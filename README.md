@@ -35,7 +35,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - Base image: [Mozilla's](https://github.com/mozilla-services/syncstorage-rs/blob/master/Dockerfile) container
     - Base image differences: image built with `DATABASE_BACKEND=mysql` to use the MySQL-compatible interface instead of Google Spanner
     - source code: https://github.com/mozilla-services/syncstorage-rs
-        - code changes: none
+        - code changes: none for amd64. Other architectures [build against libmariadb-dev](/.github/workflows/syncstorage-rs.yml#L143)
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - GitHub [workflow](/.github/workflows/syncstorage-rs.yml) and [logs](https://github.com/porelli/firefox-sync/actions/workflows/syncstorage-rs.yml)
     - Base image: [MariaDB's](https://github.com/MariaDB/mariadb-docker/blob/master/Dockerfile.template) container
@@ -48,9 +48,9 @@ All the images are updated weekly to the latest tag available from Mozilla's off
 1. clone this repository
 1. run `./prepare_environment.sh` to automatically prepare your `.env` file and conf examples according with your variables
 1. setup your reverse proxy server
-    1. if you use nginx, check the [syncstorage-rs.conf](/config/nginx/syncstorage-rs.conf) as example
+    1. if you use nginx, check the [syncstorage-rs-example.conf](/config/nginx/syncstorage-rs-example.conf) as example
 1. start docker compose: `docker compose up`
-1. OPTIONAL: Install the systemd service (see [firefox-sync.service](/config/systemd/syncstorage-rs.service)) and enable it
+1. OPTIONAL: Install the systemd service (see [firefox-sync-example.service](/config/systemd/syncstorage-rs-example.service)) and enable it
     - all the containers are already set to restart automatically; stopping Docker (for example when you shutdown your computer) will automatically stop all the services gracefully and restart them once Docker is starting again
 
 ## Firefox setup
@@ -85,3 +85,4 @@ The below examples assume your server respond to this domain: `firefox-sync.exam
 ## Credits
 - [Mozilla](https://www.mozilla.org/) for [Firefox](https://www.mozilla.org/firefox) and opensourcing all their software, including the backend
 - [jeena](https://github.com/jeena) for [fxsync-docker](https://github.com/jeena/fxsync-docker) which is the inspiration for this project
+- [ghagl](https://github.com/ghagl) for [the change](https://github.com/mozilla-services/syncstorage-rs/pull/1635) required to build arm64 images
