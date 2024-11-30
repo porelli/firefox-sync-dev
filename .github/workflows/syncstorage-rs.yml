@@ -143,15 +143,21 @@ jobs:
         run: docker buildx create --use
 
       # non-amd64 is not natively supported, see https://github.com/mozilla-services/syncstorage-rs/pull/1635
-      - name: Replace MySQL client with MariaDB client where architecture is not supported
-        if: matrix.architecture != 'linux/amd64'
+      # - name: Replace MySQL client with MariaDB client where architecture is not supported
+      #   if: matrix.architecture != 'linux/amd64'
+      #   run: |
+      #     sed -i 's/libmysqlclient-dev/libmariadb-dev-compat libmariadb-dev/g' "./mozilla-services/${{ env.SERVICE_NAME }}/Dockerfile"
+
+      - name: Replace Dockerfile
         run: |
-          sed -i 's/libmysqlclient-dev/libmariadb-dev-compat libmariadb-dev/g' "./mozilla-services/${{ env.SERVICE_NAME }}/Dockerfile"
+          cp "./${{ env.SERVICE_NAME }}/Dockerfile" "./mozilla-services/${{ env.SERVICE_NAME }}/Dockerfile"
 
       - name: Build service Docker image for ${{ matrix.architecture }}
         run: |
           docker buildx build --provenance=false --platform ${{ matrix.architecture }} \
             --build-arg DATABASE_BACKEND=${{ env.DATABASE_BACKEND }} \
+            --build-arg BUILDPLATFORM=linux/amd64 \
+            --build-arg TARGETPLATFORM=${{ matrix.architecture }} \
             -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
             -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
             -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}latest \
@@ -161,6 +167,8 @@ jobs:
         if: env.SERVICE_REQUIRE_INIT == 'true'
         run: |
           docker buildx build --provenance=false --platform ${{ matrix.architecture }} \
+          --build-arg BUILDPLATFORM=linux/amd64 \
+          --build-arg TARGETPLATFORM=${{ matrix.architecture }} \
             -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
             -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
             -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-latest \
