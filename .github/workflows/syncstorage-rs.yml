@@ -126,6 +126,11 @@ jobs:
     permissions:
       contents: write
       packages: write
+    outputs:
+      service_docker_image_tags: ${{ steps.build_service_docker_image.outputs.service_docker_image_tags }}
+      init_docker_image_tags: ${{ steps.build_init_docker_image.outputs.init_docker_image_tags }}
+      service_generic_image_tags: ${{ steps.build_service_docker_image.outputs.service_generic_image_tags }}
+      init_generic_image_tags: ${{ steps.build_init_docker_image.outputs.init_generic_image_tags }}
 
     steps:
       - name: Checkout
@@ -143,42 +148,112 @@ jobs:
         run: docker buildx create --use
 
       # non-amd64 is not natively supported, see https://github.com/mozilla-services/syncstorage-rs/pull/1635
-      - name: Replace MySQL client with MariaDB client where architecture is not supported
-        if: matrix.architecture != 'linux/amd64'
+      # - name: Replace MySQL client with MariaDB client where architecture is not supported
+      #   if: matrix.architecture != 'linux/amd64'
+      #   run: |
+      #     sed -i 's/libmysqlclient-dev/libmariadb-dev-compat libmariadb-dev/g' "./mozilla-services/${{ env.SERVICE_NAME }}/Dockerfile"
+
+      - name: Replace Dockerfile
         run: |
-          sed -i 's/libmysqlclient-dev/libmariadb-dev-compat libmariadb-dev/g' "./mozilla-services/${{ env.SERVICE_NAME }}/Dockerfile"
+          cp "./${{ env.SERVICE_NAME }}/Dockerfile" "./mozilla-services/${{ env.SERVICE_NAME }}/Dockerfile"
 
       - name: Build service Docker image for ${{ matrix.architecture }}
+        id: build_service_docker_image
         run: |
+          architecture_tag=$(echo ${{ matrix.architecture }} | sed 's/\//_/g')
+          service_docker_image_tag_prefix="${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}"
+          service_docker_image_tag_suffix="-${architecture_tag}"
+          service_docker_tag_with_timestamp="${service_docker_image_tag_prefix}-${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}-${service_docker_image_tag_suffix}"
+          service_docker_tag_with_version_tag="${service_docker_image_tag_prefix}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}-${service_docker_image_tag_suffix}"
+          service_docker_tag_with_latest="${service_docker_image_tag_prefix}-latest-${service_docker_image_tag_suffix}"
           docker buildx build --provenance=false --platform ${{ matrix.architecture }} \
+            --build-arg BUILDPLATFORM=linux/amd64 \
+            --build-arg TARGETPLATFORM=${{ matrix.architecture }} \
             --build-arg DATABASE_BACKEND=${{ env.DATABASE_BACKEND }} \
-            -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
-            -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
-            -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}latest \
+            -t service_docker_tag_with_timestamp \
+            -t service_docker_tag_with_version_tag \
+            -t service_docker_tag_with_latest \
             --push "./mozilla-services/${{ env.SERVICE_NAME }}"
 
-      - name: Build initialization Docker image for ${{ matrix.architecture }}
-        if: env.SERVICE_REQUIRE_INIT == 'true'
+          # Platform-independent tags (generic tags)
+          service_generic_tag_with_timestamp="${service_docker_image_tag_prefix}-${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}"
+          service_generic_tag_with_version_tag="${service_docker_image_tag_prefix}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}"
+          service_generic_tag_with_latest="${service_docker_image_tag_prefix}-latest"
+
+          echo "service_docker_image_tags=${service_docker_tag_with_timestamp},${service_docker_tag_with_version_tag},${service_docker_tag_with_latest}" >> ${GITHUB_OUTPUT}
+          echo "service_generic_image_tags=${service_generic_tag_with_timestamp},${service_generic_tag_with_version_tag},${service_generic_tag_with_latest}" >> ${GITHUB_OUTPUT}
+
+      - name: Build init Docker image for ${{ matrix.architecture }}
+        id: build_init_docker_image
         run: |
-          docker buildx build --provenance=false --platform ${{ matrix.architecture }} \
-            -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
-            -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }} \
-            -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-latest \
-            --push "./${{ env.SERVICE_NAME }}-init"
+          init_image_tag="${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.IMAGE_PREFIX_TAGS }}init-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}-${{ matrix.architecture }}"
+          docker buildx build --platform ${{ matrix.architecture }} \
+            --build-arg BUILDPLATFORM=linux/amd64 \
+            --build-arg TARGETPLATFORM=${{ matrix.architecture }} \
+            -t $init_image_tag \
+            --push "./mozilla-services/${{ env.SERVICE_NAME }}-init"
+
+          # Platform-independent init image
+          init_generic_image_tag="${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.IMAGE_PREFIX_TAGS }}init"
+          docker buildx build --platform ${{ matrix.architecture }} \
+            --build-arg BUILDPLATFORM=linux/amd64 \
+            --build-arg TARGETPLATFORM=linux/amd64 \
+            -t $init_generic_image_tag \
+            --push "./mozilla-services/${{ env.SERVICE_NAME }}-init"
+
+          echo "init_docker_image_tags=${init_image_tag}" >> ${GITHUB_OUTPUT}
+          echo "init_generic_image_tags=${init_generic_image_tag}" >> ${GITHUB_OUTPUT}
 
   prepare-release:
     needs:
-      - check-if-run-is-necessary
       - prepare-env
       - build-and-push
+      - check-if-run-is-necessary
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-
+    if: needs.build-and-push.outputs.service_docker_image_tags != '' && needs.build-and-push.outputs.init_docker_image_tags != ''
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Collect tags
+        id: collect_tags
+        run: |
+          service_docker_image_tags="${{ needs.build-and-push.outputs.service_docker_image_tags }}"
+          service_generic_image_tags="${{ needs.build-and-push.outputs.service_generic_image_tags }}"
+          init_docker_image_tags="${{ needs.build-and-push.outputs.init_docker_image_tags }}"
+          init_generic_image_tags="${{ needs.build-and-push.outputs.init_generic_image_tags }}"
+
+          echo "::set-output name=service_docker_image_tags::${service_docker_image_tags}"
+          echo "::set-output name=service_generic_image_tags::${service_generic_image_tags}"
+          echo "::set-output name=init_docker_image_tags::${init_docker_image_tags}"
+          echo "::set-output name=init_generic_image_tags::${init_generic_image_tags}"
+
+      - name: Create manifest for service images
+        run: |
+          service_manifest_tags="${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}"
+
+          for tag in ${{ steps.collect_tags.outputs.service_docker_image_tags }}; do
+            service_manifest_tags="${service_manifest_tags},${tag}"
+          done
+
+          for tag in ${{ steps.collect_tags.outputs.service_generic_image_tags }}; do
+            service_manifest_tags="${service_manifest_tags},${tag}"
+          done
+
+          docker manifest create $service_manifest_tags
+          docker manifest push $service_manifest_tags
+
+      - name: Create manifest for init images
+        run: |
+          init_manifest_tags="${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.IMAGE_PREFIX_TAGS }}init-${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}"
+
+          for tag in ${{ steps.collect_tags.outputs.init_docker_image_tags }}; do
+            init_manifest_tags="${init_manifest_tags},${tag}"
+          done
+
+          for tag in ${{ steps.collect_tags.outputs.init_generic_image_tags }}; do
+            init_manifest_tags="${init_manifest_tags},${tag}"
+          done
+
+          docker manifest create $init_manifest_tags
+          docker manifest push $init_manifest_tags
 
       - name: Get changelog from service
         run: |
@@ -196,4 +271,3 @@ jobs:
           name: ${{ env.SERVICE_NAME }}
           tag: ${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ needs.prepare-env.outputs.build_timestamp }}-${{ needs.check-if-run-is-necessary.outputs.latest_git_tag }}
           bodyFile: ./mozilla-services/${{ env.SERVICE_NAME }}/${{ env.CHANGELOG_PATH }}
-
