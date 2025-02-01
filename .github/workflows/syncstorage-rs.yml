@@ -3,134 +3,289 @@ name: syncstorage-rs-mysql
 on:
   workflow_dispatch:
   schedule:
-    - cron: '5 6 * * 1'
+    - cron: '5 6 * * 1' # Run every Monday at 06:05 UTC
   push:
     branches:
       - main
+      - '**'
+
+env:
+  # repository variables
+  REPOSITORY_REGISTRY: ghcr.io
+  REPOSITORY_FULL_NAME: ${{ github.repository }}
+  # service variables
+  SERVICE_NAME: syncstorage-rs
+  SERVICE_REPOSITORY_SERVER: github.com
+  SERVICE_REPOSITORY_NAME: mozilla-services/syncstorage-rs
+  SERVICE_CHANGELOG_PATH: CHANGELOG.md
+  # specific for this component
+  IMAGE_PREFIX_TAGS: mysql
+  DATABASE_BACKEND: mysql
 
 jobs:
-  build-and-push:
+  prepare-env:
+    runs-on: ubuntu-latest
+    outputs:
+      github_release: ${{ steps.set-version-suffix-and-release-strategy.outputs.github_release }}
+      service_tag: ${{ steps.get-service-latest-tag.outputs.service_tag }}
+      internal_commit_head: ${{ steps.find-code.outputs.internal_commit_head }}
+      repository_full_name: ${{ steps.env.outputs.repository_full_name }}
+      service_name: ${{ steps.env.outputs.service_name }}
+      service_repository_name: ${{ steps.env.outputs.service_repository_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find local code to build
+        id: find-code
+        uses: ./.github/actions/find-head
+        with:
+          event_name: ${{ github.event_name }}
+
+      - name: Decide release strategy
+        id: set-version-suffix-and-release-strategy
+        # <GIT_BRANCH>   , <GIT_TAG> on head, github release
+        # main           , yes              , yes
+        # non-main-branch, yes              , no
+        # any-branch     , no               , no
+        run: |
+          if [[ "${{ steps.find-code.outputs.internal_commit_branch_name }}" == "main" ]] && [[ -n "${{ steps.find-code.outputs.internal_commit_tag }}" ]]; then
+            echo 'github_release=true' >> ${GITHUB_OUTPUT}
+          else
+            echo 'github_release=false' >> ${GITHUB_OUTPUT}
+          fi
+
+      - name: Fetch latest tags from service repository
+        id: get-service-latest-tag
+        run: |
+          latest_tag=$(git ls-remote --tags "https://${{ env.SERVICE_REPOSITORY_SERVER }}/${{ env.SERVICE_REPOSITORY_NAME }}" | grep -v '\^{}' | awk -F/ '{print $NF}' | sort -V | tail -n1)
+          echo "Latest tag for this service: ${latest_tag}"
+          echo "service_tag=${latest_tag}" >> ${GITHUB_OUTPUT}
+
+      - name: Create output with inaccessible env variables
+        id: env
+        run: |
+          echo "repository_full_name=${{ env.REPOSITORY_FULL_NAME }}" >> ${GITHUB_OUTPUT}
+          echo "service_name=${{ env.SERVICE_NAME }}" >> ${GITHUB_OUTPUT}
+          echo "service_repository_name=${{ env.SERVICE_REPOSITORY_NAME }}" >> ${GITHUB_OUTPUT}
+
+  build-and-push-containers:
+    needs:
+      - prepare-env
+
+    permissions:
+      contents: write
+      packages: write
+
+    strategy:
+      matrix:
+        config:
+          - docker_architecture: amd64
+            github_runner_image: ubuntu-latest
+            image_type: app
+          - docker_architecture: amd64
+            github_runner_image: ubuntu-latest
+            image_type: init
+          - docker_architecture: arm64
+            github_runner_image: ubuntu-24.04-arm
+            image_type: app
+          - docker_architecture: arm64
+            github_runner_image: ubuntu-24.04-arm
+            image_type: init
+
+    runs-on: ${{ matrix.config.github_runner_image }}
+
+    steps:
+      - name: Prepare variables
+        id: prepare-variables
+        run: |
+          # setting docker and github variables
+          case ${{ matrix.config.docker_architecture }} in
+            amd64)
+              echo docker_architecture='amd64' >> ${GITHUB_OUTPUT}
+              echo docker_target='linux/amd64' >> ${GITHUB_OUTPUT}
+              ;;
+            arm64)
+              echo docker_architecture='arm64' >> ${GITHUB_OUTPUT}
+              echo docker_target='linux/arm64' >> ${GITHUB_OUTPUT}
+              ;;
+            *)
+              echo "Unknown architecture"
+              exit 1
+              ;;
+          esac
+
+          # setting image-specific paths
+          case ${{ matrix.config.image_type }} in
+            app)
+              echo code_repository="${{ env.SERVICE_REPOSITORY_NAME }}" >> ${GITHUB_OUTPUT}
+              echo code_dockerfile_path='./' >> ${GITHUB_OUTPUT}
+              ;;
+            *)
+              echo code_repository="${{ env.REPOSITORY_FULL_NAME }}" >> ${GITHUB_OUTPUT}
+              echo code_dockerfile_path="./${{ env.SERVICE_NAME }}-${{ matrix.config.image_type }}/" >> ${GITHUB_OUTPUT}
+              ;;
+          esac
+
+      - name: Prepare platform pair
+        id: prepare-platform-pair
+        run: |
+          platform=${{ matrix.config.docker_architecture }}
+          echo "platform_pair=${platform//\//-}" >> ${GITHUB_OUTPUT}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.prepare-variables.outputs.code_commit_head }}
+          repository: ${{ steps.prepare-variables.outputs.code_repository }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # non-amd64 is not natively supported in syncstorage-rs, see https://github.com/mozilla-services/syncstorage-rs/pull/1635
+      - name: Replace MySQL client with MariaDB client where architecture is not supported
+        if: steps.prepare-variables.outputs.code_repository == 'mozilla-services/syncstorage-rs' && steps.prepare-variables.outputs.docker_architecture != 'amd64'
+        run: |
+          sed -i 's/libmysqlclient-dev/libmariadb-dev-compat libmariadb-dev/g' "./Dockerfile"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          platforms: ${{ steps.prepare-variables.outputs.docker_target }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,"name=${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}",push-by-digest=true,name-canonical=true,push=true
+          context: ${{ steps.prepare-variables.outputs.code_dockerfile_path }}
+          cache-from: type=registry,ref=${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:buildcache-${{ env.SERVICE_NAME }}-${{ matrix.config.image_type }}-${{ steps.prepare-platform-pair.outputs.platform_pair }}
+          cache-to: type=registry,ref=${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:buildcache-${{ env.SERVICE_NAME }}-${{ matrix.config.image_type }}-${{ steps.prepare-platform-pair.outputs.platform_pair }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.config.image_type }}-${{ steps.prepare-platform-pair.outputs.platform_pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-and-push-manifests:
+    needs:
+      - prepare-env
+      - build-and-push-containers
+
+    permissions:
+      contents: write
+      packages: write
+
+    strategy:
+      matrix:
+        image-type: [app, init]
     runs-on: ubuntu-latest
 
-    env:
-      # generic variables
-      REPOSITORY_SITE: ghcr.io
-      REPOSITORY_FULL_NAME: ${{ github.repository }}
-      SERVICE_NAME: syncstorage-rs
-      SERVICE_REPOSITORY: https://github.com/mozilla-services/syncstorage-rs
-      CHANGELOG_PATH: CHANGELOG.md
-      IMAGE_EXPIRY: 600000 # in seconds, slightly less than a week
-      IMAGE_PREFIX_TAGS: mysql-
-      SERVICE_REQUIRE_INIT: true
-      # specific for this component
-      DATABASE_BACKEND: mysql
+    steps:
+      - name: Prepare image name
+        id: image-name
+        run: |
+          case ${{ matrix.image-type }} in
+            app)
+              echo docker_image_name_suffix="" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo docker_image_name_suffix="-${{ matrix.image-type }}" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: ${{ matrix.image-type }}-*
+          merge-multiple: true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ steps.image-name.outputs.image-name }}
+          tags: |
+            type=schedule,value=latest,pattern={{date 'YYYYMMDD-hhmmss'}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          # flavor: |
+          #   latest=auto
+          #   prefix=${{ env.SERVICE_NAME }}
+          #   suffix=${{ env.IMAGE_PREFIX_TAGS }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ steps.meta.outputs.version }}
+
+  prepare-release:
+    runs-on: ubuntu-latest
+
+    needs:
+      - prepare-env
+      - build-and-push-containers
+      - build-and-push-manifests
 
     permissions:
       contents: write
       packages: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Fetch latest tags
-        id: get_latest_tag
+      - name: Get changelog from service
+        if: needs.prepare-env.outputs.github_release
         run: |
-          latest_tag=$(git ls-remote --tags "${{ env.SERVICE_REPOSITORY }}" | grep -v '\^{}' | awk -F/ '{print $NF}' | sort -V | tail -n1)
-          echo "Latest tag: $latest_tag"
-          echo "tag=$latest_tag" >> $GITHUB_OUTPUT
-
-      - name: Check if tag exists in docker repository
-        id: check_tag_exists
-        run: |
-          tag=${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ steps.get_latest_tag.outputs.tag }}
-          temporary_token=$(curl "https://${{ env.REPOSITORY_SITE }}/token?scope=${{ env.REPOSITORY_FULL_NAME }}:pull" | jq -r .token)
-          response=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${temporary_token}" \
-            "https://${{ env.REPOSITORY_SITE }}/v2/${{ env.REPOSITORY_FULL_NAME }}/manifests/${tag}")
-          echo "HTTP response code: $response"
-          if [ "$response" -eq 200 ]; then
-            echo "Tag $tag exists in docker repository."
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "Tag $tag does not exist in docker repository."
-            echo "tag_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Login to docker repository
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REPOSITORY_SITE }} -u "${{ github.actor }}" --password-stdin
-
-      - name: Pull image to check timestamp
-        if: steps.check_tag_exists.outputs.tag_exists == 'true'
-        run: |
-          docker pull ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ steps.get_latest_tag.outputs.tag }}
-
-      - name: Check image age
-        id: check_image_age
-        if: steps.check_tag_exists.outputs.tag_exists == 'true'
-        run: |
-          tag=${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ steps.get_latest_tag.outputs.tag }}
-          image_creation=$(docker inspect --format='{{.Created}}' ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${tag})
-          image_timestamp=$(date -d "$image_creation" +%s)
-          current_timestamp=$(date +%s)
-          expiry_date=$(($current_timestamp - ${{ env.IMAGE_EXPIRY }}))
-          if [ "$image_timestamp" -lt "$expiry_date" ]; then
-            echo "Image is older than one week."
-            echo "image_old=true" >> $GITHUB_OUTPUT
-          else
-            echo "Image is less than a week old."
-            echo "image_old=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Skip if tag exists and image is not old
-        if: steps.check_tag_exists.outputs.tag_exists == 'true' && steps.check_image_age.outputs.image_old == 'false'
-        run: echo "Tag exists and image is not old. Skipping build and push steps."
-
-      - name: Set current date as env variable
-        run: echo "NOW=$(date +'%Y%m%dT%H%M%S')" >> ${GITHUB_ENV}
-
-      - name: Clone third-party repository at the latest tag
-        if: steps.check_tag_exists.outputs.tag_exists == 'false' || steps.check_image_age.outputs.image_old == 'true'
-        run: |
-          mkdir mozilla-services
-          git clone --depth 1 --branch ${{ steps.get_latest_tag.outputs.tag }} "${{ env.SERVICE_REPOSITORY }}" mozilla-services/"${{ env.SERVICE_NAME }}"
-
-      - name: Build service Docker image
-        if: steps.check_tag_exists.outputs.tag_exists == 'false' || steps.check_image_age.outputs.image_old == 'true'
-        run: |
-          docker build --build-arg DATABASE_BACKEND=${{ env.DATABASE_BACKEND }} \
-                       -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${NOW}-${{ steps.get_latest_tag.outputs.tag }} \
-                       -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ steps.get_latest_tag.outputs.tag }} \
-                       -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}latest \
-                       "./mozilla-services/${{ env.SERVICE_NAME }}"
-
-      - name: Push service Docker image with version tag
-        if: steps.check_tag_exists.outputs.tag_exists == 'false' || steps.check_image_age.outputs.image_old == 'true'
-        run: |
-          docker image push --all-tags ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}
-
-      - name: Build service initialization Docker image
-        if: (steps.check_tag_exists.outputs.tag_exists == 'false' || steps.check_image_age.outputs.image_old == 'true') && env.SERVICE_REQUIRE_INIT == 'true'
-        run: |
-          docker build -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-${NOW}-${{ steps.get_latest_tag.outputs.tag }} \
-                       -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-${{ steps.get_latest_tag.outputs.tag }} \
-                       -t ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}init-latest \
-                       "./${{ env.SERVICE_NAME }}-init"
-
-      - name: Push service initialization Docker image with version tag
-        if: (steps.check_tag_exists.outputs.tag_exists == 'false' || steps.check_image_age.outputs.image_old == 'true') && env.SERVICE_REQUIRE_INIT == 'true'
-        run: |
-          docker image push --all-tags ${{ env.REPOSITORY_SITE }}/${{ env.REPOSITORY_FULL_NAME }}
+          mkdir -p mozilla-services/${{ env.SERVICE_NAME }}
+          curl -H 'Accept: application/vnd.github.v3.raw' -L -s https://github.com/mozilla-services/syncstorage-rs/raw/refs/tags/${{ needs.prepare-env.outputs.service_tag }}/CHANGELOG.md -o mozilla-services/${{ env.SERVICE_NAME }}/${{ env.SERVICE_CHANGELOG_PATH }}
 
       - name: Prepare changelog
-        if: steps.check_tag_exists.outputs.tag_exists == 'false' || steps.check_image_age.outputs.image_old == 'true'
+        if: needs.prepare-env.outputs.github_release
         run: |
-          sed -i -n '/<a name="${{ steps.get_latest_tag.outputs.tag }}"/,/^<a name=/ {/^<a name=/!p; /^<a name="${{ steps.get_latest_tag.outputs.tag }}"/p}' "./mozilla-services/${{ env.SERVICE_NAME }}/${{ env.CHANGELOG_PATH }}"
-          sed "2s/$/ - Built on ${NOW}/" -i "./mozilla-services/${{ env.SERVICE_NAME }}/${{ env.CHANGELOG_PATH }}"
+          sed -i -n '/<a name="${{ needs.prepare-env.outputs.service_tag }}"/,/^<a name=/ {/^<a name=/!p; /^<a name="${{ needs.prepare-env.outputs.service_tag }}"/p}' "./mozilla-services/${{ env.SERVICE_NAME }}/${{ env.SERVICE_CHANGELOG_PATH }}"
 
       - name: Create Release
-        if: steps.check_tag_exists.outputs.tag_exists == 'false' || steps.check_image_age.outputs.image_old == 'true'
+        if: needs.prepare-env.outputs.github_release
         uses: ncipollo/release-action@v1
         with:
           name: ${{ env.SERVICE_NAME }}
-          tag: ${{ env.SERVICE_NAME }}-${{ env.IMAGE_PREFIX_TAGS }}${{ env.NOW }}-${{ steps.get_latest_tag.outputs.tag }}
-          bodyFile: ./mozilla-services/${{ env.SERVICE_NAME }}/${{ env.CHANGELOG_PATH }}
+          tag: test
+          bodyFile: ./mozilla-services/${{ env.SERVICE_NAME }}/${{ env.SERVICE_CHANGELOG_PATH }}

@@ -1,0 +1,22 @@
+name: Push container
+
+on:
+  workflow_call:
+    inputs:
+      architecture:
+        required: true
+        type: string
+
+jobs:
+  push-container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2

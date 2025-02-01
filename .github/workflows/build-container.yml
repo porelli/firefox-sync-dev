@@ -1,0 +1,123 @@
+name: Build container
+
+on:
+  workflow_call:
+    inputs:
+      image_type:
+        description: 'Type of the image, will be used to distinguish the digests'
+        required: true
+        type: string
+      code_repository:
+        description: 'Repository that will be used for checkout'
+        required: true
+        type: string
+      code_commit_head:
+        description: 'Commit ID that will be used for checkout'
+        required: true
+        type: string
+      code_dockerfile_path:
+        description: 'Path with the Dockerfile'
+        default: './'
+        required: false
+        type: string
+      docker_repository_registry:
+        description: 'Registry where we want to upload this image'
+        default: 'amd64'
+        required: false
+        type: string
+      docker_repository_full_name:
+        description: 'Image full name'
+        default: 'amd64'
+        required: false
+        type: string
+      docker_architecture:
+        description: 'Architecture for this image'
+        default: 'amd64'
+        required: false
+        type: string
+      docker_target:
+        description: 'Target for this image'
+        default: 'linux/amd64'
+        required: false
+        type: string
+      github_runner_image:
+        description: 'Image that will be used to run this job'
+        default: 'ubuntu-latest'
+        required: false
+        type: string
+
+jobs:
+  build-container:
+    runs-on: ${{ inputs.github_runner_image }}
+
+    steps:
+      - name: Prepare variables
+        id: prepare-variables
+        run: |
+          # setting image-specific paths
+          case ${{ inputs.image_type }} in
+            init)
+              code_repository="${{ env.REPOSITORY_FULL_NAME }}"
+              code_dockerfile_path="${{ env.SERVICE_NAME }}-init/" >> ${GITHUB_OUTPUT}
+              ;;
+            app)
+              code_repository="${{ env.SERVICE_REPOSITORY_NAME }}"
+              code_dockerfile_path='./' >> ${GITHUB_OUTPUT}
+              ;;
+              esac
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.code_commit_head }}
+          repository: ${{ inputs.code_repository }}
+
+      - name: Prepare
+        id: prepare
+        run: |
+          platform=${{ inputs.docker_target }}
+          echo "platform_pair=${platform//\//-}" >> ${GITHUB_ENV}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ inputs.docker_repository_registry }}/${{ inputs.docker_repository_full_name }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.docker_repository_registry }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # non-amd64 is not natively supported in syncstorage-rs, see https://github.com/mozilla-services/syncstorage-rs/pull/1635
+      - name: Replace MySQL client with MariaDB client where architecture is not supported
+        if: inputs.code_repository == 'mozilla-services/syncstorage-rs' && inputs.docker_architecture != 'amd64'
+        run: |
+          sed -i 's/libmysqlclient-dev/libmariadb-dev-compat libmariadb-dev/g' "./Dockerfile"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          platforms: ${{ inputs.docker_target }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,"name=${{ inputs.docker_repository_registry }}/${{ inputs.docker_repository_full_name }}",push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${{ inputs.image_type }}-${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.prepare.outputs.platform_pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
