@@ -46,6 +46,8 @@ services:
       retries: 3
     volumes:
       - syncstorage-db:/var/lib/mysql
+    ports:
+      - 28643:3306
     restart: unless-stopped
 
   tokenserver_db:
@@ -66,6 +68,8 @@ services:
     volumes:
       - tokenserver-db:/var/lib/mysql
     restart: unless-stopped
+    ports:
+      - 28644:3306
 
   tokenserver_db_init:
     image: ${REPOSITORY}:${SYNCSTORAGE_INIT_IMAGE}-${SYNCSTORAGE_INIT_IMAGE_TAG}
