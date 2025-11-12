@@ -21,7 +21,7 @@ env:
   # service variables
   SERVICE_NAME: syncstorage-rs
   SERVICE_REPOSITORY_SERVER: github.com
-  SERVICE_REPOSITORY_NAME: mozilla-services/syncstorage-rs
+  SERVICE_REPOSITORY_NAME: porelli/syncstorage-rs
   SERVICE_CHANGELOG_PATH: CHANGELOG.md
   # specific for this component
   IMAGE_TAGS: mysql
