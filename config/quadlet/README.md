@@ -25,6 +25,7 @@ Quadlets are systemd unit files that Podman automatically converts into containe
 - `firefox-sync-syncstorage-migrate.container` - Database migrations, without exposing the service (runs once)
 - `firefox-sync-tokenserver-db-init.container` - Database initialization and MAX_USERS (runs once, after the migrations)
 - `firefox-sync-syncstorage.container` - Main Firefox Sync service (starts only after the init succeeded)
+- `fxa/` - self-hosted Mozilla accounts (experimental, see [FXA.md](../../FXA.md)), installed only when chosen in `prepare_environment.sh`
 
 ### Setup Script
 - `../../prepare_environment.sh` (choose Quadlets) - Automated setup that:

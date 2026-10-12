@@ -1,0 +1,28 @@
+# Test reverse proxy for docker-compose.fxa.yml: HTTPS with Caddy's internal CA
+{
+	local_certs
+	skip_install_trust
+}
+
+accounts.fxa.test {
+	reverse_proxy fxa-content:3030
+}
+
+api.fxa.test {
+	reverse_proxy fxa-auth:9000
+}
+
+profile.fxa.test {
+	handle_path /img/* {
+		reverse_proxy fxa-profile-static:1112
+	}
+	reverse_proxy fxa-profile:1111
+}
+
+pairing.fxa.test {
+	reverse_proxy fxa-pairing:8000
+}
+
+sync.fxa.test {
+	reverse_proxy syncstorage:8000
+}

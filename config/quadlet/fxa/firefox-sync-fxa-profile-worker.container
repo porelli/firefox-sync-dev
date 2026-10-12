@@ -1,0 +1,25 @@
+[Unit]
+Description=Firefox Sync - Mozilla accounts - Profile image worker
+After=firefox-sync-network.service
+
+[Container]
+Image=%FXA_IMAGE%:%FXA_VERSION%
+ContainerName=firefox-sync-fxa-profile-worker
+Network=firefox-sync-network.network
+PodmanArgs=--network-alias=fxa-profile-worker
+# Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
+PodmanArgs=--arch=%FXA_ARCH%
+Environment="NODE_ENV=production"
+Environment="WORKER_HOST=0.0.0.0"
+Environment="IMG=local"
+Volume=firefox-sync-fxa-profile-images.volume:/fxa/packages/fxa-profile-server/var/public
+Exec=sh -c 'cd /fxa/packages/fxa-profile-server && exec node bin/worker.js'
+
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target default.target

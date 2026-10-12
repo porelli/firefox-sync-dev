@@ -139,6 +139,7 @@ echo ""
 echo "Note: To change max_users, update MAX_USERS"
 echo "in .env and restart the init container:"
 echo "  docker compose up tokenserver_db_init"
+echo "  (Quadlets: systemctl --user restart firefox-sync-tokenserver-db-init.service)"
 echo "=========================================="
 
 exit 0

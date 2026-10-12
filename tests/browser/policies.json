@@ -1,0 +1,10 @@
+{
+  "policies": {
+    "Certificates": { "Install": ["/caddy-ca/root.crt"] },
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DontCheckDefaultBrowser": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": ""
+  }
+}

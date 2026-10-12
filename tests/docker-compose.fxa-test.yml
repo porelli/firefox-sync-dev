@@ -1,0 +1,63 @@
+# Test-only additions for docker-compose.fxa.yml: Caddy serving the public URLs over HTTPS
+# (internal CA) and Mailpit catching the verification emails.
+# The containers resolve the public host names to Caddy through network aliases.
+
+x-trust-caddy: &trust-caddy
+  NODE_EXTRA_CA_CERTS: /caddy-ca/root.crt
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    volumes:
+      - ./tests/Caddyfile.fxa:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data/caddy
+    networks:
+      default:
+        aliases: [accounts.fxa.test, api.fxa.test, profile.fxa.test, pairing.fxa.test, sync.fxa.test]
+
+  # Caddy keeps its CA private, publish the certificate for the FxA services and the tests
+  caddy-ca:
+    image: caddy:2-alpine
+    command: [sh, -c, "until [ -f /data/caddy/pki/authorities/local/root.crt ]; do sleep 1; done; cp /data/caddy/pki/authorities/local/root.crt /caddy-ca/root.crt && chmod 644 /caddy-ca/root.crt"]
+    volumes:
+      - caddy-data:/data/caddy:ro
+      - caddy-ca:/caddy-ca
+    depends_on: [caddy]
+    restart: "no"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
+  fxa-auth:
+    environment:
+      <<: *trust-caddy
+    volumes:
+      - caddy-ca:/caddy-ca:ro
+    depends_on:
+      caddy-ca:
+        condition: service_completed_successfully
+
+  fxa-content:
+    environment:
+      <<: *trust-caddy
+    volumes:
+      - caddy-ca:/caddy-ca:ro
+    depends_on:
+      caddy-ca:
+        condition: service_completed_successfully
+
+  fxa-profile:
+    environment:
+      <<: *trust-caddy
+    volumes:
+      - caddy-ca:/caddy-ca:ro
+    depends_on:
+      caddy-ca:
+        condition: service_completed_successfully
+
+volumes:
+  caddy-data:
+  caddy-ca:

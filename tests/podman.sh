@@ -8,6 +8,7 @@
 #   REPOSITORY  image repository (default: ghcr.io/porelli/firefox-sync)
 #   TAG         tag suffix of both the app and init images (default: latest)
 #   PORT        host port (default: 28660)
+#   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -102,12 +103,50 @@ if [ "${FAILED}" != 0 ]; then
   diagnose
 fi
 
+stop_quadlets() {
+  systemctl --user stop $(systemctl --user list-units --all --plain --no-legend 'firefox-sync-*' | awk '{print $1}') 2> /dev/null
+  rm -f "${QUADLET_DIR}"/firefox-sync-*
+  systemctl --user daemon-reload
+  podman volume rm -f $(podman volume ls -q | grep '^firefox-sync-') > /dev/null 2>&1
+}
+stop_quadlets
+
+if [ -z "${SKIP_FXA:-}" ]; then
+  echo "== quadlets with self-hosted Mozilla accounts"
+  # answers: ..., image tag, FxA, FxA domain, SMTP host, port, user, password, sender
+  printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" y fxa.invalid mail.invalid 587 test 'p%ss|w&rd' "" \
+    | ./prepare_environment.sh > setup-fxa-quadlets.log 2>&1
+  check "$?" 0 "prepare_environment.sh (quadlets with accounts)"
+  check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 12 "accounts quadlet files installed"
+  check "$(grep -lE '%[A-Z][A-Z0-9_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders"
+  check "$(grep -c 'SMTP_PASS=p%%ss|w&rd"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "values escaped for systemd"
+  "${QUADLET}" -dryrun -user > quadlet-fxa-dryrun.log 2>&1
+  check "$?" 0 "quadlet generator accepts the accounts files"
+  # one pull up front, otherwise every unit pulls the 5 GB image at the same time
+  podman pull -q --arch "$(grep '^FXA_ARCH=' .env | cut -d= -f2)" "$(grep '^FXA_IMAGE=' .env | cut -d= -f2):$(grep '^FXA_VERSION=' .env | cut -d= -f2)" > /dev/null
+  check "$?" 0 "pull mozilla/fxa-mono"
+  timeout 1200 systemctl --user start firefox-sync-syncstorage.service firefox-sync-fxa-content.service firefox-sync-fxa-profile.service
+  check "$?" 0 "systemctl --user start (syncstorage and accounts)"
+  ok=""
+  for _ in $(seq 1 90); do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3030/__heartbeat__)" = 200 ] && ok=yes && break
+    sleep 5
+  done
+  check "${ok}" yes "accounts web pages answer (quadlets)"
+  ok=""
+  for _ in $(seq 1 90); do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9000/__heartbeat__)" = 200 ] && ok=yes && break
+    sleep 5
+  done
+  check "${ok}" yes "accounts API answers (quadlets)"
+  check "$(curl -s http://127.0.0.1:3030/.well-known/fxa-client-configuration | grep -o '"auth_server_base_url":"[^"]*"')" '"auth_server_base_url":"https://api.fxa.invalid"' "client configuration (quadlets)"
+  if [ "${FAILED}" != 0 ]; then
+    journalctl --user -u 'firefox-sync-fxa-*' --no-pager | tail -40
+  fi
+  stop_quadlets
+fi
+
 echo "== cleanup"
-systemctl --user stop firefox-sync-syncstorage.service firefox-sync-tokenserver-db-init.service \
-  firefox-sync-syncstorage-migrate.service firefox-sync-syncstorage-db.service firefox-sync-tokenserver-db.service 2> /dev/null
-rm -f "${QUADLET_DIR}"/firefox-sync-*
-systemctl --user daemon-reload
-podman volume rm -f firefox-sync-syncstorage-db firefox-sync-tokenserver-db > /dev/null 2>&1
 rm -rf "${WORK}"
 
 [ ${FAILED} = 0 ] && echo "RESULT podman: all checks passed" || echo "RESULT podman: some checks FAILED"

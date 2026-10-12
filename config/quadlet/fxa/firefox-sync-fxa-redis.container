@@ -1,0 +1,21 @@
+[Unit]
+Description=Firefox Sync - Mozilla accounts - Redis
+After=firefox-sync-network.service
+
+[Container]
+Image=docker.io/library/redis:7-alpine
+ContainerName=firefox-sync-fxa-redis
+Network=firefox-sync-network.network
+PodmanArgs=--network-alias=fxa-redis
+HealthCmd=redis-cli ping
+HealthInterval=15s
+HealthRetries=10
+
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target default.target

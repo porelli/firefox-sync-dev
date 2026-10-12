@@ -7,6 +7,10 @@ on:
         description: Rebuild all images from scratch instead of reusing identical ones (manual runs on main always do, they publish a release)
         type: boolean
         default: false
+      fxa_version:
+        description: "mozilla/fxa-mono tag for the self-hosted accounts tests, default: newest release"
+        type: string
+        default: ""
   schedule:
     - cron: '15 6 * * 1' # Run every Monday at 06:15 UTC
     # - cron: '*/7 * * * *' # Test
@@ -350,6 +354,57 @@ jobs:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
         run: ./tests/podman.sh
+
+  ## Test the self-hosted Mozilla accounts (experimental, does not block publishing) ##
+  test-fxa:
+    needs:
+      - prepare-env
+      - build-and-push-containers
+
+    permissions:
+      contents: read
+      packages: read
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pick the Mozilla accounts version
+        id: fxa
+        run: |
+          # newest vX.Y.Z release that is already published on Docker Hub
+          version="${{ inputs.fxa_version }}"
+          if [ -z "${version}" ]; then
+            for candidate in $(git ls-remote --tags https://github.com/mozilla/fxa 'refs/tags/v*' | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 3 | sort -rV); do
+              if docker manifest inspect "mozilla/fxa-mono:${candidate}" > /dev/null 2>&1; then
+                version=${candidate}
+                break
+              fi
+            done
+          fi
+          echo "Testing mozilla/fxa-mono:${version}"
+          echo "version=${version}" >> ${GITHUB_OUTPUT}
+
+      - name: End-to-end tests with self-hosted Mozilla accounts
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
+          # Mozilla's own images: early warning about a new release before fxa.yml builds it
+          FXA_IMAGE: docker.io/mozilla/fxa-mono
+          FXA_VERSION: ${{ steps.fxa.outputs.version }}
+          FXA_ARCH: amd64
+          FXA_PAIRING_IMAGE: docker.io/mozilla/channelserver:1.5.0
+        run: ./tests/e2e-fxa.sh
 
   ## Collect digests from previus builds and create a single manifest ##
   build-and-push-manifests:

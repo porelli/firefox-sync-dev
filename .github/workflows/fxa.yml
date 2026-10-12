@@ -1,0 +1,265 @@
+name: fxa-mono
+
+# amd64 and arm64 builds of Mozilla's accounts image (mozilla/fxa-mono, published for
+# amd64 only) from the upstream release tags, tested with tests/e2e-fxa.sh on both
+# architectures before the multi-arch tags are published. Experimental, see FXA.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "FxA release tag to build (vX.Y.Z), default: newest release"
+        type: string
+        default: ""
+      rebuild:
+        description: Build even if an image for this release exists
+        type: boolean
+        default: false
+  schedule:
+    - cron: '45 6 * * 1' # every Monday, after the syncstorage-rs build
+  push:
+    paths:
+      - .github/workflows/fxa.yml
+
+env:
+  REPOSITORY_REGISTRY: ghcr.io
+  REPOSITORY_FULL_NAME: ${{ github.repository }}
+  FXA_REPOSITORY: mozilla/fxa
+  PAIRING_REPOSITORY: mozilla-services/channelserver
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.existing.outputs.build }}
+      pairing_version: ${{ steps.pairing.outputs.version }}
+      build_pairing: ${{ steps.pairing.outputs.build }}
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pick the release
+        id: version
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          version="${REQUESTED}"
+          if [ -z "${version}" ]; then
+            version=$(git ls-remote --tags "https://github.com/${FXA_REPOSITORY}" 'refs/tags/v*' | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          fi
+          # used in a checkout ref and in image tags: only accept a release tag
+          if ! [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Not a release tag: '${version}'"
+            exit 1
+          fi
+          echo "FxA release: ${version}"
+          echo "version=${version}" >> ${GITHUB_OUTPUT}
+
+      - name: Look for an existing image
+        id: existing
+        env:
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          image="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono-${{ steps.version.outputs.version }}"
+          if [ "${REBUILD}" != true ] && docker buildx imagetools inspect "${image}" > /dev/null 2>&1; then
+            echo "${image} exists, nothing to build"
+            echo "build=false" >> ${GITHUB_OUTPUT}
+          else
+            echo "build=true" >> ${GITHUB_OUTPUT}
+          fi
+
+      - name: Pairing server release
+        id: pairing
+        env:
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          # the QR code pairing server (channelserver), also amd64 only upstream
+          version=$(git ls-remote --tags "https://github.com/${PAIRING_REPOSITORY}" | awk -F/ '{print $NF}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          echo "Pairing server release: ${version}"
+          echo "version=${version}" >> ${GITHUB_OUTPUT}
+          image="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${version}"
+          if [ "${REBUILD}" != true ] && docker buildx imagetools inspect "${image}" > /dev/null 2>&1; then
+            echo "${image} exists, nothing to build"
+            echo "build=false" >> ${GITHUB_OUTPUT}
+          else
+            echo "build=true" >> ${GITHUB_OUTPUT}
+          fi
+
+  build-pairing:
+    needs: prepare
+    if: needs.prepare.outputs.build_pairing == 'true'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout the pairing server ${{ needs.prepare.outputs.pairing_version }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PAIRING_REPOSITORY }}
+          ref: ${{ needs.prepare.outputs.pairing_version }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: false
+          tags: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.PAIRING_REPOSITORY }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.pairing_version }}
+            org.opencontainers.image.licenses=MPL-2.0
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Mozilla accounts ${{ needs.prepare.outputs.version }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.FXA_REPOSITORY }}
+          ref: ${{ needs.prepare.outputs.version }}
+
+      - name: Prepare the sources like upstream's docker workflow
+        run: |
+          ./_scripts/l10n/clone.sh
+          # version.json as upstream writes it, pointing to the upstream release
+          printf '{"version":{"hash":"%s","version":"%s","source":"https://github.com/%s","build":"%s/%s/actions/runs/%s"}}\n' \
+            "$(git rev-parse HEAD)" "${{ needs.prepare.outputs.version }}" "${{ env.FXA_REPOSITORY }}" \
+            "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}" \
+            | tee packages/version.json apps/version.json
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: _dev/docker/mono/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: false
+          tags: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.FXA_REPOSITORY }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.licenses=MPL-2.0
+
+  test:
+    needs: [prepare, build, build-pairing]
+    # runs when anything was built (a skipped build means the image already exists)
+    if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: End-to-end tests with our ${{ matrix.arch }} image
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+          FXA_ARCH: ${{ matrix.arch }}
+          FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-${{ matrix.arch }}
+        run: ./tests/e2e-fxa.sh
+
+  publish:
+    needs: [prepare, test]
+    if: ${{ !failure() && !cancelled() && needs.test.result == 'success' }}
+    permissions:
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Multi-arch tags
+        run: |
+          prefix="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono"
+          version="${{ needs.prepare.outputs.version }}"
+          docker buildx imagetools create -t "${prefix}-${version}" -t "${prefix}-latest" \
+            "${prefix}-${version}-linux-amd64" "${prefix}-${version}-linux-arm64"
+          docker buildx imagetools inspect "${prefix}-${version}"
+          pairing="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver"
+          pairing_version="${{ needs.prepare.outputs.pairing_version }}"
+          docker buildx imagetools create -t "${pairing}-${pairing_version}" -t "${pairing}-latest" \
+            "${pairing}-${pairing_version}-linux-amd64" "${pairing}-${pairing_version}-linux-arm64"

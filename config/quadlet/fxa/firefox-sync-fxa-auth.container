@@ -1,0 +1,86 @@
+[Unit]
+Description=Firefox Sync - Mozilla accounts - Auth and OAuth server
+After=firefox-sync-network.service firefox-sync-fxa-keys-owner.service firefox-sync-fxa-migrations.service firefox-sync-fxa-redis.service
+Requires=firefox-sync-fxa-keys-owner.service firefox-sync-fxa-migrations.service firefox-sync-fxa-redis.service
+
+[Container]
+Image=%FXA_IMAGE%:%FXA_VERSION%
+ContainerName=firefox-sync-fxa-auth
+Network=firefox-sync-network.network
+PodmanArgs=--network-alias=fxa-auth
+# Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
+PodmanArgs=--arch=%FXA_ARCH%
+Environment="MYSQL_HOST=fxa-db"
+Environment="MYSQL_USERNAME=root"
+Environment="MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
+Environment="NODE_ENV=prod"
+Environment="CONFIG_FILES=/fxa-keys/oauth-clients.json"
+Environment="IP_ADDRESS=0.0.0.0"
+Environment="PUBLIC_URL=%FXA_AUTH_URL%"
+Environment="OAUTH_URL=%FXA_AUTH_URL%"
+Environment="CONTENT_SERVER_URL=%FXA_CONTENT_URL%"
+Environment="FXA_OPENID_ISSUER=%FXA_CONTENT_URL%"
+Environment="ISSUER=%FXA_EMAIL_DOMAIN%"
+Environment="PROFILE_SERVER_URL=http://fxa-profile:1111"
+Environment="SYNC_TOKENSERVER_URL=%SYNCSTORAGE_DOMAIN%"
+Environment="CORS_ORIGIN=%FXA_CONTENT_URL%"
+Environment="OAUTH_SERVER_SECRET_KEY=%FXA_OAUTH_SECRET%"
+Environment="OAUTH_SERVER_SECRETS=%FXA_OAUTH_SECRET%"
+Environment="AUTH_SERVER_SECRETS=%FXA_OAUTH_SECRET%"
+Environment="AUTH_SERVER_SHARED_SECRET=%FXA_AUTH_SECRET%"
+Environment="PROFILE_SERVER_AUTH_SECRET_BEARER_TOKEN=%FXA_PROFILE_SECRET%"
+Environment="FLOW_ID_KEY=%FXA_FLOW_ID_KEY%"
+Environment="SESSION_TOKEN_HANDLE_KEY=%FXA_SESSION_TOKEN_HANDLE_KEY%"
+Environment="SECRET_KEY_FILE=/fxa-keys/secret-key.json"
+Environment="PUBLIC_KEY_FILE=/fxa-keys/public-key.json"
+Environment="VAPID_KEYS_FILE=/fxa-keys/vapid-keys.json"
+Environment="FXA_OPENID_KEYFILE=/fxa-keys/openid-key.json"
+Environment="FXA_OPENID_NEWKEYFILE=/fxa-keys/openid-newKey.json"
+Environment="FXA_OPENID_OLDKEYFILE=/fxa-keys/openid-oldKey.json"
+Environment="DB=mysql"
+Environment="AUTH_MYSQL_HOST=fxa-db"
+Environment="AUTH_MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
+Environment="PUSHBOX_ENABLED=true"
+Environment="PUSHBOX_MYSQL_HOST=fxa-db"
+Environment="PUSHBOX_MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
+Environment="DB_AUTO_UPDATE_CLIENTS=true"
+Environment="REDIS_HOST=fxa-redis"
+Environment="ACCESS_TOKEN_REDIS_HOST=fxa-redis"
+Environment="REFRESH_TOKEN_REDIS_HOST=fxa-redis"
+Environment="CUSTOMS_REDIS_HOST=fxa-redis"
+Environment="RATELIMIT_REDIS_HOST=fxa-redis"
+Environment="METRICS_REDIS_HOST=fxa-redis"
+Environment="AUTH_CACHE_REDIS_HOST=fxa-redis"
+Environment="RECOVERY_PHONE_REDIS_HOST=fxa-redis"
+Environment="PASSKEY_REDIS_HOST=fxa-redis"
+Environment="SMTP_HOST=%FXA_SMTP_HOST%"
+Environment="SMTP_PORT=%FXA_SMTP_PORT%"
+Environment="SMTP_USER=%FXA_SMTP_USER%"
+Environment="SMTP_PASS=%FXA_SMTP_PASS%"
+Environment="SMTP_SECURE=%FXA_SMTP_SECURE%"
+Environment="SMTP_SENDER=%FXA_SMTP_SENDER%"
+Environment="FIRESTORE_ENABLED=false"
+Environment="SNS_TOPIC_ARN=disabled"
+Environment="GEODB_ENABLED=false"
+Environment="AUTH_GLEAN_ENABLED=false"
+Environment="CUSTOMS_SERVER_URL=none"
+Environment="RECOVERY_PHONE__ENABLED=false"
+Environment="RECOVERY_PHONE__TWILIO__CREDENTIAL_MODE="
+Environment="ACCOUNT_EVENTS_ENABLED=false"
+Environment="LOG_LEVEL=INFO"
+Volume=firefox-sync-fxa-keys.volume:/fxa-keys
+Volume=%SCRIPT_DIR%/config/fxa:/fxa-config:ro,z
+PublishPort=%FXA_AUTH_EXPORT_PORT%:9000
+HealthCmd=node -e "fetch('http://localhost:9000/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+HealthInterval=15s
+HealthRetries=10
+Exec=sh -c 'cd /fxa/packages/fxa-auth-server/dist/packages/fxa-auth-server && node scripts/gen_keys.js && node scripts/oauth_gen_keys.js && node scripts/gen_vapid_keys.js && node /fxa-config/oauth-clients.js /fxa-keys/oauth-clients.json && exec node bin/key_server.js'
+
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target default.target

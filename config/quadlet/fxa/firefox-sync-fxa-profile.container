@@ -1,0 +1,40 @@
+[Unit]
+Description=Firefox Sync - Mozilla accounts - Profile server
+After=firefox-sync-network.service firefox-sync-fxa-migrations.service firefox-sync-fxa-redis.service
+Requires=firefox-sync-fxa-migrations.service firefox-sync-fxa-redis.service
+
+[Container]
+Image=%FXA_IMAGE%:%FXA_VERSION%
+ContainerName=firefox-sync-fxa-profile
+Network=firefox-sync-network.network
+PodmanArgs=--network-alias=fxa-profile
+# Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
+PodmanArgs=--arch=%FXA_ARCH%
+Environment="MYSQL_HOST=fxa-db"
+Environment="MYSQL_USERNAME=root"
+Environment="MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
+Environment="NODE_ENV=production"
+Environment="HOST=0.0.0.0"
+Environment="DB=mysql"
+Environment="PUBLIC_URL=%FXA_PROFILE_URL%"
+Environment="AUTH_SERVER_URL=http://fxa-auth:9000/v1"
+Environment="OAUTH_SERVER_URL=http://fxa-auth:9000/v1"
+Environment="AUTH_SECRET_BEARER_TOKEN=%FXA_PROFILE_SECRET%"
+Environment="REDIS_HOST=fxa-redis"
+Environment="WORKER_URL=http://fxa-profile-worker:1113"
+Environment="IMG=local"
+Environment="IMG_URL=%FXA_PROFILE_URL%/img/a/{id}"
+Environment="IMG_PROVIDERS_FXA=^%FXA_PROFILE_URL%/img/a/[0-9a-f]{32}$"
+Environment="EVENTS_ENABLED=false"
+Volume=firefox-sync-fxa-profile-images.volume:/fxa/packages/fxa-profile-server/var/public
+PublishPort=%FXA_PROFILE_EXPORT_PORT%:1111
+Exec=sh -c 'cd /fxa/packages/fxa-profile-server && exec node bin/server.js'
+
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target default.target
