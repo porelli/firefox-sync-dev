@@ -1,0 +1,68 @@
+[Unit]
+Description=Firefox Sync - Admin UI and sign-up gate
+After=firefox-sync-network.service firefox-sync-tokenserver-db-init.service firefox-sync-fxa-policy.service
+Requires=firefox-sync-tokenserver-db-init.service firefox-sync-fxa-policy.service
+
+[Container]
+Image=%REPOSITORY%:admin-latest
+ContainerName=firefox-sync-admin
+Network=firefox-sync-network.network
+PodmanArgs=--network-alias=ffs-admin
+Environment="ADMIN_PASSWORD=%ADMIN_PASSWORD%"
+Environment="TOKENSERVER_DB_TYPE=mysql"
+Environment="TOKENSERVER_DB_HOST=firefox-sync-tokenserver-db"
+Environment="TOKENSERVER_DB_PORT=3306"
+Environment="TOKENSERVER_DB_NAME=%MARIADB_TOKENSERVER_DATABASE%"
+Environment="TOKENSERVER_DB_USER=%MARIADB_TOKENSERVER_USER%"
+Environment="TOKENSERVER_DB_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%"
+Environment="STORAGE_DB_HOST=firefox-sync-syncstorage-db"
+Environment="STORAGE_DB_PORT=3306"
+Environment="STORAGE_DB_NAME=%MARIADB_SYNCSTORAGE_DATABASE%"
+Environment="STORAGE_DB_USER=%MARIADB_SYNCSTORAGE_USER%"
+Environment="STORAGE_DB_PASSWORD=%MARIADB_SYNCSTORAGE_PASSWORD%"
+Environment="SYNCSTORAGE_URL=http://firefox-sync-syncstorage:8000"
+Environment="ALERT_EMAIL=%ADMIN_ALERT_EMAIL%"
+Environment="SMTP_HOST=%FXA_SMTP_HOST%"
+Environment="SMTP_PORT=%FXA_SMTP_PORT%"
+Environment="SMTP_USER=%FXA_SMTP_USER%"
+Environment="SMTP_PASS=%FXA_SMTP_PASS%"
+Environment="SMTP_SECURE=%FXA_SMTP_SECURE%"
+Environment="SMTP_SENDER=%FXA_SMTP_SENDER%"
+Environment="METRICS_TOKEN=%ADMIN_METRICS_TOKEN%"
+Environment="ADMIN_UPDATE_CHECK=%ADMIN_UPDATE_CHECK%"
+Environment="ADMIN_STALE_DAYS=%ADMIN_STALE_DAYS%"
+Environment="ADMIN_RETENTION_DAYS=%ADMIN_RETENTION_DAYS%"
+# sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
+Environment="ADMIN_OIDC_ISSUER=%ADMIN_OIDC_ISSUER%"
+Environment="ADMIN_OIDC_CLIENT_ID=%ADMIN_OIDC_CLIENT_ID%"
+Environment="ADMIN_OIDC_CLIENT_SECRET=%ADMIN_OIDC_CLIENT_SECRET%"
+Environment="ADMIN_OIDC_REDIRECT_URL=%ADMIN_OIDC_REDIRECT_URL%"
+Environment="ADMIN_OIDC_SCOPES=%ADMIN_OIDC_SCOPES%"
+Environment="ADMIN_OIDC_NAME=%ADMIN_OIDC_NAME%"
+Environment="ADMIN_OIDC_GROUPS_CLAIM=%ADMIN_OIDC_GROUPS_CLAIM%"
+Environment="ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=%ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL%"
+Environment="ADMIN_AUTH_HEADER=%ADMIN_AUTH_HEADER%"
+Environment="ADMIN_AUTH_GROUPS_HEADER=%ADMIN_AUTH_GROUPS_HEADER%"
+Environment="ADMIN_TRUSTED_PROXIES=%ADMIN_TRUSTED_PROXIES%"
+Environment="ADMIN_ALLOWED_USERS=%ADMIN_ALLOWED_USERS%"
+Environment="ADMIN_ALLOWED_GROUPS=%ADMIN_ALLOWED_GROUPS%"
+Environment="FXA_DB_HOST=fxa-db"
+Environment="FXA_DB_PASSWORD=%FXA_ADMIN_DB_PASSWORD%"
+Environment="FXA_AUTH_UPSTREAM=http://fxa-auth:9000"
+Environment="FXA_CONTENT_URL=%FXA_CONTENT_URL%"
+PublishPort=%ADMIN_EXPORT_PORT%:8080
+# the sign-up gate: POST /v1/account/create of FXA_AUTH_URL (see config/nginx/fxa-example.conf)
+PublishPort=%ADMIN_GATE_EXPORT_PORT%:8081
+# exec form: the image has no shell for the default CMD-SHELL
+HealthCmd=["/ffs-admin", "healthcheck"]
+HealthInterval=30s
+
+AutoUpdate=registry
+
+[Service]
+Restart=always
+# the Sync server resolves ffs-admin once: a new container (update, restart) has a new IP
+ExecStartPost=-/usr/bin/systemctl --user --no-block try-restart firefox-sync-syncstorage.service
+
+[Install]
+WantedBy=multi-user.target default.target

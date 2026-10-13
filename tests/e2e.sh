@@ -3,12 +3,20 @@
 # else running on the host: own compose project, loopback-only port, own volumes.
 #
 # Usage: tests/e2e.sh <mysql|postgres>
+# Runs with the admin UI (COMPOSE_PROFILES=admin), with Mozilla's accounts (mock): Sync part only.
+# The admin UI signs in with its password, Dex (OpenID Connect) and a trusted header.
 # Environment:
 #   REPOSITORY      image repository (default: ghcr.io/porelli/firefox-sync)
 #   TAG             tag suffix of both the app and init images (default: latest)
-#   PORT            host port, bound to 127.0.0.1 (default: 28651 mysql, 28652 postgres)
+#   PORT            host port, bound to 127.0.0.1 (default: 28651 mysql, 28652 postgres),
+#                   the admin UI on PORT+20
+#   ADMIN_IMAGE     admin UI image to test, used as is (default: built from admin/)
 #   CLEANUP_IMAGES  set to 1 to remove the pulled images at the end
+#   SKIP_PULL       set to 1 to use the local images (e.g. an init image built from this tree)
 #   KEEP            set to 1 to leave the stack running
+#   TEST_SUBNET     the stack's network, a /24 (default: 10.231.1.0/24 mysql, 10.231.2.0/24 postgres);
+#                   its containers are in the upper half, the admin UI's trusted proxies, the
+#                   gateway (the host) at .1 is not
 set -u
 
 BACKEND=${1:?usage: $0 <mysql|postgres>}
@@ -21,10 +29,14 @@ WORK=$(mktemp -d)
 ENV_FILE=${WORK}/${BACKEND}.env
 
 case ${BACKEND} in
-  mysql)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28651} ;;
-  postgres) COMPOSE=${CODE}/docker-compose.postgres.yml; PORT=${PORT:-28652} ;;
+  mysql)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28651}; NET=1 ;;
+  postgres) COMPOSE=${CODE}/docker-compose.postgres.yml; PORT=${PORT:-28652}; NET=2 ;;
   *) echo "unknown backend ${BACKEND}"; exit 2 ;;
 esac
+# the admin UI trusts the X-Test-Email header of the containers (tests/docker-compose.test.yml),
+# not of the gateway: what comes from the host
+export TEST_SUBNET=${TEST_SUBNET:-10.231.${NET}.0/24}
+export TEST_TRUSTED=${TEST_SUBNET%.0/24}.128/25 TEST_GATEWAY=${TEST_SUBNET%.0/24}.1
 
 rnd() { tr -dc '[:alnum:]' < /dev/urandom | head -c 24; }
 MASTER_SECRET=$(rnd)
@@ -38,6 +50,8 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://ffs-e2e.invalid|" \
     -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:${PORT}|" \
     -e "s|^MAX_USERS=.*|MAX_USERS=1|" \
+    -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|" \
+    -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:$((PORT + 20))|" \
     -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
     -e "s|^SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-${BACKEND}|" \
     -e "s|^SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-${BACKEND}-init|" \
@@ -46,8 +60,13 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api-accounts.stage.mozaws.net|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://mock_fxa:6000|" \
     -e "/^COMPOSE_FILE=/d" \
+    -e "s|<REPLACE_WITH_SOMETHING_SECURE>|$(rnd)|" \
+    -e "s|<REPLACE_WITH_[A-Z_]*>|placeholder.invalid|g" \
     "${CODE}/.env-example" > "${ENV_FILE}"
 set -a; source "${ENV_FILE}"; set +a
+# the admin UI under test: ADMIN_IMAGE as is (pulled when missing), or built from admin/
+ADMIN_GIVEN=${ADMIN_IMAGE:-}
+export ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
 
 dc() { docker compose -p "${PROJECT}" -f "${COMPOSE}" -f "${TESTS}/docker-compose.test.yml" --env-file "${ENV_FILE}" "$@"; }
 FAILED=0
@@ -63,6 +82,18 @@ hb() {
   echo "${c}"
 }
 wait_init() { timeout 300 docker wait "$(dc ps -a -q tokenserver_db_init)"; }
+# Prometheus metrics of the admin UI
+metrics() { curl -s -H 'Authorization: Bearer ffs-test-metrics-token' "http://127.0.0.1:$((PORT + 20))/metrics"; }
+# retries until the metrics have this line (HEALTH_CHECK_SECONDS=5 in the tests)
+metrics_show() {
+  for _ in $(seq 1 20); do metrics | grep -qxF "$1" && { echo yes; return; }; sleep 1; done
+}
+# admin UI errors in the background (written to the logs only)
+admin_errors() { dc logs ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|rendering [^:]*): '; }
+admin_healthy() {
+  for _ in $(seq 1 60); do [ "$(state ffs-admin Health.Status)" = healthy ] && break; sleep 1; done
+  state ffs-admin Health.Status
+}
 # set a value in the env file and in this shell (the shell environment wins over --env-file)
 set_env() { sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"; }
 
@@ -83,6 +114,9 @@ in_app() {
     -e SYNC_MASTER_SECRET="${MASTER_SECRET}" \
     -e SYNCSTORAGE_DOMAIN="${SYNCSTORAGE_DOMAIN}" \
     -e MAX_USERS="${MAX_USERS}" \
+    -e ADMIN_URL=http://ffs-admin:8080 \
+    -e ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+    -e BACKEND="${BACKEND}" \
     -e PYTHONPATH=/app:/app/tools \
     -e PYTHONDONTWRITEBYTECODE=1 \
     --entrypoint /bin/sh syncstorage -c "cd /app && $1" < /dev/null
@@ -95,14 +129,18 @@ teardown() {
   dc down -v --remove-orphans > /dev/null 2>&1
   if [ -n "${CLEANUP_IMAGES:-}" ]; then
     docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${TAG}" > /dev/null 2>&1
+    [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
     [ "${BACKEND}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
   fi
   rm -rf "${WORK}"
 }
 trap teardown EXIT
 
+if [ -z "${ADMIN_GIVEN}" ]; then
+  COMPOSE_BAKE=false docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
+fi
 echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
-dc pull -q || exit 1
+[ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
 
 echo "== fail closed: a failing init must keep syncstorage down"
 printf 'services:\n  tokenserver_db_init:\n    entrypoint: ["/bin/false"]\n' > "${WORK}/fail-init.yml"
@@ -134,6 +172,12 @@ check "$(ins a@ffs-e2e.invalid 1 aa)" ok "first account allowed"
 check "$(ins a@ffs-e2e.invalid 2 bb)" ok "same account with new client state allowed"
 check "$(ins b@ffs-e2e.invalid 1 aa)" rejected "second account rejected"
 
+echo "== max users changed in the database (admin UI) survive a restart"
+sql "UPDATE config SET config_value = '3' WHERE config_key = 'max_users';" > /dev/null
+dc up -d --no-deps --force-recreate tokenserver_db_init > /dev/null 2>&1; wait_init > /dev/null
+check "$(sql "SELECT config_value FROM config WHERE config_key = 'max_users';")" 3 "max users kept when MAX_USERS did not change"
+sql "UPDATE config SET config_value = '1' WHERE config_key = 'max_users';" > /dev/null
+
 echo "== domain change"
 OLD_DOMAIN=${SYNCSTORAGE_DOMAIN}
 NEW_DOMAIN=https://ffs-e2e-new.invalid
@@ -152,6 +196,44 @@ sql "DELETE FROM users;" > /dev/null
 echo "== client flow through the tokenserver (mock FxA), MAX_USERS=1"
 pytest_in_app /tests/test_client_flow.py
 check "$?" 0 "client flow tests"
+
+echo "== admin UI drops what is older than ADMIN_RETENTION_DAYS"
+sql "INSERT INTO ffs_events (at, kind, detail) VALUES (1, 'test', 'old');" > /dev/null
+sql "INSERT INTO ffs_metrics VALUES (60000, 'old.metric', 1, 0);" > /dev/null
+# pruned on the first flush after the start (METRICS_FLUSH_SECONDS=5)
+dc restart ffs-admin > /dev/null 2>&1
+for _ in $(seq 1 30); do
+  [ "$(sql "SELECT (SELECT COUNT(*) FROM ffs_events WHERE kind = 'test') + (SELECT COUNT(*) FROM ffs_metrics WHERE name = 'old.metric');")" = 0 ] && break
+  sleep 1
+done
+check "$(sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'test';")" 0 "old events pruned"
+check "$(sql "SELECT COUNT(*) FROM ffs_metrics WHERE name = 'old.metric';")" 0 "old metrics pruned"
+# the Sync server restarts with the admin UI (restart: true), for the metrics
+check "$(hb)" 200 "/__heartbeat__ after the admin UI restart"
+
+echo "== admin UI, Sync only (Mozilla's accounts)"
+pytest_in_app /tests/test_admin_sync.py
+check "$?" 0 "admin UI tests"
+
+echo "== admin UI single sign-on: OpenID Connect (Dex) and a trusted proxy's header"
+pytest_in_app /tests/test_admin_auth.py
+check "$?" 0 "admin UI sign-in tests"
+# from the host (the gateway, not a trusted proxy) the header is ignored
+check "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'X-Test-Email: admin@ffs-e2e.invalid' \
+  "http://127.0.0.1:$((PORT + 20))/")" "303 http://127.0.0.1:$((PORT + 20))/login" "admin UI ignores the header of an untrusted peer"
+
+echo "== admin UI sees the Sync server go down and back up"
+health_events() { sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'health' AND detail LIKE '$1';"; }
+# the start already has one of each (the admin UI starts first): more than before
+DOWN=$(health_events 'Sync server is down%')
+UP=$(health_events 'Sync server is back up')
+dc stop syncstorage > /dev/null 2>&1
+check "$(metrics_show 'ffs_up{component="Sync server"} 0')" yes "ffs_up 0 with the Sync server stopped"
+dc start syncstorage > /dev/null 2>&1
+check "$(hb)" 200 "/__heartbeat__ after the restart"
+check "$(metrics_show 'ffs_up{component="Sync server"} 1')" yes "ffs_up 1 with the Sync server back"
+check "$([ "$(health_events 'Sync server is down%')" -gt "${DOWN}" ] && [ "$(health_events 'Sync server is back up')" -gt "${UP}" ] && echo yes)" yes \
+  "'is down' and 'is back up' in the event log"
 
 echo "== upstream storage integration tests"
 pytest_in_app tools/integration_tests/test_storage.py
@@ -176,6 +258,11 @@ if [ "${BACKEND}" = mysql ]; then
 fi
 pytest_in_app "${UPSTREAM_TS}"
 check "$?" 0 "upstream tokenserver tests"
+
+echo "== admin UI"
+check "$(admin_healthy)" healthy "admin UI container healthcheck"
+check "$(admin_errors | wc -l)" 0 "no background errors in the admin UI logs"
+admin_errors | tail -5
 
 [ ${FAILED} = 0 ] && echo "RESULT ${BACKEND}: all checks passed" || echo "RESULT ${BACKEND}: some checks FAILED"
 exit ${FAILED}

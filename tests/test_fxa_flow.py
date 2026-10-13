@@ -51,12 +51,12 @@ def wait_for_code(email, timeout=120):
     raise AssertionError(f"no verification email for {email}")
 
 
-def authorize(session):
+def authorize(session, full=False, offline=False):
     """OAuth access token for Sync, requested like Firefox 154+ does.
 
     FxA is moving from Hawk to Bearer tokens (FXA-9392): /oauth/authorization
     now rejects Hawk-signed requests (PyFxA 0.8 authorize_token), Firefox sends
-    `Bearer fxs_<token id>` instead.
+    `Bearer fxs_<token id>` instead. offline: also a refresh token, like the mobile apps.
     """
     oauth = OAuthClient(client_id=FIREFOX_CLIENT_ID, server_url=AUTH)
     challenge, verifier = oauth.generate_pkce_challenge()
@@ -64,7 +64,8 @@ def authorize(session):
     state = uuid.uuid4().hex
     res = requests.post(
         f"{AUTH}/v1/oauth/authorization",
-        json={"client_id": FIREFOX_CLIENT_ID, "scope": SYNC_SCOPE, "state": state, **challenge},
+        json={"client_id": FIREFOX_CLIENT_ID, "scope": SYNC_SCOPE, "state": state, **challenge,
+              **({"access_type": "offline"} if offline else {})},
         headers={"Authorization": f"Bearer fxs_{token_id}"},
         timeout=30,
     )
@@ -73,7 +74,8 @@ def authorize(session):
     query = parse_qs(urlparse(data.get("redirect", "")).query)
     assert data.get("state", query.get("state", [None])[0]) == state
     code = data.get("code") or query["code"][0]
-    return oauth.trade_code(code, **verifier)["access_token"]
+    granted = oauth.trade_code(code, **verifier)
+    return granted if full else granted["access_token"]
 
 
 def sync_token(session, keys_changed_at):

@@ -1,5 +1,7 @@
 # Test-only additions for docker-compose.fxa.yml: Caddy serving the public URLs over HTTPS
-# (internal CA) and Mailpit catching the verification emails.
+# (internal CA), Mailpit catching the verification emails, the admin UI under test
+# (ADMIN_IMAGE, built from admin/ by tests/e2e-fxa.sh unless given), which also signs in
+# with these accounts (OpenID Connect).
 # The containers resolve the public host names to Caddy through network aliases.
 
 x-trust-caddy: &trust-caddy
@@ -13,7 +15,7 @@ services:
       - caddy-data:/data/caddy
     networks:
       default:
-        aliases: [accounts.fxa.test, api.fxa.test, profile.fxa.test, pairing.fxa.test, sync.fxa.test]
+        aliases: [accounts.fxa.test, api.fxa.test, admin.fxa.test, profile.fxa.test, pairing.fxa.test, sync.fxa.test]
 
   # Caddy keeps its CA private, publish the certificate for the FxA services and the tests
   caddy-ca:
@@ -30,6 +32,31 @@ services:
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
+  # the admin UI and sign-up policy under test
+  fxa-policy:
+    pull_policy: missing
+
+  ffs-admin:
+    pull_policy: missing
+    environment:
+      # everything faster, alerts to the mail catcher
+      METRICS_FLUSH_SECONDS: 5
+      HEALTH_CHECK_SECONDS: 5
+      ALERT_INTERVAL_SECONDS: 5
+      ALERT_EMAIL: admin@fxa.test
+      SMTP_INSECURE_AUTH: 1
+      METRICS_TOKEN: ffs-test-metrics-token
+      ADMIN_UPDATE_CHECK: "false"
+      ADMIN_STALE_DAYS: 0
+      ADMIN_UNCONFIRMED_HOURS: 0
+      # signs in with the accounts (ADMIN_FXA_CLIENT_ID in tests/e2e-fxa.sh) through Caddy
+      SSL_CERT_FILE: /caddy-ca/root.crt
+    volumes:
+      - caddy-ca:/caddy-ca:ro
+    depends_on:
+      caddy-ca:
+        condition: service_completed_successfully
 
   fxa-auth:
     environment:

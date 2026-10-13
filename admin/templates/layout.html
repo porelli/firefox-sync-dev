@@ -1,0 +1,24 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>firefox-sync admin</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{{end}}
+{{define "nav"}}<header>
+  <h1>firefox-sync admin</h1>
+  <nav><a href="/">Overview</a> <a href="/activity">Activity</a>{{if .FxA}} <a href="/security">Security</a>{{end}}</nav>
+  {{with .User}}<span class="hint">{{.}}</span>{{end}}
+  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="link">Sign out</button></form>
+</header>
+{{end}}
+{{define "flash"}}{{if .Message}}<p class="message" role="status">{{.Message}}</p>{{end}}
+{{if .Failed}}<p class="failed" role="alert">{{.Failed}}</p>{{end}}
+{{range .Errors}}<p class="failed">{{.}}</p>{{end}}{{end}}
+{{define "foot"}}</body>
+</html>
+{{end}}

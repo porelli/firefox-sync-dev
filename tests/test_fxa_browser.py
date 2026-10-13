@@ -14,6 +14,7 @@ Environment:
 
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -94,13 +95,25 @@ def sign_in(driver):
     """)
     time.sleep(3)
     driver.switch_to.window(driver.window_handles[-1])
-    used_codes = set()
-    for _ in range(15):
-        time.sleep(3)
+
+    def finished(heading):
         user = signed_in_user(driver)
-        heading = driver.execute_script("return (document.querySelector('h1,h2')||{}).innerText||''")
         if user and (user["verified"] or "Sync is turned on" in heading or "signed in" in heading.lower()):
             return user
+
+    return fill_in_accounts_pages(driver, finished)
+
+
+def fill_in_accounts_pages(driver, finished, used_codes=()):
+    """The accounts pages, page after page, until finished(heading) returns something.
+    used_codes: confirmation codes already in the mailbox, not for this sign-in."""
+    used_codes = set(used_codes)
+    for _ in range(15):
+        time.sleep(3)
+        heading = driver.execute_script("return (document.querySelector('h1,h2')||{}).innerText||''")
+        result = finished(heading)
+        if result:
+            return result
         if visible(driver, "input[type=email]") and not visible(driver, "input[type=password]"):
             field = visible(driver, "input[type=email]")[0]
             field.clear()
@@ -181,5 +194,77 @@ def test_second_device_gets_the_bookmark(first_device):
         result = chrome(driver, SYNC, BOOKMARK_URL, None)
         assert result.get("status") == "success.sync", result
         assert result["found"] == [BOOKMARK_TITLE], result
+    finally:
+        driver.quit()
+
+
+def test_admin_shows_the_devices_and_the_data(first_device):
+    # the two Firefox profiles above, as the admin UI sees them
+    if not os.environ.get("ADMIN_PASSWORD"):
+        pytest.skip("no admin UI")
+    admin = os.environ.get("ADMIN_URL", "https://admin.fxa.test").rstrip("/")
+    http = requests.Session()
+    http.verify = "/caddy-ca/root.crt"
+    http.post(f"{admin}/login", data={"password": os.environ["ADMIN_PASSWORD"]}, timeout=30)
+    uid = signed_in_user(first_device)["uid"]
+    page = http.get(f"{admin}/users/{uid}", timeout=30).text
+    assert EMAIL in page, page[:1000]
+    # errors of the queries (Devices: ..., Sync storage: ...)
+    assert 'class="failed"' not in page, re.findall(r'class="failed"[^>]*>([^<]*)', page)
+    devices = page.split('<table id="devices">')[1].split("</table>")[0]
+    assert devices.count("<tr><td>") >= 2 and "Firefox" in devices, devices
+    collections = page.split('<table id="collections">')[1].split("</table>")[0]
+    assert "<td>bookmarks</td>" in collections, collections
+
+
+def test_admin_sign_in_with_the_account(first_device):
+    # the admin UI signs in with these accounts: ADMIN_ALLOWED_USERS=@example.com in
+    # tests/e2e-fxa.sh, a new Firefox with the account of the tests above
+    if not os.environ.get("ADMIN_FXA_CLIENT_ID"):
+        pytest.skip("the admin UI does not sign in with these accounts")
+    admin = os.environ.get("ADMIN_URL", "https://admin.fxa.test").rstrip("/")
+    driver = start_firefox()
+    try:
+        stale = set(mail_codes(EMAIL))
+        driver.get(f"{admin}/login")
+        driver.find_element(By.LINK_TEXT, "Sign in with Mozilla account").click()
+
+        def finished(heading):
+            # the callback's page moves on to the dashboard by itself
+            if driver.current_url == f"{admin}/" and "Sign out" in driver.page_source:
+                return driver.page_source
+
+        page = fill_in_accounts_pages(driver, finished, used_codes=stale)
+        assert f'<span class="hint">{EMAIL}</span>' in page, page[:2000]
+    finally:
+        driver.quit()
+
+
+def test_refused_sign_up_shows_an_error():
+    # FXA_SIGNUP_ALLOWLIST of tests/e2e-fxa.sh: example.org is not on it
+    driver = start_firefox()
+    try:
+        driver.get(f"{CONTENT}/")
+        address = f"ffs-refused-{uuid.uuid4().hex[:8]}@example.org"
+        text = ""
+        for _ in range(10):
+            time.sleep(3)
+            text = driver.execute_script("return document.body.innerText")
+            if "blocked" in text.lower():
+                break
+            if visible(driver, CODE_INPUT):
+                raise AssertionError("refused sign-up got to the confirmation code")
+            if visible(driver, "input[type=email]") and not visible(driver, "input[type=password]"):
+                field = visible(driver, "input[type=email]")[0]
+                field.clear()
+                field.send_keys(address)
+            elif visible(driver, "input[type=password]"):
+                for field in visible(driver, "input[type=password]"):
+                    field.clear()
+                    field.send_keys(PASSWORD)
+            buttons = visible(driver, "button[type=submit]")
+            if buttons:
+                buttons[0].click()
+        assert "blocked" in text.lower(), text[:600]
     finally:
         driver.quit()

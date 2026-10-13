@@ -1,0 +1,27 @@
+# Dex, the OpenID Connect provider of tests/e2e.sh for the admin UI's single sign-on
+# (tests/test_admin_auth.py). Reached as http://dex:5556 inside the stack's network.
+issuer: http://dex:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true
+staticClients:
+  - id: ffs-admin
+    name: firefox-sync admin
+    secret: ffs-test-dex-client-secret
+    redirectURIs: [http://ffs-admin:8080/auth/callback]
+# the local connector: both have the password ffs-test-dex-password
+enablePasswordDB: true
+staticPasswords:
+  # in ADMIN_ALLOWED_USERS
+  - email: admin@ffs-e2e.invalid
+    hash: "$2a$10$/aNh7DJhn9fY8cLN2aZWKOwDLozenOzvtOd/Ai5oTpDyORv6hyEoK"
+    username: admin
+    userID: 4d3c1a58-51a1-4b0b-9b39-0f6c8f2a1e01
+  # not in it
+  - email: mallory@elsewhere.invalid
+    hash: "$2a$10$/aNh7DJhn9fY8cLN2aZWKOwDLozenOzvtOd/Ai5oTpDyORv6hyEoK"
+    username: mallory
+    userID: 4d3c1a58-51a1-4b0b-9b39-0f6c8f2a1e02

@@ -14,15 +14,17 @@ By default Firefox signs in with Mozilla accounts (`accounts.firefox.com`) and o
   | host name | `.env` | proxy to |
   |---|---|---|
   | `accounts.example.com` | `FXA_CONTENT_URL` | `127.0.0.1:3030` |
-  | `api.example.com` | `FXA_AUTH_URL` | `127.0.0.1:9000` |
+  | `api.example.com` | `FXA_AUTH_URL` | `127.0.0.1:9000`, and with the [admin UI](ADMIN.md) `POST /v1/account/create` to `127.0.0.1:8091` |
   | `profile.example.com` | `FXA_PROFILE_URL` | `127.0.0.1:1111`, and `/img/` to `127.0.0.1:1112/` |
   | `sync.example.com` | `SYNCSTORAGE_DOMAIN` | `127.0.0.1:${CONTAINER_EXPORT_PORT}`, as without FxA |
+  | `admin.example.com` (optional) | `ADMIN_OIDC_REDIRECT_URL` | `127.0.0.1:8090`, to sign in to the [admin UI](ADMIN.md#signing-in) with these accounts, from your own addresses only |
 
 ## Setup
 
-1. Run `./prepare_environment.sh` and answer `y` to "Also self-host Mozilla accounts?": it asks for the domain of the host names and your SMTP server, generates the secrets, points the sync server to your accounts and sets `COMPOSE_FILE` so that `docker compose up -d` starts everything. It also writes an nginx example to `config/nginx/fxa.conf`. To do it by hand instead, fill in the `SELF-HOSTED MOZILLA ACCOUNTS` section of `.env`:
+1. Run `./prepare_environment.sh` and answer `y` to "Also self-host Mozilla accounts?": it asks for the domain of the host names and your SMTP server, generates the secrets, points the sync server to your accounts and sets `COMPOSE_FILE` so that `docker compose up -d` starts everything. It also writes an nginx example to `config/nginx/fxa.conf`. Last, with the admin UI, it asks whether to sign in to the admin UI with these accounts: give the admins' emails (and the host name of the admin UI) to register the admin UI as an OAuth client of the accounts service, see [ADMIN.md](ADMIN.md#signing-in). To do it by hand instead, fill in the `SELF-HOSTED MOZILLA ACCOUNTS` section of `.env`:
     - the three URLs above
-    - a different random value for each `FXA_*_SECRET`, `FXA_FLOW_ID_KEY`, `FXA_SESSION_TOKEN_HANDLE_KEY`, `FXA_CONTENT_SESSION_SECRET` and `FXA_MYSQL_PASSWORD`
+    - a different random value for each `FXA_*_SECRET`, `FXA_FLOW_ID_KEY`, `FXA_SESSION_TOKEN_HANDLE_KEY`, `FXA_CONTENT_SESSION_SECRET`, `FXA_MYSQL_PASSWORD` and `FXA_ADMIN_DB_PASSWORD`
+    - who can sign up: `FXA_SIGNUPS` and `FXA_SIGNUP_ALLOWLIST`, see [below](#who-can-sign-up)
     - your SMTP server
 1. Point the sync server to your accounts service instead of Mozilla's:
     ```
@@ -38,12 +40,16 @@ By default Firefox signs in with Mozilla accounts (`accounts.firefox.com`) and o
     With Podman, choose Quadlets in `prepare_environment.sh`: the accounts get their own units (`firefox-sync-fxa-*`), start them with `systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile.service firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service`.
 1. In Firefox, set `identity.fxaccounts.autoconfig.uri` to `https://accounts.example.com` in `about:config`, restart it and sign up. On Android, enable the debug menu (tap the Firefox logo 5 times in `About Firefox`), then in `Sync Debug` set `Custom Mozilla account server` to `https://accounts.example.com` and `Custom Sync server` to `https://sync.example.com/1.0/sync/1.5`. On iOS, enable it by tapping the version number 5 times in `Settings`, then in `Advanced Sync Settings` turn on `Use Custom FxA Content Server` with `Custom Account Content Server URI` set to `https://accounts.example.com`.
 
+## Who can sign up
+
+Anybody who can reach your accounts pages can create an account, and with it use your sync server (up to `MAX_USERS`). To allow only some emails or domains, or nobody, set `FXA_SIGNUPS` and `FXA_SIGNUP_ALLOWLIST` in `.env` (`prepare_environment.sh` asks for the allowlist), or use the [admin UI](ADMIN.md), which can also disable accounts. The accounts database enforces it, see [ADMIN.md](ADMIN.md#who-can-sign-up-self-hosted-accounts).
+
 ## What works and what doesn't
 
 - Works and is tested: sign-up, email confirmation, sign-in, OAuth for Sync, syncing, a second device. Tested with Firefox 157 desktop: two profiles signed up and in through the accounts pages and synced bookmarks between them.
 - Send tab to device uses Mozilla's public push service, as Firefox does with Mozilla accounts.
 - Pairing a phone with a QR code uses Mozilla's channel server, unless you run your own: uncomment `COMPOSE_PROFILES=pairing` and `FXA_PAIRING_URL=wss://pairing.example.com` in `.env` and proxy that host name (websocket) to `FXA_PAIRING_EXPORT_PORT`, see the example in `config/nginx/fxa-example.conf`.
-- Sign-in attempts are rate limited by the accounts service itself (Redis, upstream's `rate-limit-rules.txt`), e.g. 5 failed sign-ins per IP address and email in 15 minutes. The old separate customs server does not exist anymore.
+- Sign-in attempts are rate limited by the accounts service itself (Redis, upstream's `rate-limit-rules.txt`), e.g. 5 failed sign-ins per IP address and email in 15 minutes. The old separate customs server does not exist anymore. The client IP address comes from `X-Forwarded-For`: with another proxy in front of yours, raise `FXA_CLIENT_ADDRESS_DEPTH`, see [ADMIN.md](ADMIN.md#rate-limits-and-the-client-ip-address).
 - Not available: payments and subscriptions, recovery phone (SMS), sign in with Google or Apple, deferred account clean-up tasks and account event notifications (they need Google Cloud).
 
 ## Upgrades
@@ -57,7 +63,7 @@ Don't stay too far behind either: Firefox itself refuses to sign in to accounts 
 
 ## Tests
 
-[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit), then [`tests/test_fxa_flow.py`](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token from the tokenserver and syncs, then signs in again as a second device. Then [`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [`tests/browser`](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it. No Mozilla service is involved.
+[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit), then [`tests/test_fxa_flow.py`](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token from the tokenserver and syncs, then signs in again as a second device. [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) checks the sign-up policy and the [admin UI](ADMIN.md). Then [`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [`tests/browser`](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it. No Mozilla service is involved.
 
 ## Credits
 

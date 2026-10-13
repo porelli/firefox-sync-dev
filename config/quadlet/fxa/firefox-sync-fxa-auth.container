@@ -1,7 +1,7 @@
 [Unit]
 Description=Firefox Sync - Mozilla accounts - Auth and OAuth server
-After=firefox-sync-network.service firefox-sync-fxa-keys-owner.service firefox-sync-fxa-migrations.service firefox-sync-fxa-redis.service
-Requires=firefox-sync-fxa-keys-owner.service firefox-sync-fxa-migrations.service firefox-sync-fxa-redis.service
+After=firefox-sync-network.service firefox-sync-fxa-keys-owner.service firefox-sync-fxa-policy.service firefox-sync-fxa-redis.service
+Requires=firefox-sync-fxa-keys-owner.service firefox-sync-fxa-policy.service firefox-sync-fxa-redis.service
 
 [Container]
 Image=%FXA_IMAGE%:%FXA_VERSION%
@@ -24,6 +24,16 @@ Environment="ISSUER=%FXA_EMAIL_DOMAIN%"
 Environment="PROFILE_SERVER_URL=http://fxa-profile:1111"
 Environment="SYNC_TOKENSERVER_URL=%SYNCSTORAGE_DOMAIN%"
 Environment="CORS_ORIGIN=%FXA_CONTENT_URL%"
+# client IP for the rate limits, see FXA_CLIENT_ADDRESS_DEPTH in .env-example
+Environment="CLIENT_ADDRESS_DEPTH=%FXA_CLIENT_ADDRESS_DEPTH%"
+# see FXA_ACCESS_TOKEN_LIFETIME in .env-example
+Environment="FXA_EXPIRATION_ACCESS_TOKEN=%FXA_ACCESS_TOKEN_LIFETIME%"
+# the OAuth client of the admin UI (config/fxa/oauth-clients.js), with ADMIN_FXA_CLIENT_ID
+Environment="ADMIN_FXA_CLIENT_ID=%ADMIN_FXA_CLIENT_ID%"
+Environment="ADMIN_FXA_CLIENT_SECRET=%ADMIN_FXA_CLIENT_SECRET%"
+Environment="ADMIN_OIDC_REDIRECT_URL=%ADMIN_OIDC_REDIRECT_URL%"
+# clients that never skip the sign-in code: Mozilla's defaults and the admin UI
+Environment="SERVICES_WITH_EMAIL_VERIFICATION=32aaeb6f1c21316a,98e6508e88680e1a,%ADMIN_FXA_CLIENT_ID%"
 Environment="OAUTH_SERVER_SECRET_KEY=%FXA_OAUTH_SECRET%"
 Environment="OAUTH_SERVER_SECRETS=%FXA_OAUTH_SECRET%"
 Environment="AUTH_SERVER_SECRETS=%FXA_OAUTH_SECRET%"

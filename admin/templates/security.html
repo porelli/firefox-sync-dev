@@ -1,0 +1,23 @@
+{{template "head"}}
+{{template "nav" .}}
+<main>
+{{template "flash" .}}
+<section>
+  <h2>Blocked by the rate limits</h2>
+  <p class="hint">The accounts service blocks an email, an IP address or both for a while after too many attempts, e.g. 5 wrong passwords in 15 minutes. Lift a block if it is you or someone you know.</p>
+  <table id="blocks">
+    <thead><tr><th>Who</th><th>Action</th><th>Attempts</th><th>Until (UTC)</th><th></th></tr></thead>
+    <tbody>{{range .Blocks}}<tr><td>{{.On}} <code>{{.Value}}</code></td><td>{{.Action}}</td><td>{{.Attempts}}</td><td>{{when .Until}}</td>
+      <td><form method="post" action="/security/unblock"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="key" value="{{.Key}}"><button type="submit">Lift</button></form></td></tr>{{else}}<tr><td colspan="5">Nobody is blocked.</td></tr>{{end}}</tbody>
+  </table>
+</section>
+<section>
+  <h2>Close to a limit</h2>
+  <p class="hint">Failed sign-ins and codes, at least half way to their limit in the current window.</p>
+  <table id="attempts">
+    <thead><tr><th>Who</th><th>Action</th><th>Attempts</th><th>Window</th></tr></thead>
+    <tbody>{{range .Attempts}}<tr><td>{{.On}} <code>{{.Value}}</code></td><td>{{.Action}}</td><td>{{.Count}} of {{.Max}}</td><td>{{.Window}}</td></tr>{{else}}<tr><td colspan="4">Nothing unusual.</td></tr>{{end}}</tbody>
+  </table>
+</section>
+</main>
+{{template "foot"}}

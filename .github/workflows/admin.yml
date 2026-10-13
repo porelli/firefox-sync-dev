@@ -1,0 +1,254 @@
+name: admin
+
+# The admin UI and sign-up policy image (admin/, see ADMIN.md), amd64 and arm64.
+# Go cross-compiles in the Dockerfile: one runner builds both without emulation.
+# The candidate admin-<sha12> is tested as published (ADMIN_IMAGE) against the
+# published syncstorage and accounts images, then tagged admin-latest, from main only.
+#
+# Triggers: only what goes into the image. The rest of the tree the admin UI works
+# with (compose files, quadlets, prepare_environment.sh, tests) changes on pushes that
+# the syncstorage-rs workflow already tests, with the admin UI built from source.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - admin/**
+      - .github/workflows/admin.yml
+
+# a newer push supersedes a run in progress: an older candidate never overwrites admin-latest
+concurrency:
+  group: admin-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REPOSITORY_REGISTRY: ghcr.io
+  REPOSITORY_FULL_NAME: ${{ github.repository }}
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: admin/go.mod
+          cache-dependency-path: admin/go.sum
+
+      - name: Unit tests
+        working-directory: admin
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
+
+  build:
+    needs: unit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.tags.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Candidate tag
+        id: tags
+        run: echo "image=${REPOSITORY_REGISTRY}/${REPOSITORY_FULL_NAME}:admin-${GITHUB_SHA::12}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: admin
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.tags.outputs.image }}
+          # shown on the admin UI's health table
+          build-args: |
+            VERSION=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=firefox-sync admin UI and sign-up policy
+
+  ## Sync only (no accounts): admin UI next to syncstorage, both backends ##
+  e2e:
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        database_backend: [mysql, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Init images from this commit
+        # the init scripts change with the admin UI (e.g. MAX_USERS): the published ones may
+        # be older than this commit (the syncstorage-rs workflow rebuilds them in parallel)
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+        run: |
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+
+      - name: End-to-end tests
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          ADMIN_IMAGE: ${{ needs.build.outputs.image }}
+          BACKEND: ${{ matrix.database_backend }}
+          SKIP_PULL: 1
+        run: ./tests/e2e.sh "${BACKEND}"
+
+  ## With the self-hosted accounts: sign-up policy, accounts, browser, on both architectures ##
+  e2e-fxa:
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Init images from this commit
+        # the init scripts change with the admin UI (e.g. MAX_USERS): the published ones may
+        # be older than this commit (the syncstorage-rs workflow rebuilds them in parallel)
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+        run: |
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+
+      - name: End-to-end tests with self-hosted Mozilla accounts
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          ADMIN_IMAGE: ${{ needs.build.outputs.image }}
+          FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          FXA_VERSION: fxa-mono-latest
+          FXA_ARCH: ${{ matrix.arch }}
+          FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-latest
+          SKIP_PULL: 1
+        run: ./tests/e2e-fxa.sh
+
+  ## Rootless podman: compose on the Podman socket, quadlets, quadlets with the accounts ##
+  podman:
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-24.04
+    # the accounts phase pulls a 5 GB image and takes up to 20 minutes to start
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free disk space
+        # rootless podman keeps its images in the home directory, on the root disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af > /dev/null
+          df -h /
+
+      - name: Set up rootless podman and a systemd user session
+        run: |
+          sudo loginctl enable-linger "${USER}"
+          for _ in $(seq 1 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "${GITHUB_ENV}"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "${GITHUB_ENV}"
+
+      - name: Login to GitHub Container Registry
+        # docker compose sends the docker CLI credentials to the Podman socket when pulling
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "${TOKEN}" | podman login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
+          echo "${TOKEN}" | docker login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
+
+      - name: Init images from this commit
+        # see the e2e job; podman has its own image store
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+        run: |
+          podman build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
+          podman build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+
+      - name: Podman tests
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          ADMIN_IMAGE: ${{ needs.build.outputs.image }}
+        run: ./tests/podman.sh
+
+  ## admin-latest: the tested candidate, unchanged ##
+  publish:
+    needs: [build, e2e, e2e-fxa, podman]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Tag admin-latest
+        env:
+          CANDIDATE: ${{ needs.build.outputs.image }}
+        run: |
+          docker buildx imagetools create -t "${REPOSITORY_REGISTRY}/${REPOSITORY_FULL_NAME}:admin-latest" "${CANDIDATE}"
+          docker buildx imagetools inspect "${REPOSITORY_REGISTRY}/${REPOSITORY_FULL_NAME}:admin-latest"

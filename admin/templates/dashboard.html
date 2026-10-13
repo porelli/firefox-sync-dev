@@ -1,0 +1,97 @@
+{{template "head"}}
+{{template "nav" .}}
+<main>
+{{template "flash" .}}
+
+{{if .Health}}
+<section>
+  <h2>Health</h2>
+  <table id="health">
+    <thead><tr><th>Component</th><th>Status</th><th>Version</th></tr></thead>
+    <tbody>{{range .Health}}<tr><td>{{.Name}}</td><td>{{if .Up}}<span class="ok">up</span>{{else}}<span class="disabled">down</span> <span class="hint">{{.Error}}</span>{{end}}</td><td>{{.Version}}{{if .Latest}} <span class="update">{{.Latest}} available</span>{{end}}</td></tr>{{end}}</tbody>
+  </table>
+  {{with .Sizes}}<p class="hint">Databases: {{range $name, $size := .}}{{$name}} {{bytes $size}}; {{end}}history on the Activity page.</p>{{end}}
+</section>
+{{end}}
+
+<section>
+  <h2>Sync</h2>
+  {{with .Sync}}
+  <p><strong id="sync-users">{{.Users}}</strong> of <strong id="sync-max-users">{{.MaxUsers}}</strong> accounts use this Sync server.
+    New accounts are refused once the limit is reached, accounts already here keep working.</p>
+  <form method="post" action="/sync/max-users" class="inline">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label for="max_users">Max users</label>
+    <input id="max_users" name="max_users" type="number" min="0" value="{{.MaxUsers}}" required>
+    <button type="submit">Save</button>
+  </form>
+  <p class="hint">Changes apply at once, without restarting anything. {{if $.MaxUsersFromEnv}}This is MAX_USERS from .env{{else}}Changed here: MAX_USERS in .env differs{{end}}; a new MAX_USERS in .env replaces it on the next <code>docker compose up -d</code> (or a restart of the init unit with Quadlets), the Sync server keeps running.</p>
+  {{if .Nodes}}
+  <table>
+    <thead><tr><th>Sync node</th><th>Status</th></tr></thead>
+    <tbody>{{range .Nodes}}<tr><td>{{.Node}}</td><td>{{if .Downed}}retired{{else}}in use{{end}}</td></tr>{{end}}</tbody>
+  </table>
+  {{end}}
+  {{end}}
+</section>
+
+{{if .FxA}}
+<section>
+  <h2>Sign-ups</h2>
+  {{with .Policy}}
+  <form method="post" action="/accounts/signups">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <fieldset>
+      <legend>Who can create an account</legend>
+      <label><input type="radio" name="mode" value="open" {{if eq .Mode "open"}}checked{{end}}> Anybody</label>
+      <label><input type="radio" name="mode" value="allowlist" {{if eq .Mode "allowlist"}}checked{{end}}> Only the emails and domains below</label>
+      <label><input type="radio" name="mode" value="closed" {{if eq .Mode "closed"}}checked{{end}}> Nobody (sign-ups closed)</label>
+    </fieldset>
+    <label for="allowlist">Allowlist: one email (alice@example.com) or domain (@example.com) per line</label>
+    <textarea id="allowlist" name="allowlist" rows="5">{{$.Allowlist}}</textarea>
+    <button type="submit">Save</button>
+  </form>
+  <p class="hint">Existing accounts are not affected, disable them below. FXA_SIGNUPS and FXA_SIGNUP_ALLOWLIST in .env replace these settings when they are changed there.</p>
+  {{end}}
+</section>
+
+<section>
+  <h2>Accounts</h2>
+  {{if or .StaleCount .UnconfirmedCount}}<p class="hint">{{with .StaleCount}}{{.}} not synced for {{$.StaleDays}} days (ADMIN_STALE_DAYS). {{end}}{{with .UnconfirmedCount}}{{.}} never confirmed their email: they cannot sign in, and do not count towards max users until they sync.{{end}}</p>{{end}}
+  <table id="accounts">
+    <thead><tr><th>Email</th><th>Created (UTC)</th><th>Confirmed</th><th>Last sync (UTC)</th><th>Stored</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {{range .Accounts}}
+      <tr data-email="{{.Email}}">
+        <td><a href="/users/{{.UID}}">{{.Email}}</a></td>
+        <td>{{date .CreatedAt}}</td>
+        <td>{{if .Verified}}yes{{else}}no{{if .Unconfirmed}} <span class="badge">unconfirmed</span>{{end}}{{end}}</td>
+        <td>{{if .Sync}}{{when .Usage.LastModified}}{{if .Stale}} <span class="badge">inactive</span>{{end}}{{else}}not using Sync{{end}}</td>
+        <td>{{if .Sync}}{{bytes .Usage.Bytes}}, {{.Usage.Items}} items{{end}}</td>
+        <td>{{if .Disabled}}<span class="disabled">disabled</span>{{else}}active{{end}}</td>
+        <td>
+          <form method="post" action="/accounts/{{.UID}}/{{if .Disabled}}enable{{else}}disable{{end}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <button type="submit" class="{{if not .Disabled}}danger{{end}}">{{if .Disabled}}Enable{{else}}Disable{{end}}</button>
+          </form>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7">No accounts yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="hint">Disabling signs the account out everywhere and it cannot sign in again. Its browsers stop syncing within the hour, when their current Sync token expires.</p>
+</section>
+{{else}}
+<section>
+  <h2>Sync accounts</h2>
+  <p class="hint">These accounts are Mozilla accounts: this server only knows their ids. Self-host the accounts (FXA.md) to see emails and to control sign-ups.</p>
+  <table>
+    <thead><tr><th>Account id</th><th>First sync (UTC)</th><th>Last sync (UTC)</th><th>Stored</th></tr></thead>
+    <tbody>{{range .SyncUsers}}<tr><td><a href="/users/{{.UID}}"><code>{{.UID}}</code></a></td><td>{{date .CreatedAt}}</td><td>{{when .Usage.LastModified}}{{if .Stale}} <span class="badge">inactive</span>{{end}}</td><td>{{bytes .Usage.Bytes}}, {{.Usage.Items}} items</td></tr>{{else}}<tr><td colspan="4">No accounts yet.</td></tr>{{end}}</tbody>
+  </table>
+</section>
+{{end}}
+</main>
+{{template "foot"}}

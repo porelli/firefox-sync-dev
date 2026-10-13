@@ -18,7 +18,8 @@ The purpose of this repository is to provide a docker-compose that can be used t
     - The limit counts accounts, not database rows: an account changing its keys (e.g. after a password reset) is never locked out.
     - Possible alternative (better) solutions:
         - implement the feature directly in syncstorage-rs
-        - self-host the accounts service as well, so that only accounts created on your server can sign in: experimental support in [FXA.md](FXA.md)
+        - self-host the accounts service as well, so that only accounts created on your server can sign in: experimental support in [FXA.md](FXA.md), and choose who can create one (allowlist of emails and domains, or closed sign-ups)
+1. The optional [admin UI](ADMIN.md) changes the max users without a restart and, with self-hosted accounts, controls sign-ups and disables accounts.
 
 ## Background
 
@@ -55,6 +56,11 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - Base image differences: [added](/syncstorage-rs-init-postgres/Dockerfile) [`db_init.sh`](/syncstorage-rs-init-postgres/db_init.sh) and [`db_init.sql`](/syncstorage-rs-init-postgres/db_init.sql) scripts
     - source code: https://github.com/postgres/postgres
         - code changes: none
+
+- [ghcr.io/porelli/firefox-sync:admin-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions), amd64 and arm64
+    - GitHub [workflow](/.github/workflows/admin.yml)
+    - Purpose: the optional [admin UI](ADMIN.md), and the sign-up policy of the self-hosted accounts
+    - source code: [admin/](/admin), a Go program in a distroless image
 
 ### Mozilla accounts images (experimental)
 - `ghcr.io/porelli/firefox-sync:fxa-mono-<release>` and `fxa-mono-latest`, amd64 and arm64
@@ -101,7 +107,7 @@ systemctl --user start firefox-sync-syncstorage.service
 Every image build runs the tests in [tests/](/tests) before the multi-arch tags (e.g. `syncstorage-rs-mysql-latest`) are published:
 - [`tests/e2e.sh`](/tests/e2e.sh) `<mysql|postgres>`: starts the docker compose stack and checks start-up order, MAX_USERS, domain changes, a Firefox-like sign-in and sync through the tokenserver ([`test_client_flow.py`](/tests/test_client_flow.py), using upstream's mock FxA server) and runs upstream's storage and tokenserver integration tests
 - [`tests/podman.sh`](/tests/podman.sh): rootless Podman, with Quadlets (also with self-hosted accounts) and with `docker compose` on the Podman socket, configured with `prepare_environment.sh`
-- [`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh): the stack with self-hosted Mozilla accounts behind an HTTPS proxy and a mail catcher: the setup with `prepare_environment.sh`, sign-up, OAuth and sync like Firefox does ([`test_fxa_flow.py`](/tests/test_fxa_flow.py)), a real Firefox signing up on one profile and syncing to a second one ([`test_fxa_browser.py`](/tests/test_fxa_browser.py)) and the pairing server. It runs with the newest Mozilla accounts release every week, and on amd64 and arm64 for the [accounts images](/.github/workflows/fxa.yml)
+- [`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh): the stack with self-hosted Mozilla accounts behind an HTTPS proxy and a mail catcher: the setup with `prepare_environment.sh`, sign-up, OAuth and sync like Firefox does ([`test_fxa_flow.py`](/tests/test_fxa_flow.py)), the sign-up policy and the admin UI ([`test_fxa_admin.py`](/tests/test_fxa_admin.py)), a real Firefox signing up on one profile and syncing to a second one ([`test_fxa_browser.py`](/tests/test_fxa_browser.py)) and the pairing server. It runs with the newest Mozilla accounts release every week, and on amd64 and arm64 for the [accounts images](/.github/workflows/fxa.yml)
 
 All can be run locally against any published tag, e.g. `TAG=latest tests/e2e.sh mysql`.
 

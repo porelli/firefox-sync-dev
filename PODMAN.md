@@ -126,6 +126,10 @@ systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile
 ```
 The databases, the migrations and the auth server are started automatically as dependencies.
 
+#### Admin UI
+
+If you enabled the [admin UI](ADMIN.md) in `prepare_environment.sh`, starting the Sync server also starts it, first, so that the Sync server sends it its metrics; on its own: `systemctl --user start firefox-sync-admin.service` (with self-hosted accounts it is also the sign-up gate, and starts the sign-up policy unit as a dependency). When the admin UI container is replaced (auto-update, restart) it restarts the Sync server, which only looks up its address at start.
+
 #### Managing Quadlet Services
 
 ```bash

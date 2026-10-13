@@ -2,6 +2,8 @@
 # Adds upstream's mock FxA OAuth server, shipped in the syncstorage-rs image, so that the
 # tokenserver login flow can be tested without a Mozilla account.
 # Point FXA_OAUTH_SERVER_URL to http://mock_fxa:6000 in the env file.
+# Adds Dex for the admin UI's single sign-on, and signs in by a trusted header (X-Test-Email)
+# from the containers of TEST_SUBNET's upper half (not the gateway, so not the host).
 
 services:
   mock_fxa:
@@ -11,3 +13,45 @@ services:
       MOCK_FXA_SERVER_HOST: 0.0.0.0
       MOCK_FXA_SERVER_PORT: 6000
     restart: "no"
+
+  # OpenID Connect provider, tests/dex.yml
+  dex:
+    image: ghcr.io/dexidp/dex:v2.46.0
+    command: [dex, serve, /etc/dex/ffs-test.yml]
+    volumes:
+      - ./tests/dex.yml:/etc/dex/ffs-test.yml:ro
+    restart: "no"
+
+  # ADMIN_IMAGE, built from admin/ by tests/e2e.sh unless given
+  ffs-admin:
+    pull_policy: missing
+    environment:
+      # reached over plain http inside the network
+      ADMIN_INSECURE_COOKIE: 1
+      # everything faster
+      METRICS_FLUSH_SECONDS: 5
+      HEALTH_CHECK_SECONDS: 5
+      METRICS_TOKEN: ffs-test-metrics-token
+      ADMIN_UPDATE_CHECK: "false"
+      ADMIN_STALE_DAYS: 0
+      # the password (ADMIN_PASSWORD) and both single sign-ons, see tests/test_admin_auth.py
+      ADMIN_OIDC_ISSUER: http://dex:5556/dex
+      ADMIN_OIDC_CLIENT_ID: ffs-admin
+      ADMIN_OIDC_CLIENT_SECRET: ffs-test-dex-client-secret
+      ADMIN_OIDC_REDIRECT_URL: http://ffs-admin:8080/auth/callback
+      ADMIN_OIDC_NAME: Dex
+      ADMIN_AUTH_HEADER: X-Test-Email
+      ADMIN_AUTH_GROUPS_HEADER: X-Test-Groups
+      ADMIN_TRUSTED_PROXIES: ${TEST_TRUSTED:?}
+      ADMIN_ALLOWED_USERS: admin@ffs-e2e.invalid,@admins.invalid
+      ADMIN_ALLOWED_GROUPS: ffs-admins
+
+# fixed, so that the containers are trusted proxies and the gateway (the host) is not
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${TEST_SUBNET:?}
+          ip_range: ${TEST_TRUSTED:?}
+          # out of ip_range (Docker would take its first address)
+          gateway: ${TEST_GATEWAY:?}

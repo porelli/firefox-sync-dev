@@ -1,0 +1,25 @@
+[Unit]
+Description=Firefox Sync - Mozilla accounts - Sign-up policy
+After=firefox-sync-network.service firefox-sync-fxa-migrations.service
+Requires=firefox-sync-fxa-migrations.service
+
+[Container]
+Image=%REPOSITORY%:admin-latest
+ContainerName=firefox-sync-fxa-policy
+Network=firefox-sync-network.network
+Environment="FXA_DB_HOST=fxa-db"
+Environment="FXA_DB_ROOT_PASSWORD=%FXA_MYSQL_PASSWORD%"
+Environment="FXA_ADMIN_DB_PASSWORD=%FXA_ADMIN_DB_PASSWORD%"
+Environment="FXA_SIGNUPS=%FXA_SIGNUPS%"
+Environment="FXA_SIGNUP_ALLOWLIST=%FXA_SIGNUP_ALLOWLIST%"
+Exec=fxa-init
+
+AutoUpdate=registry
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target default.target

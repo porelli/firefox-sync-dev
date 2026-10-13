@@ -1,7 +1,9 @@
 [Unit]
 Description=Firefox Sync - Syncstorage Service
-After=firefox-sync-network.service firefox-sync-tokenserver-db-init.service
+After=firefox-sync-network.service firefox-sync-tokenserver-db-init.service firefox-sync-admin.service
 Requires=firefox-sync-tokenserver-db-init.service
+# the admin UI first, when installed: the metrics go to it only if it runs at start
+Wants=firefox-sync-admin.service
 
 [Container]
 Image=%REPOSITORY%:%SYNCSTORAGE_IMAGE%-%SYNCSTORAGE_IMAGE_TAG%
@@ -24,6 +26,10 @@ Environment=SYNC_TOKENSERVER__FXA_METRICS_HASH_SECRET=%METRICS_HASH_SECRET%
 Environment=SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS=2
 Environment=RUST_LOG=info
 
+# metrics for the admin UI, when it runs: syncstorage-rs does not start if the metrics
+# host does not resolve, so only point it there if it does
+PodmanArgs=--entrypoint=/bin/sh
+Exec=-c 'if getent hosts ffs-admin > /dev/null; then export SYNC_STATSD_HOST=ffs-admin SYNC_STATSD_PORT=8125; echo "Sending metrics to the admin UI"; fi; exec /app/bin/syncserver'
 HealthCmd=curl -f http://localhost:8000/__heartbeat__
 HealthInterval=30s
 HealthTimeout=10s

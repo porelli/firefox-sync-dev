@@ -1,0 +1,45 @@
+{{template "head"}}
+{{template "nav" .}}
+<main>
+{{template "flash" .}}
+<p class="ranges">{{range .Ranges}}<a href="/activity?range={{.}}" {{if eq . $.Range}}class="current"{{end}}>{{.}}</a> {{end}}</p>
+
+<section>
+  <h2>Sync server</h2>
+  {{if .Received.IsZero}}
+  <p class="hint">No metrics received since the admin UI started. They come from the Sync server, which sends them only if the admin UI was running when it started: restart it (<code>docker compose restart syncstorage</code>, or <code>systemctl --user restart firefox-sync-syncstorage.service</code>) if this stays empty while people sync.</p>
+  {{else}}
+  <p class="hint">Last metrics received {{when .Received}} UTC.</p>
+  {{end}}
+  {{range .Charts}}
+  <figure>
+    <figcaption>{{.Title}}: <strong>{{.Total}}</strong> <span class="hint">({{$.Bucket}})</span></figcaption>
+    {{.SVG}}
+    <div class="axis"><span>{{date $.Since}} UTC</span><span>now</span></div>
+  </figure>
+  {{end}}
+  {{range .Gauges}}
+  <figure>
+    <figcaption>Database {{.Name}}: <strong>{{bytes .Last}}</strong> <span class="hint">(measured every hour)</span></figcaption>
+    {{.SVG}}
+    <div class="axis"><span>{{date $.Since}} UTC</span><span>now</span></div>
+  </figure>
+  {{end}}
+  <details>
+    <summary>All metrics</summary>
+    <table id="metrics">
+      <thead><tr><th>Metric</th><th>Count</th><th>Average</th></tr></thead>
+      <tbody>{{range .Totals}}<tr><td><code>{{.Name}}</code></td><td>{{.Count}}</td><td>{{if .AvgMs}}{{printf "%.1f" .AvgMs}} ms{{end}}</td></tr>{{else}}<tr><td colspan="3">No metrics yet: they come from the Sync server when it runs with the admin UI (see ADMIN.md).</td></tr>{{end}}</tbody>
+    </table>
+  </details>
+</section>
+
+<section>
+  <h2>Events</h2>
+  <table id="events">
+    <thead><tr><th>When (UTC)</th><th>What</th><th></th></tr></thead>
+    <tbody>{{range .Events}}<tr><td>{{date .At}}</td><td>{{.Kind}}</td><td>{{.Detail}}</td></tr>{{else}}<tr><td colspan="3">Nothing in this period.</td></tr>{{end}}</tbody>
+  </table>
+</section>
+</main>
+{{template "foot"}}

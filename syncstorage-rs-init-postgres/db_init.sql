@@ -31,9 +31,17 @@ FROM services s
 WHERE s.service = 'sync-1.5' AND n.service = s.id
   AND n.node <> '@DOMAIN@';
 
--- Update MAX_USERS configuration (always update to current value)
+-- MAX_USERS from .env, when it changed since the last start (or on the first one):
+-- otherwise keep the value set in the admin UI. max_users_env is the last value
+-- applied from .env.
 INSERT INTO config (config_key, config_value)
 VALUES ('max_users', '@MAX_USERS@')
+ON CONFLICT (config_key) DO UPDATE
+SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP
+WHERE (SELECT c.config_value FROM config c WHERE c.config_key = 'max_users_env') IS DISTINCT FROM EXCLUDED.config_value;
+
+INSERT INTO config (config_key, config_value)
+VALUES ('max_users_env', '@MAX_USERS@')
 ON CONFLICT (config_key) DO UPDATE
 SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP;
 

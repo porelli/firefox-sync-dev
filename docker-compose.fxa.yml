@@ -1,12 +1,14 @@
 # Self-hosted Mozilla accounts (FxA), on top of docker-compose.yml or docker-compose.postgres.yml
 # Usage: docker compose -f docker-compose.yml -f docker-compose.fxa.yml up -d
 #
-# Uses Mozilla's official image (mozilla/fxa-mono, amd64 only). The public URLs below must be
-# served by your reverse proxy, see FXA.md:
+# Uses amd64 and arm64 builds of Mozilla's releases (mozilla/fxa-mono). The public URLs below
+# must be served by your reverse proxy, see FXA.md:
 #   FXA_CONTENT_URL  -> fxa-content:3030 (accounts web pages, Firefox reads /.well-known from here)
-#   FXA_AUTH_URL     -> fxa-auth:9000    (accounts API and OAuth)
+#   FXA_AUTH_URL     -> fxa-auth:9000    (accounts API and OAuth; with the admin UI,
+#                       POST /v1/account/create -> ffs-admin:8081, the sign-up gate)
 #   FXA_PROFILE_URL  -> fxa-profile:1111 (and /img/ -> fxa-profile-static:1112)
 #   SYNCSTORAGE_DOMAIN -> syncstorage   (as without FxA)
+#   host of ADMIN_OIDC_REDIRECT_URL -> ffs-admin:8080 (optional: sign in to the admin UI with these accounts)
 # In .env, point the tokenserver to this FxA: FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1
 # and FXA_EMAIL_DOMAIN to the host name of FXA_AUTH_URL.
 
@@ -75,6 +77,22 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # who can create an account (FXA_SIGNUPS, FXA_SIGNUP_ALLOWLIST), enforced by the
+  # accounts database itself; also the database user of the admin UI. See ADMIN.md
+  fxa-policy:
+    image: ${ADMIN_IMAGE:-${REPOSITORY}:admin-latest}
+    command: [fxa-init]
+    environment:
+      FXA_DB_HOST: fxa-db
+      FXA_DB_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD}
+      FXA_ADMIN_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:-}
+      FXA_SIGNUPS: ${FXA_SIGNUPS:-open}
+      FXA_SIGNUP_ALLOWLIST: ${FXA_SIGNUP_ALLOWLIST:-}
+    depends_on:
+      fxa-migrations:
+        condition: service_completed_successfully
+    restart: "no"
+
   fxa-auth:
     <<: *fxa
     working_dir: /fxa/packages/fxa-auth-server/dist/packages/fxa-auth-server
@@ -101,6 +119,18 @@ services:
       PROFILE_SERVER_URL: http://fxa-profile:1111
       SYNC_TOKENSERVER_URL: ${SYNCSTORAGE_DOMAIN}
       CORS_ORIGIN: ${FXA_CONTENT_URL}
+      # the client IP for the rate limits is this far from the end of X-Forwarded-For:
+      # 2 = one reverse proxy in front (Mozilla's default, 3, lets clients pick their IP)
+      CLIENT_ADDRESS_DEPTH: ${FXA_CLIENT_ADDRESS_DEPTH:-2}
+      # how long Firefox's access tokens live (Mozilla's default: 365 minutes), see ADMIN.md
+      FXA_EXPIRATION_ACCESS_TOKEN: ${FXA_ACCESS_TOKEN_LIFETIME:-60 minutes}
+      # the OAuth client of the admin UI (config/fxa/oauth-clients.js), with ADMIN_FXA_CLIENT_ID
+      ADMIN_FXA_CLIENT_ID: ${ADMIN_FXA_CLIENT_ID:-}
+      ADMIN_FXA_CLIENT_SECRET: ${ADMIN_FXA_CLIENT_SECRET:-}
+      ADMIN_OIDC_REDIRECT_URL: ${ADMIN_OIDC_REDIRECT_URL:-}
+      # clients that never skip the sign-in code: Mozilla's defaults and the admin UI, so
+      # that a password alone (an unconfirmed session) cannot sign in to the admin UI
+      SERVICES_WITH_EMAIL_VERIFICATION: 32aaeb6f1c21316a,98e6508e88680e1a,${ADMIN_FXA_CLIENT_ID:-}
       # secrets
       # the auth server signs OAuth assertions with OAUTH_SERVER_SECRET_KEY and accepts
       # those signed with one of AUTH_SERVER_SECRETS: they must share the secret
@@ -158,7 +188,7 @@ services:
     depends_on:
       fxa-keys-owner:
         condition: service_completed_successfully
-      fxa-migrations:
+      fxa-policy:
         condition: service_completed_successfully
       fxa-redis:
         condition: service_healthy
@@ -192,6 +222,8 @@ services:
       SYNC_TOKENSERVER_URL: ${SYNCSTORAGE_DOMAIN}
       # QR code pairing with phones: Mozilla's server unless the pairing profile runs one here
       PAIRING_SERVER_BASE_URI: ${FXA_PAIRING_URL:-wss://channelserver.services.mozilla.com}
+      # as in fxa-auth: the admin UI never skips the sign-in code (Mozilla's default + the admin UI)
+      SERVICES_WITH_EMAIL_VERIFICATION: 32aaeb6f1c21316a,${ADMIN_FXA_CLIENT_ID:-}
       FLOW_ID_KEY: ${FXA_FLOW_ID_KEY}
       FEATURE_FLAGS_REDIS_HOST: fxa-redis
       REDIS_HOST: fxa-redis
@@ -277,6 +309,28 @@ services:
     ports:
       - ${FXA_PAIRING_EXPORT_PORT:-127.0.0.1:8058}:8000
     restart: unless-stopped
+
+  # the admin UI (COMPOSE_PROFILES=admin) also manages the accounts, and is the
+  # sign-up gate: point POST /v1/account/create of FXA_AUTH_URL to ADMIN_GATE_EXPORT_PORT
+  ffs-admin:
+    environment:
+      FXA_DB_HOST: fxa-db
+      FXA_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:-}
+      FXA_AUTH_UPSTREAM: http://fxa-auth:9000
+      # health check of the optional pairing server
+      FXA_PAIRING_URL: ${FXA_PAIRING_URL:-}
+      # the accounts pages, allowed to read the refusals (CORS)
+      FXA_CONTENT_URL: ${FXA_CONTENT_URL}
+      # with ADMIN_FXA_CLIENT_ID, sign in with these accounts (see ADMIN.md), unless set otherwise
+      ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-${ADMIN_FXA_CLIENT_ID:+${FXA_CONTENT_URL}}}
+      ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-${ADMIN_FXA_CLIENT_ID:-}}
+      ADMIN_OIDC_CLIENT_SECRET: ${ADMIN_OIDC_CLIENT_SECRET:-${ADMIN_FXA_CLIENT_SECRET:-}}
+      ADMIN_OIDC_NAME: ${ADMIN_OIDC_NAME:-${ADMIN_FXA_CLIENT_ID:+Mozilla account}}
+    depends_on:
+      fxa-policy:
+        condition: service_completed_successfully
+    ports:
+      - ${ADMIN_GATE_EXPORT_PORT:-127.0.0.1:8091}:8081
 
 volumes:
   fxa-db:

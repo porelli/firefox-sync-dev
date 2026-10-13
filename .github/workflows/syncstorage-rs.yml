@@ -36,7 +36,7 @@ env:
   IMAGE_TAGS: mysql
   # bump when the way the app image is built changes (build args, platforms, ...):
   # app images are otherwise reused as long as the upstream tag does not change
-  APP_BUILD_REVISION: 1
+  APP_BUILD_REVISION: 2
 
 jobs:
 
@@ -191,6 +191,16 @@ jobs:
         with:
           ref: ${{ steps.prepare-variables.outputs.code_commit_head }}
           repository: ${{ steps.prepare-variables.outputs.code_repository }}
+
+      - name: Version of the app
+        if: matrix.image_type == 'app'
+        env:
+          SERVICE_TAG: ${{ needs.prepare-env.outputs.service_tag }}
+        run: |
+          # upstream's CI fills version.json (served at /__version__), it says TBD otherwise
+          printf '{"version":"%s","commit":"%s","source":"https://github.com/%s","build":"%s/%s/actions/runs/%s"}\n' \
+            "${SERVICE_TAG}" "$(git rev-parse HEAD)" "${{ env.SERVICE_REPOSITORY_NAME }}" \
+            "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}" | tee version.json
 
       - name: Docker meta
         id: meta

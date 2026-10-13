@@ -1,8 +1,9 @@
 name: fxa-mono
 
 # amd64 and arm64 builds of Mozilla's accounts image (mozilla/fxa-mono, published for
-# amd64 only) from the upstream release tags, tested with tests/e2e-fxa.sh on both
-# architectures before the multi-arch tags are published. Experimental, see FXA.md.
+# amd64 only) from the upstream release tags, tested with tests/e2e-fxa.sh and
+# tests/podman.sh on both architectures before the multi-arch tags are published.
+# Experimental, see FXA.md.
 
 on:
   workflow_dispatch:
@@ -113,6 +114,15 @@ jobs:
         with:
           repository: ${{ env.PAIRING_REPOSITORY }}
           ref: ${{ needs.prepare.outputs.pairing_version }}
+
+      - name: Version of the pairing server
+        env:
+          PAIRING_VERSION: ${{ needs.prepare.outputs.pairing_version }}
+        run: |
+          # upstream's CI fills version.json (served at /__version__), it says TBD otherwise
+          printf '{"version":"%s","commit":"%s","source":"https://github.com/%s","build":"%s/%s/actions/runs/%s"}\n' \
+            "${PAIRING_VERSION}" "$(git rev-parse HEAD)" "${{ env.PAIRING_REPOSITORY }}" \
+            "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}" | tee version.json
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
@@ -235,9 +245,65 @@ jobs:
           FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-${{ matrix.arch }}
         run: ./tests/e2e-fxa.sh
 
+  # the candidate under rootless podman too: quadlets with the accounts, set up by
+  # prepare_environment.sh like a user would (and compose on the Podman socket)
+  test-podman:
+    needs: [prepare, build, build-pairing]
+    if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # compose (MariaDB, PostgreSQL), quadlets, then the 5 GB accounts image and its
+    # quadlets (up to 20 minutes to start)
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free disk space
+        # rootless podman keeps its images in the home directory, on the root disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af > /dev/null
+          df -h /
+
+      - name: Set up rootless podman and a systemd user session
+        run: |
+          # not on every runner image
+          command -v podman > /dev/null || { sudo apt-get update -q && sudo apt-get install -y -q podman; }
+          sudo loginctl enable-linger "${USER}"
+          for _ in $(seq 1 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "${GITHUB_ENV}"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "${GITHUB_ENV}"
+
+      - name: Login to GitHub Container Registry
+        # docker compose sends the docker CLI credentials to the Podman socket when pulling
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "${TOKEN}" | podman login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
+          echo "${TOKEN}" | docker login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
+
+      - name: Podman tests with our ${{ matrix.arch }} image
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          FXA_TEST_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+        run: ./tests/podman.sh
+
   publish:
-    needs: [prepare, test]
-    if: ${{ !failure() && !cancelled() && needs.test.result == 'success' }}
+    needs: [prepare, test, test-podman]
+    if: ${{ !failure() && !cancelled() && needs.test.result == 'success' && needs.test-podman.result == 'success' }}
     permissions:
       packages: write
     runs-on: ubuntu-latest

@@ -50,6 +50,16 @@ services:
 
   syncstorage:
     <<: *syncstorage
+    # metrics for the admin UI, when it runs: syncstorage-rs does not start if the
+    # metrics host does not resolve, so only point it there if it does
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if getent hosts ffs-admin > /dev/null; then
+          export SYNC_STATSD_HOST=ffs-admin SYNC_STATSD_PORT=8125
+          echo "Sending metrics to the admin UI"
+        fi
+        exec /app/bin/syncserver
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/__heartbeat__"]
       interval: 30s
@@ -59,6 +69,12 @@ services:
     depends_on:
       tokenserver_db_init:
         condition: service_completed_successfully
+      # started first when enabled (COMPOSE_PROFILES=admin), for the metrics; and
+      # restarted with it: the metrics host is resolved once, a new container has a new IP
+      ffs-admin:
+        condition: service_started
+        required: false
+        restart: true
     ports:
       - ${CONTAINER_EXPORT_PORT}:8000
 
@@ -116,6 +132,57 @@ services:
       MARIADB_PASSWORD: ${MARIADB_TOKENSERVER_PASSWORD}
       MAX_USERS: ${MAX_USERS}
       DOMAIN: ${SYNCSTORAGE_DOMAIN}
+
+  # optional admin UI (COMPOSE_PROFILES=admin), see ADMIN.md
+  ffs-admin:
+    image: ${ADMIN_IMAGE:-${REPOSITORY}:admin-latest}
+    profiles: [admin]
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      TOKENSERVER_DB_TYPE: mysql
+      TOKENSERVER_DB_HOST: ${MARIADB_TOKENSERVER_SERVER}
+      TOKENSERVER_DB_PORT: ${MARIADB_TOKENSERVER_SERVER_PORT}
+      TOKENSERVER_DB_NAME: ${MARIADB_TOKENSERVER_DATABASE}
+      TOKENSERVER_DB_USER: ${MARIADB_TOKENSERVER_USER}
+      TOKENSERVER_DB_PASSWORD: ${MARIADB_TOKENSERVER_PASSWORD}
+      # what each account stores (sizes only, the data is encrypted by Firefox)
+      STORAGE_DB_HOST: ${MARIADB_SYNCSTORAGE_SERVER}
+      STORAGE_DB_PORT: ${MARIADB_SYNCSTORAGE_SERVER_PORT}
+      STORAGE_DB_NAME: ${MARIADB_SYNCSTORAGE_DATABASE}
+      STORAGE_DB_USER: ${MARIADB_SYNCSTORAGE_USER}
+      STORAGE_DB_PASSWORD: ${MARIADB_SYNCSTORAGE_PASSWORD}
+      SYNCSTORAGE_URL: http://syncstorage:8000
+      ALERT_EMAIL: ${ADMIN_ALERT_EMAIL:-}
+      SMTP_HOST: ${FXA_SMTP_HOST:-}
+      SMTP_PORT: ${FXA_SMTP_PORT:-587}
+      SMTP_USER: ${FXA_SMTP_USER:-}
+      SMTP_PASS: ${FXA_SMTP_PASS:-}
+      SMTP_SECURE: ${FXA_SMTP_SECURE:-false}
+      SMTP_SENDER: ${FXA_SMTP_SENDER:-}
+      METRICS_TOKEN: ${ADMIN_METRICS_TOKEN:-}
+      ADMIN_UPDATE_CHECK: ${ADMIN_UPDATE_CHECK:-true}
+      ADMIN_STALE_DAYS: ${ADMIN_STALE_DAYS:-90}
+      ADMIN_RETENTION_DAYS: ${ADMIN_RETENTION_DAYS:-30}
+      # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
+      ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-}
+      ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-}
+      ADMIN_OIDC_CLIENT_SECRET: ${ADMIN_OIDC_CLIENT_SECRET:-}
+      ADMIN_OIDC_REDIRECT_URL: ${ADMIN_OIDC_REDIRECT_URL:-}
+      ADMIN_OIDC_SCOPES: ${ADMIN_OIDC_SCOPES:-}
+      ADMIN_OIDC_NAME: ${ADMIN_OIDC_NAME:-}
+      ADMIN_OIDC_GROUPS_CLAIM: ${ADMIN_OIDC_GROUPS_CLAIM:-}
+      ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL: ${ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL:-}
+      ADMIN_AUTH_HEADER: ${ADMIN_AUTH_HEADER:-}
+      ADMIN_AUTH_GROUPS_HEADER: ${ADMIN_AUTH_GROUPS_HEADER:-}
+      ADMIN_TRUSTED_PROXIES: ${ADMIN_TRUSTED_PROXIES:-}
+      ADMIN_ALLOWED_USERS: ${ADMIN_ALLOWED_USERS:-}
+      ADMIN_ALLOWED_GROUPS: ${ADMIN_ALLOWED_GROUPS:-}
+    depends_on:
+      tokenserver_db_init:
+        condition: service_completed_successfully
+    ports:
+      - ${ADMIN_EXPORT_PORT:-127.0.0.1:8090}:8080
+    restart: unless-stopped
 
 volumes:
   syncstorage-db:

@@ -2,6 +2,11 @@
 {
 	local_certs
 	skip_install_trust
+	# like nginx with $proxy_add_x_forwarded_for: keep the X-Forwarded-For sent by the
+	# clients (all on the private test network) and append theirs
+	servers {
+		trusted_proxies static private_ranges
+	}
 }
 
 accounts.fxa.test {
@@ -9,7 +14,17 @@ accounts.fxa.test {
 }
 
 api.fxa.test {
+	# the sign-up gate of the admin UI
+	@create {
+		method POST
+		path /v1/account/create
+	}
+	reverse_proxy @create ffs-admin:8081
 	reverse_proxy fxa-auth:9000
+}
+
+admin.fxa.test {
+	reverse_proxy ffs-admin:8080
 }
 
 profile.fxa.test {

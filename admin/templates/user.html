@@ -1,0 +1,49 @@
+{{template "head"}}
+{{template "nav" .}}
+<main>
+<p><a href="/">← Overview</a></p>
+{{template "flash" .}}
+{{with .Account}}
+<h2>{{.Email}}</h2>
+<p>Account created {{date .CreatedAt}} UTC, email {{if .Verified}}confirmed{{else}}not confirmed{{end}}, {{if .Disabled}}<span class="disabled">disabled</span>{{else}}active{{end}}.</p>
+<form method="post" action="/accounts/{{.UID}}/{{if .Disabled}}enable{{else}}disable{{end}}">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <button type="submit" class="{{if not .Disabled}}danger{{end}}">{{if .Disabled}}Enable{{else}}Disable{{end}}</button>
+</form>
+{{else}}
+<h2><code>{{.UID}}</code></h2>
+{{end}}
+
+<section>
+  <h2>Sync data</h2>
+  {{if .SyncUser}}
+  <p>Syncing since {{date .SyncUser.CreatedAt}} UTC{{with .Total}}, last change {{when .LastModified}} UTC: {{bytes .Bytes}} in {{.Items}} items{{end}}.</p>
+  <table id="collections">
+    <thead><tr><th>Collection</th><th>Items</th><th>Size</th><th>Last change (UTC)</th></tr></thead>
+    <tbody>{{range .Collections}}<tr><td>{{.Name}}</td><td>{{.Items}}</td><td>{{bytes .Bytes}}</td><td>{{when .LastModified}}</td></tr>{{else}}<tr><td colspan="4">Nothing stored.</td></tr>{{end}}</tbody>
+  </table>
+  <p class="hint">Sync data is encrypted by Firefox with the account's keys: the server only knows its size, not what it is.</p>
+  {{else}}
+  <p>This account does not use this Sync server.</p>
+  {{end}}
+</section>
+
+{{if .FxA}}{{if .Account}}
+<section>
+  <h2>Devices</h2>
+  <table id="devices">
+    <thead><tr><th>Name</th><th>Type</th><th>Added (UTC)</th><th>Last used (UTC)</th><th></th></tr></thead>
+    <tbody>{{range .Devices}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{when .CreatedAt}}</td><td>{{when .LastUsed}}</td>
+      <td><form method="post" action="/users/{{$.UID}}/devices/{{.ID}}/sign-out"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger">Sign out</button></form></td></tr>{{else}}<tr><td colspan="5">No devices.</td></tr>{{end}}</tbody>
+  </table>
+  <h3>Sessions</h3>
+  <table id="sessions">
+    <thead><tr><th>Browser</th><th>System</th><th>Signed in (UTC)</th><th>Last used (UTC)</th><th></th></tr></thead>
+    <tbody>{{range .Sessions}}<tr><td>{{.Browser}}</td><td>{{.OS}}</td><td>{{when .CreatedAt}}</td><td>{{when .LastUsed}}</td>
+      <td><form method="post" action="/users/{{$.UID}}/sessions/{{.Ref}}/sign-out"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger">Sign out</button></form></td></tr>{{else}}<tr><td colspan="5">Signed out everywhere.</td></tr>{{end}}</tbody>
+  </table>
+  <p class="hint">Signing out a device ends its session and its tokens: Firefox there asks to sign in again (it can sync for up to an hour with what it has). The account keeps working everywhere else; to lock it out, disable it.</p>
+</section>
+{{end}}{{end}}
+</main>
+{{template "foot"}}

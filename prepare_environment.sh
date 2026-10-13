@@ -116,6 +116,14 @@ DEFAULT_SYNCSTORAGE_IMAGE_TAG=latest
 read -e -p "Syncstorage image tag [latest/<tag>] [${DEFAULT_SYNCSTORAGE_IMAGE_TAG}]: " SYNCSTORAGE_IMAGE_TAG
 SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG:-${DEFAULT_SYNCSTORAGE_IMAGE_TAG}}
 
+# admin UI
+read -r -e -p "Enable the admin UI? Max users, and sign-ups and accounts with self-hosted accounts, see ADMIN.md (Y/n): " ADMIN_UI
+case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
+
+# admin sign-in with the self-hosted accounts, asked below
+ADMIN_ALLOWED_USERS=""
+ADMIN_HOST=""
+
 # self-hosted Mozilla accounts (experimental, docker compose only for now)
 read -r -e -p "Also self-host Mozilla accounts? Experimental, see FXA.md (y/N): " SELF_HOST_FXA
 case "${SELF_HOST_FXA}" in y|Y|yes) SELF_HOST_FXA=yes ;; *) SELF_HOST_FXA=no ;; esac
@@ -134,6 +142,22 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     read -r -e -p "Sender of the emails [${DEFAULT_FXA_SMTP_SENDER}]: " FXA_SMTP_SENDER
     FXA_SMTP_SENDER=${FXA_SMTP_SENDER:-${DEFAULT_FXA_SMTP_SENDER}}
     [ "${FXA_SMTP_PORT}" = "465" ] && FXA_SMTP_SECURE=true || FXA_SMTP_SECURE=false
+    read -r -e -p "Who can create an account? Emails and @domains, comma-separated (empty: anybody): " FXA_SIGNUP_ALLOWLIST
+    FXA_SIGNUP_ALLOWLIST=$(printf '%s' "${FXA_SIGNUP_ALLOWLIST}" | tr -d ' ')
+    case "${FXA_SIGNUP_ALLOWLIST}" in *[!A-Za-z0-9@._+,-]*) echo "ERROR: not a list of emails and domains: ${FXA_SIGNUP_ALLOWLIST}"; exit 1 ;; esac
+    [ -n "${FXA_SIGNUP_ALLOWLIST}" ] && FXA_SIGNUPS=allowlist || FXA_SIGNUPS=open
+    # asked last, so that scripted answers for the questions above still line up
+    if [ "${ADMIN_UI}" = "yes" ]; then
+        read -r -e -p "Sign in to the admin UI with these accounts? Admin emails, comma-separated (empty: password only): " ADMIN_ALLOWED_USERS
+        ADMIN_ALLOWED_USERS=$(printf '%s' "${ADMIN_ALLOWED_USERS}" | tr -d ' ')
+        case "${ADMIN_ALLOWED_USERS}" in *[!A-Za-z0-9@._+,-]*) echo "ERROR: not a list of emails and domains: ${ADMIN_ALLOWED_USERS}"; exit 1 ;; esac
+        if [ -n "${ADMIN_ALLOWED_USERS}" ]; then
+            DEFAULT_ADMIN_HOST=admin.${FXA_DOMAIN}
+            read -r -e -p "Host name of the admin UI, where the accounts pages send you back [${DEFAULT_ADMIN_HOST}]: " ADMIN_HOST
+            ADMIN_HOST=${ADMIN_HOST:-${DEFAULT_ADMIN_HOST}}
+            case "${ADMIN_HOST}" in *[!A-Za-z0-9.:-]*|"") echo "ERROR: not a host name: ${ADMIN_HOST}"; exit 1 ;; esac
+        fi
+    fi
 fi
 
 # random passwords
@@ -142,6 +166,7 @@ MARIADB_SYNCSTORAGE_PASSWORD=$(generate_random_string 24)
 POSTGRES_PASSWORD=$(generate_random_string 24)
 SYNC_MASTER_SECRET=$(generate_random_string 24)
 METRICS_HASH_SECRET=$(generate_random_string 24)
+ADMIN_PASSWORD=$(generate_random_string 24)
 
 # prepare .env file
 cp ${SCRIPT_DIR}/.env-example ${SCRIPT_DIR}/.env
@@ -154,8 +179,10 @@ apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https:/
 apply_sed ${SCRIPT_DIR}/.env "s|CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=${CONTAINER_EXPORT_PORT}|"
 apply_sed ${SCRIPT_DIR}/.env "s|MAX_USERS=.*|MAX_USERS=${MAX_USERS}|"
 apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
+[ "${ADMIN_UI}" = "yes" ] && apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    for name in FXA_MYSQL_PASSWORD FXA_AUTH_SECRET FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_FLOW_ID_KEY FXA_SESSION_TOKEN_HANDLE_KEY FXA_CONTENT_SESSION_SECRET; do
+    for name in FXA_MYSQL_PASSWORD FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_FLOW_ID_KEY FXA_SESSION_TOKEN_HANDLE_KEY FXA_CONTENT_SESSION_SECRET; do
         apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=$(generate_random_string 32)|"
     done
     # the accounts images come from the same registry as the sync images, for this host's architecture
@@ -175,6 +202,23 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_PASS=.*|FXA_SMTP_PASS='$(sed_escape "${FXA_SMTP_PASS}")'|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_SECURE=.*|FXA_SMTP_SECURE=${FXA_SMTP_SECURE}|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"$(sed_escape "${FXA_SMTP_SENDER}")\"|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=${FXA_SIGNUPS}|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
+    if [ -n "${ADMIN_ALLOWED_USERS:-}" ]; then
+        # the admin UI signs in with these accounts: a public OAuth client (PKCE, no secret:
+        # the accounts service refuses PKCE from clients with one), registered by fxa-auth
+        ADMIN_FXA_CLIENT_ID=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_FXA_CLIENT_ID=.*|ADMIN_FXA_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_ALLOWED_USERS=.*|ADMIN_ALLOWED_USERS=${ADMIN_ALLOWED_USERS}|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_REDIRECT_URL=.*|ADMIN_OIDC_REDIRECT_URL=https://${ADMIN_HOST}/auth/callback|"
+        # written out for the Quadlets too, which have no defaults like docker-compose.fxa.yml
+        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_ISSUER=.*|ADMIN_OIDC_ISSUER=https://accounts.${FXA_DOMAIN}|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_CLIENT_ID=.*|ADMIN_OIDC_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_NAME=.*|ADMIN_OIDC_NAME=\"Mozilla account\"|"
+        # the accounts service has no email_verified claim, but only lets confirmed
+        # sessions through to the admin UI (SERVICES_WITH_EMAIL_VERIFICATION in fxa-auth)
+        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=.*|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true|"
+    fi
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         COMPOSE_FILES=docker-compose.postgres.yml:docker-compose.fxa.yml
     else
@@ -190,6 +234,20 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         value=$(grep "^FXA_${port}_EXPORT_PORT=" ${SCRIPT_DIR}/.env | cut -d= -f2)
         apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<${port}_EXPORT_PORT>|${value}|g"
     done
+    if [ "${ADMIN_UI}" = "yes" ]; then
+        value=$(grep "^ADMIN_GATE_EXPORT_PORT=" ${SCRIPT_DIR}/.env | cut -d= -f2)
+        apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ADMIN_GATE_EXPORT_PORT>|${value}|g"
+    else
+        # no sign-up gate without the admin UI
+        apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "/# admin UI only/,/^  }$/d"
+    fi
+    if [ -n "${ADMIN_ALLOWED_USERS:-}" ]; then
+        value=$(grep "^ADMIN_EXPORT_PORT=" ${SCRIPT_DIR}/.env | cut -d= -f2)
+        apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ADMIN_HOST>|${ADMIN_HOST}|g"
+        apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ADMIN_EXPORT_PORT>|${value}|g"
+    else
+        apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "/# admin UI sign-in only/,/# end of the admin UI sign-in/d"
+    fi
 fi
 if [ "${DATABASE_BACKEND}" = "postgres" ]; then
     [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.postgres.yml|"
@@ -214,10 +272,18 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     
     QUADLET_DIR="${QUADLET_DIR:-${HOME}/.config/containers/systemd}"
 
-    # load the generated values (database names, users, FxA endpoints, etc.)
-    set -a
-    source ${SCRIPT_DIR}/.env
-    set +a
+    # load the generated values (database names, users, FxA endpoints, etc.); not with
+    # `source`: unused sections keep placeholders like <REPLACE_WITH_...>, not shell
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+        key=${line%%=*}
+        value=${line#*=}
+        case "${value}" in
+            \'*\') value=${value:1:${#value}-2} ;;
+            \"*\") value=${value:1:${#value}-2} ;;
+        esac
+        export "${key}=${value}"
+    done < ${SCRIPT_DIR}/.env
     mkdir -p "${QUADLET_DIR}"
     
     # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it
@@ -237,6 +303,10 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
 
     QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
     [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
+    if [ "${ADMIN_UI}" = "yes" ]; then
+        # with the accounts, the admin UI also manages them
+        [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/admin") || QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/admin")
+    fi
     echo "Processing quadlet files..."
     for source in "${QUADLET_SOURCES[@]}"; do
         for file in "${source}"/*.{network,volume,container}; do
@@ -263,17 +333,28 @@ echo "Configuration files created:"
 echo "  - .env"
 echo "  - config/nginx/syncstorage-rs.conf"
 echo "  - config/systemd/syncstorage-rs.service"
-[ "${SELF_HOST_FXA}" = "yes" ] && echo "  - config/nginx/fxa.conf (accounts.${FXA_DOMAIN}, api.${FXA_DOMAIN}, profile.${FXA_DOMAIN})"
+[ "${SELF_HOST_FXA}" = "yes" ] && echo "  - config/nginx/fxa.conf (accounts.${FXA_DOMAIN}, api.${FXA_DOMAIN}, profile.${FXA_DOMAIN}${ADMIN_HOST:+, ${ADMIN_HOST}})"
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
     echo "  - Quadlet files in ${QUADLET_DIR}"
+fi
+if [ "${ADMIN_UI}" = "yes" ]; then
+    echo ""
+    echo "Admin UI: http://localhost:8090 on this host (over SSH: ssh -L 8090:127.0.0.1:8090 <host>),"
+    echo "  password: ADMIN_PASSWORD in .env. See ADMIN.md"
+    [ -n "${ADMIN_ALLOWED_USERS:-}" ] && echo "  or https://${ADMIN_HOST}, signed in with the accounts of ${ADMIN_ALLOWED_USERS}"
 fi
 
 echo ""
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
     echo "Next steps for Quadlet deployment:"
-    echo "  1. systemctl --user start firefox-sync-syncstorage.service"
+    # the admin UI first: the Sync server sends its metrics only if it runs then
+    if [ "${ADMIN_UI}" = "yes" ]; then
+        echo "  1. systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service"
+    else
+        echo "  1. systemctl --user start firefox-sync-syncstorage.service"
+    fi
     if [ "${SELF_HOST_FXA}" = "yes" ]; then
         echo "     systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \\"
         echo "       firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service"
