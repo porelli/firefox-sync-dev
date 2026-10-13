@@ -1,12 +1,23 @@
 # Your own database server
 
-By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml)), one PostgreSQL container ([docker-compose.postgres.yml](/docker-compose.postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`). You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
+By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml), or [MySQL 8.4](#mariadb-or-mysql-containers)), one PostgreSQL container ([docker-compose.postgres.yml](/docker-compose.postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`). You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
 
 What changes:
 - `DB_CONTAINERS=0` (and `FXA_DB_CONTAINERS=0` for the accounts) in `.env`: those containers are not started, everything else is the same.
 - You create the databases and users once, with the SQL below. The stack never needs an administrator account on your server.
 - The migrations and the init container still run at every start, as the users below: the tables, the `MAX_USERS` trigger and the sign-up policy are created and updated by the stack.
 - Backups are yours: the stack's volumes are not used, and the backup service (`COMPOSE_PROFILES=backup`) is for the database containers. Your backup job can record its runs for the admin UI, which then shows the last one and alerts when it fails or gets old: see [ADMIN.md](ADMIN.md#your-own-database-servers).
+
+## MariaDB or MySQL containers
+
+This section is about the database containers of the stack, not your own server. The two Sync databases (`syncstorage_db`, `tokenserver_db`) run on MariaDB (`mariadb:lts`) by default. With `SYNC_DB=mysql` they run on MySQL 8.4 instead, which is what upstream syncstorage-rs is developed and tested on. On MariaDB one of upstream's tokenserver tests is skipped here because MariaDB orders the nodes differently (see `tests/e2e.sh`); on MySQL it runs. The images (`syncstorage-rs-mysql`, `syncstorage-rs-mysql-init`) and the `MARIADB_*` settings of `.env` stay the same.
+
+- `prepare_environment.sh`: answer `mysql` to the database backend question. It writes `SYNC_DB=mysql` and `MARIADB_TLS_VERIFY=false`, and adds [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml) to `COMPOSE_FILE`. With Quadlets the units of [config/quadlet/mysql/](/config/quadlet/mysql) replace the two MariaDB units.
+- By hand: `SYNC_DB=mysql` in `.env` and `COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml` (with the accounts `docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml`; with the Podman socket `-f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml`).
+- Choose it before the first start. MySQL gets its own volumes (`syncstorage-db-mysql` and `tokenserver-db-mysql`, Quadlets: `firefox-sync-syncstorage-db-mysql` and `firefox-sync-tokenserver-db-mysql`), so it never opens MariaDB's data files. If you switch an existing install, MariaDB's data stays in its volumes and Sync starts with empty databases. Moving the data takes a dump and a reload, which is not tested here. Also, MariaDB's dumps use its `uca1400` collations, which MySQL rejects (see [Moving an existing install](#moving-an-existing-install)). Going back to MariaDB finds MariaDB's volumes as you left them.
+- No binary logging (`--disable-log-bin`), the same as the MariaDB containers. No replica reads the log, and MySQL would keep 30 days of every change (`binlog_expire_logs_seconds`). With binary logging on, the init container could only create the `MAX_USERS` procedure and trigger with `log_bin_trust_function_creators=ON` (`ERROR 1419`). If you want binary logs (a replica, point-in-time recovery), replace `--disable-log-bin` with `--log-bin-trust-function-creators=ON` in the `command` (Quadlets: `Exec=`). That combination is what the `EXTERNAL_DB=1` tests run.
+- The users use MySQL 8.4's default `caching_sha2_password`, with no `mysql_native_password`. The Sync server and the admin UI connect without TLS, the same as with your own MySQL server. The init container's MariaDB client connects over TLS without checking MySQL's self-signed certificate, on the stack's own network (`MARIADB_TLS_VERIFY=false`, which `docker-compose.sync-mysql.yml` sets for compose; without it the init fails with `ERROR 2026`).
+- `mysql:8.4` is the current MySQL LTS release.
 
 ## Supported servers
 
@@ -129,6 +140,7 @@ All in `.env`. `prepare_environment.sh` writes them when you answer `y`.
 | Setting | Default | Your own server |
 |---|---|---|
 | `DB_CONTAINERS` | `1` | `0`: no `syncstorage_db`, `tokenserver_db` or `postgres_db` container |
+| `SYNC_DB` | `mariadb` | not used: it picks the database containers, `mysql` for [MySQL 8.4](#mariadb-or-mysql-containers) |
 | `MARIADB_TLS_VERIFY` | `true` | `false`: the init container's client checks the server's certificate, and MySQL's own is self-signed (the Sync server itself does not use TLS) |
 | `MARIADB_TOKENSERVER_SERVER`, `_SERVER_PORT`, `_DATABASE`, `_USER`, `_PASSWORD` | `tokenserver_db`, `3306`, `tokenserver`, `tokenserver` | your server and the names of the SQL above |
 | `MARIADB_SYNCSTORAGE_SERVER`, `_SERVER_PORT`, `_DATABASE`, `_USER`, `_PASSWORD` | `syncstorage_db`, `3306`, `syncstorage`, `syncstorage` | the same server, or another one |
@@ -162,6 +174,7 @@ With docker compose. Not covered by the tests: check the result before you remov
 1. Stop the stack: `docker compose down` (not `-v`: that deletes the volumes with your data).
 1. Dump the data, from the running database containers (start only them: `docker compose up -d tokenserver_db syncstorage_db`):
     - MariaDB: `docker compose exec tokenserver_db sh -c 'mariadb-dump -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" --routines --triggers "$MARIADB_DATABASE"' > tokenserver.sql`, the same for `syncstorage_db`. These load into MariaDB 10.10+ only: their tables use MariaDB's `uca1400` collations, which MySQL rejects.
+    - MySQL (`SYNC_DB=mysql`): `docker compose exec tokenserver_db sh -c 'mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" --routines --triggers --no-tablespaces "$MYSQL_DATABASE"' > tokenserver.sql`, the same for `syncstorage_db` (`--no-tablespaces`: the stack's users have no `PROCESS` privilege)
     - PostgreSQL: `docker compose exec postgres_db sh -c 'pg_dump -U "$POSTGRES_USER" --no-owner --no-acl "$POSTGRES_DB"' > syncserver.sql`
     - the accounts: `docker compose exec fxa-db sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --routines --triggers --databases fxa fxa_oauth fxa_profile pushbox ffs'  > fxa.sql` (`mariadb-dump` instead of `mysqldump` with `FXA_DB=mariadb`). Load it into the same kind of server: from MySQL to MariaDB or back is not tested
 1. Create the databases and users on your server with the passwords already in your `.env`: copy the file of [config/database/](/config/database) and replace each `@NAME@` with its value from `.env` (`@TOKENSERVER_PASSWORD@` is `MARIADB_TOKENSERVER_PASSWORD`, `@FXA_ADMIN_PASSWORD@` is `FXA_ADMIN_DB_PASSWORD`, and so on; add `FXA_MYSQL_USER`, `FXA_MYSQL_POLICY_USER` and `FXA_MYSQL_POLICY_PASSWORD` to `.env`, it had `root`). Keep the database and user names of `.env`. Then load the dumps:

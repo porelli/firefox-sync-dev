@@ -1,0 +1,59 @@
+# The Sync databases (syncstorage_db, tokenserver_db) on MySQL 8.4 instead of MariaDB (SYNC_DB=mysql,
+# see DATABASES.md), on top of docker-compose.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
+# (with Podman: -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml).
+# Same images for the Sync server (syncstorage-rs-mysql) and the init container: upstream
+# syncstorage-rs is developed and tested on MySQL 8.
+# The MARIADB_* variables of docker-compose.yml stay in these containers, the MySQL image ignores them.
+
+x-sync-mysql: &sync-mysql
+  image: mysql:8.4
+  # no binary logging, like the MariaDB containers: no replica reads it, and it would keep
+  # 30 days of every change (binlog_expire_logs_seconds). With it on, the init container's
+  # MAX_USERS procedure and trigger would also need log_bin_trust_function_creators (ERROR 1419)
+  command: [mysqld, --disable-log-bin]
+  healthcheck:
+    # over TCP: during the first start the image runs a temporary server on the socket only;
+    # as the stack's user (the root password is random), mysqladmin ping only asks if it answers
+    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --protocol=tcp -u\"$${MYSQL_USER}\" -p\"$${MYSQL_PASSWORD}\" --silent"]
+    start_period: 30s
+    interval: 10s
+    timeout: 5s
+    retries: 10
+
+services:
+  syncstorage_db:
+    <<: *sync-mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: ${MARIADB_SYNCSTORAGE_DATABASE}
+      MYSQL_USER: ${MARIADB_SYNCSTORAGE_USER}
+      MYSQL_PASSWORD: ${MARIADB_SYNCSTORAGE_PASSWORD}
+    # replaces the syncstorage-db volume (same path): MySQL must not open MariaDB's data
+    # files, an existing syncstorage-db volume is left as it is
+    volumes:
+      - syncstorage-db-mysql:/var/lib/mysql
+
+  tokenserver_db:
+    <<: *sync-mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: ${MARIADB_TOKENSERVER_DATABASE}
+      MYSQL_USER: ${MARIADB_TOKENSERVER_USER}
+      MYSQL_PASSWORD: ${MARIADB_TOKENSERVER_PASSWORD}
+    volumes:
+      - tokenserver-db-mysql:/var/lib/mysql
+
+  tokenserver_db_init:
+    environment:
+      # the init container's MariaDB client checks the server's certificate by default, and
+      # MySQL's is self-signed (ERROR 2026): TLS without the check, on the stack's own network
+      MARIADB_TLS_VERIFY: "false"
+
+  # the backups (COMPOSE_PROFILES=backup) with MySQL's own client and mysqldump: the MariaDB
+  # client refuses MySQL's self-signed certificate
+  backup:
+    image: mysql:8.4
+
+volumes:
+  syncstorage-db-mysql:
+  tokenserver-db-mysql:

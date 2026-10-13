@@ -71,10 +71,12 @@ esac
 
 # database backend
 DEFAULT_DATABASE_BACKEND=mariadb
-read -e -p "Database backend [mariadb/postgres] [${DEFAULT_DATABASE_BACKEND}]: " DATABASE_BACKEND
+read -e -p "Database backend [mariadb/mysql/postgres] [${DEFAULT_DATABASE_BACKEND}]: " DATABASE_BACKEND
 DATABASE_BACKEND=${DATABASE_BACKEND:-${DEFAULT_DATABASE_BACKEND}}
 case "${DATABASE_BACKEND}" in
-    mariadb|postgres) ;;
+    mariadb|postgres) SYNC_DB=mariadb ;;
+    # MySQL 8.4 containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
+    mysql|MySQL) DATABASE_BACKEND=mysql; SYNC_DB=mysql ;;
     *)
         echo "ERROR: unknown database backend '${DATABASE_BACKEND}'"
         exit 1
@@ -98,7 +100,7 @@ fi
 if [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     echo ""
     echo "Podman detected! Choose deployment method:"
-    echo "  1) Quadlets (systemd integration, recommended, MariaDB only)"
+    echo "  1) Quadlets (systemd integration, recommended, MariaDB and MySQL only)"
     echo "  2) docker compose with the Podman socket"
     read -e -p "Deployment method [1]: " DEPLOY_METHOD
     case "${DEPLOY_METHOD:-1}" in
@@ -107,7 +109,7 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ]; then
         *) echo "ERROR: unknown deployment method '${DEPLOY_METHOD}'"; exit 1 ;;
     esac
     if [ "${DEPLOY_METHOD}" = "quadlets" ] && [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        echo "WARNING: Quadlets are only provided for MariaDB, using docker compose with the Podman socket"
+        echo "WARNING: Quadlets are only provided for MariaDB and MySQL, using docker compose with the Podman socket"
         DEPLOY_METHOD=compose
     fi
 fi
@@ -249,6 +251,10 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     esac
 fi
 
+# SYNC_DB=mysql: the Sync databases in MySQL containers; with your own server there are none,
+# SYNC_DB then only says what it is
+[ "${SYNC_DB}" = "mysql" ] && [ "${EXTERNAL_DB}" != "yes" ] && SYNC_COMPOSE_MYSQL=yes || SYNC_COMPOSE_MYSQL=no
+
 # random passwords
 MARIADB_TOKENSERVER_PASSWORD=$(generate_random_string 24)
 MARIADB_SYNCSTORAGE_PASSWORD=$(generate_random_string 24)
@@ -270,6 +276,14 @@ apply_sed ${SCRIPT_DIR}/.env "s|MAX_USERS=.*|MAX_USERS=${MAX_USERS}|"
 apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG}|"
 apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
 [ "${ADMIN_UI}" = "yes" ] && apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
+if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
+    # MySQL's certificate is self-signed: the init container's client does not check it
+    # (docker-compose.sync-mysql.yml does the same, this is for the Quadlets)
+    apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_TLS_VERIFY=.*|MARIADB_TLS_VERIFY=false|"
+    # with the accounts, set below with theirs
+    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml|"
+fi
 if [ "${EXTERNAL_DB}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^DB_CONTAINERS=.*|DB_CONTAINERS=0|"
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
@@ -338,6 +352,8 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         COMPOSE_FILES=docker-compose.postgres.yml:docker-compose.fxa.yml
+    elif [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
+        COMPOSE_FILES=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml
     else
         COMPOSE_FILES=docker-compose.yml:docker-compose.fxa.yml
     fi
@@ -442,11 +458,17 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     SKIP_UNITS=""
     DROP_DEPS=""
     if [ "${DB_CONTAINERS:-1}" = 0 ]; then
-        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.(container|volume)$'
+        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
         DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
     else
         export MARIADB_SYNCSTORAGE_SERVER=firefox-sync-syncstorage-db MARIADB_SYNCSTORAGE_SERVER_PORT=3306
         export MARIADB_TOKENSERVER_SERVER=firefox-sync-tokenserver-db MARIADB_TOKENSERVER_SERVER_PORT=3306
+        if [ "${SYNC_DB:-mariadb}" = "mysql" ]; then
+            # MariaDB's volumes, unused (the volumes themselves are kept); MySQL's certificate
+            # is self-signed, the init container's client does not check it
+            SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.volume$'
+            export MARIADB_TLS_VERIFY=false
+        fi
     fi
     if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
         SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db(-mariadb)?\.(container|volume)$"
@@ -477,6 +499,9 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     }
 
     QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
+    # SYNC_DB=mysql: mysql/ replaces the database units of the same name (without the
+    # database containers, SKIP_UNITS leaves them out)
+    [ "${SYNC_DB:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/mysql")
     [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
     # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
     [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
@@ -492,6 +517,7 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
             target_dir=${QUADLET_DIR}
             [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
             [ "${FXA_DB:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
+            [ "${SYNC_DB:-mariadb}" = "mysql" ] && [ -f "${source}/mysql/${filename}" ] && continue
             if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
                 # left from a setup with the database containers (the volume is kept)
                 rm -f "${QUADLET_DIR}/${filename}"
@@ -586,6 +612,7 @@ elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     else
         COMPOSE_FILES="-f docker-compose.yml -f docker-compose.podman.yml"
     fi
+    [ "${SYNC_COMPOSE_MYSQL}" = "yes" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.sync-mysql.yml"
     [ "${SELF_HOST_FXA}" = "yes" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.fxa.yml"
     [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB}" = "mariadb" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.fxa-mariadb.yml"
     echo "Next steps for docker compose with the Podman socket:"

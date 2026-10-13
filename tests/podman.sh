@@ -1,6 +1,6 @@
 #!/bin/bash
 # Rootless podman test: docker compose on the Podman socket (MariaDB and PostgreSQL) and
-# quadlets (MariaDB), set up with prepare_environment.sh exactly like a user would.
+# quadlets (MariaDB; MySQL rendered only), set up with prepare_environment.sh exactly like a user would.
 # Needs rootless podman, docker compose (v2, no Docker daemon) and a systemd user session.
 #
 # Usage: tests/podman.sh
@@ -10,6 +10,9 @@
 #   PORT        host port (default: 28660)
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
+#   SYNC_DB     mariadb (default) or mysql: the Sync databases of the compose and quadlet phases
+#               (MySQL 8.4, docker-compose.sync-mysql.yml and config/quadlet/mysql/); the MySQL
+#               quadlets are rendered and checked in any case
 #   ADMIN_IMAGE     admin UI image to test, pulled and used as is (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1-linux-arm64 (default: REPOSITORY:fxa-mono-latest)
@@ -105,6 +108,8 @@ metrics_show() {
   done
   echo "${missing:-all}"
 }
+SYNC_DB=${SYNC_DB:-mariadb}
+case "${SYNC_DB}" in mariadb|mysql) ;; *) echo "SYNC_DB: mariadb or mysql"; exit 2 ;; esac
 SYNC_UP=('ffs_up{component="Sync server"} 1' 'ffs_up{component="Tokenserver database"} 1')
 # signed in with the default Secure cookie over plain http: curl, like browsers, keeps
 # it for localhost
@@ -129,7 +134,7 @@ compose_test() {
     "syncstorage started after the init (compose, ${backend})"
   check "$(admin_up /login)" 200 "admin UI (compose, ${backend})"
   check "$(admin_sign_in "${backend}")" yes "admin UI sign-in over http://localhost (compose, ${backend})"
-  if [ "${backend}" = mariadb ]; then
+  if [ "${backend}" != postgres ]; then
     check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')" all "admin UI reaches the Sync server and its databases (compose, ${backend})"
   else
     check "$(metrics_show "${SYNC_UP[@]}")" all "admin UI reaches the Sync server and its database (compose, ${backend})"
@@ -139,7 +144,11 @@ compose_test() {
   [ "${FAILED}" = 0 ] || diagnose "compose-${backend}.log"
   docker compose "$@" down -v > /dev/null 2>&1
 }
-compose_test mariadb -f docker-compose.yml -f docker-compose.podman.yml
+if [ "${SYNC_DB}" = mysql ]; then
+  compose_test mysql -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml
+else
+  compose_test mariadb -f docker-compose.yml -f docker-compose.podman.yml
+fi
 compose_test postgres -f docker-compose.postgres.yml
 
 echo "== quadlets with PostgreSQL: docker compose instead"
@@ -160,9 +169,9 @@ env_keys_diff() {
   echo "$(LC_ALL=C comm -23 <(echo "${compose}") <(echo "${quadlet}") | grep -vxE "$2" | paste -sd' ')|$(LC_ALL=C comm -13 <(echo "${compose}") <(echo "${quadlet}") | paste -sd' ')"
 }
 
-echo "== quadlets (mariadb)"
+echo "== quadlets (${SYNC_DB})"
 export QUADLET_DIR=${HOME}/.config/containers/systemd
-setup mariadb 1
+setup "${SYNC_DB}" 1
 check "$?" 0 "prepare_environment.sh (quadlets)"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in quadlets"
 # with the admin UI, MAX_USERS=initial:1: the init container and the admin UI both get it
@@ -205,8 +214,9 @@ done
 check "$([ "${pid}" != "${SYNC_PID}" ] && echo yes)" yes "Sync server restarted with the admin UI (quadlets)"
 check "$(hb)" 200 "/__heartbeat__ after the admin UI restart (quadlets)"
 # backups: the timer installed, off until enabled; a run by hand
+# the database container's own client (mariadb, or mysql in the MySQL image)
 ts_sql() { podman exec -e MYSQL_PWD="$(grep '^MARIADB_TOKENSERVER_PASSWORD=' .env | cut -d= -f2)" firefox-sync-tokenserver-db \
-  mariadb -u"$(grep '^MARIADB_TOKENSERVER_USER=' .env | cut -d= -f2)" "$(grep '^MARIADB_TOKENSERVER_DATABASE=' .env | cut -d= -f2)" -sN -e "$1"; }
+  sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -u"$(grep '^MARIADB_TOKENSERVER_USER=' .env | cut -d= -f2)" "$(grep '^MARIADB_TOKENSERVER_DATABASE=' .env | cut -d= -f2)" -sN -e "$1"; }
 check "$(grep -c '^OnCalendar=\*-\*-\* 03:00:00 UTC$' "${SYSTEMD_USER_DIR}/firefox-sync-backup.timer" 2> /dev/null) $(systemctl --user is-enabled firefox-sync-backup.timer 2> /dev/null)" "1 disabled" \
   "backup timer installed, not enabled (quadlets)"
 check "$(systemctl --user show -p Triggers --value firefox-sync-backup.timer)" firefox-sync-backup.service "the backup timer starts the backup service"
@@ -248,6 +258,21 @@ if [ "${FAILED}" != 0 ]; then
   tail -20 setup-no-admin.log quadlet-no-admin-dryrun.log
   journalctl --user -u 'firefox-sync-*' --since "${QUADLET_SINCE}" --no-pager | tail -40
 fi
+
+echo "== quadlets with the Sync databases on MySQL (SYNC_DB=mysql): only what is installed"
+setup mysql 1
+check "$?" 0 "prepare_environment.sh (quadlets, MySQL)"
+check "$(grep -c '^SYNC_DB=mysql$' .env) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml$' .env)" "1 1" "SYNC_DB=mysql in .env, with the compose overlay"
+check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
+  "docker.io/library/mysql:8.4 docker.io/library/mysql:8.4" "MySQL 8.4 database units"
+check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db*.volume 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
+  "firefox-sync-syncstorage-db-mysql.volume firefox-sync-tokenserver-db-mysql.volume" "MySQL's own volumes, not MariaDB's"
+check "$(grep -hcxE 'Exec=mysqld --disable-log-bin|HealthCmd=mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) -p[A-Za-z0-9]+ --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
+  "2 2" "MySQL without binary logging, healthcheck over TCP"
+check "$(grep -cxF 'Environment=MARIADB_TLS_VERIFY=false' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "init container does not check MySQL's self-signed certificate"
+check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in the MySQL quadlets"
+"${QUADLET}" -dryrun -user > quadlet-mysql-dryrun.log 2>&1
+check "$?" 0 "quadlet generator accepts the MySQL database units"
 stop_quadlets
 
 if [ -n "${EXTERNAL_DB:-}" ]; then

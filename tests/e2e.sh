@@ -2,7 +2,7 @@
 # End-to-end test of the firefox-sync stack (docker compose), isolated from anything
 # else running on the host: own compose project, loopback-only port, own volumes.
 #
-# Usage: tests/e2e.sh <mysql|postgres>
+# Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL 8.4
 # Runs with the admin UI and the backups (COMPOSE_PROFILES=admin,backup, BACKUP_KEEP=1; with
 # EXTERNAL_DB=1 the admin UI only, your own backups record their runs), with Mozilla's accounts
 # (mock): Sync part only.
@@ -16,9 +16,12 @@
 #   CLEANUP_IMAGES  set to 1 to remove the pulled images at the end
 #   SKIP_PULL       set to 1 to use the local images (e.g. an init image built from this tree)
 #   KEEP            set to 1 to leave the stack running
-#   TEST_SUBNET     the stack's network, a /24 (default: 10.231.1.0/24 mysql, 10.231.2.0/24 postgres);
+#   TEST_SUBNET     the stack's network, a /24 (default: 10.231.1.0/24 mysql, 10.231.2.0/24 postgres,
+#                   10.231.4.0/24 SYNC_DB=mysql);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
 #                   gateway (the host) at .1 is not
+#   SYNC_DB         mysql: the mysql backend on MySQL 8.4 containers (docker-compose.sync-mysql.yml)
+#                   instead of MariaDB (default mariadb); own project, PORT 28654 and TEST_SUBNET 10.231.4.0/24
 #   EXTERNAL_DB     set to 1 for a database server outside the stack (DB_CONTAINERS=0, DATABASES.md),
 #                   created with only the grants of config/database/: MySQL 8.4 with binary logging
 #                   for mysql, a PostgreSQL 18 owner that is no superuser for postgres; on its own
@@ -34,11 +37,19 @@ PROJECT=ffs-e2e-${BACKEND}
 WORK=$(mktemp -d)
 ENV_FILE=${WORK}/${BACKEND}.env
 
-case ${BACKEND} in
-  mysql)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28651}; NET=1 ;;
-  postgres) COMPOSE=${CODE}/docker-compose.postgres.yml; PORT=${PORT:-28652}; NET=2 ;;
+SYNC_DB=${SYNC_DB:-mariadb}
+case ${BACKEND}:${SYNC_DB} in
+  mysql:mariadb)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28651}; NET=1 ;;
+  postgres:mariadb) COMPOSE=${CODE}/docker-compose.postgres.yml; PORT=${PORT:-28652}; NET=2 ;;
+  # (28653 is tests/e2e-fxa.sh's)
+  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28654}; NET=4; PROJECT=${PROJECT}-mysql84 ;;
+  postgres:*) echo "SYNC_DB is for the mysql backend"; exit 2 ;;
+  mysql:*) echo "SYNC_DB: mariadb or mysql"; exit 2 ;;
   *) echo "unknown backend ${BACKEND}"; exit 2 ;;
 esac
+if [ "${SYNC_DB}" = mysql ] && [ -n "${EXTERNAL_DB:-}" ]; then
+  echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL 8.4"; exit 2
+fi
 # the admin UI trusts the X-Test-Email header of the containers (tests/docker-compose.test.yml),
 # not of the gateway: what comes from the host
 export TEST_SUBNET=${TEST_SUBNET:-10.231.${NET}.0/24}
@@ -71,12 +82,19 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://mock_fxa:6000|" \
     -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" \
     -e "/^COMPOSE_FILE=/d" \
+    -e "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|" \
     -e "s|<REPLACE_WITH_SOMETHING_SECURE>|$(rnd)|" \
     -e "s|<REPLACE_WITH_[A-Z_]*>|placeholder.invalid|g" \
     "${CODE}/.env-example" > "${ENV_FILE}"
 EXTDB=
 COMPOSE_EXTRA=()
 DATABASE_SERVER=
+# what the admin UI reports, and the database client in the database containers
+DB_CLIENT=mariadb
+if [ "${SYNC_DB}" = mysql ]; then
+  COMPOSE_EXTRA=(-f "${CODE}/docker-compose.sync-mysql.yml")
+  DATABASE_SERVER=MySQL DB_CLIENT=mysql
+fi
 if [ -n "${EXTERNAL_DB:-}" ]; then
   # a server elsewhere: its own container and network, reached by name
   EXTDB=${PROJECT}-extdb
@@ -131,7 +149,7 @@ sql() {
   elif [ -n "${EXTDB}" ]; then
     docker exec -i -e PGPASSWORD="${POSTGRES_PASSWORD}" "${EXTDB}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DATABASE}" -tA -c "$1" < /dev/null
   elif [ "${BACKEND}" = mysql ]; then
-    dc exec -T tokenserver_db mariadb -u"${MARIADB_TOKENSERVER_USER}" -p"${MARIADB_TOKENSERVER_PASSWORD}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null
+    dc exec -T -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" tokenserver_db "${DB_CLIENT}" -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null
   else
     dc exec -T postgres_db psql -U "${POSTGRES_USER}" -d "${POSTGRES_DATABASE}" -tA -c "$1" < /dev/null
   fi
@@ -231,7 +249,8 @@ teardown() {
   if [ -n "${CLEANUP_IMAGES:-}" ]; then
     docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${TAG}" > /dev/null 2>&1
     [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
-    [ "${BACKEND}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
+    [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
+    [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mysql:8.4' && docker rmi mysql:8.4 > /dev/null 2>&1
   fi
   rm -rf "${WORK}"
 }
@@ -284,6 +303,18 @@ if [ -n "${EXTDB}" ]; then
     check "$(echo "SELECT has_database_privilege('dbadmin', '${POSTGRES_DATABASE}', 'TEMP'), has_database_privilege('public', '${POSTGRES_DATABASE}', 'CONNECT');" | extdb_admin)" "t|f" \
       "database created by a CREATEROLE CREATEDB role, closed to PUBLIC"
   fi
+fi
+
+if [ "${SYNC_DB}" = mysql ]; then
+  echo "== database containers on MySQL 8.4 (SYNC_DB=mysql)"
+  for db in syncstorage_db tokenserver_db; do
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "${db}")")" mysql:8.4 "${db} runs mysql:8.4"
+    check "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Name}}{{end}}{{end}}' "$(dc ps -a -q "${db}")")" \
+      "${PROJECT}_${db//_/-}-mysql" "${db} in its own volume, not MariaDB's"
+  done
+  # no binary logging (docker-compose.sync-mysql.yml), the trigger without log_bin_trust_function_creators
+  check "$(sql "SELECT VERSION() LIKE '8.4.%', @@log_bin, @@log_bin_trust_function_creators;")" "$(printf '1\t0\t0')" "MySQL 8.4 without binary logging"
+  check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "MAX_USERS trigger created by the init container"
 fi
 
 echo "== tokenserver node"
@@ -460,7 +491,8 @@ hb > /dev/null
 UPSTREAM_TS="tools/integration_tests/tokenserver --ignore=tools/integration_tests/tokenserver/test_e2e.py"
 if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ]; then
   # with several empty nodes the tokenserver orders them by LOG(0) (NULL), MySQL 8
-  # (upstream CI) returns them in id order, MariaDB does not: this stack has one node
+  # (upstream CI, EXTERNAL_DB=1 and SYNC_DB=mysql here, where it runs) returns them in id
+  # order, MariaDB does not: this stack has one node
   # (node ids are relative to tools/integration_tests, pytest's rootdir in the image)
   T=test_node_assignment.py::test_user_creation
   UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
@@ -482,5 +514,6 @@ sql "DELETE FROM users;" > /dev/null
 pytest_in_app "/tests/test_client_flow.py -k first_sign_in"
 check "$?" 0 "a first sign-in and sync without the admin UI"
 
-[ ${FAILED} = 0 ] && echo "RESULT ${BACKEND}: all checks passed" || echo "RESULT ${BACKEND}: some checks FAILED"
+RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL 8.4)")
+[ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"
 exit ${FAILED}

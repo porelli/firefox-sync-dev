@@ -201,6 +201,14 @@ check "$?" 0 "prepare_environment.sh with PostgreSQL and self-hosted accounts"
 check "$(grep -c '^COMPOSE_FILE=docker-compose.postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
 check "$(setup_compose config --services | grep -cxE 'postgres_db|fxa-auth|fxa-policy|ffs-admin')" 4 "compose stack with PostgreSQL, the accounts and the admin UI"
 check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db|MAX_USERS: "?initial:2"?)$')" 3 "admin UI for PostgreSQL and the accounts, with MAX_USERS"
+# Sync on MySQL 8.4 containers (SYNC_DB=mysql), the same mysql images
+prepare_again mysql ""
+check "$?" 0 "prepare_environment.sh with MySQL for Sync and self-hosted accounts"
+check "$(env_value SYNC_DB) $(env_value MARIADB_TLS_VERIFY) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" \
+  "mysql false 1" "Sync on MySQL 8.4 in .env, with the accounts"
+check "$(setup_compose config | sed -n '/^  tokenserver_db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:8\.4|source: tokenserver-db-mysql|- --disable-log-bin)$')" 3 \
+  "tokenserver_db on MySQL 8.4 without binary logging, in its own volume"
+check "$(setup_compose config | sed -n '/^  tokenserver_db_init:/,/^  [a-z]/p' | grep -cE '^ +MARIADB_TLS_VERIFY: "?false"?$')" 1 "init container does not check MySQL's self-signed certificate"
 prepare_again mariadb "" ""
 check "$?" 0 "prepare_environment.sh with the admin UI, no admin emails (password only)"
 check "$(grep -cE 'server_name admin\.|<ADMIN_' "${SETUP}/config/nginx/fxa.conf")" 0 "no admin UI host in the nginx example, password only"

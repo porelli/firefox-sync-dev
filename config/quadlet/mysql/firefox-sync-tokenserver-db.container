@@ -1,0 +1,36 @@
+# Installed instead of ../firefox-sync-tokenserver-db.container with SYNC_DB=mysql (DATABASES.md).
+[Unit]
+Description=Firefox Sync - Tokenserver Database (MySQL)
+After=firefox-sync-network.service
+
+[Container]
+Image=docker.io/library/mysql:8.4
+ContainerName=firefox-sync-tokenserver-db
+Network=firefox-sync-network.network
+# MySQL must not open MariaDB's data files: its own volume
+Volume=firefox-sync-tokenserver-db-mysql.volume:/var/lib/mysql
+
+Environment=MYSQL_RANDOM_ROOT_PASSWORD=yes
+Environment=MYSQL_DATABASE=%MARIADB_TOKENSERVER_DATABASE%
+Environment=MYSQL_USER=%MARIADB_TOKENSERVER_USER%
+Environment=MYSQL_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%
+
+# no binary logging, like MariaDB: no replica reads it, it would keep 30 days of every
+# change, and the init container's MAX_USERS trigger would need log_bin_trust_function_creators
+Exec=mysqld --disable-log-bin
+
+# over TCP: during the first start the image runs a temporary server on the socket only
+HealthCmd=mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%MARIADB_TOKENSERVER_USER% -p%MARIADB_TOKENSERVER_PASSWORD% --silent
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=10
+HealthStartPeriod=30s
+
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target default.target

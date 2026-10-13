@@ -126,6 +126,10 @@ systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile
 ```
 The databases, the migrations and the auth server are started automatically as dependencies.
 
+#### MySQL instead of MariaDB
+
+Answer `mysql` to the database backend question of `prepare_environment.sh` (`SYNC_DB=mysql` in `.env`): the units of [config/quadlet/mysql/](/config/quadlet/mysql) replace `firefox-sync-syncstorage-db.container` and `firefox-sync-tokenserver-db.container`, with their own volumes (`firefox-sync-syncstorage-db-mysql`, `firefox-sync-tokenserver-db-mysql`). The MariaDB volumes are left as they are; switching an existing install starts with empty databases, see [DATABASES.md](DATABASES.md#mariadb-or-mysql-containers).
+
 #### Your own database server
 
 To use a MariaDB or MySQL server you already run, answer `y` to "Use an existing database server instead of starting one?" in `prepare_environment.sh` (and for the accounts, a MySQL 8.0/8.4 or MariaDB 11.4 to 11.8 server). The database units are then not installed, the other units don't depend on them, and the script writes `database-setup.sql` for your server. A server on this host is `host.containers.internal` for the containers, not `localhost`. See [DATABASES.md](DATABASES.md).
@@ -188,6 +192,9 @@ export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
 
 # MariaDB, with longer healthcheck timings for rootless
 docker compose -f docker-compose.yml -f docker-compose.podman.yml up -d
+
+# MySQL 8.4 (SYNC_DB=mysql, see DATABASES.md)
+docker compose -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml up -d
 
 # PostgreSQL
 docker compose -f docker-compose.postgres.yml up -d
