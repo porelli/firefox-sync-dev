@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -55,16 +56,40 @@ var fxaPolicySQL = []string{
 		GROUP BY table_schema`,
 	// sessions and devices for the admin UI without their token ids: a session token id
 	// signs in as its account (Bearer fxs_<id>), ffs_admin never reads one
+	// verified: the sign-in code (or the second step) was entered; the methods are
+	// VERIFICATION_METHODS of the auth server (lib/tokens/session_token.js)
 	`CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.sessions AS
-		SELECT uid, LOWER(SHA2(tokenId, 256)) AS ref, uaBrowser, uaOS, createdAt, lastAccessTime
-		FROM fxa.sessionTokens`,
+		SELECT s.uid, LOWER(SHA2(s.tokenId, 256)) AS ref, s.uaBrowser, s.uaOS, s.createdAt, s.lastAccessTime,
+			NOT EXISTS (SELECT 1 FROM fxa.unverifiedTokens u WHERE u.tokenId = s.tokenId) AS verified,
+			CASE s.verificationMethod WHEN 0 THEN 'email' WHEN 1 THEN 'email-2fa' WHEN 2 THEN 'totp-2fa'
+				WHEN 3 THEN 'recovery-code' WHEN 4 THEN 'sms-2fa' WHEN 5 THEN 'passkey' END AS verificationMethod
+		FROM fxa.sessionTokens s`,
+	// ref: the session the device signed in with (as in ffs.sessions), for its last use in Redis
 	`CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.devices AS
 		SELECT d.uid, d.id, COALESCE(NULLIF(d.nameUtf8, ''), d.name) AS name, COALESCE(d.type, '') AS type,
 			COALESCE(d.createdAt, 0) AS createdAt,
-			GREATEST(COALESCE(s.lastAccessTime, 0), COALESCE(UNIX_TIMESTAMP(r.lastUsedAt) * 1000, 0)) AS lastUsed
+			GREATEST(COALESCE(s.lastAccessTime, 0), COALESCE(UNIX_TIMESTAMP(r.lastUsedAt) * 1000, 0)) AS lastUsed,
+			LOWER(SHA2(s.tokenId, 256)) AS ref
 		FROM fxa.devices d
 		LEFT JOIN fxa.sessionTokens s ON s.tokenId = d.sessionTokenId
 		LEFT JOIN fxa_oauth.refreshTokens r ON r.token = d.refreshTokenId`,
+	// how each account signs in, without the secrets: never sharedSecret (TOTP), codeHash
+	// (recovery codes), recoveryData (the wrapped keys), phoneNumber or the passkeys' keys.
+	// keysChangedAt is NULL until the keys first change (FxA then uses verifierSetAt)
+	`CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.account_security AS
+		SELECT a.uid,
+			EXISTS (SELECT 1 FROM fxa.totp t WHERE t.uid = a.uid AND t.enabled AND t.verified) AS totp_enabled,
+			EXISTS (SELECT 1 FROM fxa.recoveryKeys k WHERE k.uid = a.uid AND k.enabled) AS recovery_key,
+			(SELECT COUNT(*) FROM fxa.recoveryCodes c WHERE c.uid = a.uid) AS recovery_codes_left,
+			EXISTS (SELECT 1 FROM fxa.recoveryPhones p WHERE p.uid = a.uid) AS recovery_phone,
+			(SELECT COUNT(*) FROM fxa.passkeys p WHERE p.uid = a.uid) AS passkeys,
+			a.verifierSetAt, COALESCE(a.keysChangedAt, a.verifierSetAt, a.createdAt) AS keysChangedAt, a.lockedAt,
+			(SELECT COUNT(*) FROM fxa.sessionTokens s JOIN fxa.unverifiedTokens u ON u.tokenId = s.tokenId
+				WHERE s.uid = a.uid) AS unverified_sessions
+		FROM fxa.accounts a`,
+	// every address of an account, the primary one too (not their codes)
+	`CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.emails AS
+		SELECT uid, email, isVerified, isPrimary, createdAt FROM fxa.emails`,
 	// signing out reads the token ids too: MySQL needs SELECT on the columns of a
 	// DELETE ... WHERE, so these run with the privileges of their definer
 	"DROP PROCEDURE IF EXISTS ffs.sign_out_session",
@@ -107,6 +132,203 @@ var fxaPolicySQL = []string{
 		DELETE FROM fxa.devices WHERE uid = p_uid AND id = p_device;
 		COMMIT;
 	END`,
+	// signing out everywhere: Mozilla's own procedure (sessions, key fetch, account reset,
+	// password change and forgot tokens, devices and their commands, unverified tokens,
+	// unblock codes, in its own transaction), then the OAuth tokens it does not know about
+	"DROP PROCEDURE IF EXISTS ffs.sign_out_all",
+	`CREATE PROCEDURE ffs.sign_out_all(p_uid BINARY(16))
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+		IF NOT EXISTS (SELECT 1 FROM fxa.accounts WHERE uid = p_uid) THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'no such account';
+		END IF;
+		CALL fxa.revokeAccountTokens_1(p_uid);
+		START TRANSACTION;
+		-- codes first: the token endpoint does not check disabledAt, a code traded
+		-- in between would leave a refresh token
+		DELETE FROM fxa_oauth.codes WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.refreshTokens WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.tokens WHERE userId = p_uid;
+		COMMIT;
+	END`,
+	// disabledAt first, which refuses new sign-ins, then everything signed out: a sign-in
+	// between the two would otherwise leave a session behind
+	"DROP PROCEDURE IF EXISTS ffs.disable_account",
+	`CREATE PROCEDURE ffs.disable_account(p_uid BINARY(16))
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM fxa.accounts WHERE uid = p_uid) THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'no such account';
+		END IF;
+		UPDATE fxa.accounts SET disabledAt = FLOOR(UNIX_TIMESTAMP(NOW(3)) * 1000)
+			WHERE uid = p_uid AND disabledAt IS NULL;
+		CALL ffs.sign_out_all(p_uid);
+	END`,
+	"DROP PROCEDURE IF EXISTS ffs.enable_account",
+	`CREATE PROCEDURE ffs.enable_account(p_uid BINARY(16))
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM fxa.accounts WHERE uid = p_uid) THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'no such account';
+		END IF;
+		UPDATE fxa.accounts SET disabledAt = NULL WHERE uid = p_uid;
+	END`,
+	// turning off two-step authentication for someone locked out (a lost phone): the TOTP
+	// secret with Mozilla's procedure, and the backup methods that only work with it
+	"DROP PROCEDURE IF EXISTS ffs.remove_totp",
+	`CREATE PROCEDURE ffs.remove_totp(p_uid BINARY(16))
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+		IF NOT EXISTS (SELECT 1 FROM fxa.accounts WHERE uid = p_uid) THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'no such account';
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM fxa.totp WHERE uid = p_uid) THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'two-step authentication is not on';
+		END IF;
+		START TRANSACTION;
+		CALL fxa.deleteTotpToken_4(p_uid);
+		DELETE FROM fxa.recoveryCodes WHERE uid = p_uid;
+		DELETE FROM fxa.recoveryPhones WHERE uid = p_uid;
+		COMMIT;
+	END`,
+	"DROP PROCEDURE IF EXISTS ffs.remove_recovery_key",
+	`CREATE PROCEDURE ffs.remove_recovery_key(p_uid BINARY(16))
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM fxa.recoveryKeys WHERE uid = p_uid) THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'no account recovery key';
+		END IF;
+		CALL fxa.deleteRecoveryKey_2(p_uid);
+	END`,
+	// confirming the email for someone whose code never arrived: Mozilla's procedure with
+	// the account's own code, which ffs_admin never reads. The sessions stay unconfirmed
+	// (their own codes), a new sign-in sends a sign-in code
+	"DROP PROCEDURE IF EXISTS ffs.confirm_email",
+	`CREATE PROCEDURE ffs.confirm_email(p_uid BINARY(16))
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		DECLARE v_code BINARY(16) DEFAULT NULL;
+		DECLARE v_verified BOOLEAN DEFAULT NULL;
+		SELECT emailCode, emailVerified INTO v_code, v_verified FROM fxa.accounts WHERE uid = p_uid;
+		IF v_code IS NULL THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'no such account';
+		END IF;
+		IF v_verified THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'the email is already confirmed';
+		END IF;
+		CALL fxa.verifyEmail_9(p_uid, v_code);
+	END`,
+	// deleting an account for good, disabled first (two steps, never one slip): what the
+	// auth server's own deletion removes (deleteAccount_24), then what lives in the other
+	// databases, and the exact email from the allowlist so that it cannot sign up again.
+	// Ours first: a failure leaves a disabled account, not one half deleted
+	"DROP PROCEDURE IF EXISTS ffs.delete_account",
+	`CREATE PROCEDURE ffs.delete_account(p_uid BINARY(16))
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		DECLARE v_found INT DEFAULT 0;
+		DECLARE v_disabled BIGINT DEFAULT NULL;
+		DECLARE v_email VARCHAR(255) DEFAULT NULL;
+		DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+		SELECT COUNT(*), MAX(disabledAt), MAX(normalizedEmail) INTO v_found, v_disabled, v_email
+			FROM fxa.accounts WHERE uid = p_uid;
+		IF v_found = 0 THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'no such account';
+		END IF;
+		IF v_disabled IS NULL THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'only a disabled account can be deleted: disable it first';
+		END IF;
+		START TRANSACTION;
+		DELETE FROM fxa.recoveryPhones WHERE uid = p_uid;
+		DELETE FROM fxa_oauth.codes WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.refreshTokens WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.tokens WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.accountActivity WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.accountAuthorizations WHERE uid = p_uid;
+		DELETE FROM fxa_oauth.accountAuthorizations_v2 WHERE uid = p_uid;
+		DELETE FROM fxa_profile.avatar_selected WHERE userId = p_uid;
+		DELETE FROM fxa_profile.avatars WHERE userId = p_uid;
+		DELETE FROM fxa_profile.profile WHERE userId = p_uid;
+		DELETE FROM pushbox.pushboxv1 WHERE user_id IN (LOWER(HEX(p_uid)), HEX(p_uid));
+		COMMIT;
+		CALL fxa.deleteAccount_24(p_uid, 'fxa_admin_requested_account_delete');
+		DELETE FROM ffs.signup_allowlist WHERE entry = LOWER(v_email);
+	END`,
+	// an account that never confirmed its email: the same deletion, the reason the auth
+	// server gives its own cleanup of them. One account per call (the admin UI lists them
+	// and counts those deleted), and only one created more than a day ago whatever the
+	// caller asks: ffs_admin cannot delete fresh accounts with it
+	"DROP PROCEDURE IF EXISTS ffs.delete_unconfirmed",
+	`CREATE PROCEDURE ffs.delete_unconfirmed(p_uid BINARY(16), p_before BIGINT)
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		DECLARE v_found INT DEFAULT 0;
+		DECLARE v_before BIGINT DEFAULT 0;
+		DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+		SET v_before = LEAST(p_before, UNIX_TIMESTAMP() * 1000 - 86400000);
+		SELECT COUNT(*) INTO v_found FROM fxa.accounts a
+			WHERE a.uid = p_uid AND a.emailVerified = 0 AND a.createdAt < v_before
+			AND NOT EXISTS (SELECT 1 FROM fxa.emails e WHERE e.uid = a.uid AND e.isVerified);
+		IF v_found = 0 THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '` + errNotUnconfirmed + `';
+		END IF;
+		START TRANSACTION;
+		DELETE FROM fxa_oauth.codes WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.refreshTokens WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.tokens WHERE userId = p_uid;
+		DELETE FROM fxa_oauth.accountAuthorizations WHERE uid = p_uid;
+		DELETE FROM fxa_oauth.accountAuthorizations_v2 WHERE uid = p_uid;
+		COMMIT;
+		CALL fxa.deleteAccount_24(p_uid, 'fxa_unverified_account_delete');
+	END`,
+	// expired tokens and codes, with Mozilla's own procedure: codes 30 days, tokens and
+	// sessions without a device 4 weeks (a Firefox's session has its device: never). It
+	// looks at one creation time per call, and stops for good at an old session that has
+	// a device: the same rule once more for all of them. Then the OAuth codes (15 minutes,
+	// as the auth server's script) and the security events of the account settings, which
+	// it never prunes. The counts in the last result set (prune_10 sends its own first).
+	// The times are the database's at most, the security events kept a day at least:
+	// ffs_admin cannot empty the tables with a time in the future
+	"DROP PROCEDURE IF EXISTS ffs.prune",
+	`CREATE PROCEDURE ffs.prune(p_now BIGINT, p_events_before BIGINT)
+	MODIFIES SQL DATA
+	SQL SECURITY DEFINER
+	BEGIN
+		DECLARE v_unblock, v_signin, v_reset, v_forgot, v_change, v_sessions INT UNSIGNED DEFAULT 0;
+		DECLARE v_more, v_codes, v_events INT DEFAULT 0;
+		DECLARE v_now, v_events_before, v_cutoff BIGINT DEFAULT 0;
+		DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+		SET v_now = LEAST(p_now, UNIX_TIMESTAMP() * 1000);
+		SET v_events_before = LEAST(p_events_before, v_now - 86400000);
+		SET v_cutoff = v_now - 2419200000;
+		CALL fxa.prune_10(v_now, 2419200000, 2592000000, 100000, v_unblock, v_signin, v_reset, v_forgot, v_change, v_sessions);
+		START TRANSACTION;
+		DELETE u FROM fxa.unverifiedTokens u JOIN fxa.sessionTokens s ON s.tokenId = u.tokenId
+			WHERE s.createdAt < v_cutoff
+			AND NOT EXISTS (SELECT 1 FROM fxa.devices d WHERE d.uid = s.uid AND d.sessionTokenId = s.tokenId);
+		DELETE s FROM fxa.sessionTokens s WHERE s.createdAt < v_cutoff
+			AND NOT EXISTS (SELECT 1 FROM fxa.devices d WHERE d.uid = s.uid AND d.sessionTokenId = s.tokenId);
+		SET v_more = ROW_COUNT();
+		DELETE FROM fxa_oauth.codes WHERE createdAt < NOW() - INTERVAL 15 MINUTE;
+		SET v_codes = ROW_COUNT();
+		DELETE FROM fxa.securityEvents WHERE createdAt < v_events_before;
+		SET v_events = ROW_COUNT();
+		UPDATE fxa.dbMetadata SET value = CAST(v_now AS CHAR) WHERE name = 'prune-last-ran';
+		COMMIT;
+		SELECT v_unblock AS unblock_codes, v_signin AS signin_codes,
+			v_reset + v_forgot + v_change AS account_tokens, v_sessions + v_more AS sessions,
+			v_codes AS oauth_codes, v_events AS security_events;
+	END`,
 	"DROP TRIGGER IF EXISTS fxa.ffs_signup_policy",
 	// the gate in front of the accounts API answers with a proper error first, this
 	// catches whatever reaches the auth server another way
@@ -118,9 +340,9 @@ var fxaPolicySQL = []string{
 	END`,
 }
 
-// The admin UI connects as ffs_admin: it reads the accounts and can only disable
-// them, sign out their devices and sessions, it cannot change anything else in FxA.
-// Revoked first: what earlier versions granted goes (the token ids). The REVOKE must stay first.
+// The admin UI connects as ffs_admin: it reads the accounts, and changes them only
+// through the procedures above (no UPDATE or DELETE on FxA's tables).
+// Revoked first: what earlier versions granted goes (the token ids, the DELETEs). The REVOKE must stay first.
 var fxaAdminGrants = []string{
 	"REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'ffs_admin'@'%'",
 	"GRANT SELECT, INSERT, UPDATE, DELETE ON ffs.settings TO 'ffs_admin'@'%'",
@@ -129,15 +351,97 @@ var fxaAdminGrants = []string{
 	"GRANT SELECT ON ffs.database_sizes TO 'ffs_admin'@'%'",
 	"GRANT SELECT ON ffs.sessions TO 'ffs_admin'@'%'",
 	"GRANT SELECT ON ffs.devices TO 'ffs_admin'@'%'",
+	"GRANT SELECT ON ffs.account_security TO 'ffs_admin'@'%'",
+	"GRANT SELECT ON ffs.emails TO 'ffs_admin'@'%'",
+	"GRANT SELECT ON ffs.schema_levels TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON FUNCTION ffs.signup_allowed TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON PROCEDURE ffs.sign_out_session TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON PROCEDURE ffs.sign_out_device TO 'ffs_admin'@'%'",
-	"GRANT SELECT (uid, email, emailVerified, createdAt, disabledAt), UPDATE (disabledAt) ON fxa.accounts TO 'ffs_admin'@'%'",
-	// disabling an account signs it out everywhere
-	"GRANT SELECT (uid), DELETE ON fxa.sessionTokens TO 'ffs_admin'@'%'",
-	"GRANT SELECT (userId), DELETE ON fxa_oauth.refreshTokens TO 'ffs_admin'@'%'",
-	"GRANT SELECT (userId), DELETE ON fxa_oauth.tokens TO 'ffs_admin'@'%'",
-	"GRANT SELECT (userId), DELETE ON fxa_oauth.codes TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.sign_out_all TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.disable_account TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.enable_account TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.remove_totp TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.remove_recovery_key TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.confirm_email TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.delete_account TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.delete_unconfirmed TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON PROCEDURE ffs.prune TO 'ffs_admin'@'%'",
+	"GRANT SELECT (uid, email, emailVerified, createdAt, disabledAt) ON fxa.accounts TO 'ffs_admin'@'%'",
+}
+
+// fxaObsoleteGrants: what the previous version granted, revoked one by one where
+// REVOKE ALL is not allowed (your own server); errors for grants that are not there
+// (errNoSuchGrant, errNoSuchTableGrant) are fine
+var fxaObsoleteGrants = []string{
+	"REVOKE UPDATE (disabledAt) ON fxa.accounts FROM 'ffs_admin'@'%'",
+	"REVOKE DELETE ON fxa.sessionTokens FROM 'ffs_admin'@'%'",
+	"REVOKE SELECT (uid) ON fxa.sessionTokens FROM 'ffs_admin'@'%'",
+	"REVOKE DELETE ON fxa_oauth.refreshTokens FROM 'ffs_admin'@'%'",
+	"REVOKE SELECT (userId) ON fxa_oauth.refreshTokens FROM 'ffs_admin'@'%'",
+	"REVOKE DELETE ON fxa_oauth.tokens FROM 'ffs_admin'@'%'",
+	"REVOKE SELECT (userId) ON fxa_oauth.tokens FROM 'ffs_admin'@'%'",
+	"REVOKE DELETE ON fxa_oauth.codes FROM 'ffs_admin'@'%'",
+	"REVOKE SELECT (userId) ON fxa_oauth.codes FROM 'ffs_admin'@'%'",
+}
+
+const (
+	errNoSuchGrant      = 1141
+	errNoSuchTableGrant = 1147
+)
+
+// fxaPinnedProcedures: FxA's own procedures that the ones above call. Their names carry
+// a version (_1): a new FxA release may replace one. fxa-init then installs stand-ins
+// that refuse with a clear message (policySQL) rather than stopping: fxa-auth waits
+// for fxa-init, and the accounts must keep working
+var fxaPinnedProcedures = []string{"revokeAccountTokens_1", "deleteTotpToken_4", "deleteRecoveryKey_2", "verifyEmail_9", "deleteAccount_24", "prune_10"}
+
+var procedureCall = regexp.MustCompile(`CALL (ffs|fxa)\.(\w+)\(`)
+
+// policySQL is fxaPolicySQL with the procedures that call a missing one (directly, or
+// through another of ffs) replaced by procedures that only refuse
+func policySQL(missing []string) []string {
+	msg := strings.Join(missing, ", ") + " is missing from the accounts database: see the log of fxa-policy"
+	if len(msg) > 128 { // the limit of MESSAGE_TEXT
+		msg = "procedures of FxA are missing from the accounts database: see the log of fxa-policy"
+	}
+	unusable := map[string]bool{}
+	for _, name := range missing {
+		unusable[name] = true
+	}
+	stmts := make([]string, len(fxaPolicySQL))
+	for i, stmt := range fxaPolicySQL {
+		header, _, _ := strings.Cut(stmt, "\n")
+		if name, ok := strings.CutPrefix(header, "CREATE PROCEDURE "); ok {
+			name, _, _ = strings.Cut(name, "(")
+			for _, call := range procedureCall.FindAllStringSubmatch(stmt, -1) {
+				if unusable[call[1]+"."+call[2]] {
+					unusable[name] = true
+					stmt = header + `
+	SQL SECURITY DEFINER
+	SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '` + msg + "'"
+					break
+				}
+			}
+		}
+		stmts[i] = stmt
+	}
+	return stmts
+}
+
+// missingProcedures lists the pinned procedures not in the accounts database
+func missingProcedures(ctx context.Context, db *sql.DB) ([]string, error) {
+	var missing []string
+	for _, name := range fxaPinnedProcedures {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.ROUTINES
+			WHERE ROUTINE_SCHEMA = 'fxa' AND ROUTINE_NAME = ? AND ROUTINE_TYPE = 'PROCEDURE'`, name).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			missing = append(missing, "fxa."+name)
+		}
+	}
+	return missing, nil
 }
 
 func fxaInit(ctx context.Context) error {
@@ -178,10 +482,30 @@ func fxaInit(ctx context.Context) error {
 		}
 	}
 
-	for _, stmt := range fxaPolicySQL {
+	// information_schema lists only the routines this user may run: without EXECUTE on
+	// fxa.* (your own server, DATABASES.md) they look missing too
+	missing, err := missingProcedures(ctx, db)
+	if err != nil {
+		return err
+	}
+	stmts := fxaPolicySQL
+	if len(missing) > 0 {
+		log.Printf("WARNING: %s missing from the accounts database (a newer FxA release renamed it, or %s has no EXECUTE on fxa.*, DATABASES.md): what the admin UI does with it answers with an error (ADMIN.md)",
+			strings.Join(missing, ", "), user)
+		stmts = policySQL(missing)
+	}
+
+	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("%s: %w", strings.SplitN(stmt, "\n", 2)[0], err)
 		}
+	}
+	view, err := schemaLevelsView(ctx, db)
+	if err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, view); err != nil {
+		return fmt.Errorf("ffs.schema_levels: %w", err)
 	}
 
 	if password := env("FXA_ADMIN_DB_PASSWORD", ""); password != "" {
@@ -197,6 +521,11 @@ func fxaInit(ctx context.Context) error {
 			// Nothing earlier versions granted to revoke there, and REVOKE ALL needs it too
 			log.Printf("ffs_admin: created by the administrator of the database server, granting")
 			grants = grants[1:]
+			for _, stmt := range fxaObsoleteGrants {
+				if _, err := db.ExecContext(ctx, stmt); err != nil && !(errors.As(err, &myErr) && (myErr.Number == errNoSuchGrant || myErr.Number == errNoSuchTableGrant)) {
+					return fmt.Errorf("%s: %w", stmt, err)
+				}
+			}
 		case err != nil:
 			return fmt.Errorf("creating ffs_admin: %w", err)
 		default:
@@ -217,6 +546,54 @@ func fxaInit(ctx context.Context) error {
 	}
 	log.Printf("sign-ups: %s", describePolicy(policy))
 	return nil
+}
+
+// schemaDatabases: the accounts databases whose migrations keep a schema-patch-level
+var schemaDatabases = []string{"fxa", "fxa_oauth", "fxa_profile", "pushbox"}
+
+// schemaLevelsView: ffs.schema_levels, the schema-patch-level (and prune-last-ran, when
+// the auth server last pruned old tokens) of the accounts databases, from the dbMetadata
+// tables that exist: a release without one must not stop fxa-policy
+func schemaLevelsView(ctx context.Context, db *sql.DB) (string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT table_schema FROM information_schema.tables
+		WHERE table_name = 'dbMetadata' AND table_schema IN ('fxa', 'fxa_oauth', 'fxa_profile', 'pushbox') ORDER BY table_schema`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var found []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return "", err
+		}
+		found = append(found, name)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return schemaLevelsSQL(found), nil
+}
+
+func schemaLevelsSQL(databases []string) string {
+	var selects []string
+	for _, name := range databases {
+		known := false
+		for _, d := range schemaDatabases {
+			known = known || d == name
+		}
+		if !known {
+			continue
+		}
+		// one collation for the UNION: the databases may have different defaults
+		selects = append(selects, fmt.Sprintf(`SELECT '%s' AS db, CONVERT(name USING utf8mb4) COLLATE utf8mb4_bin AS name,
+			CONVERT(value USING utf8mb4) COLLATE utf8mb4_bin AS value FROM %s.dbMetadata
+			WHERE name IN ('schema-patch-level', 'prune-last-ran')`, name, name))
+	}
+	if len(selects) == 0 {
+		selects = []string{"SELECT 'none' AS db, 'none' AS name, 'none' AS value FROM DUAL WHERE FALSE"}
+	}
+	return "CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.schema_levels AS " + strings.Join(selects, "\nUNION ALL ")
 }
 
 // applyEnvPolicy sets FXA_SIGNUPS and FXA_SIGNUP_ALLOWLIST from .env when they changed
@@ -246,7 +623,7 @@ func applyEnvPolicy(ctx context.Context, db *sql.DB) (*SignupPolicy, error) {
 		current := &FxaDB{db: db}
 		return current.Policy(ctx)
 	}
-	return policy, setPolicy(ctx, db, policy, snapshot)
+	return policy, setPolicy(ctx, db, policy, nil, snapshot)
 }
 
 func describePolicy(p *SignupPolicy) string {

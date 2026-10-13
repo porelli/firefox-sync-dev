@@ -29,6 +29,8 @@ Environment="CORS_ORIGIN=%FXA_CONTENT_URL%"
 Environment="CLIENT_ADDRESS_DEPTH=%FXA_CLIENT_ADDRESS_DEPTH%"
 # see FXA_ACCESS_TOKEN_LIFETIME in .env-example
 Environment="FXA_EXPIRATION_ACCESS_TOKEN=%FXA_ACCESS_TOKEN_LIFETIME%"
+# when sessions were last used (the admin UI shows it): for every account, Mozilla samples 30%
+Environment="LASTACCESSTIME_UPDATES_SAMPLE_RATE=1"
 # the OAuth client of the admin UI (config/fxa/oauth-clients.js), with ADMIN_FXA_CLIENT_ID
 Environment="ADMIN_FXA_CLIENT_ID=%ADMIN_FXA_CLIENT_ID%"
 Environment="ADMIN_FXA_CLIENT_SECRET=%ADMIN_FXA_CLIENT_SECRET%"

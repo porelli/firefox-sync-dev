@@ -148,7 +148,7 @@ def test_sign_up_and_first_sync(account):
     assert storage(token, "PUT", "/storage/meta/global", meta).status_code == 200
     bookmarks = [{"id": f"bookmark{i:03d}", "payload": json.dumps({"title": f"b{i}"})} for i in range(3)]
     assert len(storage(token, "POST", "/storage/bookmarks", bookmarks).json()["success"]) == 3
-    account["uid"] = token["uid"]
+    account["uid"], account["key_id"] = token["uid"], key_id
 
 
 def test_scoped_keys_for_sync(account):
@@ -194,3 +194,48 @@ def test_repeated_wrong_passwords_are_blocked():
             return
         assert res.status_code == 400, res.text
     raise AssertionError("10 wrong passwords in a row were not rate limited")
+
+
+def admin_confirm(path, **form):
+    """Signs in to the admin UI with its password, submits the form of a confirm page"""
+    import re
+    admin = os.environ["ADMIN_URL"].rstrip("/")
+    http = requests.Session()
+    res = http.post(f"{admin}/login", data={"password": os.environ["ADMIN_PASSWORD"]}, timeout=30)
+    assert res.status_code == 200 and "Sign out" in res.text, res.text[:500]
+    page = http.get(f"{admin}{path}", timeout=30).text
+    form_html = page.split('id="confirm">')[1]
+    fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form_html))
+    action = re.search(r'<form method="post" action="([^"]+)" id="confirm">', page).group(1)
+    res = http.post(f"{admin}{action}", data={**fields, **form}, timeout=60)
+    assert res.status_code == 200 and 'class="failed"' not in res.text, res.text[:3000]
+    return res.text
+
+
+@pytest.mark.skipif(not os.environ.get("ADMIN_URL"), reason="no admin UI")
+def test_sync_again_after_a_reset(account):
+    # the admin resets the Sync data: the next sync finds the server empty and uploads again
+    # (the keys of the first sync: the key fetch token is single use, and the wrong
+    # passwords above block new sign-ins)
+    session, key_id = account["session"], account["key_id"]
+    uid = session.uid
+    done = admin_confirm(f"/users/{uid}/reset-sync")
+    assert "Reset the Sync data of" in done, done[:3000]
+    bearer = authorize(session)
+    res = requests.get(f"{SYNC}/1.0/sync/1.5", headers={"Authorization": f"Bearer {bearer}", "X-KeyID": key_id}, timeout=30)
+    assert res.status_code == 200, res.text
+    token = res.json()
+    assert token["uid"] == account["uid"] and storage(token, "GET", "/info/collections").json() == {}
+    assert storage(token, "GET", "/storage/meta/global").status_code == 404
+    meta = {"id": "global", "payload": json.dumps({"syncID": "mnopqrstuvwx", "storageVersion": 5})}
+    assert storage(token, "PUT", "/storage/meta/global", meta).status_code == 200
+    # and with its max users slot freed: a new tokenserver row, a working token
+    done = admin_confirm(f"/users/{uid}/reset-sync", free_slot="1")
+    assert "freed its max users slot" in done, done[:3000]
+    bearer = authorize(session)
+    res = requests.get(f"{SYNC}/1.0/sync/1.5", headers={"Authorization": f"Bearer {bearer}", "X-KeyID": key_id}, timeout=30)
+    assert res.status_code == 200, res.text
+    fresh = res.json()
+    assert fresh["uid"] != account["uid"] and storage(fresh, "GET", "/info/collections").json() == {}
+    bookmarks = [{"id": "bookmark000", "payload": json.dumps({"title": "again"})}]
+    assert len(storage(fresh, "POST", "/storage/bookmarks", bookmarks).json()["success"]) == 1

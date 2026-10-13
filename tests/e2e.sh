@@ -3,7 +3,9 @@
 # else running on the host: own compose project, loopback-only port, own volumes.
 #
 # Usage: tests/e2e.sh <mysql|postgres>
-# Runs with the admin UI (COMPOSE_PROFILES=admin), with Mozilla's accounts (mock): Sync part only.
+# Runs with the admin UI and the backups (COMPOSE_PROFILES=admin,backup, BACKUP_KEEP=1; with
+# EXTERNAL_DB=1 the admin UI only, your own backups record their runs), with Mozilla's accounts
+# (mock): Sync part only.
 # The admin UI signs in with its password, Dex (OpenID Connect) and a trusted header.
 # Environment:
 #   REPOSITORY      image repository (default: ghcr.io/porelli/firefox-sync)
@@ -43,6 +45,9 @@ export TEST_SUBNET=${TEST_SUBNET:-10.231.${NET}.0/24}
 export TEST_TRUSTED=${TEST_SUBNET%.0/24}.128/25 TEST_GATEWAY=${TEST_SUBNET%.0/24}.1
 
 rnd() { tr -dc '[:alnum:]' < /dev/urandom | head -c 24; }
+# the backup service is for the database containers: your own server has its own backups
+PROFILES=admin,backup
+[ -n "${EXTERNAL_DB:-}" ] && PROFILES=admin
 MASTER_SECRET=$(rnd)
 # upstream's tokenserver tests expect the stage FxA email domain, the mock FxA
 # server and the metrics hash secret to be the master secret
@@ -54,7 +59,8 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://ffs-e2e.invalid|" \
     -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:${PORT}|" \
     -e "s|^MAX_USERS=.*|MAX_USERS=1|" \
-    -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|" \
+    -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=${PROFILES}|" \
+    -e "s|^BACKUP_KEEP=.*|BACKUP_KEEP=1|" \
     -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:$((PORT + 20))|" \
     -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
     -e "s|^SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-${BACKEND}|" \
@@ -63,6 +69,7 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api-accounts.stage.mozaws.net|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://mock_fxa:6000|" \
+    -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" \
     -e "/^COMPOSE_FILE=/d" \
     -e "s|<REPLACE_WITH_SOMETHING_SECURE>|$(rnd)|" \
     -e "s|<REPLACE_WITH_[A-Z_]*>|placeholder.invalid|g" \
@@ -354,9 +361,11 @@ echo "== client flow through the tokenserver (mock FxA), MAX_USERS=1"
 pytest_in_app /tests/test_client_flow.py
 check "$?" 0 "client flow tests"
 
-echo "== admin UI drops what is older than ADMIN_RETENTION_DAYS"
+echo "== admin UI drops what is older than ADMIN_RETENTION_DAYS, the audit trail after ADMIN_AUDIT_RETENTION_DAYS"
 sql "INSERT INTO ffs_events (at, kind, detail) VALUES (1, 'test', 'old');" > /dev/null
 sql "INSERT INTO ffs_metrics VALUES (60000, 'old.metric', 1, 0);" > /dev/null
+days_ago() { echo $(( ($(date +%s) - $1 * 86400) * 1000 )); }
+sql "INSERT INTO ffs_events (at, kind, detail) VALUES ($(days_ago 60), 'admin', 'audit kept'), ($(days_ago 400), 'admin', 'audit old'), ($(days_ago 60), 'health', 'health old');" > /dev/null
 # pruned on the first flush after the start (METRICS_FLUSH_SECONDS=5)
 dc restart ffs-admin > /dev/null 2>&1
 for _ in $(seq 1 30); do
@@ -365,8 +374,51 @@ for _ in $(seq 1 30); do
 done
 check "$(sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'test';")" 0 "old events pruned"
 check "$(sql "SELECT COUNT(*) FROM ffs_metrics WHERE name = 'old.metric';")" 0 "old metrics pruned"
+check "$(sql "SELECT detail FROM ffs_events WHERE detail IN ('audit kept', 'audit old', 'health old');")" "audit kept" "admin events of 60 days kept (365), others pruned (30)"
+sql "DELETE FROM ffs_events WHERE detail = 'audit kept';" > /dev/null
 # the Sync server restarts with the admin UI (restart: true), for the metrics
 check "$(hb)" 200 "/__heartbeat__ after the admin UI restart"
+
+echo "== backups"
+backups_of() { sql "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND $1;"; }
+# the admin UI sees a change within HEALTH_CHECK_SECONDS (5): its event, alerted
+backup_event() {
+  for _ in $(seq 1 30); do
+    [ "$(sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'backup' AND detail LIKE '$1';")" -gt 0 ] && { echo yes; return; }
+    sleep 1
+  done
+}
+if [ -z "${EXTDB}" ]; then
+  backup_run() { dc exec -T "$@" backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1; }
+  good=$(backups_of "ok = 1")
+  backup_run
+  check "$?" 0 "a backup run (COMPOSE_PROFILES=backup)"
+  # a second one, a second later: BACKUP_KEEP=1 keeps only it. What a killed run left goes
+  dc exec -T backup sh -c 'mkdir -p /backups/sync/.20200101T000000Z.partial'
+  sleep 1.1
+  backup_run
+  check "$?" 0 "another backup run"
+  check "$(dc exec -T backup sh -c 'ls -a /backups/sync | grep -c partial')" 0 "the leftover of a killed run removed"
+  check "$(backups_of "ok = 1 AND bytes > 0 AND location LIKE '/backups/sync/%'")" $((good + 2)) "each run recorded in ffs_backups, with its size and place"
+  check "$(dc exec -T backup sh -c 'ls /backups/sync | wc -l')" 1 "BACKUP_KEEP=1: older copies removed"
+  [ "${BACKEND}" = mysql ] && expected="${MARIADB_SYNCSTORAGE_DATABASE}.sql.gz ${MARIADB_TOKENSERVER_DATABASE}.sql.gz" || expected="${POSTGRES_DATABASE}.sql.gz"
+  check "$(dc exec -T backup sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" && basename "$f"; done' | LC_ALL=C sort | paste -sd' ')" "${expected}" "the dumps pass gzip -t"
+  check "$(dc exec -T backup sh -c 'stat -c %a /backups/sync/*/*.sql.gz' | sort -u)" 600 "the dumps are for root only (0600)"
+  check "$(dc exec -T backup sh -c 'gunzip -c /backups/sync/*/*.sql.gz' | grep -cE 'CREATE TABLE [`"]?(public\.)?users[`"]? ')" 1 "the dump has the tokenserver's users table"
+  # a run that fails (nowhere to write): recorded, alerted, nothing left
+  backup_run -e BACKUP_DIR=/proc/ffs-none
+  check "$?" 1 "a failed backup run exits with an error"
+  check "$(backups_of "ok = 0 AND error LIKE 'cannot write to /proc/ffs-none%'")" 1 "the failed run in ffs_backups"
+  check "$(backup_event 'The backup of the Sync databases failed on %')" yes "admin UI: event and alert for the failed backup"
+  backup_run
+  check "$(backup_event 'The backup of the Sync databases works again%')" yes "admin UI: event when the backups work again"
+  dc logs backup 2>&1 | grep -m1 'every day at'
+else
+  # your own backups: the INSERT of ADMIN.md#backups, as the tokenserver user
+  sql "INSERT INTO ffs_backups (scope, started, finished, ok, bytes, location) VALUES ('sync', $(date +%s)000, $(date +%s)000, 1, 123456, 'my own backup');"
+  check "$?" 0 "the INSERT of your own backups (EXTERNAL_DB)"
+  check "$(backups_of "ok = 1 AND location = 'my own backup'")" 1 "your own backup in ffs_backups"
+fi
 
 echo "== admin UI, Sync only (Mozilla's accounts)"
 pytest_in_app /tests/test_admin_sync.py
@@ -420,6 +472,15 @@ echo "== admin UI"
 check "$(admin_healthy)" healthy "admin UI container healthcheck"
 check "$(admin_errors | wc -l)" 0 "no background errors in the admin UI logs"
 admin_errors | tail -5
+
+echo "== the Sync server without the admin UI (ADMIN_UI=n: no ffs-admin to resolve)"
+dc stop ffs-admin > /dev/null 2>&1 && dc rm -f ffs-admin > /dev/null 2>&1
+dc up -d --no-deps --force-recreate syncstorage > /dev/null 2>&1
+check "$(hb)" 200 "/__heartbeat__ without the admin UI"
+check "$(dc logs syncstorage 2>&1 | grep -c 'Sending metrics to the admin UI')" 0 "no metrics host without the admin UI"
+sql "DELETE FROM users;" > /dev/null
+pytest_in_app "/tests/test_client_flow.py -k first_sign_in"
+check "$?" 0 "a first sign-in and sync without the admin UI"
 
 [ ${FAILED} = 0 ] && echo "RESULT ${BACKEND}: all checks passed" || echo "RESULT ${BACKEND}: some checks FAILED"
 exit ${FAILED}

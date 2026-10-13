@@ -420,6 +420,8 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     echo "Setting up Podman Quadlets..."
     
     QUADLET_DIR="${QUADLET_DIR:-${HOME}/.config/containers/systemd}"
+    # timers are plain systemd units, not Quadlets
+    SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user}"
 
     # load the generated values (database names, users, FxA endpoints, etc.); not with
     # `source`: unused sections keep placeholders like <REPLACE_WITH_...>, not shell
@@ -433,7 +435,7 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         esac
         export "${key}=${value}"
     done < ${SCRIPT_DIR}/.env
-    mkdir -p "${QUADLET_DIR}"
+    mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
 
     # the database containers: the .env names (syncstorage_db) are compose's, here the
     # containers are reached by their names. Your own server: none of them
@@ -484,16 +486,18 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     fi
     echo "Processing quadlet files..."
     for source in "${QUADLET_SOURCES[@]}"; do
-        for file in "${source}"/*.{network,volume,container}; do
+        for file in "${source}"/*.{network,volume,container,timer}; do
             [ -f "${file}" ] || continue
             filename=$(basename "${file}")
+            target_dir=${QUADLET_DIR}
+            [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
             [ "${FXA_DB:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
             if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
                 # left from a setup with the database containers (the volume is kept)
                 rm -f "${QUADLET_DIR}/${filename}"
                 continue
             fi
-            render_quadlet "${file}" | drop_deps > "${QUADLET_DIR}/${filename}"
+            render_quadlet "${file}" | drop_deps > "${target_dir}/${filename}"
             [ "${PIPESTATUS[0]}" = 0 ] || exit 1
             echo "  ✓ ${filename}"
         done
@@ -570,6 +574,7 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see FXA.md)"
     fi
     echo "  2. (Optional) loginctl enable-linger \$USER"
+    echo "  3. (Optional) nightly backups: systemctl --user enable --now firefox-sync-backup.timer (ADMIN.md#backups)"
     echo ""
     echo "To check status:"
     echo "  systemctl --user status firefox-sync-syncstorage.service"
@@ -587,12 +592,14 @@ elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     echo "  1. systemctl --user enable --now podman.socket"
     echo "  2. export DOCKER_HOST=unix://\${XDG_RUNTIME_DIR}/podman/podman.sock"
     echo "  3. docker compose ${COMPOSE_FILES} up -d"
+    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (ADMIN.md#backups)"
     echo ""
     echo "See PODMAN.md for detailed instructions (podman-compose is not supported)"
 else
     echo "Next steps:"
     echo "  1. docker compose up -d"
     [ "${SELF_HOST_FXA}" = "yes" ] && echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see FXA.md)"
+    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (ADMIN.md#backups)"
     echo "  2. (Optional) Install systemd service:"
     echo "     sudo cp config/systemd/syncstorage-rs.service /etc/systemd/system/"
     echo "     sudo systemctl enable --now syncstorage-rs.service"

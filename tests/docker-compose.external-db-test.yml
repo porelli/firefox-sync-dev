@@ -11,6 +11,8 @@ services:
     networks: [default, extdb]
   ffs-admin:
     networks: [default, extdb]
+  backup:
+    networks: [default, extdb]
 
 networks:
   extdb:

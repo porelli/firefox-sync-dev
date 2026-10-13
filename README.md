@@ -93,6 +93,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - **Docker**: See [firefox-sync.service](/config/systemd/syncstorage-rs-example.service)
     - **Podman**: See [PODMAN.md](PODMAN.md#method-1-using-quadlets) for Quadlet setup (recommended)
     - All containers are set to restart automatically
+1. OPTIONAL: nightly backups of the databases into a volume, watched by the admin UI: add `backup` to `COMPOSE_PROFILES` in `.env` (Quadlets: `systemctl --user enable --now firefox-sync-backup.timer`), and copy them off the host with `.env`, see [ADMIN.md](ADMIN.md#backups)
 
 ### Podman with Quadlets (Recommended for Podman)
 
@@ -119,6 +120,7 @@ All can be run locally against any published tag, e.g. `TAG=latest tests/e2e.sh 
 
 The below examples assume your server respond to this domain: `firefox-sync.example.com`.
 With self-hosted Mozilla accounts, see [FXA.md](FXA.md#setup) instead: Firefox is pointed to your accounts server, which tells it where the sync server is.
+With the [admin UI](ADMIN.md), its Connect a device page shows the steps below with your server's values.
 
 ### Desktop
 

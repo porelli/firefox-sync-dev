@@ -35,13 +35,14 @@ BOOKMARK_TITLE = "Self-hosted FxA test bookmark"
 CODE_INPUT = "input[autocomplete=one-time-code], input[name=code], input[inputmode=numeric]"
 
 
-def start_firefox():
+def start_firefox(**extra_prefs):
     profile = tempfile.mkdtemp(prefix="ffs-firefox-")
     prefs = {
         "identity.fxaccounts.autoconfig.uri": CONTENT,
         "browser.aboutwelcome.enabled": False,
         "datareporting.policy.dataSubmissionPolicyBypassNotification": True,
         "identity.fxaccounts.loglevel": "Debug",
+        **extra_prefs,
     }
     with open(os.path.join(profile, "user.js"), "w") as f:
         for k, v in prefs.items():
@@ -211,9 +212,9 @@ def test_admin_shows_the_devices_and_the_data(first_device):
     assert EMAIL in page, page[:1000]
     # errors of the queries (Devices: ..., Sync storage: ...)
     assert 'class="failed"' not in page, re.findall(r'class="failed"[^>]*>([^<]*)', page)
-    devices = page.split('<table id="devices">')[1].split("</table>")[0]
+    devices = page.split('<table id="devices"')[1].split("</table>")[0]
     assert devices.count("<tr><td>") >= 2 and "Firefox" in devices, devices
-    collections = page.split('<table id="collections">')[1].split("</table>")[0]
+    collections = page.split('<table id="collections"')[1].split("</table>")[0]
     assert "<td>bookmarks</td>" in collections, collections
 
 
@@ -266,5 +267,125 @@ def test_refused_sign_up_shows_an_error():
             if buttons:
                 buttons[0].click()
         assert "blocked" in text.lower(), text[:600]
+    finally:
+        driver.quit()
+
+
+def admin_browser(**prefs):
+    """A Firefox signed in to the admin UI with the password, or None without it"""
+    if not os.environ.get("ADMIN_PASSWORD"):
+        return None, None
+    admin = os.environ.get("ADMIN_URL", "https://admin.fxa.test").rstrip("/")
+    driver = start_firefox(**prefs)
+    driver.get(f"{admin}/login")
+    driver.find_element(By.ID, "password").send_keys(os.environ["ADMIN_PASSWORD"])
+    driver.find_element(By.CSS_SELECTOR, "form[action='/login'] button[type=submit]").click()
+    for _ in range(20):
+        if driver.current_url == f"{admin}/" and "Sign out" in driver.page_source:
+            return driver, admin
+        time.sleep(0.5)
+    driver.quit()
+    raise AssertionError(f"admin sign-in failed: {driver.current_url}")
+
+
+def test_admin_fits_a_phone():
+    # a window is at least 500 px wide: zoomed in to 139%, the page gets 360 CSS pixels,
+    # like most phones (the media queries follow the zoom)
+    driver, admin = admin_browser()
+    if not driver:
+        pytest.skip("no admin UI")
+    try:
+        driver.set_window_size(500, 1028)
+        for path in ("/", "/activity", "/security"):
+            driver.get(f"{admin}{path}")
+            with driver.context(driver.CONTEXT_CHROME):
+                driver.execute_script("gBrowser.selectedBrowser.fullZoom = 500 / 360")
+            time.sleep(0.5)
+            width = driver.execute_script("return window.innerWidth")
+            assert 350 <= width <= 370, f"the window is {width} CSS px wide"
+            # the page itself does not scroll sideways, the wide tables do in their box
+            scroll = driver.execute_script("return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth)")
+            # (what sticks out, for the error)
+            widest = driver.execute_script("""return [...document.querySelectorAll('body *')].map(e => [e.getBoundingClientRect().right, e.tagName + '.' + e.className])
+                .sort((x, y) => y[0] - x[0]).slice(0, 3)""")
+            assert scroll <= width, (path, scroll, width, widest)
+            # the stylesheet applies (style-src 'self' of the CSP): buttons tall enough to tap
+            heights = driver.execute_script("return [...document.querySelectorAll('main button, header nav a')].map(e => e.getBoundingClientRect().height)")
+            assert heights and min(heights) >= 44, (path, heights)
+            if path == "/":
+                accounts = driver.find_element(By.ID, "accounts")
+                assert accounts.find_element(By.XPATH, "..").get_attribute("class") == "scroll"
+    finally:
+        driver.quit()
+
+
+def test_admin_disables_through_the_confirm_page(first_device):
+    # last of the tests of this account: it gets signed out, then enabled again
+    driver, admin = admin_browser()
+    if not driver:
+        pytest.skip("no admin UI")
+    try:
+        uid = signed_in_user(first_device)["uid"]
+        # the account through the search of the list (50 a page)
+        driver.find_element(By.ID, "find-q").send_keys(EMAIL)
+        driver.find_element(By.CSS_SELECTOR, "#find button[type=submit]").click()
+        time.sleep(1)
+        driver.find_element(By.CSS_SELECTOR, f'tr[data-email="{EMAIL}"] a[href="/accounts/{uid}/disable"]').click()
+        assert driver.current_url == f"{admin}/accounts/{uid}/disable"
+        page = driver.page_source
+        assert f"Disable {EMAIL}?" in page and "Firefox" in page.split('id="confirm-devices"')[1], page[:3000]
+        # the CSP blocks inline styles and scripts: the page is styled by the stylesheet only
+        color = driver.execute_script("return getComputedStyle(document.querySelector('#confirm button.danger')).backgroundColor")
+        assert color == "rgb(197, 0, 66)", color
+        assert driver.find_element(By.ID, "cancel").get_attribute("href") == f"{admin}/users/{uid}"
+        driver.find_element(By.ID, "reason").send_keys("browser test")
+        driver.find_element(By.CSS_SELECTOR, "#confirm button[type=submit]").click()
+        time.sleep(1)
+        assert driver.current_url == f"{admin}/users/{uid}", driver.current_url
+        message = driver.find_element(By.CSS_SELECTOR, "p.message[role=status]").text
+        assert message.startswith(f"Disabled {EMAIL} (uid {uid[:8]})"), message
+        assert "disabled" in driver.find_element(By.TAG_NAME, "main").text
+        # enabling is one click
+        driver.find_element(By.CSS_SELECTOR, f'form[action="/accounts/{uid}/enable"] button').click()
+        time.sleep(1)
+        assert driver.find_element(By.CSS_SELECTOR, "p.message[role=status]").text.startswith(f"Enabled {EMAIL}")
+    finally:
+        driver.quit()
+
+
+def test_invite_link_fills_in_the_email():
+    # the link of an invitation (ADMIN.md): the accounts pages open with the email filled in
+    if not os.environ.get("ADMIN_PASSWORD"):
+        pytest.skip("no admin UI")
+    admin = os.environ.get("ADMIN_URL", "https://admin.fxa.test").rstrip("/")
+    http = requests.Session()
+    http.verify = "/caddy-ca/root.crt"
+    http.post(f"{admin}/login", data={"password": os.environ["ADMIN_PASSWORD"]}, timeout=30)
+    csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', http.get(f"{admin}/", timeout=30).text).group(1)
+    address = f"ffs-invite-{uuid.uuid4().hex[:8]}@example.com"
+    res = http.post(f"{admin}/accounts/invite", data={"csrf": csrf, "email": address}, timeout=30)
+    assert f"Invited {address}" in res.text, res.text[:2000]
+    link = None
+    for _ in range(30):
+        found = requests.get(f"{MAILPIT}/api/v1/search", params={"query": f"to:{address}"}, timeout=10).json().get("messages", [])
+        if found:
+            text = requests.get(f"{MAILPIT}/api/v1/message/{found[0]['ID']}", timeout=10).json()["Text"]
+            link = re.search(r"https://\S+/\?email=\S+", text).group(0)
+            break
+        time.sleep(1)
+    assert link and link.startswith(CONTENT), link
+    driver = start_firefox()
+    try:
+        driver.get(link)
+        seen = ""
+        for _ in range(20):
+            time.sleep(1.5)
+            values = [e.get_attribute("value") for e in visible(driver, "input[type=email]")]
+            seen = " ".join(values) + " " + driver.execute_script("return document.body.innerText")
+            if address in seen:
+                break
+        # filled in the email field, or shown on the sign-up page it moves on to
+        assert address in seen, (driver.current_url.split("?")[0], seen[:600])
+        print(f"invite link: {driver.current_url.split('?')[0]}, email in a field: {address in values}")
     finally:
         driver.quit()

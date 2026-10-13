@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,30 +38,56 @@ func (a *App) userPage(w http.ResponseWriter, r *http.Request, s *session) {
 		}
 		data["Collections"], data["Total"] = collections, total
 	}
+	// every row the tokenserver has for the account, what each stores, what looks wrong
+	if rows, flags, err := a.syncRows(ctx, uid); err != nil {
+		errs = append(errs, "Sync rows: "+err.Error())
+	} else {
+		data["Rows"], data["Flags"], data["Storage"] = rows, flags, a.storage != nil
+	}
 
 	if a.fxa != nil {
 		data["FxA"] = true
-		accounts, err := a.fxa.Accounts(ctx)
-		if err != nil {
-			errs = append(errs, "Accounts: "+err.Error())
-		}
-		for _, acc := range accounts {
-			if acc.UID == uid {
-				acc := acc
-				data["Account"] = &acc
+		var acc *FxaAccount
+		// not an account id (404 below): nothing to ask
+		if _, err := accountID(uid); err == nil {
+			if acc, err = a.fxa.Account(ctx, uid); err != nil {
+				errs = append(errs, "Accounts: "+err.Error())
 			}
 		}
-		if data["Account"] != nil {
+		if acc != nil {
+			data["Account"], data["ContentURL"] = acc, a.contentURL
 			devices, sessions, err := a.fxa.Devices(ctx, uid)
 			if err != nil {
 				errs = append(errs, "Devices: "+err.Error())
 			}
+			staleBefore := time.Now().AddDate(0, 0, -a.staleDays)
+			for i := range devices {
+				devices[i].Inactive = latest(devices[i].LastUsed, devices[i].CreatedAt).Before(staleBefore)
+			}
+			data["StaleDays"] = a.staleDays
 			data["Devices"], data["Sessions"] = devices, sessions
+			if data["Security"], err = a.fxa.Security(ctx, uid); err != nil {
+				errs = append(errs, "Sign-in security: "+err.Error())
+			}
+			if data["Emails"], err = a.fxa.Emails(ctx, uid); err != nil {
+				errs = append(errs, "Emails: "+err.Error())
+			}
+			blocks, complete, err := a.fxa.BlocksOf(ctx, []FxaAccount{*acc})
+			if err != nil {
+				errs = append(errs, "Rate limits: "+err.Error())
+			} else if !complete {
+				errs = append(errs, tooManyBlocks())
+			}
+			data["Blocks"] = blocks
 		}
 	}
 	if data["Account"] == nil && user == nil && len(errs) == 0 {
 		http.NotFound(w, r)
 		return
+	}
+	data["MaxNote"] = maxNote
+	if data["Note"], err = a.sync.Note(ctx, uid); err != nil {
+		errs = append(errs, "Note: "+err.Error())
 	}
 	data["Errors"] = errs
 	a.render(w, "user.html", data)
@@ -116,24 +143,69 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	data["Gauges"] = gaugeCharts
 
-	events, err := a.rec.Events(ctx, since, 300)
-	if err != nil {
-		errs = append(errs, "Event log: "+err.Error())
+	data["Events"], data["Older"], data["Kind"], data["Q"], data["Paged"] = a.eventPage(r, &errs)
+	data["Kinds"] = eventKinds
+	if jobs, err := a.sync.Jobs(ctx); err != nil {
+		errs = append(errs, "Maintenance: "+err.Error())
+	} else {
+		data["Jobs"] = jobList(a.enabledJobs(), jobs)
 	}
-	if a.fxa != nil {
-		recent, err := a.fxa.Recent(ctx, since)
+	data["Errors"] = errs
+	a.render(w, "activity.html", data)
+}
+
+// the kinds of the event filter: those of the log, then those of the accounts database
+var eventKinds = []string{"admin", "sign-in", "sign-up refused", "health", "update", "blocked", "maintenance", "sign-up burst", "backup", "attention", "sign-up", "new device"}
+
+const eventsPerPage = 100
+
+// eventPage: the events of the log and of the accounts database (sign-ups, new
+// devices), newest first, before ?before= (milliseconds), of ?kind=, containing ?q=;
+// older is where the next page starts (0: no more)
+func (a *App) eventPage(r *http.Request, errs *[]string) (events []Event, older int64, kind, q string, paged bool) {
+	ctx := r.Context()
+	query := r.URL.Query()
+	kind, q = query.Get("kind"), oneLine(strings.TrimSpace(query.Get("q")), 100)
+	before := time.Now().Add(time.Minute)
+	if ms, err := strconv.ParseInt(query.Get("before"), 10, 64); err == nil && ms > 0 {
+		before, paged = time.UnixMilli(ms), true
+	}
+	fromFxa := a.fxa != nil && (kind == "" || kind == "sign-up" || kind == "new device")
+	// the window of this page: down to the oldest of a full page of the log, the
+	// accounts' events in it
+	var since time.Time
+	if kind != "sign-up" && kind != "new device" {
+		logged, err := a.rec.Events(ctx, before, kind, q, eventsPerPage)
 		if err != nil {
-			errs = append(errs, "Accounts activity: "+err.Error())
+			*errs = append(*errs, "Event log: "+err.Error())
+		}
+		if len(logged) == eventsPerPage {
+			since = logged[len(logged)-1].At
+		}
+		events = logged
+	}
+	if fromFxa {
+		recent, err := a.fxa.Recent(ctx, since, before, kind, q, eventsPerPage)
+		if err != nil {
+			*errs = append(*errs, "Accounts activity: "+err.Error())
 		}
 		events = append(events, recent...)
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].At.After(events[j].At) })
-	if len(events) > 300 {
-		events = events[:300]
+	if len(events) >= eventsPerPage {
+		events = events[:eventsPerPage]
+		older = events[len(events)-1].At.UnixMilli()
+		// the cursor is a millisecond: the events of the last one go to the next page
+		// whole, those past the cut would be on neither (unless the page is one ms)
+		n := len(events)
+		for n > 0 && events[n-1].At.UnixMilli() == older {
+			n--
+		}
+		if n > 0 {
+			events, older = events[:n], older+1
+		}
 	}
-	data["Events"] = events
-	data["Errors"] = errs
-	a.render(w, "activity.html", data)
+	return events, older, kind, q, paged
 }
 
 // barChart draws the points as an SVG bar chart (numbers only, nothing from users)
@@ -173,21 +245,15 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%d B", n)
 }
 
-func when(t time.Time) string {
-	if t.IsZero() {
-		return "never"
-	}
-	return t.UTC().Format("2006-01-02 15:04")
-}
-
 func (a *App) signOutDevice(w http.ResponseWriter, r *http.Request, s *session) {
 	if a.fxa == nil {
 		http.NotFound(w, r)
 		return
 	}
 	uid := strings.ToLower(r.PathValue("uid"))
+	acc := a.account(r, uid)
 	err := a.fxa.SignOutDevice(r.Context(), uid, r.PathValue("id"))
-	a.doneTo(w, r, s, "/users/"+uid, "Signed out a device of account "+uid, err)
+	a.doneTo(w, r, s, "/users/"+uid, "Signed out a device of "+accountLabel(acc, uid), err)
 }
 
 func (a *App) signOutSession(w http.ResponseWriter, r *http.Request, s *session) {
@@ -196,8 +262,9 @@ func (a *App) signOutSession(w http.ResponseWriter, r *http.Request, s *session)
 		return
 	}
 	uid := strings.ToLower(r.PathValue("uid"))
+	acc := a.account(r, uid)
 	err := a.fxa.SignOutSession(r.Context(), uid, r.PathValue("ref"))
-	a.doneTo(w, r, s, "/users/"+uid, "Signed out a session of account "+uid, err)
+	a.doneTo(w, r, s, "/users/"+uid, "Signed out a session of "+accountLabel(acc, uid), err)
 }
 
 // the security page: who is being rate limited by the accounts service
@@ -207,11 +274,13 @@ func (a *App) securityPage(w http.ResponseWriter, r *http.Request, s *session) {
 		return
 	}
 	data := a.base(s)
-	blocks, attempts, err := a.fxa.RateLimits(r.Context())
+	limits, err := a.fxa.RateLimits(r.Context())
 	if err != nil {
 		data["Errors"] = []string{"Rate limits: " + err.Error()}
+	} else if !limits.Complete {
+		data["Errors"] = []string{tooManyBlocks()}
 	}
-	data["Blocks"], data["Attempts"] = blocks, attempts
+	data["Blocks"], data["Hidden"], data["Attempts"] = limits.Blocks, limits.Hidden, limits.Attempts
 	a.render(w, "security.html", data)
 }
 
@@ -223,5 +292,29 @@ func (a *App) unblock(w http.ResponseWriter, r *http.Request, s *session) {
 	key := r.PostFormValue("key")
 	_, on, value, action, _, _, _ := parseRateLimitKey(key)
 	err := a.fxa.Unblock(r.Context(), key)
-	a.doneTo(w, r, s, "/security", fmt.Sprintf("Lifted the block of %s %s (%s)", on, value, action), err)
+	a.doneTo(w, r, s, backTo(r, "/security"), fmt.Sprintf("Lifted the block of %s %s (%s)", on, value, action), err)
+}
+
+// jobRow: a job of the Activity page, on or not (it ran before, e.g. ADMIN_PURGE since unset)
+type jobRow struct {
+	Job
+	On bool
+}
+
+// jobList: the jobs that are on, then those that ran before, in a fixed order
+func jobList(enabled []string, jobs map[string]Job) []jobRow {
+	var list []jobRow
+	for _, name := range []string{"prune", "purge", "delete-unconfirmed"} {
+		j, ran := jobs[name]
+		on := false
+		for _, e := range enabled {
+			on = on || e == name
+		}
+		if !on && !ran {
+			continue
+		}
+		j.Name = name
+		list = append(list, jobRow{j, on})
+	}
+	return list
 }

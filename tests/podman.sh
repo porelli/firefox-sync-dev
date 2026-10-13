@@ -22,6 +22,8 @@ TAG=${TAG:-latest}
 PORT=${PORT:-28660}
 WORK=$(mktemp -d)
 export QUADLET_DIR=${WORK}/quadlets-unused  # replaced below for the quadlet phase
+# the backup timer: a plain systemd unit
+SYSTEMD_USER_DIR=${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user
 FAILED=0
 
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
@@ -64,6 +66,7 @@ sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
        -e "s|^ADMIN_GATE_EXPORT_PORT=.*|ADMIN_GATE_EXPORT_PORT=127.0.0.1:28691|" \
        -e "s|^ADMIN_METRICS_TOKEN=.*|ADMIN_METRICS_TOKEN=ffs-test-metrics-token|" \
        -e "s|^ADMIN_UPDATE_CHECK=.*|ADMIN_UPDATE_CHECK=false|" \
+       -e "s|^ADMIN_PUBLIC_CHECK=.*|ADMIN_PUBLIC_CHECK=false|" \
        -e "s|^FXA_CONTENT_EXPORT_PORT=.*|FXA_CONTENT_EXPORT_PORT=127.0.0.1:28630|" \
        -e "s|^FXA_AUTH_EXPORT_PORT=.*|FXA_AUTH_EXPORT_PORT=127.0.0.1:28600|" \
        -e "s|^FXA_PROFILE_EXPORT_PORT=.*|FXA_PROFILE_EXPORT_PORT=127.0.0.1:28611|" \
@@ -139,6 +142,24 @@ compose_test() {
 compose_test mariadb -f docker-compose.yml -f docker-compose.podman.yml
 compose_test postgres -f docker-compose.postgres.yml
 
+echo "== quadlets with PostgreSQL: docker compose instead"
+rm -f .env
+setup postgres 1
+check "$?" 0 "prepare_environment.sh (postgres, quadlets)"
+check "$(grep -c 'Quadlets are only provided for MariaDB' setup-postgres-1.log) $(grep -c 'docker compose -f docker-compose.postgres.yml up -d' setup-postgres-1.log) $(ls "${QUADLET_DIR}" 2> /dev/null | wc -l)" \
+  "1 1 0" "quadlets with PostgreSQL fall back to docker compose, no quadlet files"
+
+# the admin UI quadlet gets every setting of the compose ffs-admin service: the keys
+# only in compose (allowed: $2, a regex), then those only in the quadlet
+compose_env_keys() { docker compose --profile admin "$@" config --format json 2> /dev/null | jq -r '.services["ffs-admin"].environment | keys[]' | LC_ALL=C sort; }
+quadlet_env_keys() { sed -nE 's/^Environment="?([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$1" | LC_ALL=C sort -u; }
+env_keys_diff() {
+  local compose quadlet
+  compose=$(compose_env_keys $1) quadlet=$(quadlet_env_keys "${QUADLET_DIR}/firefox-sync-admin.container")
+  [ -n "${compose}" ] || { echo "no compose environment"; return; }
+  echo "$(LC_ALL=C comm -23 <(echo "${compose}") <(echo "${quadlet}") | grep -vxE "$2" | paste -sd' ')|$(LC_ALL=C comm -13 <(echo "${compose}") <(echo "${quadlet}") | paste -sd' ')"
+}
+
 echo "== quadlets (mariadb)"
 export QUADLET_DIR=${HOME}/.config/containers/systemd
 setup mariadb 1
@@ -147,6 +168,8 @@ check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unr
 # with the admin UI, MAX_USERS=initial:1: the init container and the admin UI both get it
 check "$(grep -hcxF 'Environment=MAX_USERS=initial:1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container") $(grep -hcxF 'Environment="MAX_USERS=initial:1"' "${QUADLET_DIR}/firefox-sync-admin.container")" "1 1" \
   "MAX_USERS=initial:1 in the init and admin UI quadlets"
+# without the accounts: not their settings, nor those of the sign-up gate and of the unconfirmed accounts
+check "$(env_keys_diff "-f docker-compose.yml" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS')" "|" "admin quadlet passes every setting of the compose service"
 QUADLET=$(ls /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2> /dev/null | head -1)
 "${QUADLET}" -dryrun -user > quadlet-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files"
@@ -181,6 +204,18 @@ for _ in $(seq 1 30); do
 done
 check "$([ "${pid}" != "${SYNC_PID}" ] && echo yes)" yes "Sync server restarted with the admin UI (quadlets)"
 check "$(hb)" 200 "/__heartbeat__ after the admin UI restart (quadlets)"
+# backups: the timer installed, off until enabled; a run by hand
+ts_sql() { podman exec -e MYSQL_PWD="$(grep '^MARIADB_TOKENSERVER_PASSWORD=' .env | cut -d= -f2)" firefox-sync-tokenserver-db \
+  mariadb -u"$(grep '^MARIADB_TOKENSERVER_USER=' .env | cut -d= -f2)" "$(grep '^MARIADB_TOKENSERVER_DATABASE=' .env | cut -d= -f2)" -sN -e "$1"; }
+check "$(grep -c '^OnCalendar=\*-\*-\* 03:00:00 UTC$' "${SYSTEMD_USER_DIR}/firefox-sync-backup.timer" 2> /dev/null) $(systemctl --user is-enabled firefox-sync-backup.timer 2> /dev/null)" "1 disabled" \
+  "backup timer installed, not enabled (quadlets)"
+check "$(systemctl --user show -p Triggers --value firefox-sync-backup.timer)" firefox-sync-backup.service "the backup timer starts the backup service"
+timeout 300 systemctl --user start firefox-sync-backup.service
+check "$?" 0 "systemctl --user start firefox-sync-backup.service (a backup by hand)"
+check "$(ts_sql "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND ok = 1 AND bytes > 0")" 1 "the backup recorded in ffs_backups (quadlets)"
+check "$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" && basename "$f"; done' | sort | paste -sd' ')" \
+  "syncstorage.sql.gz tokenserver.sql.gz" "the dumps in the firefox-sync-backups volume (quadlets)"
+[ "${FAILED}" = 0 ] || journalctl --user -u firefox-sync-backup.service --no-pager | tail -20
 if [ "${FAILED}" != 0 ]; then
   tail -20 quadlet-dryrun.log
   journalctl --user -u 'firefox-sync-*' --no-pager | tail -60
@@ -189,10 +224,30 @@ fi
 
 stop_quadlets() {
   systemctl --user stop $(systemctl --user list-units --all --plain --no-legend 'firefox-sync-*' | awk '{print $1}') 2> /dev/null
-  rm -f "${QUADLET_DIR}"/firefox-sync-*
+  rm -f "${QUADLET_DIR}"/firefox-sync-* "${SYSTEMD_USER_DIR}"/firefox-sync-*.timer
   systemctl --user daemon-reload
   podman volume rm -f $(podman volume ls -q | grep '^firefox-sync-') > /dev/null 2>&1
 }
+stop_quadlets
+
+echo "== quadlets without the admin UI (mariadb)"
+# answers as setup, admin UI: n. The Sync server starts without ffs-admin to resolve
+printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare_environment.sh > setup-no-admin.log 2>&1
+check "$?" 0 "prepare_environment.sh (quadlets, no admin UI)"
+check "$(ls "${QUADLET_DIR}"/firefox-sync-admin.* 2> /dev/null | wc -l)" 0 "no admin UI quadlet"
+check "$(grep -hcxF 'Environment=MAX_USERS=1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "plain MAX_USERS=1 in the init quadlet"
+"${QUADLET}" -dryrun -user > quadlet-no-admin-dryrun.log 2>&1
+check "$?" 0 "quadlet generator accepts the files without the admin UI"
+QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+timeout 900 systemctl --user start firefox-sync-syncstorage.service
+check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service (no admin UI)"
+check "$(hb)" 200 "/__heartbeat__ (quadlets, no admin UI)"
+check "$(journalctl --user -u firefox-sync-syncstorage.service --since "${QUADLET_SINCE}" --no-pager 2> /dev/null | grep -c 'Sending metrics')" 0 \
+  "no metrics host without the admin UI (quadlets)"
+if [ "${FAILED}" != 0 ]; then
+  tail -20 setup-no-admin.log quadlet-no-admin-dryrun.log
+  journalctl --user -u 'firefox-sync-*' --since "${QUADLET_SINCE}" --no-pager | tail -40
+fi
 stop_quadlets
 
 if [ -n "${EXTERNAL_DB:-}" ]; then
@@ -278,6 +333,8 @@ if [ -z "${SKIP_FXA:-}" ]; then
   [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:11.8 || expected_image=docker.io/library/mysql:8.4
   check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
+  # no pairing server in the quadlets
+  check "$(env_keys_diff "-f docker-compose.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL')" "|" "admin quadlet with the accounts passes every setting of the compose service"
   check "$(grep -lE '%[A-Z][A-Z0-9_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders"
   check "$(grep -c 'SMTP_PASS=p%%ss|w&rd"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "values escaped for systemd"
   # the admin UI signs in with these accounts: its OAuth client always asks the sign-in code
@@ -332,6 +389,11 @@ if [ -z "${SKIP_FXA:-}" ]; then
     'ffs_up{component="Accounts Redis"} 1' 'ffs_accounts 0')" all "admin UI reaches the accounts services (quadlets)"
   check "$(podman healthcheck run firefox-sync-admin > /dev/null 2>&1; echo $?)" 0 "admin UI healthcheck (quadlets with accounts)"
   check "$(curl -s http://127.0.0.1:28690/login | grep -c '>Sign in with Mozilla account</a>')" 1 "admin UI offers the accounts' sign-in (quadlets)"
+  # the backup of the accounts runs with that of Sync, before it (WantedBy=, Before=)
+  timeout 600 systemctl --user start firefox-sync-backup.service
+  check "$?" 0 "systemctl --user start firefox-sync-backup.service (quadlets with accounts)"
+  check "$(ts_sql "SELECT DISTINCT scope FROM ffs_backups WHERE ok = 1 ORDER BY scope" | paste -sd' ')" "accounts sync" "the backups of the accounts and of Sync recorded (quadlets)"
+  [ "${FAILED}" = 0 ] || journalctl --user -u 'firefox-sync-backup*' --no-pager | tail -20
   if [ "${FAILED}" != 0 ]; then
     journalctl --user -u 'firefox-sync-fxa-*' --no-pager | tail -40
   fi

@@ -6,7 +6,7 @@ What changes:
 - `DB_CONTAINERS=0` (and `FXA_DB_CONTAINERS=0` for the accounts) in `.env`: those containers are not started, everything else is the same.
 - You create the databases and users once, with the SQL below. The stack never needs an administrator account on your server.
 - The migrations and the init container still run at every start, as the users below: the tables, the `MAX_USERS` trigger and the sign-up policy are created and updated by the stack.
-- Backups are yours: the stack's volumes are not used.
+- Backups are yours: the stack's volumes are not used, and the backup service (`COMPOSE_PROFILES=backup`) is for the database containers. Your backup job can record its runs for the admin UI, which then shows the last one and alerts when it fails or gets old: see [ADMIN.md](ADMIN.md#your-own-database-servers).
 
 ## Supported servers
 
@@ -62,7 +62,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES,
   CREATE ROUTINE, ALTER ROUTINE, EXECUTE ON `@SYNCSTORAGE_DATABASE@`.* TO '@SYNCSTORAGE_USER@'@'%';
 ```
 
-- The tokenserver user creates the tables (the migrations), the init container's `config` table, the `CheckUserLimit` procedure and the `BeforeInsertUser` trigger that enforce `MAX_USERS`, and the admin UI's `ffs_metrics`, `ffs_events` and `ffs_gauges` tables.
+- The tokenserver user creates the tables (the migrations), the init container's `config` table, the `CheckUserLimit` procedure and the `BeforeInsertUser` trigger that enforce `MAX_USERS`, and the admin UI's `ffs_metrics`, `ffs_events`, `ffs_gauges`, `ffs_account_notes`, `ffs_schema_levels`, `ffs_jobs` and `ffs_backups` tables.
 - The storage user creates the tables (the migrations; one of them creates, calls and drops a procedure).
 - `REFERENCES` is needed on MySQL 8.0.22+ for the tokenserver's foreign keys.
 - Two databases, not one: both migrations keep their state in a table with the same name.
@@ -105,16 +105,18 @@ GRANT ALL PRIVILEGES ON `pushbox`.* TO '@FXA_USER@'@'%';
 CREATE USER IF NOT EXISTS '@FXA_POLICY_USER@'@'%' IDENTIFIED BY '@FXA_POLICY_PASSWORD@';
 ALTER USER '@FXA_POLICY_USER@'@'%' IDENTIFIED BY '@FXA_POLICY_PASSWORD@';
 GRANT ALL PRIVILEGES ON `ffs`.* TO '@FXA_POLICY_USER@'@'%' WITH GRANT OPTION;
-GRANT SELECT, UPDATE, DELETE, TRIGGER ON `fxa`.* TO '@FXA_POLICY_USER@'@'%' WITH GRANT OPTION;
+GRANT SELECT, UPDATE, DELETE, TRIGGER, EXECUTE ON `fxa`.* TO '@FXA_POLICY_USER@'@'%' WITH GRANT OPTION;
 GRANT SELECT, DELETE ON `fxa_oauth`.* TO '@FXA_POLICY_USER@'@'%' WITH GRANT OPTION;
-GRANT SELECT ON `fxa_profile`.* TO '@FXA_POLICY_USER@'@'%';
-GRANT SELECT ON `pushbox`.* TO '@FXA_POLICY_USER@'@'%';
+GRANT SELECT, DELETE ON `fxa_profile`.* TO '@FXA_POLICY_USER@'@'%';
+GRANT SELECT, DELETE ON `pushbox`.* TO '@FXA_POLICY_USER@'@'%';
 CREATE USER IF NOT EXISTS 'ffs_admin'@'%' IDENTIFIED BY '@FXA_ADMIN_PASSWORD@';
 ALTER USER 'ffs_admin'@'%' IDENTIFIED BY '@FXA_ADMIN_PASSWORD@';
 ```
 
 - `FXA_MYSQL_USER` (`fxa`): Mozilla's migrations create the four databases, their tables and about 400 procedures, and the accounts services use them. It must use `mysql_native_password`.
-- `FXA_MYSQL_POLICY_USER` (`ffs_policy`): `fxa-policy` installs the [sign-up policy](ADMIN.md#who-can-sign-up-self-hosted-accounts) at every start: the database `ffs`, a trigger on `fxa.accounts`, views and procedures that read and delete tokens with its privileges, and the column grants of the admin UI's user (hence `WITH GRANT OPTION`). `SELECT` on `fxa_profile` and `pushbox` lets the admin UI show the size of all five databases.
+- `FXA_MYSQL_POLICY_USER` (`ffs_policy`): `fxa-policy` installs the [sign-up policy](ADMIN.md#who-can-sign-up-self-hosted-accounts) at every start: the database `ffs`, a trigger on `fxa.accounts`, views and procedures that read and delete tokens, disable and delete accounts, turn off two-step authentication, remove recovery keys, confirm emails and prune expired tokens with its privileges (they call Mozilla's own procedures, hence `EXECUTE` on `fxa`), and the grants of the admin UI's user (hence `WITH GRANT OPTION`): `SELECT` on a few columns of `fxa.accounts` and on the views (which leave out every secret), `EXECUTE` on those procedures, nothing that changes the accounts' tables directly. `SELECT` on `fxa_profile` and `pushbox` lets the admin UI show the size of all five databases, `DELETE` there removes the profile and the push messages of a deleted account. When a procedure it calls is missing (a newer FxA release, or no `EXECUTE`), `fxa-policy` logs a warning naming it and the accounts keep working, but what needs it in the admin UI answers with an error (ADMIN.md, Disabling an account).
+- Upgrading from a version whose script had no `EXECUTE` in the policy user's grant on `fxa`: run ``GRANT EXECUTE ON `fxa`.* TO '@FXA_POLICY_USER@'@'%' WITH GRANT OPTION;`` once, then restart `fxa-policy`.
+- Upgrading from a version whose script had only `SELECT` on `fxa_profile` and `pushbox`: run ``GRANT DELETE ON `fxa_profile`.* TO '@FXA_POLICY_USER@'@'%'; GRANT DELETE ON `pushbox`.* TO '@FXA_POLICY_USER@'@'%';`` once, otherwise deleting an account in the admin UI fails (and changes nothing).
 - `ffs_admin`, with `FXA_ADMIN_DB_PASSWORD`: the admin UI's user, created here and not by `fxa-policy`. `CREATE USER` is a server-wide privilege that also lets its holder change the password of every other account (on MariaDB including `root`), so the policy user does not get it. `fxa-policy` finds `ffs_admin` there and only gives it its grants.
 - The grants are on whole databases because the tables don't exist yet when you run this.
 - The database names are fixed (`fxa`, `fxa_oauth`, `fxa_profile`, `pushbox`, `ffs`): a server or instance of its own for the accounts is best.

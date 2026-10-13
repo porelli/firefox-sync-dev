@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -23,11 +25,14 @@ type SyncDB struct {
 }
 
 type SyncNode struct {
+	ID          int64
 	Node        string
 	Capacity    int
 	CurrentLoad int
 	Available   int
 	Downed      bool
+	Backoff     int
+	Users       int // accounts on it (their current row)
 }
 
 type SyncUser struct {
@@ -112,7 +117,22 @@ func (s *SyncDB) Status(ctx context.Context) (*SyncStatus, error) {
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT email) FROM users").Scan(&st.Users); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT n.node, n.capacity, n.current_load, n.available, n.downed
+	perNode := map[int64]int{}
+	rows, err := s.db.QueryContext(ctx, "SELECT nodeid, COUNT(DISTINCT email) FROM users WHERE replaced_at IS NULL GROUP BY nodeid")
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		perNode[id] = n
+	}
+	rows.Close()
+	rows, err = s.db.QueryContext(ctx, `SELECT n.id, n.node, n.capacity, n.current_load, n.available, n.downed, n.backoff
 		FROM nodes n JOIN services s ON n.service = s.id WHERE s.service = 'sync-1.5' ORDER BY n.id`)
 	if err != nil {
 		return nil, err
@@ -121,13 +141,33 @@ func (s *SyncDB) Status(ctx context.Context) (*SyncStatus, error) {
 	for rows.Next() {
 		var n SyncNode
 		var downed int
-		if err := rows.Scan(&n.Node, &n.Capacity, &n.CurrentLoad, &n.Available, &downed); err != nil {
+		if err := rows.Scan(&n.ID, &n.Node, &n.Capacity, &n.CurrentLoad, &n.Available, &downed, &n.Backoff); err != nil {
 			return nil, err
 		}
-		n.Downed = downed != 0
+		n.Downed, n.Users = downed != 0, perNode[n.ID]
 		st.Nodes = append(st.Nodes, n)
 	}
 	return st, rows.Err()
+}
+
+// EmailDomains: the accounts of the tokenserver per domain of their email
+// (<uid>@FXA_EMAIL_DOMAIN of when they first synced)
+func (s *SyncDB) EmailDomains(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT DISTINCT email FROM users")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	domains := map[string]int{}
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		_, domain, _ := strings.Cut(email, "@")
+		domains[strings.ToLower(domain)]++
+	}
+	return domains, rows.Err()
 }
 
 func (s *SyncDB) Users(ctx context.Context) ([]SyncUser, error) {
@@ -194,6 +234,86 @@ func (s *SyncDB) SetMaxUsers(ctx context.Context, maxUsers int) error {
 		}
 	}
 	return nil
+}
+
+// Notes and labels of the accounts (ffs_account_notes), by uid: the FxA uid, or with
+// Mozilla's accounts the local part of the tokenserver email
+type Note struct {
+	Text      string
+	UpdatedAt time.Time
+	UpdatedBy string
+}
+
+const maxNote = 500
+
+func (s *SyncDB) Notes(ctx context.Context) (map[string]Note, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT uid, note, updated_at, updated_by FROM ffs_account_notes")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	notes := map[string]Note{}
+	for rows.Next() {
+		var uid string
+		var n Note
+		var at int64
+		if err := rows.Scan(&uid, &n.Text, &at, &n.UpdatedBy); err != nil {
+			return nil, err
+		}
+		n.UpdatedAt = ms(at)
+		notes[uid] = n
+	}
+	return notes, rows.Err()
+}
+
+// Note of an account, nil without one
+func (s *SyncDB) Note(ctx context.Context, uid string) (*Note, error) {
+	var n Note
+	var at int64
+	err := s.db.QueryRowContext(ctx, s.q("SELECT note, updated_at, updated_by FROM ffs_account_notes WHERE uid = ?"), uid).Scan(&n.Text, &at, &n.UpdatedBy)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	n.UpdatedAt = ms(at)
+	return &n, nil
+}
+
+// cleanNote: one line, without control characters (strings.Map also makes it valid
+// UTF-8, which the database insists on); an error over maxNote characters
+func cleanNote(note string) (string, error) {
+	note = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, note))
+	if n := utf8.RuneCountInString(note); n > maxNote {
+		return "", fmt.Errorf("a note has at most %d characters, not %d", maxNote, n)
+	}
+	return note, nil
+}
+
+// SetNote replaces the note of an account ("": removes it)
+func (s *SyncDB) SetNote(ctx context.Context, uid, note, by string) error {
+	note, err := cleanNote(note)
+	if err != nil {
+		return err
+	}
+	if note == "" {
+		_, err := s.db.ExecContext(ctx, s.q("DELETE FROM ffs_account_notes WHERE uid = ?"), uid)
+		return err
+	}
+	upsert := `INSERT INTO ffs_account_notes (uid, note, updated_at, updated_by) VALUES (?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE note = VALUES(note), updated_at = VALUES(updated_at), updated_by = VALUES(updated_by)`
+	if s.postgres {
+		upsert = `INSERT INTO ffs_account_notes (uid, note, updated_at, updated_by) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (uid) DO UPDATE SET note = EXCLUDED.note, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`
+	}
+	_, err = s.db.ExecContext(ctx, upsert, uid, note, time.Now().UnixMilli(), oneLine(by, 255))
+	return err
 }
 
 func (s *SyncDB) Ping(ctx context.Context) error {

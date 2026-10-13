@@ -3,18 +3,51 @@
 <main>
 {{template "flash" .}}
 
+<section id="attention">
+  <h2>Needs attention</h2>
+  {{with .Attention}}<ul class="attention">{{range .}}<li>{{.Text}} <a href="{{.Href}}">{{.Link}}</a></li>{{end}}</ul>
+  {{else}}<p id="all-good"><span class="ok">All good.</span> Nothing to look at.</p>{{end}}
+</section>
+
 {{if .Health}}
 <section>
   <h2>Health</h2>
-  <table id="health">
+  <div class="scroll"><table id="health" aria-label="Health of the components">
     <thead><tr><th>Component</th><th>Status</th><th>Version</th></tr></thead>
-    <tbody>{{range .Health}}<tr><td>{{.Name}}</td><td>{{if .Up}}<span class="ok">up</span>{{else}}<span class="disabled">down</span> <span class="hint">{{.Error}}</span>{{end}}</td><td>{{.Version}}{{if .Latest}} <span class="update">{{.Latest}} available</span>{{end}}</td></tr>{{end}}</tbody>
-  </table>
+    <tbody>{{range .Health}}<tr><td>{{.Name}}</td><td>{{if .Up}}<span class="ok">up</span>{{with .Detail}} <span class="hint">{{.}}</span>{{end}}{{else if .Warn}}<span class="disabled">problem</span> <span class="hint">{{.Error}}</span>{{else}}<span class="disabled">down</span> <span class="hint">{{.Error}}</span>{{end}}</td><td>{{.Version}}{{if .Latest}} <span class="update">{{.Latest}} available</span>{{end}}</td></tr>{{end}}</tbody>
+  </table></div>
   {{with .Sizes}}<p class="hint">Databases: {{range $name, $size := .}}{{$name}} {{bytes $size}}; {{end}}history on the Activity page.</p>{{end}}
+  <div id="backups">{{range .Backups}}
+    <p class="hint" data-scope="{{.Scope}}">Last backup of the {{.Title}}: {{date .Last.Finished}}, {{if .Last.OK}}{{bytes .Last.Bytes}}, {{if .Old}}<span class="disabled">more than 36 hours ago</span>{{else}}<span class="ok">ok</span>{{end}}{{else}}<span class="disabled">failed</span>{{with .Last.Error}}: {{.}}{{end}}{{if not .LastOK.Finished.IsZero}} (the last good one: {{date .LastOK.Finished}}, {{bytes .LastOK.Bytes}}){{end}}{{end}}.</p>{{else}}
+    <p class="hint">No backups recorded: COMPOSE_PROFILES=backup (or the firefox-sync-backup timer of the Quadlets) makes one every night, see ADMIN.md.</p>{{end}}
+  </div>
+  {{with .Schema}}
+  <div class="scroll"><table id="schema" aria-label="Schema of the databases">
+    <thead><tr><th>Database</th><th>Schema</th><th>Applied</th></tr></thead>
+    <tbody>{{range .}}<tr><td>{{.Database}}</td><td>{{.Level}}</td><td>{{if .At.IsZero}}{{else}}{{date .At}}{{end}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{end}}
+  {{with .PruneLastRan}}<p class="hint" id="prune-last-ran">Expired tokens and codes of the accounts database last pruned: {{when .}} (every day, see <a href="/activity#maintenance">Activity</a>).</p>{{end}}
+  {{with .Alerts}}<p class="hint" id="alert-status">Alert emails to {{.To}}: {{with .Status}}{{if .At.IsZero}}none sent since the start{{else if .Err}}<span class="disabled">the last one failed</span> on {{date .At}}: {{.Err}}{{if not .LastOK.IsZero}} (last sent {{date .LastOK}}){{end}}{{else}}last sent {{date .LastOK}}{{end}}{{end}}{{if .Waiting}}; {{.Waiting}} waiting{{if .Status.Err}}, sent once the SMTP server takes them{{else}} for the next email{{end}}{{end}}.</p>{{end}}
+  {{if .TestEmail}}<form method="post" action="/alerts/test" class="inline" id="test-email">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit">Send a test email</button>
+    <span class="hint">{{if .Alerts}}to ADMIN_ALERT_EMAIL{{else}}to {{.User}}{{end}}</span>
+  </form>{{end}}
 </section>
 {{end}}
 
+{{with .Setup}}
 <section>
+  <h2>Setup</h2>
+  <div class="scroll"><table id="setup" aria-label="Setup checks">
+    <thead><tr><th>Check</th><th>Status</th><th>What it means</th></tr></thead>
+    <tbody>{{range .}}<tr><td>{{.Name}}</td><td>{{if .OK}}<span class="ok">ok</span>{{else}}<span class="disabled">warning</span>{{end}}</td><td>{{.Text}}</td></tr>{{end}}</tbody>
+  </table></div>
+</section>
+{{end}}
+
+<section id="sync">
   <h2>Sync</h2>
   {{with .Sync}}
   <p><strong id="sync-users">{{.Users}}</strong> of <strong id="sync-max-users">{{.MaxUsers}}</strong> accounts use this Sync server.
@@ -31,13 +64,51 @@
   <p class="hint" id="max-users-mode">Read-only: managed by MAX_USERS in .env; set MAX_USERS=initial:{{.MaxUsers}} to manage it here.</p>
   {{end}}
   {{if .Nodes}}
-  <table>
-    <thead><tr><th>Sync node</th><th>Status</th></tr></thead>
-    <tbody>{{range .Nodes}}<tr><td>{{.Node}}</td><td>{{if .Downed}}retired{{else}}in use{{end}}</td></tr>{{end}}</tbody>
-  </table>
+  <div class="scroll"><table id="nodes" aria-label="Sync nodes">
+    <thead><tr><th>Sync node</th><th>Status</th><th>Accounts</th><th>Capacity</th><th>Current load</th><th>Available</th><th>Backoff</th></tr></thead>
+    <tbody>{{range .Nodes}}<tr><td>{{.Node}}</td><td>{{if .Downed}}retired{{else}}in use{{end}}</td><td>{{.Users}}</td><td>{{.Capacity}}</td><td>{{.CurrentLoad}}</td><td>{{.Available}}</td><td>{{.Backoff}}</td></tr>{{end}}</tbody>
+  </table></div>
+  <p class="hint">Accounts: those whose current keys are on the node. The tokenserver puts new accounts on a node in use with places available; backoff (seconds) asks Firefox to sync less often.</p>
   {{end}}
   {{end}}
 </section>
+
+{{with .Storage}}
+<section id="storage">
+  <h2>Storage</h2>
+  <div class="scroll"><table id="storage-totals" aria-label="Sync storage">
+    <thead><tr><th>Data</th><th>Items</th><th>Size</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td>Live</td><td>{{.Live.Items}}</td><td>{{bytes .Live.Bytes}}</td><td>What Firefox reads back.</td></tr>
+      <tr><td>Expired</td><td>{{.Expired.Items}}</td><td>{{bytes .Expired.Bytes}}</td><td>Past its time to live: the Sync server no longer returns it.</td></tr>
+      <tr><td>Orphaned</td><td>{{.Orphaned.Items}}</td><td>{{bytes .Orphaned.Bytes}}</td><td>{{len .Orphans}} orphans: storage of replaced keys (after a day), of {{if .Accounts}}deleted accounts, {{end}}uids with no tokenserver row.</td></tr>
+      <tr><td>Stale batches</td><td>{{.StaleItems.Items}}</td><td>{{bytes .StaleItems.Bytes}}</td><td>{{.StaleBatches}} uploads never committed, past their 2 hours.</td></tr>
+    </tbody>
+  </table></div>
+  {{with .Orphans}}<div class="scroll"><table id="orphans" aria-label="Orphaned Sync data">
+    <thead><tr><th>Kind</th><th>Tokenserver email</th><th>Storage uids</th><th>Stored</th></tr></thead>
+    <tbody>{{range .}}<tr><td>{{.Kind}}</td><td>{{if .Account}}<a href="/users/{{.Account}}">{{.Email}}</a>{{end}}</td><td>{{range $i, $id := .Storage}}{{if $i}}, {{end}}{{$id}}{{end}}</td><td>{{.Usage.Items}} items, {{bytes .Usage.Bytes}}</td></tr>{{end}}</tbody>
+  </table></div>{{end}}
+  {{with .OtherDomains}}
+  <h3>Accounts of another email domain</h3>
+  <div class="scroll"><table id="other-domains" aria-label="Accounts of another email domain">
+    <thead><tr><th>Tokenserver email</th><th>Rows</th><th>Stored</th></tr></thead>
+    <tbody>{{range .}}<tr><td>{{.Email}}</td><td>{{.Rows}}</td><td>{{.Usage.Items}} items, {{bytes .Usage.Bytes}}</td></tr>{{end}}</tbody>
+  </table></div>
+  <p class="hint">Not in the accounts database and not of FXA_EMAIL_DOMAIN: an earlier domain, or Mozilla's accounts before. Never purged automatically; delete them from their account page if they are gone.</p>
+  {{end}}
+  {{with .Top}}
+  <h3>Largest accounts</h3>
+  <div class="scroll"><table id="top-accounts" aria-label="Largest accounts">
+    <thead><tr><th>Account</th><th>Items</th><th>Size</th></tr></thead>
+    <tbody>{{range .}}<tr><td><a href="/users/{{.UID}}">{{or .Email .UID}}</a></td><td>{{.Usage.Items}}</td><td>{{bytes .Usage.Bytes}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{end}}
+  {{if .DataFree}}<p class="hint" id="data-free">{{bytes .DataFree}} free inside the tables of the storage database: deleted data the database keeps for new rows. <code>OPTIMIZE TABLE bso;</code> gives it back to the disk (it rebuilds the table: run it when few people sync).</p>{{end}}
+  {{if .Empty}}<p class="hint">Nothing to purge.</p>{{else}}<div class="actions"><a href="/storage/purge" class="button danger" id="purge">Purge now…</a></div>{{end}}
+  <p class="hint">With ADMIN_PURGE=1 the purge runs every day by itself, see <a href="/activity#maintenance">Activity</a>.</p>
+</section>
+{{end}}
 
 {{if .FxA}}
 <section>
@@ -53,49 +124,86 @@
     </fieldset>
     <label for="allowlist">Allowlist: one email (alice@example.com) or domain (@example.com) per line</label>
     <textarea id="allowlist" name="allowlist" rows="5">{{$.Allowlist}}</textarea>
+    <input type="hidden" name="loaded" value="{{$.Allowlist}}">
     <button type="submit">Save</button>
   </form>
   <p class="hint">Existing accounts are not affected, disable them below. FXA_SIGNUPS and FXA_SIGNUP_ALLOWLIST in .env replace these settings when they are changed there.</p>
   {{end}}
+  <h3>Invitations</h3>
+  <form method="post" action="/accounts/invite" class="inline" id="invite">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label for="invite-email">Email</label>
+    <input id="invite-email" name="email" type="email" required maxlength="255">
+    <button type="submit">Invite</button>
+  </form>
+  <p class="hint">{{with .Policy}}{{if eq .Mode "allowlist"}}Adds the email to the allowlist and{{else if eq .Mode "closed"}}Sign-ups are closed: it{{else}}Anybody can sign up: it{{end}}{{end}} sends them a plain email{{if not .Mailer}} (no SMTP server: FXA_SMTP_HOST){{end}} with the link to create their account and the steps of <a href="/connect">Connect a device</a>. At most 20 an hour.</p>
+  <div class="scroll"><table id="allowlist" aria-label="Emails on the allowlist">
+    <thead><tr><th>Email</th><th>Status</th><th><span class="sr">Actions</span></th></tr></thead>
+    <tbody>{{range .Invited}}<tr data-entry="{{.Email}}"><td>{{if .UID}}<a href="/users/{{.UID}}">{{.Email}}</a>{{else}}{{.Email}}{{end}}</td><td>{{if .SignedUp.IsZero}}invited {{if .Added.IsZero}}{{else}}{{date .Added}}{{end}}, not signed up yet{{else}}signed up on {{date .SignedUp}}{{end}}</td>
+      <td><form method="post" action="/accounts/allowlist/remove"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="entry" value="{{.Email}}"><button type="submit">Remove</button></form></td></tr>{{else}}<tr><td colspan="3">No email on the allowlist.</td></tr>{{end}}</tbody>
+  </table></div>
+  {{with .Domains}}<div class="scroll"><table id="allowlist-domains" aria-label="Domains on the allowlist">
+    <thead><tr><th>Domain</th><th><span class="sr">Actions</span></th></tr></thead>
+    <tbody>{{range .}}<tr data-entry="{{.}}"><td>{{.}}</td><td><form method="post" action="/accounts/allowlist/remove"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="entry" value="{{.}}"><button type="submit">Remove</button></form></td></tr>{{end}}</tbody>
+  </table></div>{{end}}
+  <p class="hint">Removing an entry stops new sign-ups with it; an account already created stays.</p>
 </section>
 
 <section>
   <h2>Accounts</h2>
-  {{if or .StaleCount .UnconfirmedCount}}<p class="hint">{{with .StaleCount}}{{.}} not synced for {{$.StaleDays}} days (ADMIN_STALE_DAYS). {{end}}{{with .UnconfirmedCount}}{{.}} never confirmed their email: they cannot sign in, and do not count towards max users until they sync.{{end}}</p>{{end}}
-  <table id="accounts">
-    <thead><tr><th>Email</th><th>Created (UTC)</th><th>Confirmed</th><th>Last sync (UTC)</th><th>Stored</th><th>Status</th><th></th></tr></thead>
+  {{template "find" .}}
+  {{if or .StaleCount .UnconfirmedCount}}<p class="hint">{{with .StaleCount}}{{.}} not synced for {{$.StaleDays}} days (ADMIN_STALE_DAYS). {{end}}{{with .UnconfirmedCount}}{{.}} never confirmed their email: they cannot sign in, and do not count towards max users until they sync. <a href="/accounts/unconfirmed" class="danger" id="delete-unconfirmed">Delete the old ones…</a>{{end}}</p>{{end}}
+  <div class="scroll"><table id="accounts" aria-label="Accounts">
+    <thead><tr><th>Email</th><th>Created</th><th>Confirmed</th><th>Last sync</th><th>Stored</th><th>Signing in</th><th>Status</th><th><span class="sr">Actions</span></th></tr></thead>
     <tbody>
     {{range .Accounts}}
       <tr data-email="{{.Email}}">
-        <td><a href="/users/{{.UID}}">{{.Email}}</a></td>
+        <td><a href="/users/{{.UID}}">{{.Email}}</a>{{with .Note}} <span class="note">{{.}}</span>{{end}}</td>
         <td>{{date .CreatedAt}}</td>
         <td>{{if .Verified}}yes{{else}}no{{if .Unconfirmed}} <span class="badge">unconfirmed</span>{{end}}{{end}}</td>
-        <td>{{if .Sync}}{{when .Usage.LastModified}}{{if .Stale}} <span class="badge">inactive</span>{{end}}{{else}}not using Sync{{end}}</td>
+        <td>{{if .Sync}}{{when .Usage.LastModified}}{{if .Stale}} <span class="badge">inactive</span>{{end}}{{else}}not using Sync{{end}}{{with .InactiveDevices}} <span class="badge">{{.}} inactive device{{if gt . 1}}s{{end}}</span>{{end}}</td>
         <td>{{if .Sync}}{{bytes .Usage.Bytes}}, {{.Usage.Items}} items{{end}}</td>
+        <td class="security">{{if .Security.TOTP}}<span class="badge">2-step</span> {{end}}{{if not .Security.RecoveryKey}}<span class="badge">no recovery key</span> {{end}}{{if .Security.UnverifiedSessions}}<span class="badge">unconfirmed sign-in</span> {{end}}{{if .Blocked}}<span class="badge">blocked</span>{{end}}</td>
         <td>{{if .Disabled}}<span class="disabled">disabled</span>{{else}}active{{end}}</td>
         <td>
-          <form method="post" action="/accounts/{{.UID}}/{{if .Disabled}}enable{{else}}disable{{end}}">
+          {{if .Disabled}}
+          <form method="post" action="/accounts/{{.UID}}/enable">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
-            <button type="submit" class="{{if not .Disabled}}danger{{end}}">{{if .Disabled}}Enable{{else}}Disable{{end}}</button>
+            <button type="submit">Enable</button>
           </form>
+          {{else}}
+          <a href="/accounts/{{.UID}}/disable" class="danger">Disable…</a>
+          {{end}}
         </td>
       </tr>
     {{else}}
-      <tr><td colspan="7">No accounts yet.</td></tr>
+      <tr><td colspan="8">{{if or .Q .Show}}No account matches.{{else}}No accounts yet.{{end}}</td></tr>
     {{end}}
     </tbody>
-  </table>
-  <p class="hint">Disabling signs the account out everywhere and it cannot sign in again. Its browsers stop syncing within the hour, when their current Sync token expires.</p>
+  </table></div>
+  {{template "pages" .Pages}}
+  <p class="hint">Disabling signs the account out everywhere and it cannot sign in again. Its browsers stop syncing within the hour, when their current Sync token expires. 2-step: two-step authentication on. Unconfirmed sign-in: a sign-in that never entered its email code. Blocked: by the rate limits, see the account page.</p>
 </section>
 {{else}}
 <section>
   <h2>Sync accounts</h2>
+  {{template "find" .}}
   <p class="hint">These accounts are Mozilla accounts: this server only knows their ids. Self-host the accounts (FXA.md) to see emails and to control sign-ups.</p>
-  <table>
-    <thead><tr><th>Account id</th><th>First sync (UTC)</th><th>Last sync (UTC)</th><th>Stored</th></tr></thead>
-    <tbody>{{range .SyncUsers}}<tr><td><a href="/users/{{.UID}}"><code>{{.UID}}</code></a></td><td>{{date .CreatedAt}}</td><td>{{when .Usage.LastModified}}{{if .Stale}} <span class="badge">inactive</span>{{end}}</td><td>{{bytes .Usage.Bytes}}, {{.Usage.Items}} items</td></tr>{{else}}<tr><td colspan="4">No accounts yet.</td></tr>{{end}}</tbody>
-  </table>
+  <div class="scroll"><table id="sync-accounts" aria-label="Sync accounts">
+    <thead><tr><th>Account id</th><th>First sync</th><th>Last sync</th><th>Stored</th></tr></thead>
+    <tbody>{{range .SyncUsers}}<tr><td><a href="/users/{{.UID}}"><code>{{.UID}}</code></a>{{with .Note}} <span class="note">{{.}}</span>{{end}}</td><td>{{date .CreatedAt}}</td><td>{{when .Usage.LastModified}}{{if .Stale}} <span class="badge">inactive</span>{{end}}</td><td>{{bytes .Usage.Bytes}}, {{.Usage.Items}} items</td></tr>{{else}}<tr><td colspan="4">{{if .Q}}No account matches.{{else}}No accounts yet.{{end}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{template "pages" .Pages}}
 </section>
 {{end}}
 </main>
 {{template "foot"}}
+{{define "find"}}<form method="get" action="/#accounts" class="filter" role="search" id="find">
+  <div><label for="find-q">Search the accounts</label>
+  <input id="find-q" name="q" type="search" value="{{.Q}}" placeholder="{{if .FxA}}part of an email, {{end}}an account id, a tokenserver uid, a note" maxlength="255"></div>
+  {{with .Show}}<input type="hidden" name="show" value="{{.}}">{{end}}
+  <button type="submit">Search</button>
+</form>
+{{if or .Q .Show}}<p id="search-result">{{.Pages.Total}} {{if eq .Pages.Total 1}}account{{else}}accounts{{end}}{{with .ShowLabel}} {{.}}{{end}}{{with .Q}} matching &#34;{{.}}&#34;{{end}}. <a href="/#accounts">All accounts</a></p>{{end}}{{end}}
+{{define "pages"}}<p class="pages hint" id="pages">{{if .Total}}<span id="accounts-shown">{{.From}}–{{.To}}</span> of <span id="accounts-total">{{.Total}}</span>, newest first{{if gt .Pages 1}}, page {{.Page}} of {{.Pages}}{{end}}.{{end}}
+  {{with .Prev}}<a href="{{.}}" rel="prev" id="newer">← Newer</a>{{end}}{{with .Next}}<a href="{{.}}" rel="next" id="older">Older →</a>{{end}}</p>{{end}}

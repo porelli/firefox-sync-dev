@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -26,6 +28,19 @@ const (
 type FxaDB struct {
 	db    *sql.DB
 	redis string // host:port of FxA's Redis, for the access tokens
+
+	mu     sync.Mutex
+	logged string // logOnce
+}
+
+// logOnce logs a message of the overview when it differs from the last one, not on every load
+func (f *FxaDB) logOnce(msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if msg != f.logged {
+		log.Print(msg)
+		f.logged = msg
+	}
 }
 
 type FxaAccount struct {
@@ -92,13 +107,39 @@ func (f *FxaDB) Policy(ctx context.Context) (*SignupPolicy, error) {
 	return p, rows.Err()
 }
 
-func (f *FxaDB) SetPolicy(ctx context.Context, p *SignupPolicy) error {
-	return setPolicy(ctx, f.db, p, "")
+// SetPolicy sets the mode and the allowlist. loaded is the allowlist the form showed:
+// only its entries can be removed, so invitations made since the page was loaded stay.
+// nil replaces the whole list.
+func (f *FxaDB) SetPolicy(ctx context.Context, p *SignupPolicy, loaded []string) error {
+	return setPolicy(ctx, f.db, p, loaded, "")
 }
 
-// setPolicy replaces the sign-up mode and allowlist; envSnapshot, when set, records
-// the .env values they came from (see applyEnvPolicy)
-func setPolicy(ctx context.Context, db *sql.DB, p *SignupPolicy, envSnapshot string) error {
+// allowlistRemovals: the entries of current to delete for the submitted list, among
+// those of loaded (all of current when loaded is nil)
+func allowlistRemovals(current, loaded, submitted []string) []string {
+	keep := map[string]bool{}
+	for _, e := range submitted {
+		keep[e] = true
+	}
+	var shown map[string]bool
+	if loaded != nil {
+		shown = map[string]bool{}
+		for _, e := range loaded {
+			shown[e] = true
+		}
+	}
+	var gone []string
+	for _, e := range current {
+		if !keep[e] && (shown == nil || shown[e]) {
+			gone = append(gone, e)
+		}
+	}
+	return gone
+}
+
+// setPolicy sets the sign-up mode and allowlist (see SetPolicy); envSnapshot, when set,
+// records the .env values they came from (see applyEnvPolicy)
+func setPolicy(ctx context.Context, db *sql.DB, p *SignupPolicy, loaded []string, envSnapshot string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -108,11 +149,31 @@ func setPolicy(ctx context.Context, db *sql.DB, p *SignupPolicy, envSnapshot str
 		ON DUPLICATE KEY UPDATE value = VALUES(value)`, p.Mode); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM ffs.signup_allowlist"); err != nil {
+	// only what changes: the entries kept keep their date (invited on...)
+	rows, err := tx.QueryContext(ctx, "SELECT entry FROM ffs.signup_allowlist")
+	if err != nil {
 		return err
 	}
+	var current []string
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			rows.Close()
+			return err
+		}
+		current = append(current, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, e := range allowlistRemovals(current, loaded, p.Allowlist) {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM ffs.signup_allowlist WHERE entry = ?", e); err != nil {
+			return err
+		}
+	}
 	for _, e := range p.Allowlist {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO ffs.signup_allowlist (entry) VALUES (?)", e); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT IGNORE INTO ffs.signup_allowlist (entry) VALUES (?)", e); err != nil {
 			return err
 		}
 	}
@@ -123,6 +184,49 @@ func setPolicy(ctx context.Context, db *sql.DB, p *SignupPolicy, envSnapshot str
 		}
 	}
 	return tx.Commit()
+}
+
+// AllowEntry: an entry of the allowlist, since when
+type AllowEntry struct {
+	Entry string
+	Added time.Time
+}
+
+func (f *FxaDB) AllowlistEntries(ctx context.Context) ([]AllowEntry, error) {
+	rows, err := f.db.QueryContext(ctx, "SELECT entry, CAST(COALESCE(UNIX_TIMESTAMP(created_at), 0) AS SIGNED) FROM ffs.signup_allowlist ORDER BY created_at DESC, entry")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var entries []AllowEntry
+	for rows.Next() {
+		var e AllowEntry
+		var at int64
+		if err := rows.Scan(&e.Entry, &at); err != nil {
+			return nil, err
+		}
+		if at > 0 {
+			e.Added = time.Unix(at, 0)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// AddToAllowlist adds an email (or @domain), already parsed by ParseAllowlist
+func (f *FxaDB) AddToAllowlist(ctx context.Context, entry string) error {
+	_, err := f.db.ExecContext(ctx, "INSERT IGNORE INTO ffs.signup_allowlist (entry) VALUES (?)", entry)
+	return err
+}
+
+// RemoveFromAllowlist: false when it was not there
+func (f *FxaDB) RemoveFromAllowlist(ctx context.Context, entry string) (bool, error) {
+	res, err := f.db.ExecContext(ctx, "DELETE FROM ffs.signup_allowlist WHERE entry = ?", entry)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (f *FxaDB) Accounts(ctx context.Context) ([]FxaAccount, error) {
@@ -146,61 +250,79 @@ func (f *FxaDB) Accounts(ctx context.Context) ([]FxaAccount, error) {
 	return accounts, rows.Err()
 }
 
-// SetDisabled disables or re-enables an account. FxA refuses sign-ins and sessions of
-// disabled accounts, but not the OAuth tokens Firefox already has (Mozilla's own admin
-// panel leaves them too): revoke them. The tokenserver remembers a verified access
-// token for 5 minutes, and the Sync tokens it gave out last up to 1 hour.
-func (f *FxaDB) SetDisabled(ctx context.Context, uid string, disabled bool) error {
+// Account is one account, nil if there is none with that uid
+func (f *FxaDB) Account(ctx context.Context, uid string) (*FxaAccount, error) {
+	id, err := accountID(uid)
+	if err != nil {
+		return nil, err
+	}
+	var a FxaAccount
+	var created int64
+	err = f.db.QueryRowContext(ctx, `SELECT HEX(uid), email, emailVerified, createdAt, disabledAt IS NOT NULL
+		FROM fxa.accounts WHERE uid = ?`, id).Scan(&a.UID, &a.Email, &a.Verified, &created, &a.Disabled)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.UID, a.CreatedAt = strings.ToLower(a.UID), time.UnixMilli(created)
+	return &a, nil
+}
+
+func accountID(uid string) ([]byte, error) {
 	id, err := hex.DecodeString(uid)
 	if err != nil || len(id) != 16 {
-		return fmt.Errorf("invalid account id")
+		return nil, fmt.Errorf("invalid account id")
 	}
-	tx, err := f.db.BeginTx(ctx, nil)
+	return id, nil
+}
+
+// SetDisabled disables or re-enables an account. FxA refuses sign-ins and sessions of
+// disabled accounts, but not the OAuth tokens Firefox already has (Mozilla's own admin
+// panel leaves them too): disabling signs out everywhere first (SignOutAll).
+func (f *FxaDB) SetDisabled(ctx context.Context, uid string, disabled bool) error {
+	id, err := accountID(uid)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	var res sql.Result
-	if disabled {
-		res, err = tx.ExecContext(ctx, "UPDATE fxa.accounts SET disabledAt = ? WHERE uid = ? AND disabledAt IS NULL", time.Now().UnixMilli(), id)
-	} else {
-		res, err = tx.ExecContext(ctx, "UPDATE fxa.accounts SET disabledAt = NULL WHERE uid = ?", id)
+	if !disabled {
+		_, err = f.db.ExecContext(ctx, "CALL ffs.enable_account(?)", id)
+		return procedureError(err)
 	}
-	if err != nil {
-		return err
+	if _, err := f.db.ExecContext(ctx, "CALL ffs.disable_account(?)", id); err != nil {
+		return procedureError(err)
 	}
-	if disabled {
-		if n, _ := res.RowsAffected(); n == 0 {
-			var exists int
-			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM fxa.accounts WHERE uid = ?", id).Scan(&exists); err != nil {
-				return err
-			}
-			if exists == 0 {
-				return fmt.Errorf("no such account")
-			}
-		}
-		for _, q := range []string{
-			"DELETE FROM fxa.sessionTokens WHERE uid = ?",
-			"DELETE FROM fxa_oauth.refreshTokens WHERE userId = ?",
-			"DELETE FROM fxa_oauth.tokens WHERE userId = ?",
-			// the token endpoint does not check disabledAt: no code traded for new tokens
-			"DELETE FROM fxa_oauth.codes WHERE userId = ?",
-		} {
-			if _, err := tx.ExecContext(ctx, q, id); err != nil {
-				return err
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if disabled {
-		if _, err := revokeRedisTokens(ctx, f.redis, strings.ToLower(uid)); err != nil {
-			return fmt.Errorf("account disabled, but its access tokens are still valid until they expire: %w", err)
-		}
+	if _, err := revokeRedisTokens(ctx, f.redis, strings.ToLower(uid)); err != nil {
+		return &partialError{fmt.Errorf("account disabled, but its access tokens are still valid until they expire: %w", err)}
 	}
 	return nil
 }
+
+// SignOutAll ends every session, device and token of an account, which can sign in
+// again right away. The tokenserver remembers a verified access token for 5 minutes,
+// and the Sync tokens it gave out last up to 1 hour.
+func (f *FxaDB) SignOutAll(ctx context.Context, uid string) error {
+	id, err := accountID(uid)
+	if err != nil {
+		return err
+	}
+	// a procedure of fxa-init: ffs_admin cannot delete FxA's tokens itself
+	if _, err := f.db.ExecContext(ctx, "CALL ffs.sign_out_all(?)", id); err != nil {
+		return procedureError(err)
+	}
+	if _, err := revokeRedisTokens(ctx, f.redis, strings.ToLower(uid)); err != nil {
+		return &partialError{fmt.Errorf("signed out, but its access tokens are still valid until they expire: %w", err)}
+	}
+	return nil
+}
+
+// partialError: the change was made, but a later step failed. It still belongs in
+// the audit trail.
+type partialError struct{ err error }
+
+func (e *partialError) Error() string { return e.err.Error() }
+func (e *partialError) Unwrap() error { return e.err }
 
 func (f *FxaDB) Ping(ctx context.Context) error {
 	return f.db.PingContext(ctx)
@@ -252,6 +374,8 @@ type Device struct {
 	Name, Type string
 	CreatedAt  time.Time
 	LastUsed   time.Time
+	// not used for ADMIN_STALE_DAYS (the account page sets it)
+	Inactive bool
 }
 
 type Session struct {
@@ -260,16 +384,24 @@ type Session struct {
 	Browser, OS string
 	CreatedAt   time.Time
 	LastUsed    time.Time
+	// the sign-in code (or the second step) was entered, and how: email, totp-2fa...
+	Verified bool
+	Method   string
 }
 
 // Devices registered by the browsers of an account (Firefox names them, e.g.
-// "Firefox on laptop"), with when they last used it
+// "Firefox on laptop"), and its sessions, with when they last used it: the accounts
+// service writes most uses to Redis only (lastUsed)
 func (f *FxaDB) Devices(ctx context.Context, uid string) ([]Device, []Session, error) {
-	id, err := hex.DecodeString(uid)
-	if err != nil || len(id) != 16 {
-		return nil, nil, fmt.Errorf("invalid account id")
+	id, err := accountID(uid)
+	if err != nil {
+		return nil, nil, err
 	}
-	rows, err := f.db.QueryContext(ctx, `SELECT LOWER(HEX(id)), name, type, createdAt, lastUsed
+	used, err := sessionsLastUsed(ctx, f.redis, strings.ToLower(uid))
+	if err != nil {
+		log.Printf("last use of the sessions (Redis): %v", err)
+	}
+	rows, err := f.db.QueryContext(ctx, `SELECT LOWER(HEX(id)), name, type, createdAt, lastUsed, COALESCE(ref, '')
 		FROM ffs.devices WHERE uid = ? ORDER BY createdAt`, id)
 	if err != nil {
 		return nil, nil, err
@@ -279,16 +411,18 @@ func (f *FxaDB) Devices(ctx context.Context, uid string) ([]Device, []Session, e
 		var d Device
 		var name sql.NullString
 		var created int64
-		var used float64
-		if err := rows.Scan(&d.ID, &name, &d.Type, &created, &used); err != nil {
+		var last float64
+		var ref string
+		if err := rows.Scan(&d.ID, &name, &d.Type, &created, &last, &ref); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
-		d.Name, d.CreatedAt, d.LastUsed = name.String, ms(created), ms(int64(used))
+		d.Name, d.CreatedAt, d.LastUsed = name.String, ms(created), latest(ms(int64(last)), used[ref])
 		devices = append(devices, d)
 	}
 	rows.Close()
-	rows, err = f.db.QueryContext(ctx, `SELECT ref, COALESCE(uaBrowser, ''), COALESCE(uaOS, ''), createdAt, COALESCE(lastAccessTime, 0)
+	rows, err = f.db.QueryContext(ctx, `SELECT ref, COALESCE(uaBrowser, ''), COALESCE(uaOS, ''), createdAt, COALESCE(lastAccessTime, 0),
+		verified, COALESCE(verificationMethod, '')
 		FROM ffs.sessions WHERE uid = ? ORDER BY createdAt DESC`, id)
 	if err != nil {
 		return nil, nil, err
@@ -297,57 +431,269 @@ func (f *FxaDB) Devices(ctx context.Context, uid string) ([]Device, []Session, e
 	var sessions []Session
 	for rows.Next() {
 		var s Session
-		var created, used int64
-		if err := rows.Scan(&s.Ref, &s.Browser, &s.OS, &created, &used); err != nil {
+		var created, last int64
+		if err := rows.Scan(&s.Ref, &s.Browser, &s.OS, &created, &last, &s.Verified, &s.Method); err != nil {
 			return nil, nil, err
 		}
-		s.CreatedAt, s.LastUsed = ms(created), ms(used)
+		s.CreatedAt, s.LastUsed = ms(created), latest(ms(last), used[s.Ref])
 		sessions = append(sessions, s)
 	}
 	return devices, sessions, rows.Err()
 }
 
-// Recent sign-ups and new devices, for the activity log
-func (f *FxaDB) Recent(ctx context.Context, since time.Time) ([]Event, error) {
-	var events []Event
-	rows, err := f.db.QueryContext(ctx, "SELECT email, createdAt FROM fxa.accounts WHERE createdAt >= ?", since.UnixMilli())
+// InactiveDevices: per account, its devices last used (or added) before before. The
+// accounts service writes most uses to Redis only: read for the accounts with candidates
+func (f *FxaDB) InactiveDevices(ctx context.Context, before time.Time) (map[string]int, error) {
+	rows, err := f.db.QueryContext(ctx, "SELECT LOWER(HEX(uid)), createdAt, lastUsed, COALESCE(ref, '') FROM ffs.devices")
 	if err != nil {
 		return nil, err
 	}
+	type device struct {
+		last time.Time
+		ref  string
+	}
+	candidates := map[string][]device{}
 	for rows.Next() {
-		var email string
-		var at int64
-		if err := rows.Scan(&email, &at); err != nil {
+		var uid, ref string
+		var created int64
+		var last float64
+		if err := rows.Scan(&uid, &created, &last, &ref); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		events = append(events, Event{At: ms(at), Kind: "sign-up", Detail: email})
+		if d := (device{latest(ms(created), ms(int64(last))), ref}); d.last.Before(before) {
+			candidates[uid] = append(candidates[uid], d)
+		}
 	}
 	rows.Close()
-	rows, err = f.db.QueryContext(ctx, `SELECT a.email, COALESCE(d.name, ''), d.type, d.createdAt
-		FROM ffs.devices d JOIN fxa.accounts a ON a.uid = d.uid WHERE d.createdAt >= ?`, since.UnixMilli())
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	uids := make([]string, 0, len(candidates))
+	for uid := range candidates {
+		uids = append(uids, uid)
+	}
+	used, bad, err := sessionsLastUsedOf(ctx, f.redis, uids)
+	if err != nil {
+		return nil, fmt.Errorf("last use of the sessions (Redis): %w", err)
+	}
+	// an unreadable cache: that account is left out, not guessed from the older times
+	skip := map[string]bool{}
+	for _, uid := range bad {
+		skip[uid] = true
+	}
+	if len(bad) > 0 {
+		f.logOnce(fmt.Sprintf("inactive devices: unexpected session cache (Redis) of %d accounts, left out", len(bad)))
+	}
+	inactive := map[string]int{}
+	for uid, devices := range candidates {
+		if skip[uid] {
+			continue
+		}
+		for _, d := range devices {
+			if latest(d.last, used[uid][d.ref]).Before(before) {
+				inactive[uid]++
+			}
+		}
+	}
+	return inactive, nil
+}
+
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// Security is how an account signs in, from ffs.account_security (no secrets)
+type Security struct {
+	TOTP          bool // two-step authentication (an authenticator app)
+	RecoveryKey   bool
+	RecoveryCodes int // backup authentication codes left
+	RecoveryPhone bool
+	Passkeys      int
+	PasswordSetAt time.Time
+	KeysChangedAt time.Time
+	LockedAt      time.Time
+	// sessions that never entered their sign-in code (or second step)
+	UnverifiedSessions int
+}
+
+const securityColumns = `LOWER(HEX(uid)), totp_enabled, recovery_key, recovery_codes_left, recovery_phone, passkeys,
+	COALESCE(verifierSetAt, 0), COALESCE(keysChangedAt, 0), COALESCE(lockedAt, 0), unverified_sessions`
+
+func scanSecurity(scan func(...any) error) (string, Security, error) {
+	var uid string
+	var s Security
+	var password, keys, locked int64
+	err := scan(&uid, &s.TOTP, &s.RecoveryKey, &s.RecoveryCodes, &s.RecoveryPhone, &s.Passkeys, &password, &keys, &locked, &s.UnverifiedSessions)
+	s.PasswordSetAt, s.KeysChangedAt, s.LockedAt = ms(password), ms(keys), ms(locked)
+	return uid, s, err
+}
+
+// Securities: the security of every account, by uid, for the badges of the list
+func (f *FxaDB) Securities(ctx context.Context) (map[string]Security, error) {
+	rows, err := f.db.QueryContext(ctx, "SELECT "+securityColumns+" FROM ffs.account_security")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	all := map[string]Security{}
 	for rows.Next() {
-		var email, name, kind string
-		var at int64
-		if err := rows.Scan(&email, &name, &kind, &at); err != nil {
+		uid, s, err := scanSecurity(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		events = append(events, Event{At: ms(at), Kind: "new device", Detail: fmt.Sprintf("%s: %s (%s)", email, name, kind)})
+		all[uid] = s
 	}
-	return events, rows.Err()
+	return all, rows.Err()
+}
+
+func (f *FxaDB) Security(ctx context.Context, uid string) (*Security, error) {
+	id, err := accountID(uid)
+	if err != nil {
+		return nil, err
+	}
+	_, s, err := scanSecurity(f.db.QueryRowContext(ctx, "SELECT "+securityColumns+" FROM ffs.account_security WHERE uid = ?", id).Scan)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+type Email struct {
+	Email             string
+	Verified, Primary bool
+	CreatedAt         time.Time
+}
+
+// Emails of an account, the primary first
+func (f *FxaDB) Emails(ctx context.Context, uid string) ([]Email, error) {
+	id, err := accountID(uid)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := f.db.QueryContext(ctx, `SELECT email, isVerified, isPrimary, createdAt FROM ffs.emails
+		WHERE uid = ? ORDER BY isPrimary DESC, createdAt`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var emails []Email
+	for rows.Next() {
+		var e Email
+		var created int64
+		if err := rows.Scan(&e.Email, &e.Verified, &e.Primary, &created); err != nil {
+			return nil, err
+		}
+		e.CreatedAt = ms(created)
+		emails = append(emails, e)
+	}
+	return emails, rows.Err()
+}
+
+// RemoveTOTP turns off two-step authentication (and its backup codes and phone), for
+// someone who lost their authenticator: they sign in with the password and an email
+// code again
+func (f *FxaDB) RemoveTOTP(ctx context.Context, uid string) error {
+	return f.change(ctx, "ffs.remove_totp", uid, "two-step authentication turned off")
+}
+
+// RemoveRecoveryKey removes the account recovery key
+func (f *FxaDB) RemoveRecoveryKey(ctx context.Context, uid string) error {
+	return f.change(ctx, "ffs.remove_recovery_key", uid, "recovery key removed")
+}
+
+// ConfirmEmail marks the primary email of an account as confirmed, without its code
+func (f *FxaDB) ConfirmEmail(ctx context.Context, uid string) error {
+	return f.change(ctx, "ffs.confirm_email", uid, "email confirmed")
+}
+
+// change runs a procedure of fxa-init on an account, then drops the account from the
+// profile server's cache, which would show the old state (2-step on...) for a while
+func (f *FxaDB) change(ctx context.Context, procedure, uid, done string) error {
+	id, err := accountID(uid)
+	if err != nil {
+		return err
+	}
+	if _, err := f.db.ExecContext(ctx, "CALL "+procedure+"(?)", id); err != nil {
+		return procedureError(err)
+	}
+	if err := dropProfileCache(ctx, f.redis, strings.ToLower(uid)); err != nil {
+		return &partialError{fmt.Errorf("%s, but the profile server may show the old state for a while: %w", done, err)}
+	}
+	return nil
+}
+
+// Recent sign-ups and new devices, for the activity log: created in [since, before)
+// (before zero: up to now), newest first, kind "sign-up", "new device" or both (""),
+// with q in the email or the device name (any case), at most limit of each kind
+func (f *FxaDB) Recent(ctx context.Context, since, before time.Time, kind, q string, limit int) ([]Event, error) {
+	if before.IsZero() {
+		before = time.Now().Add(time.Minute)
+	}
+	like := "%" + likeEscape(strings.ToLower(q)) + "%"
+	var events []Event
+	if kind == "" || kind == "sign-up" {
+		rows, err := f.db.QueryContext(ctx, `SELECT email, createdAt FROM fxa.accounts
+			WHERE createdAt >= ? AND createdAt < ? AND LOWER(email) LIKE ? ORDER BY createdAt DESC LIMIT ?`,
+			since.UnixMilli(), before.UnixMilli(), like, limit)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var email string
+			var at int64
+			if err := rows.Scan(&email, &at); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			events = append(events, Event{At: ms(at), Kind: "sign-up", Detail: email})
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if kind == "" || kind == "new device" {
+		rows, err := f.db.QueryContext(ctx, `SELECT a.email, COALESCE(d.name, ''), d.type, d.createdAt
+			FROM ffs.devices d JOIN fxa.accounts a ON a.uid = d.uid
+			WHERE d.createdAt >= ? AND d.createdAt < ? AND (LOWER(a.email) LIKE ? OR LOWER(d.name) LIKE ?)
+			ORDER BY d.createdAt DESC LIMIT ?`, since.UnixMilli(), before.UnixMilli(), like, like, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var email, name, kind string
+			var at int64
+			if err := rows.Scan(&email, &name, &kind, &at); err != nil {
+				return nil, err
+			}
+			events = append(events, Event{At: ms(at), Kind: "new device", Detail: fmt.Sprintf("%s: %s (%s)", email, name, kind)})
+		}
+		return events, rows.Err()
+	}
+	return events, nil
+}
+
+// likeEscape: q matches as is, % and _ too (backslash: the escape of LIKE in MySQL,
+// MariaDB and PostgreSQL)
+func likeEscape(q string) string {
+	return strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(q)
 }
 
 // SignOutDevice removes a device and the tokens it signed in with, like "sign out"
 // in the devices list of the account settings; the account stays usable elsewhere.
 // Its access tokens live on until they expire (FXA_ACCESS_TOKEN_LIFETIME).
 func (f *FxaDB) SignOutDevice(ctx context.Context, uid, deviceID string) error {
-	account, err := hex.DecodeString(uid)
-	if err != nil || len(account) != 16 {
-		return fmt.Errorf("invalid account id")
+	account, err := accountID(uid)
+	if err != nil {
+		return err
 	}
 	device, err := hex.DecodeString(deviceID)
 	if err != nil || len(device) != 16 {
@@ -360,9 +706,9 @@ func (f *FxaDB) SignOutDevice(ctx context.Context, uid, deviceID string) error {
 
 // SignOutSession ends one session (ref: SHA-256 of its token id), and its device
 func (f *FxaDB) SignOutSession(ctx context.Context, uid, ref string) error {
-	account, err := hex.DecodeString(uid)
-	if err != nil || len(account) != 16 {
-		return fmt.Errorf("invalid account id")
+	account, err := accountID(uid)
+	if err != nil {
+		return err
 	}
 	hash, err := hex.DecodeString(ref)
 	if err != nil || len(hash) != 32 {

@@ -1,0 +1,32 @@
+# Backups of the tokenserver and storage databases (ADMIN.md#backups): started by
+# firefox-sync-backup.timer, off until you enable it:
+#   systemctl --user enable --now firefox-sync-backup.timer
+# One now: systemctl --user start firefox-sync-backup.service
+[Unit]
+Description=Firefox Sync - Backup of the databases
+After=firefox-sync-network.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
+
+[Container]
+Image=docker.io/library/mariadb:lts
+ContainerName=firefox-sync-backup
+Network=firefox-sync-network.network
+Volume=firefox-sync-backups.volume:/backups
+Volume=%SCRIPT_DIR%/config/backup:/ffs-backup:ro,z
+Environment="BACKUP_SCOPE=sync"
+Environment="BACKUP_KEEP=%BACKUP_KEEP%"
+Environment="MARIADB_TLS_VERIFY=%MARIADB_TLS_VERIFY%"
+Environment="TOKENSERVER_DB_TYPE=mysql"
+Environment="TOKENSERVER_DB_HOST=%MARIADB_TOKENSERVER_SERVER%"
+Environment="TOKENSERVER_DB_PORT=%MARIADB_TOKENSERVER_SERVER_PORT%"
+Environment="TOKENSERVER_DB_NAME=%MARIADB_TOKENSERVER_DATABASE%"
+Environment="TOKENSERVER_DB_USER=%MARIADB_TOKENSERVER_USER%"
+Environment="TOKENSERVER_DB_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%"
+Environment="STORAGE_DB_HOST=%MARIADB_SYNCSTORAGE_SERVER%"
+Environment="STORAGE_DB_PORT=%MARIADB_SYNCSTORAGE_SERVER_PORT%"
+Environment="STORAGE_DB_NAME=%MARIADB_SYNCSTORAGE_DATABASE%"
+Environment="STORAGE_DB_USER=%MARIADB_SYNCSTORAGE_USER%"
+Environment="STORAGE_DB_PASSWORD=%MARIADB_SYNCSTORAGE_PASSWORD%"
+Exec=sh /ffs-backup/backup.sh now
+
+[Service]
+Type=oneshot

@@ -14,6 +14,9 @@ services:
   # (also in docker-compose.external-db-test.yml: with Sync on the server too)
   ffs-admin:
     networks: [default, extdb]
+  # the Python tests run in its image, they look into the accounts database
+  syncstorage:
+    networks: [default, extdb]
 
 networks:
   extdb:

@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,18 +22,45 @@ import (
 type Component struct {
 	Name    string
 	Up      bool
+	Warn    bool // not up: it works, with a problem to look at (a certificate about to expire)
 	Error   string
+	Detail  string // what the check saw, shown next to up
 	Version string
 	Latest  string // newest upstream release, when newer than Version
 	Checked time.Time
+	// not in the health table: one of the setup checks of the overview
+	Hidden bool
 }
 
 type check struct {
-	name    string
-	health  func(ctx context.Context) error
+	name   string
+	health func(ctx context.Context) error
+	// instead of health: what to show next to up. errSkip: no row (nothing to check)
+	run     func(ctx context.Context) (string, error)
 	version func(ctx context.Context) (string, error)
 	// upstream repository (owner/name) whose releases are compared with the version
 	upstream string
+	// run at most every every, while it fails every retry (0: every round)
+	every, retry time.Duration
+	hidden       bool
+}
+
+// errSkip: a check with nothing to check (no https URL...), left out
+var errSkip = errors.New("nothing to check")
+
+// warning: a check that works with a problem, e.g. a certificate that expires soon
+type warning struct{ msg string }
+
+func (w warning) Error() string { return w.msg }
+
+func (c Component) state() string {
+	switch {
+	case c.Up:
+		return "up"
+	case c.Warn:
+		return "warn"
+	}
+	return "down"
 }
 
 type Health struct {
@@ -47,6 +77,24 @@ type Health struct {
 	lastSignup time.Time
 	started    time.Time
 	alerted    map[string]time.Time // new accounts and devices already alerted
+	// accounts (uid and action) blocked by the rate limits, alerted: until when
+	blockAlerted map[string]time.Time
+	lastRun      map[string]time.Time // of the checks with every
+	// certificates of the public URLs: host -> NotAfter
+	certs map[string]time.Time
+	// the trust of the public checks, nil: the system's (the tests set their own)
+	rootCAs *x509.CertPool
+	// schema levels of the databases, see schema.go, and the error logged last
+	schema    []SchemaLevel
+	schemaErr string
+	// the last alert of a burst of sign-ups (maintenance.go)
+	burstAlerted time.Time
+	// the runs of the backups (backup.go)
+	backups []BackupStatus
+	// when the Sync server last came up: its first metrics follow it (attention.go)
+	syncUpSince time.Time
+	// the state of each condition alerted once per change (attention.go), the errors logged last
+	states, logged map[string]string
 }
 
 // GitHub's API, for the release check (the tests use their own)
@@ -141,6 +189,16 @@ func newHealth(app *App) *Health {
 				}})
 		}
 	}
+	if m := smtpServer(); m != nil {
+		detail := net.JoinHostPort(m.host, m.port)
+		if m.user != "" {
+			detail += ", signs in as " + m.user
+		}
+		// every hour, and while it fails every 10 minutes: not a sign-in a minute with a wrong password
+		h.checks = append(h.checks, check{name: "Email (SMTP)", every: time.Hour, retry: 10 * time.Minute,
+			run: func(context.Context) (string, error) { return detail, m.check(10 * time.Second) }})
+	}
+	h.checks = append(h.checks, h.publicChecksOf(app)...)
 	// this program, at the top of the list
 	h.checks = append([]check{{name: "Admin UI", health: func(context.Context) error { return nil },
 		version: func(context.Context) (string, error) { return version, nil }}}, h.checks...)
@@ -154,11 +212,16 @@ func (h *Health) run(ctx context.Context) {
 	for {
 		h.checkAll(ctx)
 		h.watchAccounts(ctx)
+		h.watchSignupBurst(ctx, time.Now())
+		h.watchBlocks(ctx)
+		h.watchSchema(ctx)
+		h.watchBackups(ctx, time.Now())
+		h.watchThresholds(ctx, time.Now())
 		if time.Since(lastSizes) >= time.Hour {
 			h.measureSizes(ctx)
 			lastSizes = time.Now()
 		}
-		if env("ADMIN_UPDATE_CHECK", "true") != "false" && time.Since(h.latestAt) > 12*time.Hour {
+		if h.releasesDue(time.Now()) {
 			h.checkReleases(ctx)
 		}
 		select {
@@ -171,17 +234,50 @@ func (h *Health) run(ctx context.Context) {
 
 func (h *Health) checkAll(ctx context.Context) {
 	h.mu.Lock()
-	previous := map[string]bool{}
+	previous := map[string]Component{}
 	for _, c := range h.components {
-		previous[c.Name] = c.Up
+		previous[c.Name] = c
+	}
+	if h.lastRun == nil {
+		h.lastRun = map[string]time.Time{}
 	}
 	h.mu.Unlock()
 	components := make([]Component, 0, len(h.checks))
 	for _, c := range h.checks {
+		prev, seen := previous[c.name]
+		h.mu.Lock()
+		last := h.lastRun[c.name]
+		h.mu.Unlock()
+		if c.every > 0 && !last.IsZero() {
+			wait := c.every
+			if !seen || !prev.Up {
+				wait = c.retry
+			}
+			if time.Since(last) < wait {
+				if seen {
+					components = append(components, prev)
+				}
+				continue
+			}
+		}
+		h.mu.Lock()
+		h.lastRun[c.name] = time.Now()
+		h.mu.Unlock()
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		comp := Component{Name: c.name, Checked: time.Now()}
-		if err := c.health(cctx); err != nil {
-			comp.Error = err.Error()
+		comp := Component{Name: c.name, Checked: time.Now(), Hidden: c.hidden}
+		var err error
+		if c.run != nil {
+			comp.Detail, err = c.run(cctx)
+		} else {
+			err = c.health(cctx)
+		}
+		if errors.Is(err, errSkip) {
+			cancel()
+			continue
+		}
+		var warn warning
+		if err != nil {
+			comp.Error, comp.Warn = err.Error(), errors.As(err, &warn)
 		} else {
 			comp.Up = true
 		}
@@ -197,14 +293,20 @@ func (h *Health) checkAll(ctx context.Context) {
 			comp.Latest = latest
 		}
 		h.mu.Unlock()
-		if up, seen := previous[c.name]; seen && up != comp.Up {
-			if comp.Up {
+		if (seen && prev.state() != comp.state()) || (!seen && !comp.Up) {
+			switch comp.state() {
+			case "up":
 				h.app.event("health", c.name+" is back up")
-			} else {
+			case "warn":
+				h.app.event("health", c.name+": "+comp.Error)
+			default:
 				h.app.event("health", c.name+" is down: "+comp.Error)
 			}
-		} else if !seen && !comp.Up {
-			h.app.event("health", c.name+" is down: "+comp.Error)
+		}
+		if c.name == "Sync server" && comp.Up && (!seen || !prev.Up) {
+			h.mu.Lock()
+			h.syncUpSince = comp.Checked
+			h.mu.Unlock()
 		}
 		components = append(components, comp)
 	}
@@ -219,7 +321,7 @@ func (h *Health) watchAccounts(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	events, err := h.app.fxa.Recent(ctx, h.lastSignup.Add(-watchOverlap))
+	events, err := h.app.fxa.Recent(ctx, h.lastSignup.Add(-watchOverlap), time.Time{}, "", "", 1000)
 	if err != nil {
 		log.Printf("watching new accounts: %v", err)
 		return
@@ -242,6 +344,74 @@ func (h *Health) newAccountEvents(events []Event, now time.Time) {
 	for key, at := range h.alerted {
 		if at.Before(now.Add(-watchOverlap)) {
 			delete(h.alerted, key)
+		}
+	}
+}
+
+// watchBlocks alerts when the rate limits lock out an account of the accounts service
+// (wrong passwords, codes): its owner may need a hand, or someone is guessing
+func (h *Health) watchBlocks(ctx context.Context) {
+	if h.app.fxa == nil {
+		return
+	}
+	accounts, err := h.app.fxa.Accounts(ctx)
+	if err != nil {
+		log.Printf("watching the rate limits: %v", err)
+		return
+	}
+	blocks, complete, err := h.app.fxa.BlocksOf(ctx, accounts)
+	if err != nil {
+		log.Printf("watching the rate limits: %v", err)
+		return
+	}
+	h.blockEvents(blocks, accounts, time.Now(), complete)
+}
+
+// blockEvents records (and alerts) the new blocks of accounts that exist, once per
+// account and action while blocked (on its email, its email and an IP address...).
+// Anybody can get an unknown email or an IP address blocked: those are left to the
+// Security page. Not complete: blocks missing from the list may still be on
+func (h *Health) blockEvents(blocks []Block, accounts []FxaAccount, now time.Time, complete bool) {
+	if h.blockAlerted == nil {
+		h.blockAlerted = map[string]time.Time{}
+	}
+	byEmail, byUID := map[string]*FxaAccount{}, map[string]*FxaAccount{}
+	for i := range accounts {
+		byEmail[strings.ToLower(accounts[i].Email)], byUID[accounts[i].UID] = &accounts[i], &accounts[i]
+	}
+	active := map[string]bool{}
+	for _, b := range blocks {
+		// blocks from before the start were never seen ending: not new
+		if !b.Until.After(now) || b.Start.Before(h.started) {
+			continue
+		}
+		email, uid := b.Subject()
+		if email == "" && uid == "" {
+			continue
+		}
+		acc := byEmail[email]
+		if acc == nil {
+			acc = byUID[uid]
+		}
+		if acc == nil {
+			continue
+		}
+		key := acc.UID + "\x00" + b.Action
+		active[key] = true
+		if until, seen := h.blockAlerted[key]; seen {
+			if b.Until.After(until) {
+				h.blockAlerted[key] = b.Until
+			}
+			continue
+		}
+		h.blockAlerted[key] = b.Until
+		h.app.event("blocked", fmt.Sprintf("%s blocked until %s after too many attempts (%s, on %s)",
+			accountLabel(acc, acc.UID), formatTime(b.Until, adminZone), b.Action, b.On))
+	}
+	// lifted or over: a new block alerts again
+	for key, until := range h.blockAlerted {
+		if (complete && !active[key]) || !until.After(now) {
+			delete(h.blockAlerted, key)
 		}
 	}
 }
@@ -277,6 +447,12 @@ func (h *Health) measureSizes(ctx context.Context) {
 	for name, n := range sizes {
 		h.app.rec.Gauge("db.size."+name, n)
 	}
+}
+
+// releasesDue: time to ask GitHub again, every 12 hours. Never with ADMIN_UPDATE_CHECK=false:
+// with ADMIN_PUBLIC_CHECK=false too, nothing connects to the internet (ADMIN.md)
+func (h *Health) releasesDue(now time.Time) bool {
+	return env("ADMIN_UPDATE_CHECK", "true") != "false" && now.Sub(h.latestAt) > 12*time.Hour
 }
 
 // checkReleases asks GitHub for the newest releases (ADMIN_UPDATE_CHECK=false: never)

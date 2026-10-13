@@ -26,6 +26,7 @@ Quadlets are systemd unit files that Podman automatically converts into containe
 - `firefox-sync-tokenserver-db-init.container` - Database initialization and MAX_USERS (runs once, after the migrations)
 - `firefox-sync-syncstorage.container` - Main Firefox Sync service (starts only after the init succeeded)
 - `fxa/` - self-hosted Mozilla accounts (experimental, see [FXA.md](../../FXA.md)), installed only when chosen in `prepare_environment.sh`; `firefox-sync-fxa-policy.container` installs the sign-up policy before the accounts start; with `FXA_DB=mariadb` the files in `fxa/mariadb/` replace `firefox-sync-fxa-db.container` and its volume (see [FXA.md](../../FXA.md#mysql-or-mariadb))
+- `firefox-sync-backup.container`, `firefox-sync-backups.volume` and `firefox-sync-backup.timer` (installed in `~/.config/systemd/user`, off until `systemctl --user enable --now firefox-sync-backup.timer`) - nightly backups of the databases, `fxa/firefox-sync-backup-fxa.container` those of the accounts, see [ADMIN.md](../../ADMIN.md#backups)
 - `admin/firefox-sync-admin.container` - the optional [admin UI](../../ADMIN.md) (`fxa/admin/` with self-hosted accounts: it also manages them and is the sign-up gate), installed when enabled in `prepare_environment.sh`
 
 ### Your own database server

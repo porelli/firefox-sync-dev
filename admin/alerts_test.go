@@ -19,9 +19,12 @@ type fakeSMTP struct {
 	ln                 net.Listener
 	tls                *tls.Config
 	starttls, implicit bool
+	authFail           bool // refuses every password
+	quitFail           bool // drops the connection at QUIT
 
 	mu       sync.Mutex
 	commands []string
+	rcpts    []string // the arguments of RCPT
 	data     string
 }
 
@@ -83,8 +86,17 @@ func (s *fakeSMTP) handle(conn net.Conn) {
 			conn, encrypted = tls.Server(conn, s.tls), true
 			r = bufio.NewReader(conn)
 		case "AUTH":
-			reply("235 ok")
+			if s.authFail {
+				reply("535 5.7.8 authentication failed")
+			} else {
+				reply("235 ok")
+			}
 		case "MAIL", "RCPT":
+			if verb == "RCPT" {
+				s.mu.Lock()
+				s.rcpts = append(s.rcpts, line[len("RCPT "):])
+				s.mu.Unlock()
+			}
 			reply("250 ok")
 		case "DATA":
 			reply("354 go ahead")
@@ -104,7 +116,9 @@ func (s *fakeSMTP) handle(conn net.Conn) {
 			s.mu.Unlock()
 			reply("250 ok")
 		case "QUIT":
-			reply("221 bye")
+			if !s.quitFail {
+				reply("221 bye")
+			}
 			return
 		default:
 			reply("502 no")
@@ -120,8 +134,8 @@ func (s *fakeSMTP) seen() ([]string, string) {
 
 func (s *fakeSMTP) alerter(pool *x509.CertPool) *Alerter {
 	_, port, _ := net.SplitHostPort(s.ln.Addr().String())
-	return &Alerter{to: "admin@example.com", from: "ffs <admin@example.com>", host: "127.0.0.1", port: port,
-		user: "mailer", pass: "secret", rootCAs: pool}
+	return &Alerter{to: "admin@example.com", Mailer: Mailer{from: "ffs <admin@example.com>", host: "127.0.0.1", port: port,
+		user: "mailer", pass: "secret", rootCAs: pool}}
 }
 
 func line(text string) string { return time.Now().UTC().Format(alertTime) + "  " + text }
@@ -153,6 +167,20 @@ func TestAlertSubject(t *testing.T) {
 	_, data := server.seen()
 	if !strings.Contains(data, "\r\nSubject: firefox-sync: 2 events\r\n") || !strings.Contains(data, "health: Sync server is back up") {
 		t.Errorf("two lines: %q", data)
+	}
+}
+
+// once DATA is accepted the email is sent: a QUIT that fails must not send it again
+func TestAlertQuitFails(t *testing.T) {
+	server, _ := newFakeSMTP(t, false, false)
+	server.quitFail = true
+	al := server.alerter(nil)
+	al.insecureAuth = true
+	if err := al.send([]string{line("health: Sync server is down")}); err != nil {
+		t.Fatalf("accepted, reported as failed: %v", err)
+	}
+	if _, data := server.seen(); !strings.Contains(data, "health: Sync server is down") {
+		t.Errorf("%q", data)
 	}
 }
 
@@ -207,7 +235,7 @@ func TestAlertLinesFromOutside(t *testing.T) {
 func TestGateEventOnlyForEmails(t *testing.T) {
 	events := make(chan string, 2)
 	u, _ := url.Parse("http://127.0.0.1:1")
-	gate := newGate(u, "", &fakeChecker{}, func(kind, detail string) { events <- detail })
+	gate := newGate(u, "", &fakeChecker{}, func(kind, detail string) { events <- detail }, "")
 	for body, want := range map[string]string{
 		`{"email":"mallory@example.org"}`:                "mallory@example.org",
 		`{"email":"x@y\rBcc: a@b"}`:                      "invalid email",

@@ -61,7 +61,8 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^FXA_SMTP_USER=.*|FXA_SMTP_USER=test|" \
     -e "s|^FXA_SMTP_PASS=.*|FXA_SMTP_PASS=test|" \
     -e "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"Mozilla accounts <no-reply@fxa.test>\"|" \
-    -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=pairing,admin|" \
+    -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=pairing,admin,backup|" \
+    -e "s|^BACKUP_KEEP=.*|BACKUP_KEEP=1|" \
     -e "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=allowlist|" \
     -e "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=@example.com,invited@example.net|" \
     -e "s|^# FXA_PAIRING_URL=.*|FXA_PAIRING_URL=wss://pairing.fxa.test|" \
@@ -84,6 +85,8 @@ EXTDB=${PROJECT}-extdb
 if [ -n "${EXTERNAL_DB:-}" ]; then
   sed -i -e "s|^FXA_DB_CONTAINERS=.*|FXA_DB_CONTAINERS=0|" -e "s|^FXA_MYSQL_HOST=.*|FXA_MYSQL_HOST=${EXTDB}|" \
       -e "s|^FXA_MYSQL_USER=.*|FXA_MYSQL_USER=fxa|" "${ENV_FILE}"
+  # the backup service is for the database containers
+  sed -i "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=pairing,admin|" "${ENV_FILE}"
   if [ "${EXTERNAL_DB}" = fxa ]; then
     # one user for both (DATABASES.md): a policy password left in .env must not be used
     sed -i "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=unused|" "${ENV_FILE}"
@@ -252,6 +255,37 @@ external_answers[admin_answer+12]=fd00::10
 rm -f "${SETUP}/.env"
 printf '%s\n' "${external_answers[@]}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-ipv6.log" 2>&1
 check "$? $(grep -c "no IPv6 address" "${WORK}/setup-ipv6.log")" "1 1" "prepare_environment.sh refuses an IPv6 address as the database host"
+# answers that would break the quoting of .env or add lines to it: refused, no .env
+refused() {
+  local at=$1 value=$2 message=$3 log="${WORK}/setup-refused-$1.log" bad=("${answers[@]}")
+  bad[at]=${value}
+  rm -f "${SETUP}/.env"
+  printf '%s\n' "${bad[@]}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${log}" 2>&1
+  check "$? $(grep -c "${message}" "${log}") [$(ls "${SETUP}/.env" 2> /dev/null)]" "1 1 []" "prepare_environment.sh refuses ${value} (${message})"
+}
+refused $((admin_answer + 6)) "it's" "cannot contain a single quote"
+refused $((admin_answer + 8)) "alice@example.org;rm" "not a list of emails and domains"
+refused $((admin_answer + 9)) 'admin@example.org$(id)' "not a list of emails and domains"
+refused $((admin_answer + 10)) "admin.example.org/x" "not a host name"
+refused 3 ten "max users must be a number"
+refused 4 sqlite "unknown database backend"
+# answers about your own server that end up unquoted in database-setup.sql (run as
+# root) and in the database URLs: refused, no .env, no SQL
+external_answers[admin_answer+12]=db.example.org
+external_at=$((admin_answer + 12))
+refused_external() {
+  local at=$1 value=$2 message=$3 log="${WORK}/setup-refused-external-$1.log" bad=("${external_answers[@]}")
+  bad[at]=${value}
+  rm -f "${SETUP}/.env" "${SETUP}"/database-setup*.sql
+  printf '%s
+' "${bad[@]}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${log}" 2>&1
+  check "$? $(grep -c "${message}" "${log}") [$(ls "${SETUP}/.env" "${SETUP}"/database-setup*.sql 2> /dev/null)]" "1 1 []" "prepare_environment.sh refuses '${value}' (${message})"
+}
+refused_external $((external_at + 2)) "tokenserver;drop" "not a valid database or user name"
+refused_external $((external_at + 5)) "Sync-User" "not a valid database or user name"
+refused_external $((external_at + 4)) "tokenserver" "need two databases"
+refused_external $((external_at + 1)) "33o6" "not a port"
+refused_external "${external_at}" "" "database host is required"
 # the accounts on MariaDB: the last question (EOF above: mysql)
 external_answers[admin_answer+12]=db.example.org
 rm -f "${SETUP}/.env"
@@ -345,6 +379,7 @@ dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
   -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
   -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e FXA_PAIRING_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
+  -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD \
   -e PYTHONPATH=/app:/app/tools -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint /bin/sh syncstorage \
   -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_flow.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
@@ -359,6 +394,7 @@ dc run --rm -T --no-deps --user root \
   -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_DIRECT_URL=http://fxa-auth:9000 -e ADMIN_FXA_CLIENT_ID \
   -e FXA_DB_SERVER="${FXA_DB_SERVER}" -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
+  -e FXA_TEST_DB_URL="mysql://${FXA_MYSQL_USER}:${FXA_MYSQL_PASSWORD}@${FXA_MYSQL_HOST}:${FXA_MYSQL_PORT}/fxa" \
   --entrypoint /bin/sh syncstorage \
   -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
 check "$?" 0 "sign-up policy and admin UI tests"
@@ -385,6 +421,35 @@ if [ "${DB_CONTAINERS:-1}" = 0 ]; then
 else
   ts_sql() { dc exec -T tokenserver_db mariadb -u"${MARIADB_TOKENSERVER_USER}" -p"${MARIADB_TOKENSERVER_PASSWORD}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" 2> /dev/null; }
 fi
+echo "== the admin UI's user changes the accounts only through the procedures of fxa-policy"
+# (the errors too; not the warning of the MariaDB client about MYSQL_PWD)
+if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
+  as_ffs_admin() { docker exec -i -e MYSQL_PWD="${FXA_ADMIN_DB_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -uffs_admin -h 127.0.0.1 --protocol=tcp -sN -e "$1" < /dev/null 2>&1 | grep -v '^WARNING: '; }
+else
+  as_ffs_admin() { dc exec -T -e MYSQL_PWD="${FXA_ADMIN_DB_PASSWORD}" fxa-db "${DB_CLIENT}" -uffs_admin -h 127.0.0.1 --protocol=tcp -sN -e "$1" < /dev/null 2>&1 | grep -v '^WARNING: '; }
+fi
+check "$(as_ffs_admin 'SELECT COUNT(uid) > 0 FROM fxa.accounts')" 1 "ffs_admin reads the accounts"
+check "$(as_ffs_admin 'DELETE FROM fxa.sessionTokens WHERE uid IS NULL' | grep -c 'command denied')" 1 "ffs_admin cannot delete FxA's sessions itself"
+check "$(as_ffs_admin 'UPDATE fxa.accounts SET disabledAt = NULL WHERE uid IS NULL' | grep -c 'command denied')" 1 "ffs_admin cannot change fxa.accounts itself"
+check "$(as_ffs_admin 'SHOW GRANTS' | grep -cE 'GRANT .*(UPDATE|DELETE|INSERT).* ON `?fxa(_oauth)?`?\.')" 0 "no grant to change FxA's tables for ffs_admin"
+check "$(as_ffs_admin 'SHOW GRANTS' | grep -cE 'GRANT EXECUTE ON PROCEDURE `?ffs`?\.`?(disable_account|enable_account|sign_out_all|delete_account|delete_unconfirmed|prune)`?')" 6 "ffs_admin runs the procedures to disable, enable, sign out, delete and prune"
+check "$(fxa_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = 'ffs' AND ROUTINE_NAME IN ('disable_account', 'enable_account', 'sign_out_all', 'remove_totp', 'remove_recovery_key', 'confirm_email', 'delete_account', 'delete_unconfirmed', 'prune')")" 9 "fxa-policy installed the account procedures"
+# what they run on is Mozilla's: no stand-in refusing (a procedure of FxA missing, or no EXECUTE on fxa.*)
+check "$(fxa_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = 'ffs' AND ROUTINE_DEFINITION LIKE '%missing from the accounts database%'")" 0 "no account procedure replaced by a stand-in"
+# the procedures take the database's time, whatever ffs_admin passes: no fresh account
+# deleted, no recent security event pruned, with a time far in the future
+newest=$(fxa_sql "SELECT HEX(uid) FROM fxa.accounts ORDER BY createdAt DESC LIMIT 1")
+check "$(as_ffs_admin "CALL ffs.delete_unconfirmed(UNHEX('${newest}'), 9000000000000000)" | grep -c 'not an account unconfirmed since before the cutoff')" 1 "ffs.delete_unconfirmed refuses an account created today"
+recent_events() { fxa_sql "SELECT COUNT(*) FROM fxa.securityEvents WHERE createdAt > UNIX_TIMESTAMP() * 1000 - 43200000"; }
+events_before=$(recent_events)
+as_ffs_admin "CALL ffs.prune(9000000000000000, 9000000000000000)" > /dev/null
+check "$(recent_events) $(fxa_sql "SELECT CAST(value AS SIGNED) <= UNIX_TIMESTAMP() * 1000 FROM fxa.dbMetadata WHERE name = 'prune-last-ran'")" "${events_before} 1" "ffs.prune keeps the security events of the last day and records the database's time"
+# how accounts sign in, through the views: never the secrets behind them
+check "$(as_ffs_admin 'SELECT COUNT(*) > 0 FROM ffs.account_security') $(as_ffs_admin 'SELECT COUNT(*) > 0 FROM ffs.emails')" "1 1" "ffs_admin reads the sign-in security and the emails through the views"
+for secret in 'sharedSecret FROM fxa.totp' 'codeHash FROM fxa.recoveryCodes' 'recoveryData FROM fxa.recoveryKeys' 'phoneNumber FROM fxa.recoveryPhones' 'emailCode FROM fxa.accounts'; do
+  check "$(as_ffs_admin "SELECT ${secret} LIMIT 1" | grep -cE 'command denied|denied for column')" 1 "ffs_admin cannot read ${secret}"
+done
+check "$(as_ffs_admin "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'ffs' AND column_name IN ('sharedSecret', 'codeHash', 'recoveryData', 'phoneNumber', 'emailCode', 'tokenId')")" 0 "no secret column in the views of ffs_admin"
 dc run --rm --no-deps fxa-policy > /dev/null 2>&1
 check "$?" 0 "sign-up policy restarted"
 check "$(fxa_sql "SELECT COUNT(*) FROM ffs.signup_allowlist WHERE entry = 'kept@example.net'")" 1 "allowlist set in the admin UI kept"
@@ -399,6 +464,52 @@ check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'"
 set_env MAX_USERS initial:12
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
 check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "MAX_USERS=initial:12 keeps the value in the database"
+fi
+
+if [ -z "${RERUN:-}" ] && [ "${FXA_DB_CONTAINERS:-1}" = 1 ] && [ "${DB_CONTAINERS:-1}" = 1 ]; then
+  echo "== backups of the accounts and of Sync, the accounts restored into a scratch database"
+  dc exec -T backup-fxa sh /ffs-backup/backup.sh now > "${WORK}/backup.log" 2>&1
+  check "$?" 0 "a backup of the accounts databases"
+  # the sync scope records the accounts' run too (the accounts image has no client for PostgreSQL)
+  dc exec -T backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1
+  check "$?" 0 "a backup of the Sync databases"
+  [ "${FAILED}" = 0 ] || tail -5 "${WORK}/backup.log"
+  check "$(ts_sql "SELECT scope FROM ffs_backups WHERE ok = 1 AND bytes > 0 ORDER BY scope" | sort -u | paste -sd' ')" "accounts sync" "both runs in ffs_backups"
+  run_dir=$(dc exec -T backup-fxa sh -c 'ls -1 /backups/accounts | tail -1' | tr -d '\r')
+  check "$(dc exec -T backup-fxa sh -c "cd /backups/accounts/${run_dir} && for f in *.sql.gz; do gzip -t \$f && echo \$f; done" | LC_ALL=C sort | paste -sd' ')" \
+    "ffs.sql.gz fxa.sql.gz fxa_oauth.sql.gz fxa_profile.sql.gz pushbox.sql.gz" "the five accounts databases, each passing gzip -t"
+  # a restore as ADMIN.md says (the same definer user, root here), into a scratch database
+  accounts=$(fxa_sql "SELECT COUNT(*) FROM fxa.accounts")
+  dc exec -T -e MYSQL_PWD="${FXA_MYSQL_PASSWORD}" backup-fxa sh -c "${DB_CLIENT} -h fxa-db -uroot -e 'CREATE DATABASE ffs_restore_test' &&
+    gunzip -c /backups/accounts/${run_dir}/fxa.sql.gz | ${DB_CLIENT} -h fxa-db -uroot ffs_restore_test" > "${WORK}/restore.log" 2>&1
+  check "$?" 0 "the dump of fxa restores"
+  [ "${FAILED}" = 0 ] || tail -5 "${WORK}/restore.log"
+  check "$(fxa_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts")" "${accounts}" "the restored copy has every account (${accounts})"
+  routines() { fxa_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '$1'"; }
+  check "$(routines ffs_restore_test)" "$(routines fxa)" "and its procedures"
+  fxa_sql "DROP DATABASE ffs_restore_test" > /dev/null
+  check "$(fxa_sql "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'ffs_restore_test'")" 0 "scratch database dropped"
+  # a password with the option file's escapes (\\ \n \s \"), on a scratch database and directory
+  pw='b\\k\n\s"q\'
+  fxa_sql "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; CREATE DATABASE ffs_pw_test; CREATE TABLE ffs_pw_test.t (i INT);
+    CREATE USER 'ffs_pw_test'@'%' IDENTIFIED BY '${pw}'; GRANT ALL ON ffs_pw_test.* TO 'ffs_pw_test'@'%'" > /dev/null
+  bk_pw() { dc exec -T -e FXA_DB_USER=ffs_pw_test -e FXA_DB_PASSWORD="$1" -e FXA_DATABASES=ffs_pw_test -e BACKUP_DIR=/tmp/ffs-pw-test \
+    backup-fxa sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1; }
+  bk_pw "${pw}"
+  check "$?" 0 "a backup with backslashes in the password"
+  bk_pw "${pw}
+x"
+  check "$?" 1 "a password with a line break refused"
+  check "$(grep -c 'ffs_pw_test has a line break' "${WORK}/backup.log")" 1 "with a clear error"
+  dc exec -T backup-fxa rm -rf /tmp/ffs-pw-test
+  fxa_sql "DROP USER 'ffs_pw_test'@'%'; DROP DATABASE ffs_pw_test" > /dev/null
+  # the admin UI sees both, within HEALTH_CHECK_SECONDS (5)
+  for _ in $(seq 1 30); do
+    shown=$(dc exec -T syncstorage curl -s -H 'Authorization: Bearer ffs-test-metrics-token' http://ffs-admin:8080/metrics | grep -c '^ffs_backup_last_ok{scope="[a-z]*"} 1$')
+    [ "${shown}" = 2 ] && break
+    sleep 1
+  done
+  check "${shown}" 2 "the admin UI sees both backups (ffs_backup_last_ok)"
 fi
 
 if [ -z "${SKIP_BROWSER:-}" ] && runs browser; then

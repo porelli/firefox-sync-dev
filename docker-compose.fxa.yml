@@ -145,6 +145,9 @@ services:
       CLIENT_ADDRESS_DEPTH: ${FXA_CLIENT_ADDRESS_DEPTH:-2}
       # how long Firefox's access tokens live (Mozilla's default: 365 minutes), see ADMIN.md
       FXA_EXPIRATION_ACCESS_TOKEN: ${FXA_ACCESS_TOKEN_LIFETIME:-60 minutes}
+      # when sessions were last used (the admin UI shows it): for every account, Mozilla
+      # samples 30% of them
+      LASTACCESSTIME_UPDATES_SAMPLE_RATE: 1
       # the OAuth client of the admin UI (config/fxa/oauth-clients.js), with ADMIN_FXA_CLIENT_ID
       ADMIN_FXA_CLIENT_ID: ${ADMIN_FXA_CLIENT_ID:-}
       ADMIN_FXA_CLIENT_SECRET: ${ADMIN_FXA_CLIENT_SECRET:-}
@@ -347,6 +350,9 @@ services:
       FXA_PAIRING_URL: ${FXA_PAIRING_URL:-}
       # the accounts pages, allowed to read the refusals (CORS)
       FXA_CONTENT_URL: ${FXA_CONTENT_URL}
+      # the public checks (ADMIN_PUBLIC_CHECK), the sign-up gate through FXA_AUTH_URL
+      FXA_AUTH_URL: ${FXA_AUTH_URL}
+      FXA_PROFILE_URL: ${FXA_PROFILE_URL}
       # with ADMIN_FXA_CLIENT_ID, sign in with these accounts (see ADMIN.md), unless set otherwise
       ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-${ADMIN_FXA_CLIENT_ID:+${FXA_CONTENT_URL}}}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-${ADMIN_FXA_CLIENT_ID:-}}
@@ -358,7 +364,33 @@ services:
     ports:
       - ${ADMIN_GATE_EXPORT_PORT:-127.0.0.1:8091}:8081
 
+  # with COMPOSE_PROFILES=backup also the accounts databases, every night into the backups
+  # volume: the sync backup service records the result. Run one now:
+  # docker compose exec backup-fxa sh /ffs-backup/backup.sh now
+  backup-fxa:
+    # the client of fxa-db (mysqldump; mariadb-dump with docker-compose.fxa-mariadb.yml)
+    image: mysql:8.4
+    profiles: [backup]
+    entrypoint: [sh, /ffs-backup/backup.sh]
+    command: [loop]
+    environment:
+      BACKUP_SCOPE: accounts
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_TIME: ${BACKUP_TIME:-03:00}
+      FXA_DB_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      FXA_DB_PORT: ${FXA_MYSQL_PORT:-3306}
+      FXA_DB_USER: ${FXA_MYSQL_USER:-root}
+      FXA_DB_PASSWORD: ${FXA_MYSQL_PASSWORD}
+    volumes:
+      - ./config/backup:/ffs-backup:ro
+      - backups:/backups
+    depends_on:
+      fxa-policy:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   fxa-db:
   fxa-keys:
   fxa-profile-images:
+  backups:

@@ -1,0 +1,27 @@
+# Backups of the accounts databases (ADMIN.md#backups), with firefox-sync-backup.service
+# (its timer), just before it: it records the result in the tokenserver database
+[Unit]
+Description=Firefox Sync - Mozilla accounts - Backup of the database
+After=firefox-sync-network.service firefox-sync-fxa-db.service
+Before=firefox-sync-backup.service
+
+[Container]
+# the client of the accounts database: mysqldump
+Image=docker.io/library/mysql:8.4
+ContainerName=firefox-sync-backup-fxa
+Network=firefox-sync-network.network
+Volume=firefox-sync-backups.volume:/backups
+Volume=%SCRIPT_DIR%/config/backup:/ffs-backup:ro,z
+Environment="BACKUP_SCOPE=accounts"
+Environment="BACKUP_KEEP=%BACKUP_KEEP%"
+Environment="FXA_DB_HOST=%FXA_MYSQL_HOST%"
+Environment="FXA_DB_PORT=%FXA_MYSQL_PORT%"
+Environment="FXA_DB_USER=%FXA_MYSQL_USER%"
+Environment="FXA_DB_PASSWORD=%FXA_MYSQL_PASSWORD%"
+Exec=sh /ffs-backup/backup.sh now
+
+[Service]
+Type=oneshot
+
+[Install]
+WantedBy=firefox-sync-backup.service

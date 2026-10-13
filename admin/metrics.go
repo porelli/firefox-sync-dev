@@ -13,7 +13,8 @@ import (
 )
 
 // Metrics and the event log, kept in the tokenserver database (ffs_metrics,
-// ffs_events) for ADMIN_RETENTION_DAYS. syncstorage-rs (and its tokenserver) send
+// ffs_events) for ADMIN_RETENTION_DAYS, what admins did (kind admin) for
+// ADMIN_AUDIT_RETENTION_DAYS. syncstorage-rs (and its tokenserver) send
 // statsd metrics over UDP when the admin UI runs, see docker-compose.yml.
 
 const (
@@ -33,6 +34,8 @@ type metric struct {
 type Recorder struct {
 	db       *SyncDB
 	keepDays int
+	// for the events of kind admin: who did what
+	auditDays int
 
 	// events per kind and minute, at most maxEventsPerMinute (refused sign-ups come
 	// from anybody)
@@ -72,6 +75,13 @@ func (s *SyncDB) schema() []string {
 			`CREATE INDEX IF NOT EXISTS ffs_events_at ON ffs_events (at)`,
 			`CREATE TABLE IF NOT EXISTS ffs_gauges (minute BIGINT NOT NULL, name VARCHAR(191) NOT NULL,
 				value BIGINT NOT NULL, PRIMARY KEY (minute, name))`,
+			`CREATE TABLE IF NOT EXISTS ffs_account_notes (uid VARCHAR(64) PRIMARY KEY, note VARCHAR(500) NOT NULL,
+				updated_at BIGINT NOT NULL, updated_by VARCHAR(255) NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS ffs_schema_levels (name VARCHAR(64) PRIMARY KEY, level VARCHAR(255) NOT NULL,
+				updated_at BIGINT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS ffs_jobs (name VARCHAR(64) PRIMARY KEY, last_run BIGINT NOT NULL, result VARCHAR(512) NOT NULL,
+			failed SMALLINT NOT NULL DEFAULT 0)`,
+			s.backupsSchema(),
 		}
 	}
 	return []string{
@@ -81,6 +91,18 @@ func (s *SyncDB) schema() []string {
 			kind VARCHAR(32) NOT NULL, detail VARCHAR(512) NOT NULL, KEY ffs_events_at (at))`,
 		`CREATE TABLE IF NOT EXISTS ffs_gauges (minute BIGINT NOT NULL, name VARCHAR(191) NOT NULL,
 			value BIGINT NOT NULL, PRIMARY KEY (minute, name))`,
+		// utf8mb4: notes in any language, whatever the database's default
+		`CREATE TABLE IF NOT EXISTS ffs_account_notes (uid VARCHAR(64) PRIMARY KEY, note VARCHAR(500) NOT NULL,
+			updated_at BIGINT NOT NULL, updated_by VARCHAR(255) NOT NULL) DEFAULT CHARSET=utf8mb4`,
+		// the schema levels seen last, see schema.go
+		`CREATE TABLE IF NOT EXISTS ffs_schema_levels (name VARCHAR(64) PRIMARY KEY, level VARCHAR(255) NOT NULL,
+			updated_at BIGINT NOT NULL)`,
+		// the daily jobs: when they last ran, what they did (maintenance.go)
+		`CREATE TABLE IF NOT EXISTS ffs_jobs (name VARCHAR(64) PRIMARY KEY, last_run BIGINT NOT NULL, result VARCHAR(512) NOT NULL,
+			failed SMALLINT NOT NULL DEFAULT 0)
+			DEFAULT CHARSET=utf8mb4`,
+		// the runs of the backups (backup.go)
+		s.backupsSchema(),
 	}
 }
 
@@ -90,20 +112,20 @@ func newRecorder(ctx context.Context, db *SyncDB) (*Recorder, error) {
 			return nil, err
 		}
 	}
-	return &Recorder{db: db, keepDays: envInt("ADMIN_RETENTION_DAYS", 30), current: map[string]*metric{}, cumulative: map[string]*metric{}}, nil
+	return &Recorder{db: db, keepDays: envInt("ADMIN_RETENTION_DAYS", 30), auditDays: envInt("ADMIN_AUDIT_RETENTION_DAYS", 365), current: map[string]*metric{}, cumulative: map[string]*metric{}}, nil
 }
 
 // Event records something worth showing in the activity log
 func (r *Recorder) Event(kind, detail string) {
-	if len(detail) > 512 {
-		detail = detail[:512]
-	}
+	// rune-safe: a cut inside a character is invalid UTF-8 and the INSERT fails
+	detail = oneLine(detail, 509)
 	r.mu.Lock()
 	if minute := time.Now().Unix() / 60; minute != r.eventsMinute {
 		r.eventsMinute, r.eventsCount = minute, map[string]int{}
 	}
 	r.eventsCount[kind]++
-	over := r.eventsCount[kind] > maxEventsPerMinute
+	// admin events need a session and are the audit trail: never dropped
+	over := kind != "admin" && r.eventsCount[kind] > maxEventsPerMinute
 	r.mu.Unlock()
 	if over {
 		return
@@ -240,12 +262,30 @@ func (r *Recorder) flush() {
 	}
 }
 
+type pruneStatement struct {
+	query  string
+	cutoff int64
+}
+
+// pruneStatements: what is older than the retention, the audit trail kept longer
+func (r *Recorder) pruneStatements(now time.Time) []pruneStatement {
+	keep := now.AddDate(0, 0, -r.keepDays).UnixMilli()
+	audit := now.AddDate(0, 0, -r.auditDays).UnixMilli()
+	return []pruneStatement{
+		{"DELETE FROM ffs_metrics WHERE minute < ?", keep},
+		{"DELETE FROM ffs_events WHERE kind <> 'admin' AND at < ?", keep},
+		{"DELETE FROM ffs_events WHERE kind = 'admin' AND at < ?", audit},
+		{"DELETE FROM ffs_gauges WHERE minute < ?", keep},
+		// the backups: a row a night, kept like the audit trail
+		{"DELETE FROM ffs_backups WHERE started < ?", audit},
+	}
+}
+
 func (r *Recorder) prune() {
-	cutoff := time.Now().AddDate(0, 0, -r.keepDays).UnixMilli()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	for _, q := range []string{"DELETE FROM ffs_metrics WHERE minute < ?", "DELETE FROM ffs_events WHERE at < ?", "DELETE FROM ffs_gauges WHERE minute < ?"} {
-		if _, err := r.db.db.ExecContext(ctx, r.db.q(q), cutoff); err != nil {
+	for _, p := range r.pruneStatements(time.Now()) {
+		if _, err := r.db.db.ExecContext(ctx, r.db.q(p.query), p.cutoff); err != nil {
 			log.Printf("pruning: %v", err)
 		}
 	}
@@ -257,9 +297,17 @@ type Event struct {
 	Detail string
 }
 
-func (r *Recorder) Events(ctx context.Context, since time.Time, limit int) ([]Event, error) {
-	rows, err := r.db.db.QueryContext(ctx, r.db.q("SELECT at, kind, detail FROM ffs_events WHERE at >= ? ORDER BY at DESC LIMIT ?"),
-		since.UnixMilli(), limit)
+// Events of the log before a time, newest first: of a kind ("": all), with q in the
+// detail (any case, "": all)
+func (r *Recorder) Events(ctx context.Context, before time.Time, kind, q string, limit int) ([]Event, error) {
+	query, args := "SELECT at, kind, detail FROM ffs_events WHERE at < ?", []any{before.UnixMilli()}
+	if kind != "" {
+		query, args = query+" AND kind = ?", append(args, kind)
+	}
+	if q != "" {
+		query, args = query+" AND LOWER(detail) LIKE ?", append(args, "%"+likeEscape(strings.ToLower(q))+"%")
+	}
+	rows, err := r.db.db.QueryContext(ctx, r.db.q(query+" ORDER BY at DESC, id DESC LIMIT ?"), append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}

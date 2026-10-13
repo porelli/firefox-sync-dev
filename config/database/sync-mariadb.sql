@@ -11,7 +11,7 @@ ALTER USER '@TOKENSERVER_USER@'@'%' IDENTIFIED BY '@TOKENSERVER_PASSWORD@';
 ALTER USER '@SYNCSTORAGE_USER@'@'%' IDENTIFIED BY '@SYNCSTORAGE_PASSWORD@';
 -- tables (migrations; REFERENCES for their foreign keys on MySQL 8.0.22+), the init
 -- container's config table, CheckUserLimit procedure and BeforeInsertUser trigger (MAX_USERS),
--- the admin UI's ffs_metrics, ffs_events and ffs_gauges tables
+-- the admin UI's tables (ffs_metrics, ffs_events, ffs_backups...)
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES,
   CREATE ROUTINE, ALTER ROUTINE, EXECUTE, TRIGGER ON `@TOKENSERVER_DATABASE@`.* TO '@TOKENSERVER_USER@'@'%';
 -- tables (migrations; one of them creates, calls and drops a procedure)

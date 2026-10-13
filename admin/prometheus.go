@@ -7,7 +7,15 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
 
 // Prometheus metrics at /metrics, with METRICS_TOKEN as bearer token (no token: off)
 
@@ -34,9 +42,16 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&b, "%s %d\n", name, value)
 		}
 	}
+	flag := func(b bool) int64 {
+		if b {
+			return 1
+		}
+		return 0
+	}
 	if st, err := a.sync.Status(ctx); err == nil {
 		gauge("ffs_sync_accounts", "Accounts using this Sync server", int64(st.Users))
 		gauge("ffs_sync_max_users", "Maximum accounts (MAX_USERS)", int64(st.MaxUsers))
+		gauge("ffs_sync_near_max_users", "1 when 90% of max users or more are taken", flag(nearMaxUsers(st)))
 	}
 	if a.storage != nil {
 		if totals, err := a.storage.Totals(ctx); err == nil {
@@ -74,6 +89,29 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&b, "ffs_database_bytes{database=\"%s\"} %d\n", promLabel(n), sizes[n])
 		}
 	}
+	if a.health != nil {
+		certs := a.health.Certs()
+		hosts := make([]string, 0, len(certs))
+		for h := range certs {
+			hosts = append(hosts, h)
+		}
+		sort.Strings(hosts)
+		if len(hosts) > 0 {
+			b.WriteString("# HELP ffs_cert_expiry_seconds Seconds until the certificate of a public host name expires\n# TYPE ffs_cert_expiry_seconds gauge\n")
+		}
+		for _, h := range hosts {
+			fmt.Fprintf(&b, "ffs_cert_expiry_seconds{host=\"%s\"} %d\n", promLabel(h), int64(time.Until(certs[h]).Seconds()))
+		}
+	}
+	if a.alerter != nil {
+		st := a.alerter.Status()
+		gauge("ffs_alert_last_success_timestamp_seconds", "When the last alert email was sent (Unix time, 0: none since the start)", unixOrZero(st.LastOK))
+		gauge("ffs_alert_send_failing", "1 when the last alert email could not be sent", flag(alertsFailing(&st)))
+	}
+	if a.health != nil {
+		gauge("ffs_statsd_silent", "1 when the Sync server is up and sent no metrics for 30 minutes", flag(statsdSilent(componentUp(a.health.Components(), "Sync server"), a.rec.LastReceived(), a.health.silenceFrom(), time.Now())))
+		backupMetrics(&b, a.health.Backups(), time.Now())
+	}
 	// what the Sync server sent since the admin UI started
 	cumulative := a.rec.Cumulative()
 	names := make([]string, 0, len(cumulative))
@@ -93,4 +131,25 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Write([]byte(b.String()))
+}
+
+// backupMetrics: per scope the age of the last good backup, and whether the last run worked
+func backupMetrics(b *strings.Builder, backups []BackupStatus, now time.Time) {
+	if len(backups) == 0 {
+		return
+	}
+	b.WriteString("# HELP ffs_backup_age_seconds Seconds since the last good backup finished\n# TYPE ffs_backup_age_seconds gauge\n")
+	for _, s := range backups {
+		if !s.LastOK.Finished.IsZero() {
+			fmt.Fprintf(b, "ffs_backup_age_seconds{scope=\"%s\"} %d\n", promLabel(s.Scope), int64(now.Sub(s.LastOK.Finished).Seconds()))
+		}
+	}
+	b.WriteString("# HELP ffs_backup_last_ok Whether the last backup worked\n# TYPE ffs_backup_last_ok gauge\n")
+	for _, s := range backups {
+		ok := 0
+		if s.Last.OK {
+			ok = 1
+		}
+		fmt.Fprintf(b, "ffs_backup_last_ok{scope=\"%s\"} %d\n", promLabel(s.Scope), ok)
+	}
 }

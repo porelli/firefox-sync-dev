@@ -235,8 +235,9 @@ def test_header_allowed_group():
 
 
 def test_events_say_who_and_how():
-    page = Admin().get("/activity?range=24h")
-    events = page.split('<table id="events">')[1].split("</table>")[0]
+    admin = Admin()
+    # sign-ins and changes are of kind admin, refused sign-ins of their own kind
+    events = "".join(admin.get(f"/activity?kind={kind}").split('<table id="events"')[1].split("</table>")[0] for kind in ("admin", "sign-in"))
     for event in (f"signed in: {ALLOWED} (oidc)",
                   f"failed sign-in: {REFUSED} (oidc): not allowed",
                   "failed sign-in: unknown (oidc): bad state",
@@ -245,5 +246,8 @@ def test_events_say_who_and_how():
                   "signed in: other@admins.invalid (header)",
                   "signed in: guest@elsewhere.invalid (header)",
                   "failed sign-in: intruder@elsewhere.invalid (header): not allowed",
-                  "signed in (password)"):
+                  "signed in (password)",
+                  # the changes name the admin and how they signed in
+                  f"Max users set to 1 by {ALLOWED} (oidc)",
+                  "Max users set to 1 by someone@admins.invalid (header)"):
         assert f"<td>{html.escape(event)}</td>" in events, (event, events[:3000])

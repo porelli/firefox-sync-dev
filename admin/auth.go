@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Sign-in methods, enabled by their configuration (see ADMIN.md): the password,
@@ -238,17 +239,26 @@ func (c *authConfig) cookie(w http.ResponseWriter, name, value, path string, max
 
 // eventText keeps a name from a provider or a proxy on one short line
 func eventText(s string) string {
+	if s = oneLine(s, 100); s == "" {
+		return "unknown"
+	}
+	return s
+}
+
+// oneLine: without control characters, at most max bytes (and "...")
+func oneLine(s string, max int) string {
 	s = strings.Map(func(r rune) rune {
 		if r < ' ' || r == 0x7f {
 			return -1
 		}
 		return r
 	}, s)
-	if len(s) > 100 {
-		s = s[:100] + "..."
-	}
-	if s == "" {
-		return "unknown"
+	if len(s) > max {
+		cut := max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "..."
 	}
 	return s
 }

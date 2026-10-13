@@ -1,0 +1,22 @@
+{{template "head"}}
+{{template "nav" .}}
+<main>
+{{template "flash" .}}
+<section>
+  <h2>Connect a device</h2>
+  {{if .Content}}
+  <p>This server runs its own accounts: each Firefox must be pointed to {{.Content}} before signing in, it then finds the Sync server ({{.Node}}) by itself. Mozilla's accounts do not work here.</p>
+  {{with .Signup}}<p>New here? Create the account first: <a href="{{.}}">{{.}}</a>, then type the code sent by email.</p>{{end}}
+  {{else}}
+  <p>Firefox signs in with a Mozilla account as usual, and syncs with this server ({{.Node}}) instead of Mozilla's once pointed to it. Sign out of Firefox first if it is already signed in.</p>
+  {{end}}
+  <div id="device-steps">
+  {{range .Setups}}
+  <h3>{{.Device}}</h3>
+  <ol>{{range .Steps}}<li>{{.}}</li>{{end}}</ol>
+  {{end}}
+  </div>
+  <p class="hint">The same steps go out with an invitation (Overview, Sign-ups). Sync problems: about:sync-log in Firefox on a computer.</p>
+</section>
+</main>
+{{template "foot"}}

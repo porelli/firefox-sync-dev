@@ -1,7 +1,16 @@
 # Test reverse proxy for docker-compose.fxa.yml: HTTPS with Caddy's internal CA
 {
-	local_certs
 	skip_install_trust
+	# certificates of the internal CA for 30 days, not 12 hours: the admin UI warns
+	# under 14 days (tests/test_fxa_admin.py), the intermediate must outlive them
+	cert_issuer internal {
+		lifetime 30d
+	}
+	pki {
+		ca local {
+			intermediate_lifetime 60d
+		}
+	}
 	# like nginx with $proxy_add_x_forwarded_for: keep the X-Forwarded-For sent by the
 	# clients (all on the private test network) and append theirs
 	servers {

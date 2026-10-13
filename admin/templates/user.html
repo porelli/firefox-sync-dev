@@ -5,44 +5,124 @@
 {{template "flash" .}}
 {{with .Account}}
 <h2>{{.Email}}</h2>
-<p>Account created {{date .CreatedAt}} UTC, email {{if .Verified}}confirmed{{else}}not confirmed{{end}}, {{if .Disabled}}<span class="disabled">disabled</span>{{else}}active{{end}}.</p>
-<form method="post" action="/accounts/{{.UID}}/{{if .Disabled}}enable{{else}}disable{{end}}">
+<p>Account created {{date .CreatedAt}}, email {{if .Verified}}confirmed{{else}}not confirmed{{end}}, {{if .Disabled}}<span class="disabled">disabled</span>{{else}}active{{end}}.</p>
+{{range $.Blocks}}
+<div class="box warn" id="blocked">
+  <p>Blocked by the rate limits until {{when .Until}} after too many attempts ({{.Action}}, on {{.On}}): the accounts service refuses them for now.</p>
+  <form method="post" action="/security/unblock">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="key" value="{{.Key}}">
+    <input type="hidden" name="back" value="/users/{{$.UID}}">
+    <button type="submit">Lift</button>
+  </form>
+</div>
+{{end}}
+<div class="actions">
+{{if not .Verified}}<a href="/accounts/{{.UID}}/confirm-email" class="button" id="confirm-email">Confirm the email…</a>{{end}}
+{{if .Disabled}}
+<form method="post" action="/accounts/{{.UID}}/enable" class="inline">
   <input type="hidden" name="csrf" value="{{$.CSRF}}">
-  <button type="submit" class="{{if not .Disabled}}danger{{end}}">{{if .Disabled}}Enable{{else}}Disable{{end}}</button>
+  <input type="hidden" name="back" value="/users/{{.UID}}">
+  <button type="submit">Enable</button>
 </form>
 {{else}}
-<h2><code>{{.UID}}</code></h2>
+<a href="/accounts/{{.UID}}/sign-out-all" class="button danger" id="sign-out-all">Sign out everywhere…</a>
+<a href="/accounts/{{.UID}}/disable" class="button danger" id="disable">Disable…</a>
 {{end}}
+</div>
+<p class="hint">Sign out everywhere ends every session and device of the account, its owner can sign in again right away (after a password change, say); disable also keeps them from signing in. Either way Firefox may sync for up to 1 hour more with the Sync token it has, and the Sync server remembers a checked access token for 5 minutes. <a href="/activity?q={{.Email}}">Events of this account</a></p>
+{{else}}
+<h2><code>{{.UID}}</code>{{with .Note}} {{.Text}}{{end}}</h2>
+<p><a href="/activity?q={{.UID}}">Events of this account</a></p>
+{{end}}
+
+<form method="post" action="/users/{{.UID}}/note" class="inline" id="note">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label for="note-text">Note</label>
+  <input id="note-text" name="note" type="text" maxlength="{{.MaxNote}}" value="{{with .Note}}{{.Text}}{{end}}" autocomplete="off">
+  <button type="submit">Save</button>
+</form>
+<p class="hint">Shown in the accounts list{{if not .FxA}}, as a label next to the account id{{end}}, at most {{.MaxNote}} characters.{{with .Note}} Last changed {{date .UpdatedAt}} by {{.UpdatedBy}}.{{end}}</p>
 
 <section>
   <h2>Sync data</h2>
   {{if .SyncUser}}
-  <p>Syncing since {{date .SyncUser.CreatedAt}} UTC{{with .Total}}, last change {{when .LastModified}} UTC: {{bytes .Bytes}} in {{.Items}} items{{end}}.</p>
-  <table id="collections">
-    <thead><tr><th>Collection</th><th>Items</th><th>Size</th><th>Last change (UTC)</th></tr></thead>
-    <tbody>{{range .Collections}}<tr><td>{{.Name}}</td><td>{{.Items}}</td><td>{{bytes .Bytes}}</td><td>{{when .LastModified}}</td></tr>{{else}}<tr><td colspan="4">Nothing stored.</td></tr>{{end}}</tbody>
-  </table>
+  <p>Syncing since {{date .SyncUser.CreatedAt}}{{with .Total}}, last change {{when .LastModified}}: {{bytes .Bytes}} in {{.Items}} items{{end}}.</p>
+  <div class="scroll"><table id="collections" aria-label="Sync collections">
+    <thead><tr><th>Collection</th><th>Items</th><th>Size</th><th>Last change</th><th><span class="sr">Actions</span></th></tr></thead>
+    <tbody>{{range .Collections}}<tr><td>{{.Name}}</td><td>{{.Items}}</td><td>{{bytes .Bytes}}</td><td>{{when .LastModified}}</td>
+      <td><a href="/users/{{$.UID}}/reset-sync?collection={{.Name}}" class="danger">Reset…</a></td></tr>{{else}}<tr><td colspan="5">Nothing stored.</td></tr>{{end}}</tbody>
+  </table></div>
   <p class="hint">Sync data is encrypted by Firefox with the account's keys: the server only knows its size, not what it is.</p>
+  {{if .Storage}}<div class="actions"><a href="/users/{{.UID}}/reset-sync" class="button danger" id="reset-sync">Reset the Sync data…</a></div>{{end}}
   {{else}}
   <p>This account does not use this Sync server.</p>
+  {{end}}
+  {{with .Rows}}
+  <h3 id="diagnosis">Tokenserver rows</h3>
+  <div class="scroll"><table id="sync-rows" aria-label="Tokenserver rows">
+    <thead><tr><th>Uid</th><th>Client state</th><th>Keys changed</th><th>Node</th><th>Created</th><th>Replaced</th><th>Stored</th></tr></thead>
+    <tbody>{{range .}}<tr{{if .Current}} class="current"{{end}}><td>{{.ID}}{{if .Current}} <span class="badge">current</span>{{end}}</td><td><code>{{.ClientState}}</code></td>
+      <td>{{if .KeysChangedAt}}{{date .KeysChanged}} <span class="hint">({{.KeysChangedAt}})</span>{{else}}none{{end}}</td>
+      <td>{{if .NodeKnown}}{{.Node}}{{if .Downed}} <span class="badge">retired</span>{{end}}{{else}}<span class="badge">unknown node {{.NodeID}}</span>{{end}}</td>
+      <td>{{date .CreatedAt}}</td><td>{{if .Replaced}}{{date .ReplacedAt}}{{end}}</td><td>{{.Usage.Items}} items, {{bytes .Usage.Bytes}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{with $.Security}}<p class="hint" id="fxa-keys">The accounts service: keys changed {{when .KeysChangedAt}}, password set {{when .PasswordSetAt}}. A new password without the recovery key changes the keys: the tokenserver then adds a row, with new (empty) storage.</p>{{end}}
+  {{with $.Flags}}<ul id="flags" class="box warn">{{range .}}<li><strong>{{.Name}}</strong>: {{.Text}}</li>{{end}}</ul>{{else}}<p class="hint" id="flags">Nothing odd in these rows.</p>{{end}}
+  <p class="hint">The tokenserver adds a row, with a new uid and new storage, each time the keys of the account change; the current one is where Firefox syncs. Old rows go with the purge a day after they are replaced.</p>
+  {{end}}
+  {{if or .Rows .Account}}
+  {{if or (not .Account) .Account.Disabled}}
+  <div class="actions"><a href="/users/{{.UID}}/delete" class="button danger" id="delete">{{if .Account}}Delete the account for good…{{else}}Delete the Sync data…{{end}}</a></div>
+  {{else if .FxA}}
+  <p class="hint">To delete this account for good, disable it first.</p>
+  {{end}}
   {{end}}
 </section>
 
 {{if .FxA}}{{if .Account}}
 <section>
+  <h2>Signing in</h2>
+  {{with .Security}}
+  <div class="scroll"><table id="account-security" aria-label="Signing in">
+    <tbody>
+      <tr><th>Two-step authentication</th><td>{{if .TOTP}}<span class="badge">2-step</span> on, <span id="recovery-codes">{{.RecoveryCodes}}</span> backup codes left{{if .RecoveryPhone}}, recovery phone{{end}}{{else}}off{{end}}</td>
+        <td>{{if .TOTP}}<a href="/accounts/{{$.UID}}/remove-totp" class="danger" id="remove-totp">Turn off…</a>{{end}}</td></tr>
+      <tr><th>Account recovery key</th><td>{{if .RecoveryKey}}yes{{else}}<span class="badge">no recovery key</span>{{end}}</td>
+        <td>{{if .RecoveryKey}}<a href="/accounts/{{$.UID}}/remove-recovery-key" class="danger" id="remove-recovery-key">Remove…</a>{{end}}</td></tr>
+      <tr><th>Passkeys</th><td>{{.Passkeys}}</td><td></td></tr>
+      <tr><th>Password last set</th><td>{{when .PasswordSetAt}}</td><td></td></tr>
+      <tr><th>Keys last changed</th><td>{{when .KeysChangedAt}}</td><td></td></tr>
+      {{if not .LockedAt.IsZero}}<tr><th>Locked</th><td>since {{date .LockedAt}}</td><td></td></tr>{{end}}
+    </tbody>
+  </table></div>
+  {{end}}
+  <h3>Emails</h3>
+  <div class="scroll"><table id="emails" aria-label="Emails">
+    <thead><tr><th>Email</th><th>Kind</th><th>Confirmed</th><th>Added</th></tr></thead>
+    <tbody>{{range .Emails}}<tr><td>{{.Email}}</td><td>{{if .Primary}}primary{{else}}secondary{{end}}</td><td>{{if .Verified}}yes{{else}}no{{end}}</td><td>{{when .CreatedAt}}</td></tr>{{end}}</tbody>
+  </table></div>
+  <div class="box" id="forgot">
+    <p><strong>If they forget their password</strong></p>
+    <p>Use Forgot password at {{.ContentURL}}/reset_password. With a recovery key nothing is lost. Without one, open Firefox on a device that still has the data first, so it uploads it again after the reset.</p>
+  </div>
+  <p class="hint">Turning off two-step authentication or removing the recovery key tells the owner by email; check who is asking first. Secrets (the authenticator's key, the codes, the recovery data, the phone number) are never read here.</p>
+</section>
+
+<section>
   <h2>Devices</h2>
-  <table id="devices">
-    <thead><tr><th>Name</th><th>Type</th><th>Added (UTC)</th><th>Last used (UTC)</th><th></th></tr></thead>
-    <tbody>{{range .Devices}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{when .CreatedAt}}</td><td>{{when .LastUsed}}</td>
-      <td><form method="post" action="/users/{{$.UID}}/devices/{{.ID}}/sign-out"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger">Sign out</button></form></td></tr>{{else}}<tr><td colspan="5">No devices.</td></tr>{{end}}</tbody>
-  </table>
+  <div class="scroll"><table id="devices" aria-label="Devices">
+    <thead><tr><th>Name</th><th>Type</th><th>Added</th><th>Last used</th><th><span class="sr">Actions</span></th></tr></thead>
+    <tbody>{{range .Devices}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{when .CreatedAt}}</td><td>{{when .LastUsed}}{{if .Inactive}} <span class="badge">inactive</span>{{end}}</td>
+      <td><a href="/users/{{$.UID}}/devices/{{.ID}}/sign-out" class="danger">Sign out…</a></td></tr>{{else}}<tr><td colspan="5">No devices.</td></tr>{{end}}</tbody>
+  </table></div>
   <h3>Sessions</h3>
-  <table id="sessions">
-    <thead><tr><th>Browser</th><th>System</th><th>Signed in (UTC)</th><th>Last used (UTC)</th><th></th></tr></thead>
-    <tbody>{{range .Sessions}}<tr><td>{{.Browser}}</td><td>{{.OS}}</td><td>{{when .CreatedAt}}</td><td>{{when .LastUsed}}</td>
-      <td><form method="post" action="/users/{{$.UID}}/sessions/{{.Ref}}/sign-out"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger">Sign out</button></form></td></tr>{{else}}<tr><td colspan="5">Signed out everywhere.</td></tr>{{end}}</tbody>
-  </table>
-  <p class="hint">Signing out a device ends its session and its tokens: Firefox there asks to sign in again (it can sync for up to an hour with what it has). The account keeps working everywhere else; to lock it out, disable it.</p>
+  <div class="scroll"><table id="sessions" aria-label="Sessions">
+    <thead><tr><th>Browser</th><th>System</th><th>Signed in</th><th>Confirmed</th><th>Last used</th><th><span class="sr">Actions</span></th></tr></thead>
+    <tbody>{{range .Sessions}}<tr><td>{{.Browser}}</td><td>{{.OS}}</td><td><time datetime="{{stamp .CreatedAt}}">{{when .CreatedAt}}</time></td><td>{{if .Verified}}{{or .Method "yes"}}{{else}}<span class="badge">unconfirmed sign-in</span>{{end}}</td><td><time datetime="{{stamp .LastUsed}}">{{when .LastUsed}}</time></td>
+      <td><a href="/users/{{$.UID}}/sessions/{{.Ref}}/sign-out" class="danger">Sign out…</a></td></tr>{{else}}<tr><td colspan="6">Signed out everywhere.</td></tr>{{end}}</tbody>
+  </table></div>
+  <p class="hint">Inactive: not used for {{.StaleDays}} days (ADMIN_STALE_DAYS), a device that may be gone. Signing out a device ends its session and its tokens: Firefox there asks to sign in again (it can sync for up to an hour with what it has). The account keeps working everywhere else; to lock it out, disable it. An unconfirmed sign-in never entered the code sent by email (or the second step): it cannot sync.</p>
 </section>
 {{end}}{{end}}
 </main>

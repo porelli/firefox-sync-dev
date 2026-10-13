@@ -162,6 +162,12 @@ services:
       STORAGE_DB_USER: ${MARIADB_SYNCSTORAGE_USER}
       STORAGE_DB_PASSWORD: ${MARIADB_SYNCSTORAGE_PASSWORD}
       SYNCSTORAGE_URL: http://syncstorage:8000
+      # the setup checks: the Sync node, the keys of the sign-ins, the accounts' email domain
+      SYNCSTORAGE_DOMAIN: ${SYNCSTORAGE_DOMAIN}
+      FXA_OAUTH_SERVER_URL: ${FXA_OAUTH_SERVER_URL:-}
+      FXA_EMAIL_DOMAIN: ${FXA_EMAIL_DOMAIN:-}
+      # every hour the public https URLs, their certificates (and the sign-up gate); false: never
+      ADMIN_PUBLIC_CHECK: ${ADMIN_PUBLIC_CHECK:-true}
       ALERT_EMAIL: ${ADMIN_ALERT_EMAIL:-}
       SMTP_HOST: ${FXA_SMTP_HOST:-}
       SMTP_PORT: ${FXA_SMTP_PORT:-587}
@@ -173,6 +179,13 @@ services:
       ADMIN_UPDATE_CHECK: ${ADMIN_UPDATE_CHECK:-true}
       ADMIN_STALE_DAYS: ${ADMIN_STALE_DAYS:-90}
       ADMIN_RETENTION_DAYS: ${ADMIN_RETENTION_DAYS:-30}
+      ADMIN_AUDIT_RETENTION_DAYS: ${ADMIN_AUDIT_RETENTION_DAYS:-365}
+      # the daily purge of the Sync storage, the old unconfirmed accounts, sign-up bursts (ADMIN.md)
+      ADMIN_PURGE: ${ADMIN_PURGE:-}
+      ADMIN_DELETE_UNCONFIRMED_DAYS: ${ADMIN_DELETE_UNCONFIRMED_DAYS:-}
+      ADMIN_SIGNUP_BURST: ${ADMIN_SIGNUP_BURST:-10}
+      # times of the pages and the alerts, e.g. Europe/Rome (default UTC)
+      ADMIN_TZ: ${ADMIN_TZ:-}
       # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
       ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-}
@@ -194,6 +207,39 @@ services:
       - ${ADMIN_EXPORT_PORT:-127.0.0.1:8090}:8080
     restart: unless-stopped
 
+  # optional nightly backups (COMPOSE_PROFILES=backup) of the tokenserver and storage
+  # databases into the backups volume, see ADMIN.md#backups. Run one now:
+  # docker compose exec backup sh /ffs-backup/backup.sh now
+  backup:
+    image: mariadb:lts
+    profiles: [backup]
+    entrypoint: [sh, /ffs-backup/backup.sh]
+    command: [loop]
+    environment:
+      BACKUP_SCOPE: sync
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_TIME: ${BACKUP_TIME:-03:00}
+      MARIADB_TLS_VERIFY: ${MARIADB_TLS_VERIFY:-true}
+      TOKENSERVER_DB_TYPE: mysql
+      TOKENSERVER_DB_HOST: ${MARIADB_TOKENSERVER_SERVER}
+      TOKENSERVER_DB_PORT: ${MARIADB_TOKENSERVER_SERVER_PORT}
+      TOKENSERVER_DB_NAME: ${MARIADB_TOKENSERVER_DATABASE}
+      TOKENSERVER_DB_USER: ${MARIADB_TOKENSERVER_USER}
+      TOKENSERVER_DB_PASSWORD: ${MARIADB_TOKENSERVER_PASSWORD}
+      STORAGE_DB_HOST: ${MARIADB_SYNCSTORAGE_SERVER}
+      STORAGE_DB_PORT: ${MARIADB_SYNCSTORAGE_SERVER_PORT}
+      STORAGE_DB_NAME: ${MARIADB_SYNCSTORAGE_DATABASE}
+      STORAGE_DB_USER: ${MARIADB_SYNCSTORAGE_USER}
+      STORAGE_DB_PASSWORD: ${MARIADB_SYNCSTORAGE_PASSWORD}
+    volumes:
+      - ./config/backup:/ffs-backup:ro
+      - backups:/backups
+    depends_on:
+      tokenserver_db_init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   syncstorage-db:
   tokenserver-db:
+  backups:

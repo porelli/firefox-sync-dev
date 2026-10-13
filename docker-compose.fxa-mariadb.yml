@@ -18,5 +18,9 @@ services:
     volumes:
       - fxa-db-mariadb:/var/lib/mysql
 
+  # the backups of the accounts with MariaDB's client
+  backup-fxa:
+    image: mariadb:11.8
+
 volumes:
   fxa-db-mariadb:

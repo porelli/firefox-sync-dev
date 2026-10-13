@@ -36,7 +36,8 @@ var signupEmail = regexp.MustCompile(`^[^@\x00-\x20\x7f]+@[^@\x00-\x20\x7f]+$`)
 // corsOrigin is the accounts web pages (FXA_CONTENT_URL): they call the API from
 // another host name, without the header of the auth server they cannot read the error
 // event, when set, records refused sign-ups in the activity log
-func newGate(upstream *url.URL, corsOrigin string, checker SignupChecker, event func(kind, detail string)) http.Handler {
+// probe: the token of the public check (public.go), answered here and never passed on
+func newGate(upstream *url.URL, corsOrigin string, checker SignupChecker, event func(kind, detail string), probe string) http.Handler {
 	corsOrigin = strings.TrimSuffix(corsOrigin, "/")
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -50,6 +51,7 @@ func newGate(upstream *url.URL, corsOrigin string, checker SignupChecker, event 
 					r.Out.Header[h] = v
 				}
 			}
+			r.Out.Header.Del(probeHeader)
 		},
 	}
 	// errors of the gate itself; proxied responses have the auth server's headers
@@ -72,6 +74,12 @@ func newGate(upstream *url.URL, corsOrigin string, checker SignupChecker, event 
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && path.Clean("/"+r.URL.Path) == "/v1/account/create" {
+			// the admin UI asking through the reverse proxy: does it come here?
+			if probe != "" && equal(r.Header.Get(probeHeader), probe) {
+				w.Header().Set(probeHeader, probe)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCreateBody))
 			if err != nil {
 				fxaError(w, r, http.StatusRequestEntityTooLarge, 113, "Request Entity Too Large", "Request body too large")

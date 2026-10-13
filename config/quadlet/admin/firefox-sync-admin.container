@@ -24,6 +24,12 @@ Environment="STORAGE_DB_NAME=%MARIADB_SYNCSTORAGE_DATABASE%"
 Environment="STORAGE_DB_USER=%MARIADB_SYNCSTORAGE_USER%"
 Environment="STORAGE_DB_PASSWORD=%MARIADB_SYNCSTORAGE_PASSWORD%"
 Environment="SYNCSTORAGE_URL=http://firefox-sync-syncstorage:8000"
+# the setup checks: the Sync node, the keys of the sign-ins, the accounts' email domain
+Environment="SYNCSTORAGE_DOMAIN=%SYNCSTORAGE_DOMAIN%"
+Environment="FXA_OAUTH_SERVER_URL=%FXA_OAUTH_SERVER_URL%"
+Environment="FXA_EMAIL_DOMAIN=%FXA_EMAIL_DOMAIN%"
+# every hour the public https URLs and their certificates; false: never
+Environment="ADMIN_PUBLIC_CHECK=%ADMIN_PUBLIC_CHECK%"
 Environment="ALERT_EMAIL=%ADMIN_ALERT_EMAIL%"
 Environment="SMTP_HOST=%FXA_SMTP_HOST%"
 Environment="SMTP_PORT=%FXA_SMTP_PORT%"
@@ -35,6 +41,10 @@ Environment="METRICS_TOKEN=%ADMIN_METRICS_TOKEN%"
 Environment="ADMIN_UPDATE_CHECK=%ADMIN_UPDATE_CHECK%"
 Environment="ADMIN_STALE_DAYS=%ADMIN_STALE_DAYS%"
 Environment="ADMIN_RETENTION_DAYS=%ADMIN_RETENTION_DAYS%"
+Environment="ADMIN_AUDIT_RETENTION_DAYS=%ADMIN_AUDIT_RETENTION_DAYS%"
+# the daily purge of the Sync storage (ADMIN.md)
+Environment="ADMIN_PURGE=%ADMIN_PURGE%"
+Environment="ADMIN_TZ=%ADMIN_TZ%"
 # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
 Environment="ADMIN_OIDC_ISSUER=%ADMIN_OIDC_ISSUER%"
 Environment="ADMIN_OIDC_CLIENT_ID=%ADMIN_OIDC_CLIENT_ID%"

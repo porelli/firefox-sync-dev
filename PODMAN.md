@@ -134,6 +134,10 @@ To use a MariaDB or MySQL server you already run, answer `y` to "Use an existing
 
 If you enabled the [admin UI](ADMIN.md) in `prepare_environment.sh`, starting the Sync server also starts it, first, so that the Sync server sends it its metrics; on its own: `systemctl --user start firefox-sync-admin.service` (with self-hosted accounts it is also the sign-up gate, and starts the sign-up policy unit as a dependency). When the admin UI container is replaced (auto-update, restart) it restarts the Sync server, which only looks up its address at start.
 
+#### Backups
+
+`prepare_environment.sh` also installs the nightly backups, off: `firefox-sync-backup.container` (with self-hosted accounts `firefox-sync-backup-fxa.container`, which runs with it, just before) and `firefox-sync-backup.timer`, in `~/.config/systemd/user` (a timer is no Quadlet). Turn them on with `systemctl --user enable --now firefox-sync-backup.timer` (every day at `BACKUP_TIME`, UTC), run one with `systemctl --user start firefox-sync-backup.service`. The dumps are in the `firefox-sync-backups` volume, see [ADMIN.md](ADMIN.md#backups).
+
 #### Managing Quadlet Services
 
 ```bash

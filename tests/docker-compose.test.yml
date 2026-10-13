@@ -33,7 +33,11 @@ services:
       HEALTH_CHECK_SECONDS: 5
       METRICS_TOKEN: ffs-test-metrics-token
       ADMIN_UPDATE_CHECK: "false"
+      # nothing public here (https://ffs-e2e.invalid): the opt-out, see tests/test_admin_sync.py
+      ADMIN_PUBLIC_CHECK: "false"
       ADMIN_STALE_DAYS: 0
+      # local time, see tests/test_admin_sync.py
+      ADMIN_TZ: Europe/Rome
       # the password (ADMIN_PASSWORD) and both single sign-ons, see tests/test_admin_auth.py
       ADMIN_OIDC_ISSUER: http://dex:5556/dex
       ADMIN_OIDC_CLIENT_ID: ffs-admin

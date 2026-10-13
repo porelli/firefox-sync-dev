@@ -1,0 +1,106 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// Setup checks of the overview: settings that must agree with each other, with what
+// goes wrong when they do not
+
+type setupCheck struct {
+	Name string
+	OK   bool
+	Text string
+}
+
+// nodeCheck: the tokenserver hands out its nodes in use, Firefox syncs there; the init
+// container sets the node from SYNCSTORAGE_DOMAIN on every start
+func nodeCheck(domain string, nodes []SyncNode) setupCheck {
+	c := setupCheck{Name: "Sync node"}
+	var inUse []string
+	for _, n := range nodes {
+		if n.Downed {
+			continue
+		}
+		node := strings.TrimSuffix(n.Node, "/")
+		inUse = append(inUse, node)
+		if node == domain {
+			c.OK = true
+		}
+	}
+	switch {
+	case c.OK:
+		c.Text = "The tokenserver hands out " + domain + ", the public Sync URL (SYNCSTORAGE_DOMAIN)."
+	case len(inUse) == 0:
+		c.Text = "The tokenserver has no Sync node in use, SYNCSTORAGE_DOMAIN is " + domain + ": nobody can sync. The init container adds it when it starts: docker compose up -d (or restart the Quadlets)."
+	default:
+		c.Text = fmt.Sprintf("The tokenserver hands out %s, but SYNCSTORAGE_DOMAIN is %s: Firefox syncs with %s. The init container sets the node from SYNCSTORAGE_DOMAIN when it starts: docker compose up -d (or restart the Quadlets).",
+			strings.Join(inUse, ", "), domain, inUse[0])
+	}
+	return c
+}
+
+// otherDomains: the accounts of the tokenserver per email domain other than domain
+func otherDomains(domain string, counts map[string]int) map[string]int {
+	other := map[string]int{}
+	for d, n := range counts {
+		if d != strings.ToLower(domain) {
+			other[d] = n
+		}
+	}
+	return other
+}
+
+// domainCheck: the tokenserver names each account <uid>@FXA_EMAIL_DOMAIN. After a change
+// of FXA_EMAIL_DOMAIN the same people come back as new accounts: twice against max users
+func domainCheck(domain string, counts map[string]int, status *SyncStatus) setupCheck {
+	c := setupCheck{Name: "Account emails (FXA_EMAIL_DOMAIN)"}
+	other := otherDomains(domain, counts)
+	if len(other) == 0 {
+		c.OK = true
+		c.Text = fmt.Sprintf("The %d accounts of the tokenserver are all <uid>@%s, as FXA_EMAIL_DOMAIN says.", counts[strings.ToLower(domain)], domain)
+		return c
+	}
+	names := make([]string, 0, len(other))
+	total := 0
+	for d, n := range other {
+		names = append(names, fmt.Sprintf("@%s (%d)", d, n))
+		total += n
+	}
+	sort.Strings(names)
+	c.Text = fmt.Sprintf("FXA_EMAIL_DOMAIN is %s, but %d accounts of the tokenserver have another domain: %s. The tokenserver names each account <uid>@FXA_EMAIL_DOMAIN: after a change of it everybody comes back as a new account, with empty storage, and counts twice against max users",
+		domain, total, strings.Join(names, ", "))
+	if status != nil {
+		c.Text += fmt.Sprintf(" (%d of %d used)", status.Users, status.MaxUsers)
+	}
+	c.Text += ". Set FXA_EMAIL_DOMAIN back, or remove the old rows from the users table of the tokenserver database."
+	return c
+}
+
+func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []Component) []setupCheck {
+	var checks []setupCheck
+	if a.syncDomain != "" && status != nil {
+		checks = append(checks, nodeCheck(a.syncDomain, status.Nodes))
+	}
+	for _, comp := range components {
+		if comp.Name != oauthKeysCheck {
+			continue
+		}
+		c := setupCheck{Name: oauthKeysCheck, OK: comp.Up, Text: "The Sync server checks every sign-in of Firefox with these keys: " + comp.Detail + "."}
+		if !comp.Up {
+			c.Text = "The Sync server checks every sign-in of Firefox with the keys of FXA_OAUTH_SERVER_URL, which do not answer (" + comp.Error + "): nobody gets a Sync token. Check FXA_OAUTH_SERVER_URL in .env (http://fxa-auth:9000/v1 with self-hosted accounts)."
+		}
+		checks = append(checks, c)
+	}
+	if a.emailDomain != "" {
+		if counts, err := a.sync.EmailDomains(ctx); err != nil {
+			checks = append(checks, setupCheck{Name: "Account emails (FXA_EMAIL_DOMAIN)", Text: "Could not read the accounts of the tokenserver: " + err.Error()})
+		} else if len(counts) > 0 {
+			checks = append(checks, domainCheck(a.emailDomain, counts, status))
+		}
+	}
+	return checks
+}
