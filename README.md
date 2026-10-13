@@ -82,6 +82,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - you can pin the syncstorage image to a specific tag (default: `latest`)
     - you can also self-host Mozilla accounts (experimental, see [FXA.md](FXA.md)): the script asks for the host names and your SMTP server and sets everything up. Their database is MySQL 8.4 by default, or MariaDB 11.8 ([MySQL or MariaDB](FXA.md#mysql-or-mariadb))
     - you can use a MariaDB, MySQL or PostgreSQL server you already run instead of the database containers: the script writes the SQL for the databases and users, see [DATABASES.md](DATABASES.md)
+    - coming from another self-hosted Sync server (Mozilla's compose files, other images, NixOS, YunoHost, the Python syncserver, fxa-selfhosting): see [MIGRATING.md](MIGRATING.md)
 1. setup your reverse proxy server
     1. if you use nginx, check the [syncstorage-rs.conf](/config/nginx/syncstorage-rs-example.conf) as example (and [fxa.conf](/config/nginx/fxa-example.conf) with self-hosted accounts)
 1. start docker compose:
@@ -113,6 +114,8 @@ Every image build runs the tests in [tests/](/tests) before the multi-arch tags 
 - [`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh): the stack with self-hosted Mozilla accounts behind an HTTPS proxy and a mail catcher: the setup with `prepare_environment.sh`, sign-up, OAuth and sync like Firefox does ([`test_fxa_flow.py`](/tests/test_fxa_flow.py)), the sign-up policy and the admin UI ([`test_fxa_admin.py`](/tests/test_fxa_admin.py)), a real Firefox signing up on one profile and syncing to a second one ([`test_fxa_browser.py`](/tests/test_fxa_browser.py)) and the pairing server. It runs with the newest Mozilla accounts release every week, and on amd64 and arm64 for the [accounts images](/.github/workflows/fxa.yml). With `FXA_DB=mariadb` the accounts database is MariaDB 11.8 instead of MySQL 8.4 (`tests/podman.sh` takes it too, for the Quadlets)
 
 All can be run locally against any published tag, e.g. `TAG=latest tests/e2e.sh mysql`.
+
+Not run by the image builds, locally only: [`tests/migrate.sh`](/tests/migrate.sh) `<scenario>`, the database moves of [MIGRATING.md](MIGRATING.md) from other Sync servers (Mozilla's compose files, dan-r, jeena, NixOS, YunoHost) and the upgrades of older firefox-sync releases, run with the commands of the guide as written there and checked with a client of upstream's mock FxA ([`migrate_client.py`](/tests/migrate_client.py)).
 
 ## Firefox setup
 

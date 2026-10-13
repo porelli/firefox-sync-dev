@@ -168,6 +168,8 @@ The [admin UI](ADMIN.md) uses the same Sync users, and `ffs_admin` for the accou
 
 ## Moving an existing install
 
+Moving from another Sync server instead of from this stack: see [MIGRATING.md](MIGRATING.md).
+
 With docker compose. Not covered by the tests: check the result before you remove the old volumes. (Quadlets have these values written into their units by `prepare_environment.sh`: moving a Quadlet install is not described here.)
 
 1. Don't run `prepare_environment.sh` again: it would replace `.env` with new secrets (`SYNC_MASTER_SECRET`, `METRICS_HASH_SECRET`, the accounts' keys...) and new passwords. Keep your `.env` and change it by hand (step 5).

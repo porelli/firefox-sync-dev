@@ -1,0 +1,24 @@
+# Test-only additions for tests/migrate.sh, on top of firefox-sync's compose files in a
+# stack set up like a user's (its .env lists this file in COMPOSE_FILE):
+# upstream's mock FxA (FXA_OAUTH_SERVER_URL=http://mock_fxa:6000), shipped in the
+# syncstorage-rs images, and the admin UI signing in by a trusted header (X-Test-Email)
+# from the containers, so that the client can read its first page.
+
+services:
+  mock_fxa:
+    image: ${MIG_TEST_IMAGE:?}
+    entrypoint: ["sh", "/app/scripts/start_mock_fxa_server.sh"]
+    environment:
+      MOCK_FXA_SERVER_HOST: 0.0.0.0
+      MOCK_FXA_SERVER_PORT: 6000
+    restart: "no"
+
+  ffs-admin:
+    pull_policy: missing
+    environment:
+      ADMIN_INSECURE_COOKIE: 1
+      ADMIN_UPDATE_CHECK: "false"
+      ADMIN_PUBLIC_CHECK: "false"
+      ADMIN_AUTH_HEADER: X-Test-Email
+      ADMIN_TRUSTED_PROXIES: ${MIG_TRUSTED:?}
+      ADMIN_ALLOWED_USERS: admin@ffs-e2e.invalid
