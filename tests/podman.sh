@@ -243,7 +243,15 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(curl -s http://127.0.0.1:28630/.well-known/fxa-client-configuration | grep -o '"auth_server_base_url":"[^"]*"')" '"auth_server_base_url":"https://api.fxa.invalid"' "client configuration (quadlets)"
   journalctl --user -u firefox-sync-fxa-policy.service --no-pager 2> /dev/null | grep -m1 "sign-ups:"
   check "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"email":"someone@example.org","authPW":"00"}' http://127.0.0.1:28691/v1/account/create)" 400 "sign-up gate refuses an email not on the allowlist (quadlets)"
-  check "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28691/__heartbeat__)" 200 "sign-up gate forwards to the accounts API (quadlets)"
+  # the gate reaches the accounts API by its network alias: give it the same time as the checks above
+  gate=""
+  for _ in $(seq 1 30); do
+    gate=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28691/__heartbeat__)
+    [ "${gate}" = 200 ] && break
+    sleep 2
+  done
+  check "${gate}" 200 "sign-up gate forwards to the accounts API (quadlets)"
+  [ "${gate}" = 200 ] || journalctl --user -u firefox-sync-admin.service --no-pager | tail -15
   # the admin UI with the accounts: grants, Redis, the internal URLs of the health checks
   check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1' 'ffs_up{component="Accounts API"} 1' \
     'ffs_up{component="Accounts pages"} 1' 'ffs_up{component="Profile server"} 1' 'ffs_up{component="Accounts database"} 1' \

@@ -11,7 +11,11 @@
 #   FXA_ARCH         amd64 or arm64 (default: this machine)
 #   FXA_PAIRING_IMAGE pairing server image (default: REPOSITORY:fxa-channelserver-latest)
 #   ADMIN_IMAGE      admin UI and sign-up policy image, used as is (default: built from admin/)
-#   KEEP             set to 1 to leave the stack running
+#   KEEP             set to 1 to leave the stack running (its settings: KEPT_ENV)
+#   RERUN            set to 1 to run only the Python tests again, against the stack left
+#                    by KEEP=1 (seconds instead of minutes, while working on a test)
+#   ONLY             with RERUN: flow,admin,browser (default: all three)
+#   PYTEST_ARGS      with RERUN: passed to pytest, e.g. "-k sign_out"
 #   SKIP_BROWSER     set to 1 to skip the real Firefox test
 #   SKIP_PULL        set to 1 to use the local images (e.g. an init image built from this tree)
 set -u
@@ -23,6 +27,10 @@ TAG=${TAG:-latest}
 PROJECT=ffs-e2e-fxa
 WORK=$(mktemp -d)
 ENV_FILE=${WORK}/fxa.env
+KEPT_ENV=${KEPT_ENV:-${HOME}/.cache/ffs-e2e-fxa.env}
+ONLY=${ONLY:-flow,admin,browser}
+PYTEST_ARGS=${PYTEST_ARGS:-}
+runs() { [ -z "${RERUN:-}" ] || [[ ",${ONLY}," == *",$1,"* ]]; }
 
 rnd() { tr -dc '[:alnum:]' < /dev/urandom 2> /dev/null | head -c 32; }
 # the admin UI signs in with these accounts too (@example.com): its OAuth client, public
@@ -63,6 +71,11 @@ sed -i -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${REPOSITORY}|" -e "s|^FXA_ARCH=.*|FXA_ARCH
 [ -n "${FXA_IMAGE:-}" ] && sed -i "s|^FXA_IMAGE=.*|FXA_IMAGE=${FXA_IMAGE}|" "${ENV_FILE}"
 [ -n "${FXA_ARCH:-}" ] && sed -i "s|^FXA_ARCH=.*|FXA_ARCH=${FXA_ARCH}|" "${ENV_FILE}"
 [ -n "${FXA_PAIRING_IMAGE:-}" ] && sed -i "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${FXA_PAIRING_IMAGE}|" "${ENV_FILE}"
+if [ -n "${RERUN:-}" ]; then
+  [ -f "${KEPT_ENV}" ] || { echo "RERUN: no ${KEPT_ENV}, run with KEEP=1 first"; exit 2; }
+  cp "${KEPT_ENV}" "${ENV_FILE}"
+  KEEP=1
+fi
 set -a; source "${ENV_FILE}"; set +a
 # the admin UI under test: ADMIN_IMAGE as is (pulled when missing), or built from admin/
 ADMIN_GIVEN=${ADMIN_IMAGE:-}
@@ -79,13 +92,20 @@ check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expecte
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 
 teardown() {
-  [ -n "${KEEP:-}" ] && { echo "keeping stack ${PROJECT} (env: ${ENV_FILE})"; return; }
+  if [ -n "${KEEP:-}" ]; then
+    # the stack's secrets: for this user only
+    [ -n "${RERUN:-}" ] || (umask 077; mkdir -p "$(dirname "${KEPT_ENV}")"; install -m 600 "${ENV_FILE}" "${KEPT_ENV}")
+    echo "keeping stack ${PROJECT} (env: ${KEPT_ENV}, run the tests again with RERUN=1)"
+    return
+  fi
   echo "== teardown"
   dc down -v --remove-orphans > /dev/null 2>&1
+  rm -f "${KEPT_ENV}"
   rm -rf "${WORK}"
 }
 trap teardown EXIT
 
+if [ -z "${RERUN:-}" ]; then
 echo "== prepare_environment.sh with self-hosted accounts"
 SETUP=${WORK}/setup && mkdir -p "${SETUP}" && cp -r "${CODE}/." "${SETUP}/" && rm -f "${SETUP}/.env"
 # answers: domain, compose dir, port, max users, backend, [deploy method], user, image tag, admin UI,
@@ -173,7 +193,11 @@ if [ "${FAILED}" != 0 ]; then
   for s in fxa-migrations fxa-auth fxa-content fxa-profile syncstorage; do echo "---- ${s}"; dc logs --tail 25 "${s}" 2>&1; done
   exit 1
 fi
+else
+  echo "== RERUN against the kept stack ${PROJECT} (${ONLY}) ${PYTEST_ARGS}"
+fi
 
+if runs flow; then
 echo "== sign-up, OAuth and sync through self-hosted FxA"
 dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
@@ -181,9 +205,11 @@ dc run --rm -T --no-deps --user root \
   -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e FXA_PAIRING_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
   -e PYTHONPATH=/app:/app/tools -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint /bin/sh syncstorage \
-  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_flow.py > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
+  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_flow.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
 check "$?" 0 "self-hosted FxA flow tests"
+fi
 
+if runs admin; then
 echo "== sign-up policy, admin UI, rate limits"
 dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
@@ -192,9 +218,11 @@ dc run --rm -T --no-deps --user root \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_DIRECT_URL=http://fxa-auth:9000 -e ADMIN_FXA_CLIENT_ID \
   -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint /bin/sh syncstorage \
-  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
+  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
 check "$?" 0 "sign-up policy and admin UI tests"
+fi
 
+if [ -z "${RERUN:-}" ]; then
 echo "== settings from the admin UI survive a restart, .env changes replace them (MAX_USERS: a plain number)"
 fxa_sql() { dc exec -T fxa-db mysql -uroot -p"${FXA_MYSQL_PASSWORD}" -sN -e "$1" 2> /dev/null; }
 ts_sql() { dc exec -T tokenserver_db mariadb -u"${MARIADB_TOKENSERVER_USER}" -p"${MARIADB_TOKENSERVER_PASSWORD}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" 2> /dev/null; }
@@ -212,15 +240,16 @@ check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'"
 set_env MAX_USERS initial:12
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
 check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "MAX_USERS=initial:12 keeps the value in the database"
+fi
 
-if [ -z "${SKIP_BROWSER:-}" ]; then
+if [ -z "${SKIP_BROWSER:-}" ] && runs browser; then
   echo "== real Firefox: sign-up on one profile, sync to a second one"
   docker build -q -t ffs-fxa-browser "${TESTS}/browser" > /dev/null || check build failed "Firefox test image"
   docker run --rm --network "${PROJECT}_default" --shm-size 1g \
     -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
     -e FXA_CONTENT_URL -e MAILPIT_URL=http://mailpit:8025 -e PYTHONDONTWRITEBYTECODE=1 \
     -e FXA_PAIRING_URL -e ADMIN_PASSWORD -e ADMIN_URL=https://admin.fxa.test -e ADMIN_FXA_CLIENT_ID \
-    ffs-fxa-browser sh -c "python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_browser.py /tests/test_fxa_pairing.py > /tmp/pytest.log 2>&1; rc=\$?; tail -30 /tmp/pytest.log; [ \$rc = 0 ] || grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10; exit \$rc" < /dev/null
+    ffs-fxa-browser sh -c "python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -30 /tmp/pytest.log; [ \$rc = 0 ] || grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10; exit \$rc" < /dev/null
   check "$?" 0 "real Firefox sign-up and sync, pairing server"
 fi
 echo "== admin UI"

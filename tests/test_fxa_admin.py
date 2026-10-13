@@ -29,7 +29,9 @@ from test_fxa_flow import AUTH, CONTENT, FIREFOX_CLIENT_ID, SYNC, authorize, sto
 
 ADMIN = os.environ["ADMIN_URL"].rstrip("/")
 DIRECT = os.environ["FXA_DIRECT_URL"].rstrip("/")
-INVITED = "invited@example.net"  # on FXA_SIGNUP_ALLOWLIST
+# one address of example.net on the allowlist (a new one every run: the tests also
+# run again against a kept stack, tests/e2e-fxa.sh RERUN=1)
+INVITED = f"invited-{uuid.uuid4().hex[:8]}@example.net"
 ADMIN_CLIENT_ID = os.environ.get("ADMIN_FXA_CLIENT_ID", "")
 sso = pytest.mark.skipif(not ADMIN_CLIENT_ID, reason="the admin UI does not sign in with these accounts")
 
@@ -90,6 +92,12 @@ def admin():
     return Admin()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def signup_policy():
+    # the policy of a fresh stack (FXA_SIGNUP_ALLOWLIST), whatever an earlier run left
+    Admin().post("/accounts/signups", mode="allowlist", allowlist=f"@example.com\n{INVITED}")
+
+
 def test_admin_needs_the_password():
     http = requests.Session()
     res = http.get(f"{ADMIN}/", timeout=30)
@@ -118,7 +126,7 @@ def test_signup_refused_without_the_gate():
 
 
 def test_allowlist_matches_emails_and_domains():
-    # @example.com is on the list, of example.net only invited@example.net
+    # @example.com is on the list, of example.net only INVITED
     assert create(email("example.com")).status_code == 200
     res = create(email("example.net"))
     assert res.status_code == 400, res.text
