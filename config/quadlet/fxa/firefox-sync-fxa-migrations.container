@@ -10,13 +10,21 @@ Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-migrations
 # Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
 PodmanArgs=--arch=%FXA_ARCH%
-Environment="AUTH_MYSQL_HOST=fxa-db"
+Environment="AUTH_MYSQL_HOST=%FXA_MYSQL_HOST%"
+Environment="AUTH_MYSQL_PORT=%FXA_MYSQL_PORT%"
+Environment="AUTH_MYSQL_USERNAME=%FXA_MYSQL_USER%"
 Environment="AUTH_MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
-Environment="OAUTH_MYSQL_HOST=fxa-db"
+Environment="OAUTH_MYSQL_HOST=%FXA_MYSQL_HOST%"
+Environment="OAUTH_MYSQL_PORT=%FXA_MYSQL_PORT%"
+Environment="OAUTH_MYSQL_USERNAME=%FXA_MYSQL_USER%"
 Environment="OAUTH_MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
-Environment="PROFILE_MYSQL_HOST=fxa-db"
+Environment="PROFILE_MYSQL_HOST=%FXA_MYSQL_HOST%"
+Environment="PROFILE_MYSQL_PORT=%FXA_MYSQL_PORT%"
+Environment="PROFILE_MYSQL_USERNAME=%FXA_MYSQL_USER%"
 Environment="PROFILE_MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
-Environment="PUSHBOX_MYSQL_HOST=fxa-db"
+Environment="PUSHBOX_MYSQL_HOST=%FXA_MYSQL_HOST%"
+Environment="PUSHBOX_MYSQL_PORT=%FXA_MYSQL_PORT%"
+Environment="PUSHBOX_MYSQL_USERNAME=%FXA_MYSQL_USER%"
 Environment="PUSHBOX_MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
 Exec=sh -c 'cd /fxa/packages/db-migrations && for i in $$(seq 1 60); do node bin/patcher.mjs && exit 0; sleep 5; done; exit 1'
 

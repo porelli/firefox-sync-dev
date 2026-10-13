@@ -43,26 +43,29 @@ if ! parse_max_users "${MAX_USERS:-}"; then
 fi
 [ "${MAX_USERS_MODE}" = fixed ] && MAX_USERS_FIXED=1 || MAX_USERS_FIXED=0
 
-# Function to check if database is accessible
-check_db_connection() {
+# MARIADB_TLS_VERIFY=false: MySQL's certificate is self-signed, which this client refuses
+# by default; syncstorage-rs itself connects without TLS (DATABASES.md)
+TLS_ARGS=()
+[ "${MARIADB_TLS_VERIFY:-true}" = false ] && TLS_ARGS=(--skip-ssl-verify-server-cert)
+db() {
   mariadb --host="${MARIADB_SERVER}" \
           --port="${MARIADB_SERVER_PORT}" \
           --user="${MARIADB_USER}" \
           --password="${MARIADB_PASSWORD}" \
-          --connect-timeout=5 \
-          -e "SELECT 1;" >/dev/null 2>&1
+          "${TLS_ARGS[@]}" \
+          "$@"
+}
+
+# Function to check if database is accessible
+check_db_connection() {
+  db --connect-timeout=5 -e "SELECT 1;" >/dev/null 2>&1
 }
 
 # Function to check if a table exists
 table_exists() {
   local table_name="$1"
   local count
-  count=$(mariadb --host="${MARIADB_SERVER}" \
-                   --port="${MARIADB_SERVER_PORT}" \
-                   --user="${MARIADB_USER}" \
-                   --password="${MARIADB_PASSWORD}" \
-                   "${MARIADB_DATABASE}" \
-                   -sN \
+  count=$(db "${MARIADB_DATABASE}" -sN \
                    -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${MARIADB_DATABASE}' AND table_name='${table_name}';" 2>/dev/null || echo "0")
   [ "${count}" = "1" ]
 }
@@ -127,11 +130,7 @@ sed -e "s|@DOMAIN@|${DOMAIN}|g" \
 
 # Apply SQL initialization
 echo "Applying database initialization..."
-if mariadb --host="${MARIADB_SERVER}" \
-           --port="${MARIADB_SERVER_PORT}" \
-           --user="${MARIADB_USER}" \
-           --password="${MARIADB_PASSWORD}" \
-           "${MARIADB_DATABASE}" < "${SQL_FILE}"; then
+if db "${MARIADB_DATABASE}" < "${SQL_FILE}"; then
   echo "✓ SQL initialization completed successfully!"
 else
   echo "✗ ERROR: Failed to apply SQL initialization"
@@ -139,21 +138,9 @@ else
 fi
 
 # Display current status
-current_users=$(mariadb --host="${MARIADB_SERVER}" \
-                        --port="${MARIADB_SERVER_PORT}" \
-                        --user="${MARIADB_USER}" \
-                        --password="${MARIADB_PASSWORD}" \
-                        "${MARIADB_DATABASE}" \
-                        -sN \
-                        -e 'SELECT COUNT(DISTINCT email) FROM users;')
+current_users=$(db "${MARIADB_DATABASE}" -sN -e 'SELECT COUNT(DISTINCT email) FROM users;')
 
-max_users_in_db=$(mariadb --host="${MARIADB_SERVER}" \
-                           --port="${MARIADB_SERVER_PORT}" \
-                           --user="${MARIADB_USER}" \
-                           --password="${MARIADB_PASSWORD}" \
-                           "${MARIADB_DATABASE}" \
-                           -sN \
-                           -e "SELECT config_value FROM config WHERE config_key='max_users';")
+max_users_in_db=$(db "${MARIADB_DATABASE}" -sN -e "SELECT config_value FROM config WHERE config_key='max_users';")
 
 echo ""
 echo "=========================================="

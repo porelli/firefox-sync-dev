@@ -2,7 +2,8 @@ name: fxa-mono
 
 # amd64 and arm64 builds of Mozilla's accounts image (mozilla/fxa-mono, published for
 # amd64 only) from the upstream release tags, tested with tests/e2e-fxa.sh and
-# tests/podman.sh on both architectures before the multi-arch tags are published.
+# tests/podman.sh on both architectures before the multi-arch tags are published
+# (and on MariaDB, without holding back the publishing, see test-mariadb).
 # Experimental, see FXA.md.
 
 on:
@@ -243,6 +244,39 @@ jobs:
           FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
           FXA_ARCH: ${{ matrix.arch }}
           FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-${{ matrix.arch }}
+        run: ./tests/e2e-fxa.sh
+
+  # the candidate with the accounts database on MariaDB (FXA_DB=mariadb, FXA.md). Not needed
+  # by publish: Mozilla supports MySQL only, a release that breaks MariaDB must not hold back
+  # MySQL installs. The failed run is the warning for MariaDB installs (FXA.md: pin FXA_VERSION)
+  test-mariadb:
+    needs: [prepare, build, build-pairing]
+    if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: End-to-end tests with our amd64 image, the accounts on MariaDB
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          FXA_DB: mariadb
+          FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-amd64
+          FXA_ARCH: amd64
+          FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-amd64
         run: ./tests/e2e-fxa.sh
 
   # the candidate under rootless podman too: quadlets with the accounts, set up by

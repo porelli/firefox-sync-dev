@@ -10,8 +10,9 @@ Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-profile
 # Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
 PodmanArgs=--arch=%FXA_ARCH%
-Environment="MYSQL_HOST=fxa-db"
-Environment="MYSQL_USERNAME=root"
+Environment="MYSQL_HOST=%FXA_MYSQL_HOST%"
+Environment="MYSQL_PORT=%FXA_MYSQL_PORT%"
+Environment="MYSQL_USERNAME=%FXA_MYSQL_USER%"
 Environment="MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
 Environment="NODE_ENV=production"
 Environment="HOST=0.0.0.0"

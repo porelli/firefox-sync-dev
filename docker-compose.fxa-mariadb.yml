@@ -1,0 +1,22 @@
+# The accounts database on MariaDB instead of MySQL 8.4 (FXA_DB=mariadb, see FXA.md), on top of
+# docker-compose.fxa.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml
+# Mozilla supports MySQL only; MariaDB 11.4 to 11.8 passes the same tests here.
+
+services:
+  fxa-db:
+    # not mariadb:lts: from 12.0 unnamed foreign keys are named 1, 2... instead of
+    # <table>_ibfk_N, and Mozilla's migrations drop them by those names
+    image: mariadb:11.8
+    environment:
+      MARIADB_AUTO_UPGRADE: "true"
+    # the default authentication is already mysql_native_password, the only one FxA's driver supports
+    command: [mariadbd, --event-scheduler=ON]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+    # replaces the fxa-db volume (same path): MariaDB cannot open MySQL's data files,
+    # an existing fxa-db volume is left as it is
+    volumes:
+      - fxa-db-mariadb:/var/lib/mysql
+
+volumes:
+  fxa-db-mariadb:

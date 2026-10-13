@@ -17,6 +17,10 @@
 #   TEST_SUBNET     the stack's network, a /24 (default: 10.231.1.0/24 mysql, 10.231.2.0/24 postgres);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
 #                   gateway (the host) at .1 is not
+#   EXTERNAL_DB     set to 1 for a database server outside the stack (DB_CONTAINERS=0, DATABASES.md),
+#                   created with only the grants of config/database/: MySQL 8.4 with binary logging
+#                   for mysql, a PostgreSQL 18 owner that is no superuser for postgres; on its own
+#                   network (EXTDB_SUBNET, default: 10.232.1.0/24 mysql, 10.232.2.0/24 postgres)
 set -u
 
 BACKEND=${1:?usage: $0 <mysql|postgres>}
@@ -63,12 +67,29 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     -e "s|<REPLACE_WITH_SOMETHING_SECURE>|$(rnd)|" \
     -e "s|<REPLACE_WITH_[A-Z_]*>|placeholder.invalid|g" \
     "${CODE}/.env-example" > "${ENV_FILE}"
+EXTDB=
+COMPOSE_EXTRA=()
+DATABASE_SERVER=
+if [ -n "${EXTERNAL_DB:-}" ]; then
+  # a server elsewhere: its own container and network, reached by name
+  EXTDB=${PROJECT}-extdb
+  EXTDB_SUBNET=${EXTDB_SUBNET:-10.232.${NET}.0/24}
+  export EXTDB_NETWORK=${EXTDB}
+  # the admin UI's peers come from either network
+  export TEST_TRUSTED_PROXIES=${TEST_TRUSTED},${EXTDB_SUBNET%.0/24}.128/25
+  COMPOSE_EXTRA=(-f "${TESTS}/docker-compose.external-db-test.yml")
+  [ "${BACKEND}" = mysql ] && DATABASE_SERVER=MySQL
+  sed -i -e "s|^DB_CONTAINERS=.*|DB_CONTAINERS=0|" -e "s|^MARIADB_TLS_VERIFY=.*|MARIADB_TLS_VERIFY=false|" \
+      -e "s|^MARIADB_TOKENSERVER_SERVER=.*|MARIADB_TOKENSERVER_SERVER=${EXTDB}|" \
+      -e "s|^MARIADB_SYNCSTORAGE_SERVER=.*|MARIADB_SYNCSTORAGE_SERVER=${EXTDB}|" \
+      -e "s|^POSTGRES_SERVER=.*|POSTGRES_SERVER=${EXTDB}|" "${ENV_FILE}"
+fi
 set -a; source "${ENV_FILE}"; set +a
 # the admin UI under test: ADMIN_IMAGE as is (pulled when missing), or built from admin/
 ADMIN_GIVEN=${ADMIN_IMAGE:-}
 export ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
 
-dc() { docker compose -p "${PROJECT}" -f "${COMPOSE}" -f "${TESTS}/docker-compose.test.yml" --env-file "${ENV_FILE}" "$@"; }
+dc() { docker compose -p "${PROJECT}" -f "${COMPOSE}" -f "${TESTS}/docker-compose.test.yml" "${COMPOSE_EXTRA[@]}" --env-file "${ENV_FILE}" "$@"; }
 FAILED=0
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
@@ -98,7 +119,11 @@ admin_healthy() {
 set_env() { sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"; }
 
 sql() {
-  if [ "${BACKEND}" = mysql ]; then
+  if [ -n "${EXTDB}" ] && [ "${BACKEND}" = mysql ]; then
+    docker exec -i -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" "${EXTDB}" mysql -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null
+  elif [ -n "${EXTDB}" ]; then
+    docker exec -i -e PGPASSWORD="${POSTGRES_PASSWORD}" "${EXTDB}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DATABASE}" -tA -c "$1" < /dev/null
+  elif [ "${BACKEND}" = mysql ]; then
     dc exec -T tokenserver_db mariadb -u"${MARIADB_TOKENSERVER_USER}" -p"${MARIADB_TOKENSERVER_PASSWORD}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null
   else
     dc exec -T postgres_db psql -U "${POSTGRES_USER}" -d "${POSTGRES_DATABASE}" -tA -c "$1" < /dev/null
@@ -118,16 +143,84 @@ in_app() {
     -e ADMIN_URL=http://ffs-admin:8080 \
     -e ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
     -e BACKEND="${BACKEND}" \
+    -e DATABASE_SERVER="${DATABASE_SERVER}" \
     -e PYTHONPATH=/app:/app/tools \
     -e PYTHONDONTWRITEBYTECODE=1 \
     --entrypoint /bin/sh syncstorage -c "cd /app && $1" < /dev/null
 }
 pytest_in_app() { in_app "python3 -m pytest -q -p no:cacheprovider $1 > /tmp/pytest.log 2>&1; rc=\$?; tail -25 /tmp/pytest.log; exit \$rc"; }
 
+# EXTERNAL_DB=1: SQL as the administrator of the external server, on stdin
+extdb_admin() {
+  if [ "${BACKEND}" = mysql ]; then
+    docker exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" mysql -uroot -sN "$@"
+  else
+    docker exec -i -e PGPASSWORD="${EXTDB_ROOT}" "${EXTDB}" psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA "$@"
+  fi
+}
+# the server, then the databases and users exactly as DATABASES.md says
+start_extdb() {
+  EXTDB_ROOT=$(rnd)
+  docker rm -f "${EXTDB}" > /dev/null 2>&1
+  docker network rm "${EXTDB}" > /dev/null 2>&1
+  docker network create --subnet "${EXTDB_SUBNET}" --ip-range "${EXTDB_SUBNET%.0/24}.128/25" \
+    --gateway "${EXTDB_SUBNET%.0/24}.1" "${EXTDB}" > /dev/null || return 1
+  if [ "${BACKEND}" = mysql ]; then
+    # binary logging is on by default: the trigger needs log_bin_trust_function_creators
+    docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/mysql \
+      -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" mysql:8.4 --log-bin-trust-function-creators=ON > /dev/null || return 1
+  else
+    docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/postgresql \
+      -e POSTGRES_PASSWORD="${EXTDB_ROOT}" postgres:18 > /dev/null || return 1
+  fi
+  # over TCP: while the images initialize, a temporary server listens on the socket only
+  for _ in $(seq 1 90); do
+    if [ "${BACKEND}" = mysql ]; then
+      extdb_admin -h 127.0.0.1 --protocol=tcp -e 'SELECT 1' < /dev/null > /dev/null 2>&1 && break
+    else
+      extdb_admin -c 'SELECT 1' < /dev/null > /dev/null 2>&1 && break
+    fi
+    sleep 2
+  done
+  if [ "${BACKEND}" = mysql ]; then
+    sed -e "s|@TOKENSERVER_DATABASE@|${MARIADB_TOKENSERVER_DATABASE}|g" -e "s|@TOKENSERVER_USER@|${MARIADB_TOKENSERVER_USER}|g" \
+        -e "s|@TOKENSERVER_PASSWORD@|${MARIADB_TOKENSERVER_PASSWORD}|g" -e "s|@SYNCSTORAGE_DATABASE@|${MARIADB_SYNCSTORAGE_DATABASE}|g" \
+        -e "s|@SYNCSTORAGE_USER@|${MARIADB_SYNCSTORAGE_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${MARIADB_SYNCSTORAGE_PASSWORD}|g" \
+        "${CODE}/config/database/sync-mariadb.sql"
+  else
+    sed -e "s|@POSTGRES_DATABASE@|${POSTGRES_DATABASE}|g" -e "s|@POSTGRES_USER@|${POSTGRES_USER}|g" \
+        -e "s|@POSTGRES_PASSWORD@|${POSTGRES_PASSWORD}|g" "${CODE}/config/database/sync-postgres.sql"
+  fi > "${WORK}/database-setup.sql"
+  check "$(grep -c '@[A-Z_]*@' "${WORK}/database-setup.sql")" 0 "external database: SQL template filled in"
+  # run twice, first with other passwords: prepare_environment.sh run again makes new ones
+  local real
+  for real in "" 1; do
+    if [ "${BACKEND}" = mysql ]; then
+      if [ -n "${real}" ]; then cat "${WORK}/database-setup.sql"; else sed "s|IDENTIFIED BY '[^']*'|IDENTIFIED BY 'stale'|" "${WORK}/database-setup.sql"; fi \
+        | extdb_admin > /dev/null || return 1
+    else
+      # as a role with CREATEROLE and CREATEDB, not a superuser: what managed services give;
+      # the second time like psql -f, which goes on after "already exists"
+      if [ -z "${real}" ]; then
+        EXTDB_PG_ADMIN=$(rnd)
+        extdb_admin -c "CREATE ROLE dbadmin LOGIN CREATEROLE CREATEDB PASSWORD '${EXTDB_PG_ADMIN}'" < /dev/null > /dev/null || return 1
+        sed "s|PASSWORD '[^']*'|PASSWORD 'stale'|" "${WORK}/database-setup.sql" \
+          | docker exec -i -e PGPASSWORD="${EXTDB_PG_ADMIN}" "${EXTDB}" psql -h 127.0.0.1 -U dbadmin -d postgres -v ON_ERROR_STOP=1 -q > /dev/null || return 1
+      else
+        docker exec -i -e PGPASSWORD="${EXTDB_PG_ADMIN}" "${EXTDB}" psql -h 127.0.0.1 -U dbadmin -d postgres -q < "${WORK}/database-setup.sql" > /dev/null 2>&1 || return 1
+      fi
+    fi
+  done
+}
+
 teardown() {
-  [ -n "${KEEP:-}" ] && { echo "keeping stack ${PROJECT} (env: ${ENV_FILE})"; return; }
+  [ -n "${KEEP:-}" ] && { echo "keeping stack ${PROJECT} (env: ${ENV_FILE})${EXTDB:+ and its database server ${EXTDB}}"; return; }
   echo "== teardown"
   dc down -v --remove-orphans > /dev/null 2>&1
+  if [ -n "${EXTDB}" ]; then
+    docker rm -f "${EXTDB}" > /dev/null 2>&1
+    docker network rm "${EXTDB}" > /dev/null 2>&1
+  fi
   if [ -n "${CLEANUP_IMAGES:-}" ]; then
     docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${TAG}" > /dev/null 2>&1
     [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
@@ -142,6 +235,12 @@ if [ -z "${ADMIN_GIVEN}" ]; then
 fi
 echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
+
+if [ -n "${EXTDB}" ]; then
+  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo mysql:8.4 || echo postgres:18))"
+  start_extdb
+  check "$?" 0 "external database server with the databases and users of config/database/"
+fi
 
 echo "== fail closed: a failing init must keep syncstorage down"
 printf 'services:\n  tokenserver_db_init:\n    entrypoint: ["/bin/false"]\n' > "${WORK}/fail-init.yml"
@@ -160,6 +259,25 @@ APP_START=$(date -d "$(state syncstorage StartedAt)" +%s%N)
 check "$([ "${APP_START}" -gt "${INIT_END}" ] && echo yes)" yes "syncstorage started only after the init finished"
 check "$(hb)" 200 "/__heartbeat__"
 dc logs syncstorage 2>&1 | grep -m1 "Server running"
+
+if [ -n "${EXTDB}" ]; then
+  echo "== external database server: nothing more than the documented grants"
+  check "$(dc ps -a --format '{{.Service}}' | grep -cxE 'syncstorage_db|tokenserver_db|postgres_db')" 0 "no database container in the project"
+  if [ "${BACKEND}" = mysql ]; then
+    grants=$(echo "SHOW GRANTS FOR '${MARIADB_TOKENSERVER_USER}'@'%'; SHOW GRANTS FOR '${MARIADB_SYNCSTORAGE_USER}'@'%';" | extdb_admin)
+    echo "${grants}" | sed 's/^/  /'
+    check "$(echo "${grants}" | grep -cE 'ALL PRIVILEGES|SUPER')" 0 "no ALL PRIVILEGES or SUPER for the Sync users"
+    # what the test is about: binary logging (triggers), caching_sha2_password without TLS
+    check "$(echo "SELECT @@log_bin, (SELECT GROUP_CONCAT(DISTINCT plugin) FROM mysql.user WHERE user IN ('${MARIADB_TOKENSERVER_USER}', '${MARIADB_SYNCSTORAGE_USER}'));" | extdb_admin)" \
+      "$(printf '1\tcaching_sha2_password')" "binary logging on, users with caching_sha2_password"
+    check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "MAX_USERS trigger created by the init container"
+  else
+    check "$(echo "SELECT rolsuper, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = '${POSTGRES_USER}';" | extdb_admin)" "f|f|f" \
+      "the database owner is no superuser"
+    check "$(echo "SELECT has_database_privilege('dbadmin', '${POSTGRES_DATABASE}', 'TEMP'), has_database_privilege('public', '${POSTGRES_DATABASE}', 'CONNECT');" | extdb_admin)" "t|f" \
+      "database created by a CREATEROLE CREATEDB role, closed to PUBLIC"
+  fi
+fi
 
 echo "== tokenserver node"
 SVC=$(sql "SELECT id FROM services WHERE service='sync-1.5';")
@@ -288,7 +406,7 @@ check "$(wait_init)" 0 "init container exit code (MAX_USERS=1000000)"
 hb > /dev/null
 # test_e2e.py needs real accounts on Mozilla's FxA stage environment
 UPSTREAM_TS="tools/integration_tests/tokenserver --ignore=tools/integration_tests/tokenserver/test_e2e.py"
-if [ "${BACKEND}" = mysql ]; then
+if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ]; then
   # with several empty nodes the tokenserver orders them by LOG(0) (NULL), MySQL 8
   # (upstream CI) returns them in id order, MariaDB does not: this stack has one node
   # (node ids are relative to tools/integration_tests, pytest's rootdir in the image)

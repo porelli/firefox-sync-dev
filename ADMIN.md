@@ -29,6 +29,8 @@ ADMIN_EXPORT_PORT=127.0.0.1:8090
 
 then `docker compose up -d`. With Quadlets, starting `firefox-sync-syncstorage.service` also starts `firefox-sync-admin.service`.
 
+On [your own database server](DATABASES.md) the admin UI connects as the Sync users (`MARIADB_*` or `POSTGRES_*`) and, with self-hosted accounts, as `ffs_admin`, which `database-setup-fxa.sql` creates there (the sign-up policy gives it its grants): nothing else to set up.
+
 ## Max users
 
 `MAX_USERS` in `.env` says who sets the limit:

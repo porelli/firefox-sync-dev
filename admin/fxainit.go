@@ -3,11 +3,17 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
+
+// ER_SPECIFIC_ACCESS_DENIED_ERROR, MySQL and MariaDB: e.g. CREATE USER without the privilege
+const errSpecificAccessDenied = 1227
 
 // Installed (again) on every start, after FxA's migrations: idempotent
 var fxaPolicySQL = []string{
@@ -114,7 +120,7 @@ var fxaPolicySQL = []string{
 
 // The admin UI connects as ffs_admin: it reads the accounts and can only disable
 // them, sign out their devices and sessions, it cannot change anything else in FxA.
-// Revoked first: what earlier versions granted goes (the token ids).
+// Revoked first: what earlier versions granted goes (the token ids). The REVOKE must stay first.
 var fxaAdminGrants = []string{
 	"REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'ffs_admin'@'%'",
 	"GRANT SELECT, INSERT, UPDATE, DELETE ON ffs.settings TO 'ffs_admin'@'%'",
@@ -135,7 +141,13 @@ var fxaAdminGrants = []string{
 }
 
 func fxaInit(ctx context.Context) error {
-	cfg := fxaConfig(env("FXA_DB_ROOT_USER", "root"), env("FXA_DB_ROOT_PASSWORD", ""))
+	// the policy user, or the accounts' own (Quadlets have no ${a:-${b}}): DATABASES.md.
+	// User and password as a pair: a policy password left over must not go with FXA_MYSQL_USER
+	user, password := env("FXA_DB_ROOT_USER", ""), env("FXA_DB_ROOT_PASSWORD", "")
+	if user == "" {
+		user, password = env("FXA_MYSQL_USER", "root"), env("FXA_MYSQL_PASSWORD", "")
+	}
+	cfg := fxaConfig(user, password)
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err
@@ -173,14 +185,26 @@ func fxaInit(ctx context.Context) error {
 	}
 
 	if password := env("FXA_ADMIN_DB_PASSWORD", ""); password != "" {
-		// FxA's MySQL only allows mysql_native_password (see docker-compose.fxa.yml)
-		if _, err := db.ExecContext(ctx, "CREATE USER IF NOT EXISTS 'ffs_admin'@'%' IDENTIFIED BY ?", password); err != nil {
+		// the server's default plugin: mysql_native_password on fxa-db (docker-compose.fxa.yml),
+		// often caching_sha2_password on your own server, this driver handles both
+		grants := fxaAdminGrants
+		_, err := db.ExecContext(ctx, "CREATE USER IF NOT EXISTS 'ffs_admin'@'%' IDENTIFIED BY ?", password)
+		var myErr *mysql.MySQLError
+		switch {
+		case errors.As(err, &myErr) && myErr.Number == errSpecificAccessDenied:
+			// your own server: no CREATE USER for the policy user (it could change any
+			// account's password), the administrator created ffs_admin (DATABASES.md).
+			// Nothing earlier versions granted to revoke there, and REVOKE ALL needs it too
+			log.Printf("ffs_admin: created by the administrator of the database server, granting")
+			grants = grants[1:]
+		case err != nil:
 			return fmt.Errorf("creating ffs_admin: %w", err)
+		default:
+			if _, err := db.ExecContext(ctx, "ALTER USER 'ffs_admin'@'%' IDENTIFIED BY ?", password); err != nil {
+				return fmt.Errorf("setting the ffs_admin password: %w", err)
+			}
 		}
-		if _, err := db.ExecContext(ctx, "ALTER USER 'ffs_admin'@'%' IDENTIFIED BY ?", password); err != nil {
-			return fmt.Errorf("setting the ffs_admin password: %w", err)
-		}
-		for _, stmt := range fxaAdminGrants {
+		for _, stmt := range grants {
 			if _, err := db.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("%s: %w", stmt, err)
 			}

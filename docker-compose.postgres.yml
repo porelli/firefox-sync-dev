@@ -82,6 +82,9 @@ services:
 
   postgres_db:
     image: postgres:18
+    # 0: your own server (DATABASES.md); compose then skips the dependency on it
+    deploy:
+      replicas: ${DB_CONTAINERS:-1}
     environment:
       POSTGRES_DB: ${POSTGRES_DATABASE}
       POSTGRES_USER: ${POSTGRES_USER}

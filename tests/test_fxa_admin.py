@@ -348,7 +348,8 @@ def test_health_and_sizes(admin):
     # versions from /__version__ (our syncstorage images fill it in since APP_BUILD_REVISION 2)
     assert re.search(r"<td>Accounts API</td><td>[^<]*<span[^>]*>up</span></td><td>\d+\.\d+", health), health
     assert re.search(r"Databases: .*Tokenserver \d", page), page[:3000]
-    for component, v in (("Accounts database", r"MySQL 8\.4"), ("Accounts Redis", r"Redis \d"), ("Profile server", r"\d+\.\d+")):
+    # FXA_DB_SERVER: set by e2e-fxa.sh, MariaDB with FXA_DB=mariadb
+    for component, v in (("Accounts database", os.environ.get("FXA_DB_SERVER") or r"MySQL 8\.4"), ("Accounts Redis", r"Redis \d"), ("Profile server", r"\d+\.\d+")):
         assert re.search(r"<td>" + component + r"</td><td>[^<]*<span[^>]*>up</span></td><td>" + v, health), (component, health)
 
 

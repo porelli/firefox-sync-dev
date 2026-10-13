@@ -9,6 +9,7 @@
 #   TAG         tag suffix of both the app and init images (default: latest)
 #   PORT        host port (default: 28660)
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
+#   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
 #   ADMIN_IMAGE     admin UI image to test, pulled and used as is (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1-linux-arm64 (default: REPOSITORY:fxa-mono-latest)
@@ -194,15 +195,88 @@ stop_quadlets() {
 }
 stop_quadlets
 
+if [ -n "${EXTERNAL_DB:-}" ]; then
+  echo "== quadlets on your own database server (mariadb:lts, binary logging)"
+  EXTDB=ffs-podman-extdb
+  # answers as above, no accounts, then: your own server? host, port, tokenserver database
+  # and user, storage database and user
+  printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" n y "${EXTDB}" "" "" "" "" "" \
+    | ./prepare_environment.sh > setup-external.log 2>&1
+  check "$?" 0 "prepare_environment.sh (quadlets, your own database server)"
+  check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db.* 2> /dev/null | wc -l)" 0 "no database quadlets"
+  check "$(grep -hE '^(After|Requires)=.*-db\.service' "${QUADLET_DIR}"/firefox-sync-* | wc -l) $(grep -c '^Requires=' "${QUADLET_DIR}/firefox-sync-syncstorage-migrate.container")" "0 0" \
+    "no dependencies on database units"
+  check "$(grep -c '^Requires=firefox-sync-syncstorage-migrate.service$' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "the init still needs the migrations"
+  check "$(grep -hcE "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=mysql://syncstorage:[A-Za-z0-9]+@${EXTDB}:3306/syncstorage|MARIADB_SERVER=${EXTDB}|MARIADB_TLS_VERIFY=false|STORAGE_DB_HOST=${EXTDB})\"?$" \
+    "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container | paste -sd' ')" "1 2 1" "quadlets connect to your server"
+  "${QUADLET}" -dryrun -user > quadlet-external-dryrun.log 2>&1
+  check "$?" 0 "quadlet generator accepts the files without database units"
+  systemctl --user start firefox-sync-network-network.service
+  EXTDB_ROOT=$(tr -dc '[:alnum:]' < /dev/urandom | head -c 24)
+  podman rm -f "${EXTDB}" > /dev/null 2>&1
+  podman run -d --name "${EXTDB}" --network firefox-sync --tmpfs /var/lib/mysql -e MARIADB_ROOT_PASSWORD="${EXTDB_ROOT}" \
+    docker.io/library/mariadb:lts mariadbd --log-bin=mysql-bin --server-id=1 --log-bin-trust-function-creators=1 > /dev/null
+  for _ in $(seq 1 60); do
+    podman exec -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" mariadb -uroot -h 127.0.0.1 --protocol=tcp -e 'SELECT 1' > /dev/null 2>&1 && break
+    sleep 2
+  done
+  check "$(stat -c %a database-setup.sql)" 600 "database-setup.sql for this user only"
+  podman exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" mariadb -uroot < database-setup.sql
+  check "$?" 0 "database-setup.sql runs on the server"
+  timeout 900 systemctl --user start firefox-sync-syncstorage.service
+  check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service (your own server)"
+  check "$(hb)" 200 "/__heartbeat__ (quadlets, your own server)"
+  check "$(podman exec -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" mariadb -uroot -sN -e "SELECT @@log_bin; SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser'" | paste -sd' ')" \
+    "1 1" "MAX_USERS trigger on your server, with binary logging"
+  check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')" all "admin UI reaches your server (quadlets)"
+  [ "${FAILED}" = 0 ] || { journalctl --user -u 'firefox-sync-*' --no-pager | tail -40; podman logs --tail 20 "${EXTDB}"; }
+  stop_quadlets
+  podman rm -f "${EXTDB}" > /dev/null 2>&1
+  podman network rm -f firefox-sync > /dev/null 2>&1
+
+  # the accounts on your own MySQL server: only what is installed (no MySQL 8 here)
+  # answers: ..., admin host, your own server for Sync? the accounts? host, port, user, policy user
+  printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" \
+    n y fxa-mysql.invalid "" "" "" | ./prepare_environment.sh > setup-fxa-external.log 2>&1
+  check "$?" 0 "prepare_environment.sh (quadlets, accounts on your own server)"
+  check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 11 "accounts quadlet files without the database"
+  check "$(grep -hoE '^Environment="(((AUTH|OAUTH|PROFILE|PUSHBOX)_)?MYSQL|FXA_DB)_HOST=[^"]*"' "${QUADLET_DIR}"/firefox-sync-{fxa-*,admin}.container | sed 's/.*=//' | sort | uniq -c | sed 's/^ *//')" \
+    '10 fxa-mysql.invalid"' "the accounts connect to your server"
+  check "$(grep -hcE '^Environment="(FXA_DB_ROOT_USER=ffs_policy|FXA_MYSQL_USER=fxa)"$' "${QUADLET_DIR}/firefox-sync-fxa-policy.container")" 2 "sign-up policy installed by ffs_policy"
+  check "$(grep -c '^Requires=' "${QUADLET_DIR}/firefox-sync-fxa-migrations.container")" 0 "accounts migrations without the database unit"
+  "${QUADLET}" -dryrun -user > quadlet-fxa-external-dryrun.log 2>&1
+  check "$?" 0 "quadlet generator accepts the accounts files without the database"
+  stop_quadlets
+fi
+
+FXA_DB=${FXA_DB:-mysql}
+fxa_db_image() { sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-fxa-db.container" 2> /dev/null; }
+if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
+  echo "== quadlets with the accounts on MariaDB: only what is installed"
+  # answers: as below, then your own server for Sync? the accounts? the accounts database
+  printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" \
+    n n mariadb | ./prepare_environment.sh > setup-fxa-mariadb.log 2>&1
+  check "$?" 0 "prepare_environment.sh (quadlets, accounts on MariaDB)"
+  check "$(fxa_db_image) $(ls "${QUADLET_DIR}"/firefox-sync-fxa-db* 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
+    "docker.io/library/mariadb:11.8 firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB unit and its own volume, not MySQL's"
+  "${QUADLET}" -dryrun -user > quadlet-fxa-mariadb-dryrun.log 2>&1
+  check "$?" 0 "quadlet generator accepts the MariaDB accounts database"
+  stop_quadlets
+fi
+
 if [ -z "${SKIP_FXA:-}" ]; then
-  echo "== quadlets with self-hosted Mozilla accounts"
+  echo "== quadlets with self-hosted Mozilla accounts (${FXA_DB})"
   # answers: ..., image tag, admin UI, FxA, FxA domain, SMTP host, port, user, password, sender, allowlist,
-  # admin emails, admin host
+  # admin emails, admin host, [your own server for Sync? the accounts? the accounts database]
+  fxa_db_answers=()
+  [ "${FXA_DB}" = mariadb ] && fxa_db_answers=(n n mariadb)
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test 'p%ss|w&rd' "" "@fxa.invalid" \
-    "me@fxa.invalid" "" \
+    "me@fxa.invalid" "" "${fxa_db_answers[@]}" \
     | ./prepare_environment.sh > setup-fxa-quadlets.log 2>&1
   check "$?" 0 "prepare_environment.sh (quadlets with accounts)"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
+  [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:11.8 || expected_image=docker.io/library/mysql:8.4
+  check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   check "$(grep -lE '%[A-Z][A-Z0-9_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders"
   check "$(grep -c 'SMTP_PASS=p%%ss|w&rd"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "values escaped for systemd"

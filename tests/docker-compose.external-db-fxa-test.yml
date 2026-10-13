@@ -1,0 +1,21 @@
+# Test-only: the accounts on a MySQL server outside the stack (EXTERNAL_DB=1 or fxa in
+# tests/e2e-fxa.sh), FXA_DB_CONTAINERS=0; with tests/docker-compose.external-db-test.yml when Sync
+# is there too.
+
+services:
+  fxa-migrations:
+    networks: [default, extdb]
+  fxa-policy:
+    networks: [default, extdb]
+  fxa-auth:
+    networks: [default, extdb]
+  fxa-profile:
+    networks: [default, extdb]
+  # (also in docker-compose.external-db-test.yml: with Sync on the server too)
+  ffs-admin:
+    networks: [default, extdb]
+
+networks:
+  extdb:
+    external: true
+    name: ${EXTDB_NETWORK:?}

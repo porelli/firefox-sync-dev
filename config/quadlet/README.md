@@ -25,8 +25,12 @@ Quadlets are systemd unit files that Podman automatically converts into containe
 - `firefox-sync-syncstorage-migrate.container` - Database migrations, without exposing the service (runs once)
 - `firefox-sync-tokenserver-db-init.container` - Database initialization and MAX_USERS (runs once, after the migrations)
 - `firefox-sync-syncstorage.container` - Main Firefox Sync service (starts only after the init succeeded)
-- `fxa/` - self-hosted Mozilla accounts (experimental, see [FXA.md](../../FXA.md)), installed only when chosen in `prepare_environment.sh`; `firefox-sync-fxa-policy.container` installs the sign-up policy before the accounts start
+- `fxa/` - self-hosted Mozilla accounts (experimental, see [FXA.md](../../FXA.md)), installed only when chosen in `prepare_environment.sh`; `firefox-sync-fxa-policy.container` installs the sign-up policy before the accounts start; with `FXA_DB=mariadb` the files in `fxa/mariadb/` replace `firefox-sync-fxa-db.container` and its volume (see [FXA.md](../../FXA.md#mysql-or-mariadb))
 - `admin/firefox-sync-admin.container` - the optional [admin UI](../../ADMIN.md) (`fxa/admin/` with self-hosted accounts: it also manages them and is the sign-up gate), installed when enabled in `prepare_environment.sh`
+
+### Your own database server
+
+With `DB_CONTAINERS=0` in `.env` (`prepare_environment.sh` asks) the `firefox-sync-syncstorage-db` and `firefox-sync-tokenserver-db` files are not installed, and they are removed from the other units' `After=` and `Requires=`; the same for `firefox-sync-fxa-db` with `FXA_DB_CONTAINERS=0`. The host names come from `.env` (`MARIADB_*_SERVER`, `FXA_MYSQL_HOST`). See [DATABASES.md](../../DATABASES.md).
 
 ### Setup Script
 - `../../prepare_environment.sh` (choose Quadlets) - Automated setup that:

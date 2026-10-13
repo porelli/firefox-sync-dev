@@ -126,6 +126,10 @@ systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile
 ```
 The databases, the migrations and the auth server are started automatically as dependencies.
 
+#### Your own database server
+
+To use a MariaDB or MySQL server you already run, answer `y` to "Use an existing database server instead of starting one?" in `prepare_environment.sh` (and for the accounts, a MySQL 8.0/8.4 or MariaDB 11.4 to 11.8 server). The database units are then not installed, the other units don't depend on them, and the script writes `database-setup.sql` for your server. A server on this host is `host.containers.internal` for the containers, not `localhost`. See [DATABASES.md](DATABASES.md).
+
 #### Admin UI
 
 If you enabled the [admin UI](ADMIN.md) in `prepare_environment.sh`, starting the Sync server also starts it, first, so that the Sync server sends it its metrics; on its own: `systemctl --user start firefox-sync-admin.service` (with self-hosted accounts it is also the sign-up gate, and starts the sign-up policy unit as a dependency). When the admin UI container is replaced (auto-update, restart) it restarts the Sync server, which only looks up its address at start.

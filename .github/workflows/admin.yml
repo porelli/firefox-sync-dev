@@ -98,6 +98,8 @@ jobs:
       fail-fast: false
       matrix:
         database_backend: [mysql, postgres]
+        # 1: on a database server outside the stack, with only the grants of DATABASES.md
+        external_db: ["", "1"]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -126,10 +128,12 @@ jobs:
           TAG: latest
           ADMIN_IMAGE: ${{ needs.build.outputs.image }}
           BACKEND: ${{ matrix.database_backend }}
+          EXTERNAL_DB: ${{ matrix.external_db }}
           SKIP_PULL: 1
         run: ./tests/e2e.sh "${BACKEND}"
 
   ## With the self-hosted accounts: sign-up policy, accounts, browser, on both architectures ##
+  # and on MariaDB (FXA_DB=mariadb): the sign-up policy's SQL is ours, it must work on both
   e2e-fxa:
     needs: build
     permissions:
@@ -141,8 +145,18 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
+            fxa_db: mysql
           - arch: arm64
             runner: ubuntu-24.04-arm
+            fxa_db: mysql
+          - arch: amd64
+            runner: ubuntu-latest
+            fxa_db: mariadb
+          # Sync and the accounts on a server outside the stack (DATABASES.md)
+          - arch: amd64
+            runner: ubuntu-latest
+            fxa_db: mysql
+            external_db: "1"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -165,10 +179,12 @@ jobs:
           docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
           docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
 
-      - name: End-to-end tests with self-hosted Mozilla accounts
+      - name: End-to-end tests with self-hosted Mozilla accounts (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }})
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
+          FXA_DB: ${{ matrix.fxa_db }}
+          EXTERNAL_DB: ${{ matrix.external_db || '' }}
           ADMIN_IMAGE: ${{ needs.build.outputs.image }}
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           FXA_VERSION: fxa-mono-latest

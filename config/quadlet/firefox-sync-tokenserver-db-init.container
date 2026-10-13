@@ -8,8 +8,10 @@ Image=%REPOSITORY%:%SYNCSTORAGE_INIT_IMAGE%-%SYNCSTORAGE_INIT_IMAGE_TAG%
 ContainerName=firefox-sync-tokenserver-db-init
 Network=firefox-sync-network.network
 
-Environment=MARIADB_SERVER=firefox-sync-tokenserver-db
-Environment=MARIADB_SERVER_PORT=3306
+Environment=MARIADB_SERVER=%MARIADB_TOKENSERVER_SERVER%
+Environment=MARIADB_SERVER_PORT=%MARIADB_TOKENSERVER_SERVER_PORT%
+# false with your own MySQL server: its certificate is self-signed
+Environment=MARIADB_TLS_VERIFY=%MARIADB_TLS_VERIFY%
 Environment=MARIADB_DATABASE=%MARIADB_TOKENSERVER_DATABASE%
 Environment=MARIADB_USER=%MARIADB_TOKENSERVER_USER%
 Environment=MARIADB_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%

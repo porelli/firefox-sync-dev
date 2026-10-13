@@ -123,8 +123,8 @@ def test_health(admin):
     for component in components:
         row = re.search(r"<td>" + re.escape(component) + r"</td><td>(.*?)</td>", health)
         assert row and '<span class="ok">up</span>' in row.group(1), (component, health)
-    # the databases report their versions (MariaDB 11.x, PostgreSQL 18.x)
-    database = "MariaDB" if MYSQL else "PostgreSQL"
+    # the databases report their versions (MariaDB 11.x, MySQL 8.4.x on your own server, PostgreSQL 18.x)
+    database = os.environ.get("DATABASE_SERVER") or ("MariaDB" if MYSQL else "PostgreSQL")
     assert re.search(r"<td>Tokenserver database</td><td>.*?</td><td>" + database + r" \d+\.\d+", health), health
     # without self-hosted accounts there is nothing else to check
     assert len(re.findall(r"<tr><td>", health)) == len(components), health

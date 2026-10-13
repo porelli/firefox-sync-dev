@@ -1,0 +1,18 @@
+# Test-only: the Sync server on a database server outside the stack (EXTERNAL_DB=1 in
+# tests/e2e.sh and tests/e2e-fxa.sh), on its own network EXTDB_NETWORK like a server elsewhere.
+# Used with DB_CONTAINERS=0: the containers that connect to the database join that network.
+
+services:
+  syncstorage_migrate:
+    networks: [default, extdb]
+  syncstorage:
+    networks: [default, extdb]
+  tokenserver_db_init:
+    networks: [default, extdb]
+  ffs-admin:
+    networks: [default, extdb]
+
+networks:
+  extdb:
+    external: true
+    name: ${EXTDB_NETWORK:?}

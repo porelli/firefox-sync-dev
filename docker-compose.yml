@@ -80,6 +80,9 @@ services:
 
   syncstorage_db:
     image: mariadb:lts
+    # 0: your own server (DATABASES.md); compose then skips the dependency on it
+    deploy:
+      replicas: ${DB_CONTAINERS:-1}
     environment:
       MARIADB_RANDOM_ROOT_PASSWORD: "true"
       MARIADB_DATABASE: ${MARIADB_SYNCSTORAGE_DATABASE}
@@ -99,6 +102,9 @@ services:
 
   tokenserver_db:
     image: mariadb:lts
+    # 0: your own server (DATABASES.md); compose then skips the dependency on it
+    deploy:
+      replicas: ${DB_CONTAINERS:-1}
     environment:
       MARIADB_RANDOM_ROOT_PASSWORD: "true"
       MARIADB_DATABASE: ${MARIADB_TOKENSERVER_DATABASE}
@@ -130,6 +136,8 @@ services:
       MARIADB_DATABASE: ${MARIADB_TOKENSERVER_DATABASE}
       MARIADB_USER: ${MARIADB_TOKENSERVER_USER}
       MARIADB_PASSWORD: ${MARIADB_TOKENSERVER_PASSWORD}
+      # false with your own MySQL server: its certificate is self-signed
+      MARIADB_TLS_VERIFY: ${MARIADB_TLS_VERIFY:-true}
       MAX_USERS: ${MAX_USERS}
       DOMAIN: ${SYNCSTORAGE_DOMAIN}
 

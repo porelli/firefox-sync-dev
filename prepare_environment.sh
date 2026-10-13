@@ -169,6 +169,86 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
 fi
 
+# your own database server (DATABASES.md), asked last so that scripted answers for the
+# questions above still line up
+EXTERNAL_DB=no
+EXTERNAL_FXA_DB=no
+FXA_DB=mysql
+# names end up unquoted in SQL and in the database URLs
+valid_name() { [[ "${1}" =~ ^[a-z_][a-z0-9_]{0,31}$ ]] || { echo "ERROR: not a valid database or user name (a-z, 0-9, _): '${1}'"; exit 1; }; }
+# the containers reach the server over the network: localhost is the container itself
+valid_host() {
+    case "${1}" in
+        "") echo "ERROR: the database host is required"; exit 1 ;;
+        localhost|127.*|0.0.0.0)
+            echo "ERROR: '${1}' would be the container itself: use an address of this host the containers"
+            echo "  can reach (e.g. 172.17.0.1 for Docker, host.containers.internal for Podman), see DATABASES.md"
+            exit 1 ;;
+        # IPv6 literals would need [ ] in the database URLs, which not every client parses
+        *:*) echo "ERROR: '${1}': use a host name or an IPv4 address (no IPv6 address)"; exit 1 ;;
+        *[!A-Za-z0-9._-]*) echo "ERROR: not a host name: '${1}'"; exit 1 ;;
+    esac
+}
+valid_port() { case "${1}" in ''|*[!0-9]*) echo "ERROR: not a port: '${1}'"; exit 1 ;; esac; }
+read -r -e -p "Use an existing database server instead of starting one? See DATABASES.md (y/N): " EXTERNAL_DB
+case "${EXTERNAL_DB}" in y|Y|yes) EXTERNAL_DB=yes ;; *) EXTERNAL_DB=no ;; esac
+if [ "${EXTERNAL_DB}" = "yes" ]; then
+    read -r -e -p "Database server host, as the containers reach it: " DB_HOST
+    valid_host "${DB_HOST}"
+    [ "${DATABASE_BACKEND}" = "postgres" ] && DEFAULT_DB_PORT=5432 || DEFAULT_DB_PORT=3306
+    read -r -e -p "Database server port [${DEFAULT_DB_PORT}]: " DB_PORT
+    DB_PORT=${DB_PORT:-${DEFAULT_DB_PORT}}
+    valid_port "${DB_PORT}"
+    if [ "${DATABASE_BACKEND}" = "postgres" ]; then
+        read -r -e -p "Database [syncserver]: " POSTGRES_DATABASE
+        POSTGRES_DATABASE=${POSTGRES_DATABASE:-syncserver}
+        read -r -e -p "Database user [syncserver]: " POSTGRES_USER
+        POSTGRES_USER=${POSTGRES_USER:-syncserver}
+        valid_name "${POSTGRES_DATABASE}"; valid_name "${POSTGRES_USER}"
+    else
+        read -r -e -p "Tokenserver database [tokenserver]: " MARIADB_TOKENSERVER_DATABASE
+        MARIADB_TOKENSERVER_DATABASE=${MARIADB_TOKENSERVER_DATABASE:-tokenserver}
+        read -r -e -p "Tokenserver database user [tokenserver]: " MARIADB_TOKENSERVER_USER
+        MARIADB_TOKENSERVER_USER=${MARIADB_TOKENSERVER_USER:-tokenserver}
+        read -r -e -p "Storage database [syncstorage]: " MARIADB_SYNCSTORAGE_DATABASE
+        MARIADB_SYNCSTORAGE_DATABASE=${MARIADB_SYNCSTORAGE_DATABASE:-syncstorage}
+        read -r -e -p "Storage database user [syncstorage]: " MARIADB_SYNCSTORAGE_USER
+        MARIADB_SYNCSTORAGE_USER=${MARIADB_SYNCSTORAGE_USER:-syncstorage}
+        for name in "${MARIADB_TOKENSERVER_DATABASE}" "${MARIADB_TOKENSERVER_USER}" "${MARIADB_SYNCSTORAGE_DATABASE}" "${MARIADB_SYNCSTORAGE_USER}"; do
+            valid_name "${name}"
+        done
+        [ "${MARIADB_TOKENSERVER_DATABASE}" != "${MARIADB_SYNCSTORAGE_DATABASE}" ] || { echo "ERROR: the tokenserver and the storage need two databases"; exit 1; }
+    fi
+fi
+if [ "${SELF_HOST_FXA}" = "yes" ]; then
+    read -r -e -p "Use an existing MySQL 8 or MariaDB 11.4-11.8 server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See DATABASES.md (y/N): " EXTERNAL_FXA_DB
+    case "${EXTERNAL_FXA_DB}" in y|Y|yes) EXTERNAL_FXA_DB=yes ;; *) EXTERNAL_FXA_DB=no ;; esac
+    if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
+        read -r -e -p "Accounts database server host${DB_HOST:+ [${DB_HOST}]}: " FXA_MYSQL_HOST
+        FXA_MYSQL_HOST=${FXA_MYSQL_HOST:-${DB_HOST:-}}
+        valid_host "${FXA_MYSQL_HOST}"
+        read -r -e -p "Accounts database server port [3306]: " FXA_MYSQL_PORT
+        FXA_MYSQL_PORT=${FXA_MYSQL_PORT:-3306}
+        valid_port "${FXA_MYSQL_PORT}"
+        read -r -e -p "Accounts database user [fxa]: " FXA_MYSQL_USER
+        FXA_MYSQL_USER=${FXA_MYSQL_USER:-fxa}
+        read -r -e -p "User installing the sign-up policy [ffs_policy]: " FXA_MYSQL_POLICY_USER
+        FXA_MYSQL_POLICY_USER=${FXA_MYSQL_POLICY_USER:-ffs_policy}
+        valid_name "${FXA_MYSQL_USER}"; valid_name "${FXA_MYSQL_POLICY_USER}"
+    fi
+    # MySQL by default, whatever Sync uses: it is what Mozilla supports and runs
+    if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
+        read -r -e -p "Is that server MySQL or MariaDB? (mysql/mariadb) [mysql]: " FXA_DB
+    else
+        read -r -e -p "Accounts database: mysql (MySQL 8.4, what Mozilla supports) or mariadb (MariaDB 11.8, see FXA.md) [mysql]: " FXA_DB
+    fi
+    case "${FXA_DB}" in
+        ""|mysql|MySQL) FXA_DB=mysql ;;
+        mariadb|MariaDB) FXA_DB=mariadb ;;
+        *) echo "ERROR: mysql or mariadb, not '${FXA_DB}'"; exit 1 ;;
+    esac
+fi
+
 # random passwords
 MARIADB_TOKENSERVER_PASSWORD=$(generate_random_string 24)
 MARIADB_SYNCSTORAGE_PASSWORD=$(generate_random_string 24)
@@ -190,6 +270,26 @@ apply_sed ${SCRIPT_DIR}/.env "s|MAX_USERS=.*|MAX_USERS=${MAX_USERS}|"
 apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG}|"
 apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
 [ "${ADMIN_UI}" = "yes" ] && apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
+if [ "${EXTERNAL_DB}" = "yes" ]; then
+    apply_sed ${SCRIPT_DIR}/.env "s|^DB_CONTAINERS=.*|DB_CONTAINERS=0|"
+    if [ "${DATABASE_BACKEND}" = "postgres" ]; then
+        for name in POSTGRES_DATABASE POSTGRES_USER; do
+            apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
+        done
+        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SERVER=.*|POSTGRES_SERVER=${DB_HOST}|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SERVER_PORT=.*|POSTGRES_SERVER_PORT=${DB_PORT}|"
+    else
+        # the init container's client checks the certificate by default, MySQL's is self-signed
+        apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_TLS_VERIFY=.*|MARIADB_TLS_VERIFY=false|"
+        for name in MARIADB_TOKENSERVER_DATABASE MARIADB_TOKENSERVER_USER MARIADB_SYNCSTORAGE_DATABASE MARIADB_SYNCSTORAGE_USER; do
+            apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
+        done
+        for part in TOKENSERVER SYNCSTORAGE; do
+            apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_${part}_SERVER=.*|MARIADB_${part}_SERVER=${DB_HOST}|"
+            apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_${part}_SERVER_PORT=.*|MARIADB_${part}_SERVER_PORT=${DB_PORT}|"
+        done
+    fi
+fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     for name in FXA_MYSQL_PASSWORD FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_FLOW_ID_KEY FXA_SESSION_TOKEN_HANDLE_KEY FXA_CONTENT_SESSION_SECRET; do
         apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=$(generate_random_string 32)|"
@@ -213,6 +313,14 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"$(sed_escape "${FXA_SMTP_SENDER}")\"|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=${FXA_SIGNUPS}|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
+    if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
+        apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB_CONTAINERS=.*|FXA_DB_CONTAINERS=0|"
+        for name in FXA_MYSQL_HOST FXA_MYSQL_PORT FXA_MYSQL_USER FXA_MYSQL_POLICY_USER; do
+            apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
+        done
+        apply_sed ${SCRIPT_DIR}/.env "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=$(generate_random_string 32)|"
+    fi
+    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|"
     if [ -n "${ADMIN_ALLOWED_USERS:-}" ]; then
         # the admin UI signs in with these accounts: a public OAuth client (PKCE, no secret:
         # the accounts service refuses PKCE from clients with one), registered by fxa-auth
@@ -233,6 +341,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     else
         COMPOSE_FILES=docker-compose.yml:docker-compose.fxa.yml
     fi
+    [ "${FXA_DB}" = "mariadb" ] && COMPOSE_FILES="${COMPOSE_FILES}:docker-compose.fxa-mariadb.yml"
     apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=${COMPOSE_FILES}|"
     # nginx example for the accounts host names
     cp ${SCRIPT_DIR}/config/nginx/fxa-example.conf ${SCRIPT_DIR}/config/nginx/fxa.conf
@@ -262,6 +371,37 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
     [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.postgres.yml|"
     apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-postgres|"
     apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-postgres-init|"
+fi
+
+# the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
+env_value() { grep "^${1}=" ${SCRIPT_DIR}/.env | cut -d= -f2-; }
+render_sql() {
+    local template=${1} out=${2} pair expressions=()
+    shift 2
+    for pair in "$@"; do
+        expressions+=(-e "s|@${pair%%=*}@|$(sed_escape "${pair#*=}")|g")
+    done
+    rm -f "${out}"
+    (umask 077; sed "${expressions[@]}" "${template}" > "${out}")
+}
+if [ "${EXTERNAL_DB}" = "yes" ]; then
+    if [ "${DATABASE_BACKEND}" = "postgres" ]; then
+        render_sql ${SCRIPT_DIR}/config/database/sync-postgres.sql ${SCRIPT_DIR}/database-setup.sql \
+            POSTGRES_DATABASE="$(env_value POSTGRES_DATABASE)" POSTGRES_USER="$(env_value POSTGRES_USER)" \
+            POSTGRES_PASSWORD="$(env_value POSTGRES_PASSWORD)"
+    else
+        render_sql ${SCRIPT_DIR}/config/database/sync-mariadb.sql ${SCRIPT_DIR}/database-setup.sql \
+            TOKENSERVER_DATABASE="$(env_value MARIADB_TOKENSERVER_DATABASE)" TOKENSERVER_USER="$(env_value MARIADB_TOKENSERVER_USER)" \
+            TOKENSERVER_PASSWORD="$(env_value MARIADB_TOKENSERVER_PASSWORD)" \
+            SYNCSTORAGE_DATABASE="$(env_value MARIADB_SYNCSTORAGE_DATABASE)" SYNCSTORAGE_USER="$(env_value MARIADB_SYNCSTORAGE_USER)" \
+            SYNCSTORAGE_PASSWORD="$(env_value MARIADB_SYNCSTORAGE_PASSWORD)"
+    fi
+fi
+if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
+    render_sql ${SCRIPT_DIR}/config/database/fxa-${FXA_DB}.sql ${SCRIPT_DIR}/database-setup-fxa.sql \
+        FXA_USER="$(env_value FXA_MYSQL_USER)" FXA_PASSWORD="$(env_value FXA_MYSQL_PASSWORD)" \
+        FXA_POLICY_USER="$(env_value FXA_MYSQL_POLICY_USER)" FXA_POLICY_PASSWORD="$(env_value FXA_MYSQL_POLICY_PASSWORD)" \
+        FXA_ADMIN_PASSWORD="$(env_value FXA_ADMIN_DB_PASSWORD)"
 fi
 
 # prepare nginx example
@@ -294,6 +434,30 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         export "${key}=${value}"
     done < ${SCRIPT_DIR}/.env
     mkdir -p "${QUADLET_DIR}"
+
+    # the database containers: the .env names (syncstorage_db) are compose's, here the
+    # containers are reached by their names. Your own server: none of them
+    SKIP_UNITS=""
+    DROP_DEPS=""
+    if [ "${DB_CONTAINERS:-1}" = 0 ]; then
+        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.(container|volume)$'
+        DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
+    else
+        export MARIADB_SYNCSTORAGE_SERVER=firefox-sync-syncstorage-db MARIADB_SYNCSTORAGE_SERVER_PORT=3306
+        export MARIADB_TOKENSERVER_SERVER=firefox-sync-tokenserver-db MARIADB_TOKENSERVER_SERVER_PORT=3306
+    fi
+    if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
+        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db(-mariadb)?\.(container|volume)$"
+        DROP_DEPS="${DROP_DEPS:+${DROP_DEPS}|}firefox-sync-fxa-db\.service"
+    elif [ "${FXA_DB:-mysql}" = "mariadb" ]; then
+        # MySQL's volume, unused (the volume itself is kept)
+        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db\.volume$"
+    fi
+    # Requires= on a unit that is not installed fails the start: drop those dependencies
+    drop_deps() {
+        [ -n "${DROP_DEPS}" ] || { cat; return; }
+        sed -E -e "/^(After|Requires)=/{s/(=| )(${DROP_DEPS})/\1/g; s/= +/=/; s/ +$//; s/  +/ /g;}" -e '/^Requires=$/d'
+    }
     
     # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it
     render_quadlet() {
@@ -312,6 +476,8 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
 
     QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
     [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
+    # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
+    [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
     if [ "${ADMIN_UI}" = "yes" ]; then
         # with the accounts, the admin UI also manages them
         [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/admin") || QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/admin")
@@ -321,7 +487,14 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         for file in "${source}"/*.{network,volume,container}; do
             [ -f "${file}" ] || continue
             filename=$(basename "${file}")
-            render_quadlet "${file}" > "${QUADLET_DIR}/${filename}" || exit 1
+            [ "${FXA_DB:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
+            if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
+                # left from a setup with the database containers (the volume is kept)
+                rm -f "${QUADLET_DIR}/${filename}"
+                continue
+            fi
+            render_quadlet "${file}" | drop_deps > "${QUADLET_DIR}/${filename}"
+            [ "${PIPESTATUS[0]}" = 0 ] || exit 1
             echo "  ✓ ${filename}"
         done
     done
@@ -340,6 +513,8 @@ echo "Container Runtime: ${CONTAINER_RUNTIME}"
 echo "Database Backend: ${DATABASE_BACKEND}"
 echo "Configuration files created:"
 echo "  - .env"
+[ "${EXTERNAL_DB}" = "yes" ] && echo "  - database-setup.sql (the databases and users for your server)"
+[ "${EXTERNAL_FXA_DB}" = "yes" ] && echo "  - database-setup-fxa.sql (the accounts users for your $([ "${FXA_DB}" = "mariadb" ] && echo MariaDB || echo MySQL) server)"
 echo "  - config/nginx/syncstorage-rs.conf"
 echo "  - config/systemd/syncstorage-rs.service"
 [ "${SELF_HOST_FXA}" = "yes" ] && echo "  - config/nginx/fxa.conf (accounts.${FXA_DOMAIN}, api.${FXA_DOMAIN}, profile.${FXA_DOMAIN}${ADMIN_HOST:+, ${ADMIN_HOST}})"
@@ -355,6 +530,31 @@ if [ "${ADMIN_UI}" = "yes" ]; then
 fi
 
 echo ""
+
+# your own database server: what to run there first
+if [ "${EXTERNAL_DB}" = "yes" ]; then
+    echo "First, on your database server (see DATABASES.md):"
+    if [ "${DATABASE_BACKEND}" = "postgres" ]; then
+        echo "  psql -h ${DB_HOST} -p ${DB_PORT} -U postgres -f database-setup.sql"
+        echo "  pg_hba.conf: a host line (not hostssl) for the containers' addresses, scram-sha-256"
+    else
+        echo "  MySQL:   mysql -h ${DB_HOST} -P ${DB_PORT} -u root -p < database-setup.sql"
+        echo "  MariaDB: mariadb -h ${DB_HOST} -P ${DB_PORT} -u root -p < database-setup.sql"
+        echo "  with binary logging (MySQL's default): log_bin_trust_function_creators=ON"
+        echo "  plain connections allowed (require_secure_transport=OFF): the Sync server has no TLS"
+    fi
+fi
+if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
+    [ "${EXTERNAL_DB}" = "yes" ] || echo "First, on your database server (see DATABASES.md):"
+    if [ "${FXA_DB}" = "mariadb" ]; then
+        echo "  mariadb -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
+        echo "  MariaDB 11.4 to 11.8 (not 12), with binary logging: log_bin_trust_function_creators=ON"
+    else
+        echo "  mysql -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
+        echo "  MySQL 8.4 started with mysql_native_password=ON and log_bin_trust_function_creators=ON"
+    fi
+fi
+[ "${EXTERNAL_DB}" = "yes" ] || [ "${EXTERNAL_FXA_DB}" = "yes" ] && echo ""
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
     echo "Next steps for Quadlet deployment:"
@@ -382,6 +582,7 @@ elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
         COMPOSE_FILES="-f docker-compose.yml -f docker-compose.podman.yml"
     fi
     [ "${SELF_HOST_FXA}" = "yes" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.fxa.yml"
+    [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB}" = "mariadb" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.fxa-mariadb.yml"
     echo "Next steps for docker compose with the Podman socket:"
     echo "  1. systemctl --user enable --now podman.socket"
     echo "  2. export DOCKER_HOST=unix://\${XDG_RUNTIME_DIR}/podman/podman.sock"

@@ -1,0 +1,30 @@
+# Installed instead of ../firefox-sync-fxa-db.container with FXA_DB=mariadb (FXA.md).
+# Not mariadb:lts: from 12.0 unnamed foreign keys are named 1, 2... instead of
+# <table>_ibfk_N, and Mozilla's migrations drop them by those names.
+[Unit]
+Description=Firefox Sync - Mozilla accounts - Database (MariaDB)
+After=firefox-sync-network.service
+
+[Container]
+Image=docker.io/library/mariadb:11.8
+ContainerName=firefox-sync-fxa-db
+Network=firefox-sync-network.network
+PodmanArgs=--network-alias=fxa-db
+Environment="MARIADB_ROOT_PASSWORD=%FXA_MYSQL_PASSWORD%"
+Environment="MARIADB_AUTO_UPGRADE=true"
+# MariaDB cannot open MySQL's data files: its own volume
+Volume=firefox-sync-fxa-db-mariadb.volume:/var/lib/mysql
+HealthCmd=healthcheck.sh --connect --innodb_initialized
+HealthInterval=15s
+HealthRetries=10
+# the default authentication is already mysql_native_password, the only one FxA's driver supports
+Exec=mariadbd --event-scheduler=ON
+
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target default.target

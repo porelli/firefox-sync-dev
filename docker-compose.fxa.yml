@@ -18,14 +18,20 @@ x-fxa: &fxa
   platform: linux/${FXA_ARCH:-amd64}
   restart: unless-stopped
 
+# the accounts database: fxa-db (MySQL 8.4, MariaDB 11.8 with docker-compose.fxa-mariadb.yml), or
+# your own MySQL 8 or MariaDB 11.4-11.8 server (FXA_DB_CONTAINERS=0, DATABASES.md)
 x-fxa-mysql: &fxa-mysql
-  MYSQL_HOST: fxa-db
-  MYSQL_USERNAME: root
+  MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+  MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
+  MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
   MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
 
 services:
   fxa-db:
     image: mysql:8.4
+    # 0: your own server (DATABASES.md); compose then skips the dependency on it
+    deploy:
+      replicas: ${FXA_DB_CONTAINERS:-1}
     environment:
       MYSQL_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD}
     # FxA uses the node mysql driver, which only supports mysql_native_password
@@ -62,15 +68,24 @@ services:
   fxa-migrations:
     <<: *fxa
     working_dir: /fxa/packages/db-migrations
-    command: [node, bin/patcher.mjs]
+    # retried: your own server has no healthcheck to wait for, it may not answer yet
+    command: [sh, -c, "for i in $$(seq 1 60); do node bin/patcher.mjs && exit 0; sleep 5; done; exit 1"]
     environment:
-      AUTH_MYSQL_HOST: fxa-db
+      AUTH_MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      AUTH_MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
+      AUTH_MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
       AUTH_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
-      OAUTH_MYSQL_HOST: fxa-db
+      OAUTH_MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      OAUTH_MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
+      OAUTH_MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
       OAUTH_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
-      PROFILE_MYSQL_HOST: fxa-db
+      PROFILE_MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      PROFILE_MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
+      PROFILE_MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
       PROFILE_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
-      PUSHBOX_MYSQL_HOST: fxa-db
+      PUSHBOX_MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      PUSHBOX_MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
+      PUSHBOX_MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
       PUSHBOX_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
     depends_on:
       fxa-db:
@@ -83,8 +98,14 @@ services:
     image: ${ADMIN_IMAGE:-${REPOSITORY}:admin-latest}
     command: [fxa-init]
     environment:
-      FXA_DB_HOST: fxa-db
-      FXA_DB_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD}
+      FXA_DB_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      FXA_DB_PORT: ${FXA_MYSQL_PORT:-3306}
+      # installs the policy and grants ffs_admin: FXA_MYSQL_POLICY_USER, empty: FXA_MYSQL_USER
+      # (with its own password: fxa-init picks the pair, like the Quadlet)
+      FXA_DB_ROOT_USER: ${FXA_MYSQL_POLICY_USER:-}
+      FXA_DB_ROOT_PASSWORD: ${FXA_MYSQL_POLICY_PASSWORD:-}
+      FXA_MYSQL_USER: ${FXA_MYSQL_USER:-root}
+      FXA_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
       FXA_ADMIN_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:-}
       FXA_SIGNUPS: ${FXA_SIGNUPS:-open}
       FXA_SIGNUP_ALLOWLIST: ${FXA_SIGNUP_ALLOWLIST:-}
@@ -149,11 +170,15 @@ services:
       FXA_OPENID_OLDKEYFILE: /fxa-keys/openid-oldKey.json
       # databases
       DB: mysql
-      AUTH_MYSQL_HOST: fxa-db
+      AUTH_MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      AUTH_MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
+      AUTH_MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
       AUTH_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
       <<: *fxa-mysql
       PUSHBOX_ENABLED: "true"
-      PUSHBOX_MYSQL_HOST: fxa-db
+      PUSHBOX_MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      PUSHBOX_MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
+      PUSHBOX_MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
       PUSHBOX_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
       DB_AUTO_UPDATE_CLIENTS: "true"
       REDIS_HOST: fxa-redis
@@ -314,7 +339,8 @@ services:
   # sign-up gate: point POST /v1/account/create of FXA_AUTH_URL to ADMIN_GATE_EXPORT_PORT
   ffs-admin:
     environment:
-      FXA_DB_HOST: fxa-db
+      FXA_DB_HOST: ${FXA_MYSQL_HOST:-fxa-db}
+      FXA_DB_PORT: ${FXA_MYSQL_PORT:-3306}
       FXA_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:-}
       FXA_AUTH_UPSTREAM: http://fxa-auth:9000
       # health check of the optional pairing server

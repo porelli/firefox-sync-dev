@@ -42,7 +42,8 @@ services:
       ADMIN_OIDC_NAME: Dex
       ADMIN_AUTH_HEADER: X-Test-Email
       ADMIN_AUTH_GROUPS_HEADER: X-Test-Groups
-      ADMIN_TRUSTED_PROXIES: ${TEST_TRUSTED:?}
+      # (with EXTERNAL_DB=1 also the containers of the database network)
+      ADMIN_TRUSTED_PROXIES: ${TEST_TRUSTED_PROXIES:-${TEST_TRUSTED:?}}
       ADMIN_ALLOWED_USERS: admin@ffs-e2e.invalid,@admins.invalid
       ADMIN_ALLOWED_GROUPS: ffs-admins
 

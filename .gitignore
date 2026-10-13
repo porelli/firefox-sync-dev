@@ -21,5 +21,7 @@
 /.env
 /config/nginx/syncstorage-rs.conf
 /config/systemd/syncstorage-rs.service
+# SQL for your own database server, with passwords (DATABASES.md)
+/database-setup*.sql
 # go build output of admin/
 admin/admin
