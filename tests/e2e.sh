@@ -113,7 +113,8 @@ in_app() {
     -e TOKENSERVER_HOST=http://syncstorage:8000 \
     -e SYNC_MASTER_SECRET="${MASTER_SECRET}" \
     -e SYNCSTORAGE_DOMAIN="${SYNCSTORAGE_DOMAIN}" \
-    -e MAX_USERS="${MAX_USERS}" \
+    -e MAX_USERS="${MAX_USERS#*:}" \
+    -e MAX_USERS_SETTING="${MAX_USERS}" \
     -e ADMIN_URL=http://ffs-admin:8080 \
     -e ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
     -e BACKEND="${BACKEND}" \
@@ -172,11 +173,49 @@ check "$(ins a@ffs-e2e.invalid 1 aa)" ok "first account allowed"
 check "$(ins a@ffs-e2e.invalid 2 bb)" ok "same account with new client state allowed"
 check "$(ins b@ffs-e2e.invalid 1 aa)" rejected "second account rejected"
 
-echo "== max users changed in the database (admin UI) survive a restart"
+echo "== MAX_USERS=1 (plain): set again on every start, read-only in the admin UI"
+max_users() { sql "SELECT config_value FROM config WHERE config_key = 'max_users';"; }
+rerun_init() { dc up -d --no-deps --force-recreate tokenserver_db_init > /dev/null 2>&1; wait_init; }
+# the whole stack with a new MAX_USERS: the init container and the admin UI
+# not in $(...): set_env must change this shell's MAX_USERS (compose prefers it to the
+# env file), the exit code of the init container is in INIT_CODE
+redeploy_max_users() { set_env MAX_USERS "$1"; dc up -d > /dev/null 2>&1; INIT_CODE=$(wait_init); }
 sql "UPDATE config SET config_value = '3' WHERE config_key = 'max_users';" > /dev/null
-dc up -d --no-deps --force-recreate tokenserver_db_init > /dev/null 2>&1; wait_init > /dev/null
-check "$(sql "SELECT config_value FROM config WHERE config_key = 'max_users';")" 3 "max users kept when MAX_USERS did not change"
-sql "UPDATE config SET config_value = '1' WHERE config_key = 'max_users';" > /dev/null
+check "$(rerun_init)" 0 "init container exit code (rerun)"
+check "$(max_users)" 1 "MAX_USERS=1 set again over a value changed in the database"
+check "$(sql "SELECT COUNT(*) FROM config WHERE config_key = 'max_users_env';")" 0 "no max_users_env bookkeeping"
+pytest_in_app "/tests/test_admin_sync.py -k read_only"
+check "$?" 0 "admin UI: max users read-only with MAX_USERS=1"
+check "$(max_users)" 1 "max users unchanged by the refused form"
+
+echo "== MAX_USERS=initial:N: set only when there is none, then managed in the admin UI"
+redeploy_max_users initial:2
+check "${INIT_CODE}" 0 "init container exit code (MAX_USERS=initial:2)"
+check "$(max_users)" 1 "switching to initial:2 keeps the value in the database"
+sql "UPDATE config SET config_value = '3' WHERE config_key = 'max_users';" > /dev/null
+rerun_init > /dev/null
+check "$(max_users)" 3 "initial:2 keeps a value changed in the database (admin UI)"
+sql "DELETE FROM config WHERE config_key = 'max_users';" > /dev/null
+rerun_init > /dev/null
+check "$(max_users)" 2 "initial:2 sets it when there is none (new database)"
+redeploy_max_users 1
+check "${INIT_CODE}" 0 "init container exit code (back to MAX_USERS=1)"
+check "$(max_users)" 1 "switching back to a plain MAX_USERS=1 takes over"
+
+echo "== MAX_USERS not valid: the init container fails, nothing changes"
+for bad in lots initial: fixed:-1 2147483648; do
+  set_env MAX_USERS "${bad}"
+  check "$(rerun_init)" 1 "init container fails with MAX_USERS=${bad}"
+done
+check "$(dc logs tokenserver_db_init 2>&1 | grep -c "MAX_USERS='2147483648' is not valid")" 1 "init container says why"
+check "$(max_users)" 1 "max users unchanged by a MAX_USERS not valid"
+
+# the admin UI tests change max users on the page: initial:1 for the rest, until the
+# upstream tokenserver tests (the Python tests get the number, see in_app)
+redeploy_max_users initial:1
+check "${INIT_CODE}" 0 "init container exit code (MAX_USERS=initial:1)"
+check "$(max_users)" 1 "max users 1 for the following tests"
+check "$(hb)" 200 "/__heartbeat__ after the MAX_USERS changes"
 
 echo "== domain change"
 OLD_DOMAIN=${SYNCSTORAGE_DOMAIN}

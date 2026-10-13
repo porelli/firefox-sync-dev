@@ -380,6 +380,7 @@ func TestPrometheusNeedsToken(t *testing.T) {
 
 func TestMaxUsersFitsTheTriggers(t *testing.T) {
 	app := testApp()
+	app.maxUsersEditable = true
 	h := app.routes()
 	c := post(h, "/login", url.Values{"password": {"correct horse battery"}}, nil, nil).Result().Cookies()[0]
 	var s *session
@@ -396,6 +397,55 @@ func TestMaxUsersFitsTheTriggers(t *testing.T) {
 	}
 	if err := (&SyncDB{}).SetMaxUsers(context.Background(), 1<<31); err == nil {
 		t.Error("SetMaxUsers accepted 2^31")
+	}
+}
+
+func TestMaxUsersEditable(t *testing.T) {
+	for v, want := range map[string]bool{
+		"initial:5": true, " initial:5 ": true, "initial:0": true,
+		// set again by the init container on every start
+		"5": false, "fixed:5": false,
+		// not given: read-only, the safe side
+		"": false,
+		// the init container refuses these
+		"lots": false, "Initial:5": false, "-1": false,
+	} {
+		if got := maxUsersEditable(v); got != want {
+			t.Errorf("%q: %v", v, got)
+		}
+	}
+}
+
+func TestMaxUsersReadOnly(t *testing.T) {
+	app := testApp() // MAX_USERS not initial:N
+	h := app.routes()
+	c := post(h, "/login", url.Values{"password": {"correct horse battery"}}, nil, nil).Result().Cookies()[0]
+	var s *session
+	for _, s = range app.sessions {
+	}
+	// refused before the database: there is none here, SetMaxUsers would panic
+	w := post(h, "/sync/max-users", url.Values{"csrf": {s.csrf}, "max_users": {"5"}}, c, nil)
+	if w.Code != http.StatusSeeOther || !strings.Contains(s.failed, "managed by MAX_USERS in .env") || s.message != "" {
+		t.Errorf("status %d, failed %q, message %q", w.Code, s.failed, s.message)
+	}
+
+	render := func(editable bool) string {
+		var b strings.Builder
+		data := map[string]any{"CSRF": "x", "Sync": &SyncStatus{Users: 1, MaxUsers: 5}, "MaxUsersEditable": editable}
+		if err := templates.ExecuteTemplate(&b, "dashboard.html", data); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	page := render(false)
+	for _, want := range []string{`value="5" required disabled>`, `<button type="submit" disabled>Save</button>`, "managed by MAX_USERS in .env; set MAX_USERS=initial:5 to manage it here"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("read-only page without %q", want)
+		}
+	}
+	page = render(true)
+	if strings.Contains(page, "disabled>") || strings.Contains(page, "set MAX_USERS=initial:5") {
+		t.Error("editable page has a disabled form")
 	}
 }
 

@@ -19,7 +19,8 @@ The purpose of this repository is to provide a docker-compose that can be used t
     - Possible alternative (better) solutions:
         - implement the feature directly in syncstorage-rs
         - self-host the accounts service as well, so that only accounts created on your server can sign in: experimental support in [FXA.md](FXA.md), and choose who can create one (allowlist of emails and domains, or closed sign-ups)
-1. The optional [admin UI](ADMIN.md) changes the max users without a restart and, with self-hosted accounts, controls sign-ups and disables accounts.
+    - `MAX_USERS=5` (or `fixed:5`) sets the limit on every start; `MAX_USERS=initial:5` sets it on the first start only, then the [admin UI](ADMIN.md#max-users) manages it (`prepare_environment.sh` writes `initial:` when you enable the admin UI). Anything else stops the stack from starting.
+1. The optional [admin UI](ADMIN.md) changes the max users without a restart (with `MAX_USERS=initial:N`) and, with self-hosted accounts, controls sign-ups and disables accounts.
 
 ## Background
 

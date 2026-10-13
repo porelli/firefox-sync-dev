@@ -262,6 +262,8 @@ def test_max_users_from_admin(admin):
     page = admin.page()
     users = int(re.search(r'id="sync-users">(\d+)<', page).group(1))
     before = int(re.search(r'id="sync-max-users">(\d+)<', page).group(1))
+    # tests/e2e-fxa.sh runs the stack with MAX_USERS=initial:10: the page manages it
+    assert "Managed here" in page and not re.search(r'<input id="max_users" [^>]*disabled>', page), page[:3000]
     admin.post("/sync/max-users", max_users=str(users))
     try:
         # a new account cannot start syncing while the server is full

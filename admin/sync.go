@@ -164,8 +164,16 @@ func (s *SyncDB) User(ctx context.Context, uid string) (*SyncUser, error) {
 	return nil, nil
 }
 
-// SetMaxUsers changes the limit enforced by the tokenserver trigger (syncstorage-rs-init).
-// MAX_USERS in .env replaces it again only when it is changed there.
+// maxUsersEditable tells from MAX_USERS (as in .env) whether the admin UI manages the
+// limit: with initial:N the init container sets it only when there is none yet. N or
+// fixed:N is set again on every start, so a change here would not last: read-only, and
+// so when MAX_USERS is not given.
+func maxUsersEditable(maxUsers string) bool {
+	return strings.HasPrefix(strings.TrimSpace(maxUsers), "initial:")
+}
+
+// SetMaxUsers changes the limit enforced by the tokenserver trigger (syncstorage-rs-init),
+// with MAX_USERS=initial:N (see maxUsersEditable).
 func (s *SyncDB) SetMaxUsers(ctx context.Context, maxUsers int) error {
 	if maxUsers < 0 || maxUsers > math.MaxInt32 {
 		// the triggers read it into an INT: refusing every new account

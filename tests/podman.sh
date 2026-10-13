@@ -143,6 +143,9 @@ export QUADLET_DIR=${HOME}/.config/containers/systemd
 setup mariadb 1
 check "$?" 0 "prepare_environment.sh (quadlets)"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in quadlets"
+# with the admin UI, MAX_USERS=initial:1: the init container and the admin UI both get it
+check "$(grep -hcxF 'Environment=MAX_USERS=initial:1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container") $(grep -hcxF 'Environment="MAX_USERS=initial:1"' "${QUADLET_DIR}/firefox-sync-admin.container")" "1 1" \
+  "MAX_USERS=initial:1 in the init and admin UI quadlets"
 QUADLET=$(ls /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2> /dev/null | head -1)
 "${QUADLET}" -dryrun -user > quadlet-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files"

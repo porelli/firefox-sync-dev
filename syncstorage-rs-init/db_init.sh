@@ -13,9 +13,35 @@ echo "=========================================="
 echo "Firefox Sync Database Initialization"
 echo "=========================================="
 echo "Domain: ${DOMAIN}"
-echo "Max Users: ${MAX_USERS}"
+echo "Max Users: ${MAX_USERS:-}"
 echo "Database: ${MARIADB_DATABASE}"
 echo "=========================================="
+
+# MAX_USERS: N or fixed:N is applied on every start (the admin UI shows it read-only),
+# initial:N only when there is no limit yet (first start), then it is managed in the
+# admin UI. Anything else stops here: the stack must not start with a broken limit.
+parse_max_users() {
+  local value=$1 number
+  case "${value}" in
+    initial:*) MAX_USERS_MODE=initial; number=${value#initial:} ;;
+    fixed:*)   MAX_USERS_MODE=fixed;   number=${value#fixed:} ;;
+    *)         MAX_USERS_MODE=fixed;   number=${value} ;;
+  esac
+  case "${number}" in ''|*[!0-9]*) return 1 ;; esac
+  # no leading zeros, and it must fit the INT the triggers read it into
+  number=${number#"${number%%[!0]*}"}
+  number=${number:-0}
+  [ "${#number}" -le 10 ] && [ "${number}" -le 2147483647 ] || return 1
+  MAX_USERS_VALUE=${number}
+}
+
+if ! parse_max_users "${MAX_USERS:-}"; then
+  echo "✗ ERROR: MAX_USERS='${MAX_USERS:-}' is not valid: use a number from 0 to 2147483647,"
+  echo "  optionally prefixed with fixed: (the default, applied on every start) or"
+  echo "  initial: (applied on the first start only, then managed in the admin UI)"
+  exit 1
+fi
+[ "${MAX_USERS_MODE}" = fixed ] && MAX_USERS_FIXED=1 || MAX_USERS_FIXED=0
 
 # Function to check if database is accessible
 check_db_connection() {
@@ -95,7 +121,8 @@ fi
 echo ""
 echo "Processing SQL template..."
 sed -e "s|@DOMAIN@|${DOMAIN}|g" \
-    -e "s|@MAX_USERS@|${MAX_USERS}|g" \
+    -e "s|@MAX_USERS@|${MAX_USERS_VALUE}|g" \
+    -e "s|@MAX_USERS_FIXED@|${MAX_USERS_FIXED}|g" \
     "${SQL_TEMPLATE}" > "${SQL_FILE}"
 
 # Apply SQL initialization
@@ -136,11 +163,17 @@ echo "Current users: ${current_users}"
 echo "Max users (configured): ${max_users_in_db}"
 echo "Domain: ${DOMAIN}"
 echo ""
-echo "Note: max_users applies at once: change it in the admin UI (ADMIN.md),"
-echo "or update MAX_USERS in .env and run the init container again (the Sync"
-echo "server keeps running):"
-echo "  docker compose up tokenserver_db_init"
-echo "  (Quadlets: systemctl --user restart firefox-sync-tokenserver-db-init.service)"
+if [ "${MAX_USERS_MODE}" = fixed ]; then
+  echo "MAX_USERS=${MAX_USERS}: applied on every start, read-only in the admin UI."
+  echo "  To manage it in the admin UI (ADMIN.md) set MAX_USERS=initial:${MAX_USERS_VALUE} in .env."
+else
+  echo "MAX_USERS=${MAX_USERS}: applied only when there was no limit yet (first start),"
+  echo "  change it in the admin UI (ADMIN.md). A plain MAX_USERS=N in .env sets it on every start."
+fi
+[ "${max_users_in_db}" = "${MAX_USERS_VALUE}" ] || echo "  Kept the value in the database, set in the admin UI."
+echo "After changing MAX_USERS in .env:"
+echo "  docker compose up -d   (the init container and the admin UI)"
+echo "  (Quadlets: systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-admin.service)"
 echo "=========================================="
 
 exit 0

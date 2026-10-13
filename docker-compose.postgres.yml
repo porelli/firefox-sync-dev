@@ -119,6 +119,8 @@ services:
     profiles: [admin]
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # initial:N: the admin UI manages max users, otherwise .env does (read-only)
+      MAX_USERS: ${MAX_USERS}
       TOKENSERVER_DB_TYPE: postgres
       TOKENSERVER_DB_HOST: ${POSTGRES_SERVER}
       TOKENSERVER_DB_PORT: ${POSTGRES_SERVER_PORT}

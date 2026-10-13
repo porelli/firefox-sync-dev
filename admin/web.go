@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +57,8 @@ type App struct {
 	auth    *authConfig
 	// ADMIN_STALE_DAYS, ADMIN_UNCONFIRMED_HOURS
 	staleDays, unconfirmedHours int
+	// MAX_USERS=initial:N: max users is set on the dashboard, otherwise by .env
+	maxUsersEditable bool
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -96,7 +100,7 @@ func serve(ctx context.Context) error {
 		}
 	}()
 	app := &App{sync: syncDB, storage: storageDB, fxa: fxaDB, rec: rec, auth: auth, sessions: map[string]*session{},
-		staleDays: staleDays, unconfirmedHours: unconfirmedHours}
+		staleDays: staleDays, unconfirmedHours: unconfirmedHours, maxUsersEditable: maxUsersEditable(os.Getenv("MAX_USERS"))}
 	app.alerter = newAlerter()
 	if app.alerter != nil {
 		go app.alerter.run(ctx)
@@ -262,10 +266,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 	if err != nil {
 		errs = append(errs, "Sync database: "+err.Error())
 	}
-	data["Sync"] = status
-	if fromEnv, err := a.sync.MaxUsersFromEnv(ctx); err == nil {
-		data["MaxUsersFromEnv"] = fromEnv
-	}
+	data["Sync"], data["MaxUsersEditable"] = status, a.maxUsersEditable
 	if a.health != nil {
 		data["Health"], data["Sizes"] = a.health.Components(), a.health.Sizes()
 	}
@@ -351,7 +352,14 @@ func (a *App) doneTo(w http.ResponseWriter, r *http.Request, s *session, to, mes
 	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
+var errMaxUsersReadOnly = errors.New("max users is managed by MAX_USERS in .env: set MAX_USERS=initial:N there to manage it here")
+
 func (a *App) setMaxUsers(w http.ResponseWriter, r *http.Request, s *session) {
+	if !a.maxUsersEditable {
+		// the init container sets MAX_USERS again on its next start
+		a.done(w, r, s, "", errMaxUsersReadOnly)
+		return
+	}
 	n, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("max_users")))
 	// the tokenserver triggers keep it in an INT
 	if err != nil || n < 0 || n > math.MaxInt32 {

@@ -2,7 +2,7 @@
 
 A small web page to manage who can use your server, optional (`COMPOSE_PROFILES=admin`):
 
-- **Sync**: how many accounts use the server, change the maximum (`MAX_USERS`) without restarting anything.
+- **Sync**: how many accounts use the server, change the maximum without restarting anything (with `MAX_USERS=initial:N`, see [Max users](#max-users)).
 - **Sign-ups**, with [self-hosted accounts](FXA.md): anybody, only some emails and domains (allowlist), or nobody.
 - **Accounts**, with self-hosted accounts: who signed up, when they last synced and how much they store, disable and re-enable an account.
 - **Per account**: what it stores on the Sync server per collection (bookmarks, history, passwords...: items, size, last change; the data itself is encrypted by Firefox, the server cannot read it) and, with self-hosted accounts, its devices and sessions.
@@ -19,7 +19,7 @@ The image (`ghcr.io/porelli/firefox-sync:admin-latest`, amd64 and arm64) is buil
 
 ## Setup
 
-`./prepare_environment.sh` asks "Enable the admin UI?" (default yes), generates `ADMIN_PASSWORD` and sets `COMPOSE_PROFILES=admin` in `.env`; with self-hosted accounts it also offers to sign in with them, see [Signing in](#signing-in). By hand:
+`./prepare_environment.sh` asks "Enable the admin UI?" (default yes), generates `ADMIN_PASSWORD`, sets `COMPOSE_PROFILES=admin` and `MAX_USERS=initial:<the number you gave>` in `.env`; with self-hosted accounts it also offers to sign in with them, see [Signing in](#signing-in). By hand:
 
 ```
 COMPOSE_PROFILES=admin             # with the pairing server: admin,pairing
@@ -28,6 +28,17 @@ ADMIN_EXPORT_PORT=127.0.0.1:8090
 ```
 
 then `docker compose up -d`. With Quadlets, starting `firefox-sync-syncstorage.service` also starts `firefox-sync-admin.service`.
+
+## Max users
+
+`MAX_USERS` in `.env` says who sets the limit:
+
+| `MAX_USERS` | the init container | the admin UI |
+|---|---|---|
+| `5` or `fixed:5` | sets 5 on every start, replacing any change | read-only |
+| `initial:5` | sets 5 only when there is no limit yet (first start, new database) | changes it, and they are kept across restarts |
+
+The limit applies at once either way: a trigger of the tokenserver database checks it for every new account. Switching is a change like any other: from `initial:5` to `5`, 5 is set again on the next start (`docker compose up -d`, or `systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-admin.service`); from `5` to `initial:5`, the value in the database stays and the page can change it. Anything else in `MAX_USERS` (empty, not a number) stops the init container, and with it the Sync server.
 
 The page listens on `127.0.0.1:8090` only. The simplest and safest way to reach it from your computer is an SSH tunnel, without publishing it at all:
 
@@ -319,7 +330,7 @@ How it works:
 
 - The accounts database refuses the account itself: `fxa-policy`, which runs before the accounts service on every start, installs a trigger on the accounts table (and the `ffs` database it reads the policy from). Nothing reaching the accounts service, whatever the path, can create an account the policy does not allow.
 - So that people see why, the admin UI also answers sign-up requests itself: point `POST /v1/account/create` of your accounts API host name to `ADMIN_GATE_EXPORT_PORT` (`127.0.0.1:8091`). `config/nginx/fxa-example.conf` does it, `prepare_environment.sh` removes it when you don't enable the admin UI. Refused sign-ups then get "The request was blocked for security reasons" on the sign-up page, instead of "Unexpected error". Everything else goes to the accounts service directly.
-- `.env` and the page both change the policy: the values in `.env` are applied when you change them there (on the next `docker compose up -d`), otherwise what you set on the page stays. The same goes for `MAX_USERS`.
+- `.env` and the page both change the policy: the values in `.env` are applied when you change them there (on the next `docker compose up -d`), otherwise what you set on the page stays. `MAX_USERS` works differently, see [Max users](#max-users).
 
 ## Disabling an account
 
@@ -341,4 +352,4 @@ The accounts service limits sign-in attempts per client IP address, which it tak
 
 ## Tests
 
-[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) runs [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) against the full stack: refused sign-ups through the gate and directly to the accounts service, the allowlist, closing and reopening sign-ups, the accounts list, disabling an account, max users, what an account stores, the metrics and the event log, health and database sizes, the badges, lifting a rate-limit block and the attempts close to one, signing out a session, a device of a session and a device of a refresh token, the alert emails (in the mail catcher), Prometheus, the password and form checks, and the `X-Forwarded-For` spoofing. A real Firefox checks the error shown for a refused sign-up, and that the admin UI lists its two devices and its bookmarks ([`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py)). [`tests/e2e.sh`](/tests/e2e.sh) and [`tests/podman.sh`](/tests/podman.sh) check that max users set on the page survive restarts, that the UI and the gate start with compose and Quadlets and reach every component (Prometheus `ffs_up`), the container healthcheck, signing in over `http://localhost` with the default cookie, that the Sync server sends its metrics (and is restarted with a new admin UI container), the pruning of old metrics and events, a Sync server going down and back up, and that the logs have no background errors. The program itself has unit tests (`cd admin && go test ./...`).
+[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) runs [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) against the full stack: refused sign-ups through the gate and directly to the accounts service, the allowlist, closing and reopening sign-ups, the accounts list, disabling an account, max users, what an account stores, the metrics and the event log, health and database sizes, the badges, lifting a rate-limit block and the attempts close to one, signing out a session, a device of a session and a device of a refresh token, the alert emails (in the mail catcher), Prometheus, the password and form checks, and the `X-Forwarded-For` spoofing. A real Firefox checks the error shown for a refused sign-up, and that the admin UI lists its two devices and its bookmarks ([`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py)). [`tests/e2e.sh`](/tests/e2e.sh) and [`tests/podman.sh`](/tests/podman.sh) check max users with `MAX_USERS=N` (set again on every start, read-only page) and `MAX_USERS=initial:N` (set on the page, kept across restarts), that the UI and the gate start with compose and Quadlets and reach every component (Prometheus `ffs_up`), the container healthcheck, signing in over `http://localhost` with the default cookie, that the Sync server sends its metrics (and is restarted with a new admin UI container), the pruning of old metrics and events, a Sync server going down and back up, and that the logs have no background errors. The program itself has unit tests (`cd admin && go test ./...`).

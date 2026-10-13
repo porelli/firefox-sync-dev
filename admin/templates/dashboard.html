@@ -22,10 +22,14 @@
   <form method="post" action="/sync/max-users" class="inline">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <label for="max_users">Max users</label>
-    <input id="max_users" name="max_users" type="number" min="0" value="{{.MaxUsers}}" required>
-    <button type="submit">Save</button>
+    <input id="max_users" name="max_users" type="number" min="0" value="{{.MaxUsers}}" required{{if not $.MaxUsersEditable}} disabled{{end}}>
+    <button type="submit"{{if not $.MaxUsersEditable}} disabled{{end}}>Save</button>
   </form>
-  <p class="hint">Changes apply at once, without restarting anything. {{if $.MaxUsersFromEnv}}This is MAX_USERS from .env{{else}}Changed here: MAX_USERS in .env differs{{end}}; a new MAX_USERS in .env replaces it on the next <code>docker compose up -d</code> (or a restart of the init unit with Quadlets), the Sync server keeps running.</p>
+  {{if $.MaxUsersEditable}}
+  <p class="hint" id="max-users-mode">Managed here (MAX_USERS=initial:N in .env applies only to a new database). A plain MAX_USERS=N in .env would set it on every start instead.</p>
+  {{else}}
+  <p class="hint" id="max-users-mode">Read-only: managed by MAX_USERS in .env; set MAX_USERS=initial:{{.MaxUsers}} to manage it here.</p>
+  {{end}}
   {{if .Nodes}}
   <table>
     <thead><tr><th>Sync node</th><th>Status</th></tr></thead>

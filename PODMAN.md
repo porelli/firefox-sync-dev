@@ -166,6 +166,7 @@ To update MAX_USERS or other settings:
    ```bash
    systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-syncstorage.service
    ```
+   With the admin UI, also restart `firefox-sync-admin.service` after changing `MAX_USERS` between a plain number (read-only in the admin UI) and `initial:N` (managed there), see [ADMIN.md](ADMIN.md#max-users).
 
 ### Method 2: Using docker compose with the Podman socket
 

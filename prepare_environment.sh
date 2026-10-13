@@ -62,6 +62,12 @@ CONTAINER_EXPORT_PORT=${CONTAINER_EXPORT_PORT:-${DEFAULT_CONTAINER_EXPORT_PORT}}
 DEFAULT_MAX_USERS=1
 read -e -p "Max allowed users [${DEFAULT_MAX_USERS}]: " MAX_USERS
 MAX_USERS=${MAX_USERS:-${DEFAULT_MAX_USERS}}
+case "${MAX_USERS}" in
+    ''|*[!0-9]*)
+        echo "ERROR: max users must be a number, got '${MAX_USERS}'"
+        exit 1
+        ;;
+esac
 
 # database backend
 DEFAULT_DATABASE_BACKEND=mariadb
@@ -119,6 +125,9 @@ SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG:-${DEFAULT_SYNCSTORAGE_IMAGE_TAG}}
 # admin UI
 read -r -e -p "Enable the admin UI? Max users, and sign-ups and accounts with self-hosted accounts, see ADMIN.md (Y/n): " ADMIN_UI
 case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
+# with the admin UI, max users is managed there: MAX_USERS=initial:N sets it only on the
+# first start. A plain number is set again on every start (read-only in the admin UI)
+[ "${ADMIN_UI}" = "yes" ] && MAX_USERS=initial:${MAX_USERS}
 
 # admin sign-in with the self-hosted accounts, asked below
 ADMIN_ALLOWED_USERS=""

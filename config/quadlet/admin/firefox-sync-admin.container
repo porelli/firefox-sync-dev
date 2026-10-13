@@ -10,6 +10,8 @@ Network=firefox-sync-network.network
 # the Sync server sends its metrics to ffs-admin
 PodmanArgs=--network-alias=ffs-admin
 Environment="ADMIN_PASSWORD=%ADMIN_PASSWORD%"
+# initial:N: the admin UI manages max users, otherwise .env does (read-only)
+Environment="MAX_USERS=%MAX_USERS%"
 Environment="TOKENSERVER_DB_TYPE=mysql"
 Environment="TOKENSERVER_DB_HOST=firefox-sync-tokenserver-db"
 Environment="TOKENSERVER_DB_PORT=3306"

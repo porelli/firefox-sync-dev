@@ -31,19 +31,17 @@ FROM services s
 WHERE s.service = 'sync-1.5' AND n.service = s.id
   AND n.node <> '@DOMAIN@';
 
--- MAX_USERS from .env, when it changed since the last start (or on the first one):
--- otherwise keep the value set in the admin UI. max_users_env is the last value
--- applied from .env.
+-- MAX_USERS (validated by db_init.sh): N or fixed:N sets the limit on every start
+-- (the flag below is TRUE), initial:N only when there is none yet (first start,
+-- FALSE: nothing to do on conflict), then it is managed in the admin UI and kept.
 INSERT INTO config (config_key, config_value)
 VALUES ('max_users', '@MAX_USERS@')
 ON CONFLICT (config_key) DO UPDATE
 SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP
-WHERE (SELECT c.config_value FROM config c WHERE c.config_key = 'max_users_env') IS DISTINCT FROM EXCLUDED.config_value;
+WHERE @MAX_USERS_FIXED@ AND config.config_value IS DISTINCT FROM EXCLUDED.config_value;
 
-INSERT INTO config (config_key, config_value)
-VALUES ('max_users_env', '@MAX_USERS@')
-ON CONFLICT (config_key) DO UPDATE
-SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP;
+-- written by older versions, no longer used
+DELETE FROM config WHERE config_key = 'max_users_env';
 
 -- Create user limit function (idempotent)
 -- syncstorage-rs inserts a new row for an existing account when its keys

@@ -1,7 +1,9 @@
 """The admin UI with Mozilla's accounts: the Sync part only (no FxA database).
 
 Runs after test_client_flow.py in the syncstorage-rs image, see tests/e2e.sh: the
-account "alice" of the mock FxA syncs, MAX_USERS is 1. The test stack sets
+account "alice" of the mock FxA syncs, MAX_USERS is 1 (MAX_USERS=initial:1 in .env, so
+that the page manages it). tests/e2e.sh also runs the read-only test (-k read_only) while
+the stack has a plain MAX_USERS=1. The test stack sets
 ADMIN_STALE_DAYS=0, METRICS_FLUSH_SECONDS=5, HEALTH_CHECK_SECONDS=5 and METRICS_TOKEN
 (tests/docker-compose.test.yml).
 
@@ -9,6 +11,7 @@ Environment (besides those of test_client_flow.py):
   ADMIN_URL       the admin UI inside the stack's network (http://ffs-admin:8080)
   ADMIN_PASSWORD  its password
   BACKEND         mysql or postgres
+  MAX_USERS_SETTING  MAX_USERS of the stack as in .env (initial:1 or 1), MAX_USERS the number
 """
 
 import json
@@ -25,6 +28,9 @@ from test_client_flow import EMAIL_DOMAIN, Storage, db, login  # noqa: F401 (db 
 ADMIN = os.environ["ADMIN_URL"].rstrip("/")
 MYSQL = os.environ["BACKEND"] == "mysql"
 METRICS_TOKEN = "ffs-test-metrics-token"
+# MAX_USERS=initial:N: max users is changed on the page, otherwise it is read-only there
+EDITABLE = os.environ.get("MAX_USERS_SETTING", "").startswith("initial:")
+editable = pytest.mark.skipif(not EDITABLE, reason="needs MAX_USERS=initial:N")
 # PostgreSQL keeps the storage in the tokenserver database
 DB_SIZES = ("Tokenserver", "Sync storage") if MYSQL else ("Sync (tokenserver and storage)",)
 
@@ -175,8 +181,27 @@ def test_prometheus(admin):
     assert re.search(r'^ffs_statsd_total\{name="syncstorage_request_[^"]*"\} [1-9]', metrics, re.M), metrics[-3000:]
 
 
+@pytest.mark.skipif(EDITABLE, reason="MAX_USERS=initial:N, the page manages max users")
+def test_max_users_read_only(db):
+    # not the admin fixture: this runs before test_client_flow.py, without alice
+    admin = Admin()
+    page = admin.get("/")
+    before = re.search(r'id="sync-max-users">(\d+)<', page).group(1)
+    assert re.search(r'<input id="max_users" [^>]*required disabled>', page), page[:3000]
+    assert f"managed by MAX_USERS in .env; set MAX_USERS=initial:{before} to manage it here" in page
+    csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
+    res = admin.http.post(f"{ADMIN}/sync/max-users", data={"csrf": csrf, "max_users": str(int(before) + 1)}, timeout=30)
+    assert res.status_code == 200 and "managed by MAX_USERS in .env" in res.text, res.text[:3000]
+    assert "Max users set" not in res.text
+    assert db.execute(sqltext("SELECT config_value FROM config WHERE config_key = 'max_users'")).scalar() == before
+    assert re.search(r'id="sync-max-users">' + before + "<", admin.get("/"))
+
+
+@editable
 def test_max_users_from_the_page(admin, db):
     bob = f"bob@{EMAIL_DOMAIN}"
+    page = admin.get("/")
+    assert re.search(r'<input id="max_users" [^>]*required>', page) and "Managed here" in page, page[:3000]
     page = admin.post("/sync/max-users", max_users="2")
     assert "Max users set to 2" in page and re.search(r'id="sync-max-users">2<', page)
     try:
@@ -193,6 +218,7 @@ def test_max_users_from_the_page(admin, db):
     assert login("bob").status_code != 200
 
 
+@editable
 def test_bad_max_users_refused(admin):
     csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', admin.get("/")).group(1)
     res = admin.http.post(f"{ADMIN}/sync/max-users", data={"csrf": csrf, "max_users": "-1"}, timeout=30)
@@ -200,6 +226,7 @@ def test_bad_max_users_refused(admin):
     assert re.search(r'id="sync-max-users">1<', admin.get("/"))
 
 
+@editable
 def test_activity_page(admin, alice):
     # metrics are written every METRICS_FLUSH_SECONDS (5 in the tests)
     deadline = time.time() + 60

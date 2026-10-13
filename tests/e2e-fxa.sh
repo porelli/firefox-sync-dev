@@ -32,7 +32,7 @@ sed -e "s|<REPLACE_WITH_SOMETHING_SECURE>|RANDOM|" "${CODE}/.env-example" | whil
   case "${line}" in *=RANDOM) echo "${line%RANDOM}$(rnd)" ;; *) echo "${line}" ;; esac
 done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test|" \
     -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:28653|" \
-    -e "s|^MAX_USERS=.*|MAX_USERS=10|" \
+    -e "s|^MAX_USERS=.*|MAX_USERS=initial:10|" \
     -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
     -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
     -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
@@ -101,6 +101,7 @@ check "$(grep -cxF "FXA_SMTP_PASS='${password}'" "${SETUP}/.env")" 1 "SMTP passw
 check "$(sed -n '/SELF-HOSTED MOZILLA ACCOUNTS/,$p' "${SETUP}/.env" | grep -v '^#' | grep -c REPLACE)" 0 "no placeholders left for the accounts"
 check "$(cd "${SETUP}" && docker compose config --services 2> /dev/null | grep -c '^fxa-')" 11 "compose stack with the accounts services (and the optional pairing server)"
 check "$(grep -c '^COMPOSE_PROFILES=admin$' "${SETUP}/.env")" 1 "admin UI enabled"
+check "$(grep -c '^MAX_USERS=initial:2$' "${SETUP}/.env")" 1 "max users managed in the admin UI (MAX_USERS=initial:2)"
 check "$(grep -c '^FXA_SIGNUPS=allowlist$' "${SETUP}/.env") $(grep -c '^FXA_SIGNUP_ALLOWLIST=alice@example.org,@example.net$' "${SETUP}/.env")" "1 1" "sign-up allowlist"
 check "$(grep -c 'server_name accounts.example.org;' "${SETUP}/config/nginx/fxa.conf")" 1 "nginx example for the accounts"
 check "$(grep -c 'proxy_pass http://127.0.0.1:8091;' "${SETUP}/config/nginx/fxa.conf")" 1 "nginx sends sign-ups to the gate"
@@ -118,7 +119,9 @@ check "$(cd "${SETUP}" && env -u ADMIN_FXA_CLIENT_ID docker compose config 2> /d
   "the accounts always ask the sign-in code for the admin UI"
 # the same with PostgreSQL, then without the admin UI (the answers after the backend
 # are the same); compose as configured by .env, not by this shell's COMPOSE_PROFILES
-setup_compose() { (cd "${SETUP}" && env -u COMPOSE_PROFILES docker compose "$@" 2> /dev/null); }
+# only what prepare_environment.sh wrote: not this shell's stack settings (compose
+# prefers the environment to .env)
+setup_compose() { (cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} docker compose "$@" 2> /dev/null); }
 prepare_again() {
   rm -f "${SETUP}/.env"
   answers[4]=$1; answers[admin_answer]=$2; answers[admin_answer+9]=${3-admin@example.org}
@@ -128,7 +131,7 @@ prepare_again postgres ""
 check "$?" 0 "prepare_environment.sh with PostgreSQL and self-hosted accounts"
 check "$(grep -c '^COMPOSE_FILE=docker-compose.postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
 check "$(setup_compose config --services | grep -cxE 'postgres_db|fxa-auth|fxa-policy|ffs-admin')" 4 "compose stack with PostgreSQL, the accounts and the admin UI"
-check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db)$')" 2 "admin UI for PostgreSQL and the accounts"
+check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db|MAX_USERS: "?initial:2"?)$')" 3 "admin UI for PostgreSQL and the accounts, with MAX_USERS"
 prepare_again mariadb "" ""
 check "$?" 0 "prepare_environment.sh with the admin UI, no admin emails (password only)"
 check "$(grep -cE 'server_name admin\.|<ADMIN_' "${SETUP}/config/nginx/fxa.conf")" 0 "no admin UI host in the nginx example, password only"
@@ -142,6 +145,7 @@ check "$?" 0 "prepare_environment.sh with self-hosted accounts, without the admi
 check "$(grep -cE 'ADMIN_GATE_EXPORT_PORT|8091' "${SETUP}/config/nginx/fxa.conf")" 0 "no sign-up gate in the nginx example without the admin UI"
 check "$(grep -cE 'server_name admin\.|<ADMIN_' "${SETUP}/config/nginx/fxa.conf") [$(env_value ADMIN_FXA_CLIENT_ID)]" "0 []" "no admin UI sign-in without the admin UI"
 check "$(grep -c '^COMPOSE_PROFILES=' "${SETUP}/.env")" 0 "no compose profile without the admin UI"
+check "$(grep -c '^MAX_USERS=2$' "${SETUP}/.env")" 1 "plain MAX_USERS=2 without the admin UI"
 check "$(setup_compose config --services | grep -cxE 'fxa-policy|ffs-admin')" 1 "sign-up policy without the admin UI"
 check "$(setup_compose config --services | grep -cx ffs-admin)" 0 "no admin UI service"
 
@@ -191,20 +195,23 @@ dc run --rm -T --no-deps --user root \
   -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
 check "$?" 0 "sign-up policy and admin UI tests"
 
-echo "== settings from the admin UI survive a restart, .env changes replace them"
+echo "== settings from the admin UI survive a restart, .env changes replace them (MAX_USERS: a plain number)"
 fxa_sql() { dc exec -T fxa-db mysql -uroot -p"${FXA_MYSQL_PASSWORD}" -sN -e "$1" 2> /dev/null; }
 ts_sql() { dc exec -T tokenserver_db mariadb -u"${MARIADB_TOKENSERVER_USER}" -p"${MARIADB_TOKENSERVER_PASSWORD}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" 2> /dev/null; }
 dc run --rm --no-deps fxa-policy > /dev/null 2>&1
 check "$?" 0 "sign-up policy restarted"
 check "$(fxa_sql "SELECT COUNT(*) FROM ffs.signup_allowlist WHERE entry = 'kept@example.net'")" 1 "allowlist set in the admin UI kept"
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
-check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 7 "max users set in the admin UI kept"
+check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 7 "max users set in the admin UI kept (MAX_USERS=initial:10)"
 set_env FXA_SIGNUP_ALLOWLIST @example.com
 dc run --rm --no-deps fxa-policy > /dev/null 2>&1
 check "$(fxa_sql "SELECT GROUP_CONCAT(entry) FROM ffs.signup_allowlist")" "@example.com" "allowlist changed in .env applied"
 set_env MAX_USERS 11
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
-check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "max users changed in .env applied"
+check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "plain MAX_USERS=11 in .env applied over the admin UI"
+set_env MAX_USERS initial:12
+dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
+check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "MAX_USERS=initial:12 keeps the value in the database"
 
 if [ -z "${SKIP_BROWSER:-}" ]; then
   echo "== real Firefox: sign-up on one profile, sync to a second one"

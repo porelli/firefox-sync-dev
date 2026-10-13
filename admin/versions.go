@@ -61,16 +61,3 @@ func redisVersion(ctx context.Context, addr string) (string, error) {
 	}
 	return "", nil
 }
-
-// MaxUsersFromEnv: is the limit the MAX_USERS of .env (the init container keeps the
-// last value it applied in max_users_env), or was it changed in the admin UI since?
-func (s *SyncDB) MaxUsersFromEnv(ctx context.Context) (bool, error) {
-	var current, fromEnv sql.NullString
-	err := s.db.QueryRowContext(ctx, s.q(`SELECT
-		(SELECT config_value FROM config WHERE config_key = ?),
-		(SELECT config_value FROM config WHERE config_key = ?)`), "max_users", "max_users_env").Scan(&current, &fromEnv)
-	if err != nil {
-		return false, err
-	}
-	return current.Valid && fromEnv.Valid && current.String == fromEnv.String, nil
-}
