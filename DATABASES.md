@@ -196,5 +196,5 @@ With docker compose. Not covered by the tests: check the result before you remov
 - `ERROR 2026 ... self-signed certificate in certificate chain`, then "Timeout waiting for database connection" in the init container: set `MARIADB_TLS_VERIFY=false`.
 - "Timeout waiting for database connection", or the migrations never finish: the containers cannot reach the server. Check the host (not `localhost`), the port, the server's listen address, the firewall and the users' host part. Test from the stack's network: `docker compose run --rm --no-deps --entrypoint mariadb tokenserver_db_init --host=... --user=... -p --skip-ssl-verify-server-cert -e 'SELECT 1'`.
 - `ER_NOT_SUPPORTED_AUTH_MODE` from the accounts (fxa-migrations, fxa-auth): `FXA_MYSQL_USER` must use `mysql_native_password`, and MySQL 8.4 needs `mysql_native_password=ON`.
-- `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY ..._ibfk_1` from fxa-migrations: the server is MariaDB 12, use 11.4 to 11.8.
+- `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY ..._ibfk_1` from fxa-migrations: the server is MariaDB 12, use 11.4 to 11.8 (until [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494) is in a release).
 - `Access denied` from PostgreSQL, or `no pg_hba.conf entry`: add a `host` line for the containers' addresses.

@@ -53,7 +53,7 @@ Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL 8.4 b
 
 ### Why not MariaDB 12
 
-MariaDB 12 names unnamed foreign keys `1`, `2`, ... MySQL and MariaDB 11 name them `<table>_ibfk_N`. Mozilla's migrations drop foreign keys by those names, so on MariaDB 12 they stop at the first one: `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1` (`fxa`, patch 096-097), then the same in `fxa_oauth` (`clientDevelopers_ibfk_1`). No server setting changes that, only a modified copy of Mozilla's migrations would.
+MariaDB 12 names unnamed foreign keys `1`, `2`, ... MySQL and MariaDB 11 name them `<table>_ibfk_N`. Mozilla's migrations drop foreign keys by those names, so on MariaDB 12 they stop at the first one: `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1` (`fxa`, patch 096-097), then the same in `fxa_oauth` (`clientDevelopers_ibfk_1`). No server setting changes that, only a modified copy of Mozilla's migrations would. The fix is proposed upstream in [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494): the pin moves to `mariadb:lts` once a release includes it.
 
 ## Who can sign up
 

@@ -5,7 +5,8 @@
 services:
   fxa-db:
     # not mariadb:lts: from 12.0 unnamed foreign keys are named 1, 2... instead of
-    # <table>_ibfk_N, and Mozilla's migrations drop them by those names
+    # <table>_ibfk_N, and Mozilla's migrations drop them by those names. Fixed by
+    # https://github.com/mozilla/fxa/pull/21494: move to mariadb:lts once it is in a release
     image: mariadb:11.8
     environment:
       MARIADB_AUTO_UPGRADE: "true"
@@ -18,7 +19,7 @@ services:
     volumes:
       - fxa-db-mariadb:/var/lib/mysql
 
-  # the backups of the accounts with MariaDB's client
+  # the backups of the accounts with MariaDB's client (the same version as fxa-db, see there)
   backup-fxa:
     image: mariadb:11.8
 

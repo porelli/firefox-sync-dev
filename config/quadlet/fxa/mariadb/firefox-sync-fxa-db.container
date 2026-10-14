@@ -6,6 +6,8 @@ Description=Firefox Sync - Mozilla accounts - Database (MariaDB)
 After=firefox-sync-network.service
 
 [Container]
+# not mariadb:lts: MariaDB 12 breaks Mozilla's migrations, fixed by
+# https://github.com/mozilla/fxa/pull/21494 (move to lts once it is in a release)
 Image=docker.io/library/mariadb:11.8
 ContainerName=firefox-sync-fxa-db
 Network=firefox-sync-network.network
