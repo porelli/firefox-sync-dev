@@ -1,72 +1,85 @@
-{{template "head"}}
-{{template "nav" .}}
-<main>
+{{template "head" (page "Activity" "activity" .)}}
+<main id="main">
+<div class="page-head">
+  <div>
+    <h1>Activity</h1>
+    <p class="hint">{{if .Received.IsZero}}{{if .History}}Nothing received since the admin UI started{{with .Started}} at {{date .}}{{end}}: the charts show the stored history{{else}}No metrics received yet{{end}}{{else}}Last metrics received {{when .Received}}{{end}}{{with .Silent}} <span class="pill warn">Missing metrics</span> {{.}}: restart the Sync server{{end}}</p>
+  </div>
+  <nav class="ranges" aria-label="Time range">{{range .Ranges}}<a href="/activity?range={{.}}"{{if eq . $.Range}} class="current" aria-current="page"{{end}}>{{if eq . "24h"}}Last day{{else if eq . "7d"}}Last week{{else if eq . "30d"}}Last month{{else}}{{.}}{{end}}</a>{{end}}</nav>
+</div>
 {{template "flash" .}}
-<p class="ranges">{{range .Ranges}}<a href="/activity?range={{.}}" {{if eq . $.Range}}class="current"{{end}}>{{.}}</a> {{end}}</p>
 
-<section>
-  <h2>Sync server</h2>
-  {{if .Received.IsZero}}
-  <p class="hint">No metrics received since the admin UI started. They come from the Sync server, which sends them only if the admin UI was running when it started: restart it (<code>docker compose restart syncstorage</code>, or <code>systemctl --user restart firefox-sync-syncstorage.service</code>) if this stays empty while people sync.</p>
-  {{else}}
-  <p class="hint">Last metrics received {{when .Received}}.</p>
+<section aria-labelledby="sync-title">
+  <h2 class="group-title" id="sync-title">Sync server</h2>
+  {{if and .Received.IsZero (not .History)}}
+  <p class="box">No metrics received since the admin UI started. They come from the Sync server, which sends them only if the admin UI was running when it started: restart it (<code>docker compose restart syncstorage</code>, or <code>systemctl --user restart firefox-sync-syncstorage.service</code>) if this stays empty while people sync.</p>
   {{end}}
+  <div class="charts">
   {{range .Charts}}
   <figure>
-    <figcaption>{{.Title}}: <strong>{{.Total}}</strong> <span class="hint">({{$.Bucket}})</span></figcaption>
-    {{.SVG}}
-    <div class="axis"><span>{{date $.Since}}</span><span>now</span></div>
+    <figcaption>{{.Title}} <strong>{{.Total}}</strong> <span class="hint">in total, bars {{$.Bucket}}</span></figcaption>
+    <div class="plot"><span class="ymax" aria-hidden="true">{{.Peak}}</span>{{.SVG}}</div>
+    <div class="axis" aria-hidden="true"><span>{{date $.Since}}</span><span>{{with $.Mid}}{{date .}}{{end}}</span><span>now</span></div>
   </figure>
   {{end}}
   {{range .Gauges}}
   <figure>
-    <figcaption>Database {{.Name}}: <strong>{{bytes .Last}}</strong> <span class="hint">(measured every hour)</span></figcaption>
-    {{.SVG}}
-    <div class="axis"><span>{{date $.Since}}</span><span>now</span></div>
+    <figcaption>Database {{.Name}} <strong>{{bytes .Last}}</strong> <span class="hint">now, measured every hour</span></figcaption>
+    <div class="plot line"><span class="ymax" aria-hidden="true">{{bytes .Peak}}</span>{{.SVG}}</div>
+    <div class="axis" aria-hidden="true"><span>{{date $.Since}}</span><span>{{with $.Mid}}{{date .}}{{end}}</span><span>now</span></div>
   </figure>
   {{end}}
-  <details>
+  </div>
+  <details class="card">
     <summary>All metrics</summary>
     <div class="scroll"><table id="metrics" aria-label="All metrics">
       <thead><tr><th>Metric</th><th>Count</th><th>Average</th></tr></thead>
-      <tbody>{{range .Totals}}<tr><td><code>{{.Name}}</code></td><td>{{.Count}}</td><td>{{if .AvgMs}}{{printf "%.1f" .AvgMs}} ms{{end}}</td></tr>{{else}}<tr><td colspan="3">No metrics yet: they come from the Sync server when it runs with the admin UI (see ADMIN.md).</td></tr>{{end}}</tbody>
+      <tbody>{{range .Totals}}<tr><td><code>{{.Name}}</code></td><td>{{.Count}}</td><td>{{if .AvgMs}}{{printf "%.1f" .AvgMs}} ms{{end}}</td></tr>{{else}}<tr><td colspan="3" class="empty">No metrics yet: they come from the Sync server when it runs with the admin UI (see ADMIN.md).</td></tr>{{end}}</tbody>
     </table></div>
   </details>
 </section>
 
 {{with .Jobs}}
-<section id="maintenance">
-  <h2>Maintenance</h2>
+<section id="maintenance" class="card" aria-labelledby="maintenance-title">
+  <div class="card-head">
+    <h2 id="maintenance-title">Maintenance</h2>
+  </div>
   <div class="scroll"><table id="jobs" aria-label="Maintenance">
     <thead><tr><th>Every day</th><th>Last run</th><th>What it did</th></tr></thead>
     <tbody>{{range .}}<tr data-job="{{.Name}}"><td>{{.Title}}{{if not .On}} <span class="badge">off</span>{{end}}</td><td>{{when .LastRun}}</td><td>{{.Result}}</td></tr>{{end}}</tbody>
   </table></div>
-  {{if $.FxA}}<form method="post" action="/maintenance/prune" class="inline" id="prune">
-    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <button type="submit">Prune the accounts database now</button>
-    <span class="hint">expired tokens and codes only: the accounts and their data stay</span>
-  </form>{{end}}
-  <p class="hint">Each run is in the event log too (kind maintenance). Pruning removes unblock and sign-in codes after 30 days, reset tokens and sessions without a device (not those of a Firefox) after 4 weeks, OAuth codes after 15 minutes and the security events of the account settings after ADMIN_RETENTION_DAYS.</p>
+  {{/* it deletes for good: a confirm page first (confirm.go) */}}
+  {{if $.FxA}}<div class="stack" id="prune-now">
+    <a href="/maintenance/prune" class="button secondary" id="prune">Prune the accounts database now…</a>
+    <p class="hint">Only expired tokens and codes: the accounts and their data stay. The next page says what goes.</p>
+  </div>{{end}}
+  <details class="fold">
+    <summary>What pruning removes</summary>
+    <p class="hint">Unblock and sign-in codes after 30 days, reset tokens and sessions without a device (not those of a Firefox) after 4 weeks, OAuth codes after 15 minutes, and the security events of the account settings after <code>ADMIN_RETENTION_DAYS</code>. Each run is in the event log too (kind maintenance).</p>
+  </details>
 </section>
 {{end}}
 
-<section>
-  <h2 id="events-title">Events</h2>
+<section class="card" aria-labelledby="events-title">
+  <div class="card-head"><h2 id="events-title">Events</h2>{{if or .Kind .Q .Hide}}<a href="/activity?range={{.Range}}" id="all">All events</a>{{end}}</div>
   <form method="get" action="/activity" class="filter" role="search">
     <input type="hidden" name="range" value="{{.Range}}">
+    {{if .Hide}}<input type="hidden" name="hide" value="sign-ins">{{end}}
     <div><label for="kind">Kind</label>
     <select id="kind" name="kind"><option value="">all</option>{{range .Kinds}}<option value="{{.}}"{{if eq . $.Kind}} selected{{end}}>{{.}}</option>{{end}}</select></div>
-    <div><label for="q">Containing</label>
+    <div class="search"><label for="q">Containing</label>
     <input id="q" name="q" type="search" value="{{.Q}}" placeholder="an email, a word"></div>
-    <button type="submit">Filter</button>
+    <button type="submit" class="secondary">Filter</button>
   </form>
+  <nav class="chips" aria-label="Sign-ins of the admins">
+    {{if .Hide}}<a href="/activity?range={{.Range}}&amp;kind={{.Kind}}&amp;q={{.Q}}" aria-current="true">Sign-ins hidden · show them</a>{{else}}<a href="/activity?range={{.Range}}&amp;kind={{.Kind}}&amp;q={{.Q}}&amp;hide=sign-ins">Hide sign-ins</a>{{end}}
+  </nav>
   <div class="scroll"><table id="events" aria-labelledby="events-title">
     <thead><tr><th>When</th><th>What</th><th>Detail</th></tr></thead>
-    <tbody>{{range .Events}}<tr><td>{{date .At}}</td><td>{{.Kind}}</td><td>{{.Detail}}</td></tr>{{else}}<tr><td colspan="3">No events{{if or .Kind .Q .Paged}} here{{end}}.</td></tr>{{end}}</tbody>
+    <tbody>{{range .Events}}<tr data-kind="{{.Kind}}"{{if routine .}} class="routine"{{end}}><td>{{date .At}}</td><td>{{.Kind}}</td><td>{{.Detail}}</td></tr>{{else}}<tr><td colspan="3" class="empty">No events{{if or .Kind .Q .Paged .Hide}} here{{end}}.</td></tr>{{end}}</tbody>
   </table></div>
-  <p class="pages">{{if .Paged}}<a href="/activity?range={{.Range}}&amp;kind={{.Kind}}&amp;q={{.Q}}" id="newest">Newest events</a>{{end}}
-    {{if or .Kind .Q}}<a href="/activity?range={{.Range}}" id="all">All events</a>{{end}}
-    {{with .Older}}<a href="/activity?range={{$.Range}}&amp;kind={{$.Kind}}&amp;q={{$.Q}}&amp;before={{.}}" rel="next" id="older">Older events</a>{{end}}</p>
+  <p class="pages">{{if .Paged}}<a href="/activity?range={{.Range}}&amp;kind={{.Kind}}&amp;q={{.Q}}{{if .Hide}}&amp;hide=sign-ins{{end}}" id="newest">← Newest events</a>{{end}}
+    {{with .Older}}<a href="/activity?range={{$.Range}}&amp;kind={{$.Kind}}&amp;q={{$.Q}}{{if $.Hide}}&amp;hide=sign-ins{{end}}&amp;before={{.}}" rel="next" id="older">Older events →</a>{{end}}</p>
 </section>
 </main>
 {{template "foot"}}

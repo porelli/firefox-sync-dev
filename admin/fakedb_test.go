@@ -41,6 +41,12 @@ type fakeFxa struct {
 	qargs   [][]driver.Value
 	// answer, when set, answers the queries it returns rows for, before the cases below
 	answer func(query string, args []driver.Value) *fakeRows
+	// the limits: max_users of the tokenserver's config, max_accounts of ffs.settings
+	// ("": no row), the count of fxa.accounts
+	maxUsers, maxAccounts string
+	accountCount          int64
+	// as a tokenserver database (with nodes set): the accounts using Sync
+	syncUsers int64
 }
 
 const (
@@ -122,6 +128,18 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, args []driver.N
 		}
 	}
 	switch {
+	case strings.Contains(query, "FROM config WHERE config_key"):
+		if c.f.maxUsers == "" {
+			return &fakeRows{}, nil
+		}
+		return &fakeRows{cols: []string{"value"}, rows: [][]driver.Value{{c.f.maxUsers}}}, nil
+	case strings.Contains(query, "FROM ffs.settings WHERE name = 'max_accounts'"):
+		if c.f.maxAccounts == "" {
+			return &fakeRows{}, nil
+		}
+		return &fakeRows{cols: []string{"value"}, rows: [][]driver.Value{{c.f.maxAccounts}}}, nil
+	case query == "SELECT COUNT(uid) FROM fxa.accounts":
+		return &fakeRows{cols: []string{"n"}, rows: [][]driver.Value{{c.f.accountCount}}}, nil
 	case strings.Contains(query, "FROM ffs_backups"):
 		c.f.mu.Lock()
 		defer c.f.mu.Unlock()
@@ -141,7 +159,7 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, args []driver.N
 		}
 		return &fakeRows{}, nil
 	case c.f.nodes != nil && strings.HasPrefix(query, "SELECT COUNT(DISTINCT email) FROM users"):
-		return &fakeRows{cols: []string{"n"}, rows: [][]driver.Value{{int64(0)}}}, nil
+		return &fakeRows{cols: []string{"n"}, rows: [][]driver.Value{{c.f.syncUsers}}}, nil
 	case c.f.nodes != nil && strings.Contains(query, "FROM nodes n"):
 		c.f.mu.Lock()
 		defer c.f.mu.Unlock()

@@ -134,6 +134,8 @@ func (a *App) connectPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	data["Node"], data["Content"], data["Pairing"] = node, content, a.pairingURL
 	data["Setups"] = deviceSteps(content, node, a.pairingURL)
+	// the addresses to type, apart from the steps
+	data["Tokenserver"] = strings.TrimSuffix(node, "/") + "/1.0/sync/1.5"
 	if content != "" {
 		data["Signup"] = content + "/signup"
 	}
@@ -217,7 +219,7 @@ func (a *App) removeFromAllowlist(w http.ResponseWriter, r *http.Request, s *ses
 	if err == nil && !found {
 		err = fmt.Errorf("%q is not on the allowlist", oneLine(entry, 100))
 	}
-	a.done(w, r, s, "Removed "+oneLine(entry, 255)+" from the sign-up allowlist", err)
+	a.doneTo(w, r, s, backTo(r, "/"), "Removed "+oneLine(entry, 255)+" from the sign-up allowlist", err)
 }
 
 // allowRow: an email of the allowlist and whether it signed up

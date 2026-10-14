@@ -121,6 +121,20 @@ func (s *StorageDB) Totals(ctx context.Context) (map[int64]Usage, error) {
 	return totals, nil
 }
 
+// LastWrite: the latest change of any collection (zero: none), one MAX of the collections
+// (one row per account and collection, every write changes one)
+func (s *StorageDB) LastWrite(ctx context.Context) (time.Time, error) {
+	query := "SELECT COALESCE(MAX(last_modified), 0) FROM user_collections"
+	if s.postgres {
+		query = "SELECT COALESCE(CAST(EXTRACT(EPOCH FROM MAX(modified)) * 1000 AS BIGINT), 0) FROM user_collections"
+	}
+	var modified int64
+	if err := s.db.QueryRowContext(ctx, query).Scan(&modified); err != nil {
+		return time.Time{}, err
+	}
+	return ms(modified), nil
+}
+
 func (s *StorageDB) Collections(ctx context.Context, id int64) ([]CollectionUsage, error) {
 	query := `SELECT c.name, COUNT(b.id), COALESCE(SUM(LENGTH(b.payload)), 0), uc.last_modified
 		FROM user_collections uc JOIN collections c ON c.id = uc.collection

@@ -186,6 +186,11 @@ services:
       ADMIN_SIGNUP_BURST: ${ADMIN_SIGNUP_BURST:-10}
       # times of the pages and the alerts, e.g. Europe/Rome (default UTC)
       ADMIN_TZ: ${ADMIN_TZ:-}
+      # what the backup service does (COMPOSE_PROFILES=backup), for its help on the overview
+      BACKUP_TIME: ${BACKUP_TIME:-03:00}
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      # the commands it shows: compose's (the Quadlets say quadlets)
+      ADMIN_DEPLOYMENT: compose
       # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
       ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-}

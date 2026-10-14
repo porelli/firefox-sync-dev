@@ -284,7 +284,7 @@ func (a *App) newSession(w http.ResponseWriter, r *http.Request, user, method st
 		who = ": " + eventText(user)
 	}
 	log.Printf("admin signed in%s (%s)", who, method)
-	a.event("admin", fmt.Sprintf("signed in%s (%s)", who, method))
+	a.event("admin", fmt.Sprintf(adminSignIn+"%s (%s)", who, method))
 	a.auth.cookie(w, sessionCookie, token, "/", int(sessionLifetime.Seconds()), http.SameSiteStrictMode)
 	return s
 }

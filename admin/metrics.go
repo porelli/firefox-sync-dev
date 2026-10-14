@@ -299,10 +299,14 @@ type Event struct {
 
 // Events of the log before a time, newest first: of a kind ("": all), with q in the
 // detail (any case, "": all)
-func (r *Recorder) Events(ctx context.Context, before time.Time, kind, q string, limit int) ([]Event, error) {
+func (r *Recorder) Events(ctx context.Context, before time.Time, kind, q string, hideSignIns bool, limit int) ([]Event, error) {
 	query, args := "SELECT at, kind, detail FROM ffs_events WHERE at < ?", []any{before.UnixMilli()}
 	if kind != "" {
 		query, args = query+" AND kind = ?", append(args, kind)
+	}
+	// the admins' own sign-ins, routine: in the query, so a page is still full
+	if hideSignIns {
+		query, args = query+" AND NOT (kind = ? AND detail LIKE ?)", append(args, "admin", adminSignIn+"%")
 	}
 	if q != "" {
 		query, args = query+" AND LOWER(detail) LIKE ?", append(args, "%"+likeEscape(strings.ToLower(q))+"%")

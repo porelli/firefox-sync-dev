@@ -1,24 +1,30 @@
-{{template "head"}}
-{{template "nav" .}}
-<main>
-<p><a href="{{.Back}}">← {{.Name}}</a></p>
+{{template "head" (page (printf "%s %s?" .Action.Title .Name) (or .Nav "overview") .)}}
+<main id="main" class="narrow">
+<p class="crumb"><a href="{{.Back}}">{{template "icon" "back"}}<span>{{or .Crumb .Name}}</span></a></p>
 {{template "flash" .}}
-<h2>{{.Action.Title}} {{.Name}}?</h2>
+<h1>{{.Action.Title}} {{email .Name}}?</h1>
 {{with .Account}}
-<p>Account <code>{{.UID}}</code>, created {{date .CreatedAt}}, {{if .Disabled}}<span class="disabled">disabled</span>{{else}}active{{end}}.</p>
+<dl class="facts compact" aria-label="The account">
+  <div><dt>Account id</dt><dd><code>{{.UID}}</code></dd></div>
+  <div><dt>Created</dt><dd>{{date .CreatedAt}}</dd></div>
+  <div><dt>Status</dt><dd>{{if .Disabled}}<span class="disabled">disabled</span>{{else}}enabled{{end}}</dd></div>
+</dl>
 {{end}}
-<ul id="effects">{{range .Action.Effects}}<li>{{.}}</li>{{end}}</ul>
+<div class="box warn" role="note" aria-labelledby="effects-title">
+  <p class="box-title" id="effects-title">{{template "icon" "alert"}}<strong>What happens</strong></p>
+  <ul id="effects">{{range .Action.Effects}}<li>{{.}}</li>{{end}}</ul>
+</div>
 
 {{if .Action.Lists}}
 {{if .Devices}}
-<h3>Devices signed out</h3>
+<h2 class="h3">Devices signed out</h2>
 <div class="scroll"><table id="confirm-devices" aria-label="Devices signed out">
   <thead><tr><th>Name</th><th>Type</th><th>Added</th><th>Last used</th></tr></thead>
   <tbody>{{range .Devices}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{when .CreatedAt}}</td><td>{{when .LastUsed}}</td></tr>{{end}}</tbody>
 </table></div>
 {{end}}
 {{if .Sessions}}
-<h3>Sessions signed out</h3>
+<h2 class="h3">Sessions signed out</h2>
 <div class="scroll"><table id="confirm-sessions" aria-label="Sessions signed out">
   <thead><tr><th>Browser</th><th>System</th><th>Signed in</th><th>Last used</th></tr></thead>
   <tbody>{{range .Sessions}}<tr><td>{{.Browser}}</td><td>{{.OS}}</td><td>{{when .CreatedAt}}</td><td>{{when .LastUsed}}</td></tr>{{end}}</tbody>
@@ -27,16 +33,19 @@
 {{if not (or .Devices .Sessions)}}<p class="hint">No devices or sessions to sign out.</p>{{end}}
 {{end}}
 
+{{/* open when deleting: the rows are what goes */}}
 {{with .Rows}}
-<h3>Tokenserver rows</h3>
-<div class="scroll"><table id="confirm-rows" aria-label="Tokenserver rows">
-  <thead><tr><th>Uid</th><th>Created</th><th>Replaced</th><th>Stored</th></tr></thead>
-  <tbody>{{range .}}<tr><td>{{.ID}}{{if .Current}} <span class="badge">current</span>{{end}}</td><td>{{date .CreatedAt}}</td><td>{{if .Replaced}}{{date .ReplacedAt}}{{end}}</td><td>{{.Usage.Items}} items, {{bytes .Usage.Bytes}}</td></tr>{{end}}</tbody>
-</table></div>
+<details class="fold"{{if $.Action.TypeEmail}} open{{end}}>
+  <summary>Tokenserver rows ({{len .}})</summary>
+  <div class="scroll"><table id="confirm-rows" aria-label="Tokenserver rows">
+    <thead><tr><th>Uid</th><th>Created</th><th>Replaced</th><th>Stored</th></tr></thead>
+    <tbody>{{range .}}<tr><td>{{.ID}}{{if .Current}} <span class="badge">current</span>{{end}}</td><td>{{date .CreatedAt}}</td><td>{{if .Replaced}}{{date .ReplacedAt}}{{end}}</td><td>{{.Usage.Items}} items, {{bytes .Usage.Bytes}}</td></tr>{{end}}</tbody>
+  </table></div>
+</details>
 {{end}}
 
 {{with .Orphans}}
-<h3>Orphans</h3>
+<h2 class="h3">Orphans</h2>
 <div class="scroll"><table id="confirm-orphans" aria-label="Orphans purged">
   <thead><tr><th>Kind</th><th>Tokenserver email</th><th>Storage uids</th><th>Stored</th></tr></thead>
   <tbody>{{range .}}<tr><td>{{.Kind}}</td><td>{{.Email}}</td><td>{{range $i, $id := .Storage}}{{if $i}}, {{end}}{{$id}}{{end}}</td><td>{{.Usage.Items}} items, {{bytes .Usage.Bytes}}</td></tr>{{end}}</tbody>
@@ -44,6 +53,7 @@
 {{end}}
 
 {{with .Unconfirmed}}
+<h2 class="h3">Accounts deleted</h2>
 <div class="scroll"><table id="confirm-unconfirmed" aria-label="Accounts deleted">
   <thead><tr><th>Email</th><th>Created</th></tr></thead>
   <tbody>{{range .}}<tr><td>{{.Email}}</td><td>{{date .CreatedAt}}</td></tr>{{end}}</tbody>
@@ -54,13 +64,13 @@
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <input type="hidden" name="back" value="{{.Back}}">
   {{range $name, $value := .Action.Hidden}}<input type="hidden" name="{{$name}}" value="{{$value}}">{{end}}
-  <label for="reason">Reason (optional, kept in the event log{{if .Action.ReasonToNote}} and added to the account's note{{end}})</label>
+  <label for="reason">Reason <span class="hint">(optional, kept in the event log{{if .Action.ReasonToNote}} and added to the account's note{{end}})</span></label>
   <input id="reason" name="reason" type="text" maxlength="{{.MaxReason}}" autocomplete="off">
   {{if .Action.SignOut}}
-  <label><input type="checkbox" name="sign_out" value="1" checked> Also sign out everywhere ({{len .Devices}} devices, {{len .Sessions}} sessions): if someone else got in, they are out too</label>
+  <label class="check"><input type="checkbox" name="sign_out" value="1" checked> <span>Also sign out everywhere ({{len .Devices}} devices, {{len .Sessions}} sessions): if someone else got in, they are out too</span></label>
   {{end}}
   {{range .Action.Checks}}
-  <label><input type="checkbox" name="{{.Name}}" value="1"> {{.Label}}</label>
+  <label class="check"><input type="checkbox" name="{{.Name}}" value="1"> <span>{{.Label}}</span></label>
   {{end}}
   {{if .Action.TypeEmail}}
   {{if .Action.TypeUID}}
@@ -71,7 +81,7 @@
   <input id="confirm_email" name="confirm_email" type="email" autocomplete="off" required>
   {{end}}
   {{end}}
-  <p class="actions"><button type="submit" class="danger">{{.Action.Button}}</button> <a href="{{.Back}}" id="cancel">Cancel</a></p>
+  <p class="actions"><button type="submit" class="danger">{{.Action.Button}}</button> <a class="button secondary" href="{{.Back}}" id="cancel">Cancel</a></p>
 </form>
 </main>
 {{template "foot"}}

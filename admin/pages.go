@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"html/template"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -113,6 +114,11 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 	since := time.Now().Add(-rg.span).Truncate(rg.bucket)
 	data := a.base(s)
 	data["Range"], data["Bucket"], data["Ranges"], data["Since"], data["Received"] = name, rg.label, []string{"24h", "7d", "30d"}, since, a.rec.LastReceived()
+	// the middle of the x axis, and whether the metrics are missing as the overview says
+	data["Mid"] = since.Add(time.Since(since) / 2)
+	if row, silent := a.metrics(); silent {
+		data["Silent"] = row.Error
+	}
 	var errs []string
 
 	series, totals, err := a.rec.Activity(ctx, since, rg.bucket)
@@ -121,11 +127,18 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	type chart struct {
 		Series
-		SVG template.HTML
+		SVG  template.HTML
+		Peak int64
 	}
+	// the time span for screen readers: the date axis is hidden from them
+	span := fmt.Sprintf(", from %s to now", formatTime(since, adminZone))
+	// whether the stored history has anything, received by this process or before
+	history := false
 	charts := make([]chart, 0, len(series))
 	for _, sr := range series {
-		charts = append(charts, chart{sr, barChart(sr.Points)})
+		p := peak(sr.Points)
+		history = history || sr.Total > 0
+		charts = append(charts, chart{sr, barChart(sr.Points, fmt.Sprintf("peak %d %s%s", p, rg.label, span)), p})
 	}
 	data["Charts"], data["Totals"] = charts, totals
 	gauges, err := a.rec.Gauges(ctx, since, rg.bucket)
@@ -136,14 +149,20 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 		Name string
 		Last int64
 		SVG  template.HTML
+		Peak int64
 	}
 	gaugeCharts := make([]gaugeChart, 0, len(gauges))
 	for _, g := range gauges {
-		gaugeCharts = append(gaugeCharts, gaugeChart{strings.TrimPrefix(g.Name, "db.size."), g.Last, barChart(g.Points)})
+		p := peak(g.Points)
+		history = history || p > 0
+		gaugeCharts = append(gaugeCharts, gaugeChart{strings.TrimPrefix(g.Name, "db.size."), g.Last, lineChart(g.Points, "peak "+humanBytes(p)+span), p})
 	}
-	data["Gauges"] = gaugeCharts
+	data["Gauges"], data["History"] = gaugeCharts, history
+	if a.health != nil {
+		data["Started"] = a.health.started
+	}
 
-	data["Events"], data["Older"], data["Kind"], data["Q"], data["Paged"] = a.eventPage(r, &errs)
+	data["Events"], data["Older"], data["Kind"], data["Q"], data["Paged"], data["Hide"] = a.eventPage(r, &errs)
 	data["Kinds"] = eventKinds
 	if jobs, err := a.sync.Jobs(ctx); err != nil {
 		errs = append(errs, "Maintenance: "+err.Error())
@@ -155,6 +174,9 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 }
 
 // the kinds of the event filter: those of the log, then those of the accounts database
+// adminSignIn: how the event of an admin's sign-in starts, routine in the log
+const adminSignIn = "signed in"
+
 var eventKinds = []string{"admin", "sign-in", "sign-up refused", "health", "update", "blocked", "maintenance", "sign-up burst", "backup", "attention", "sign-up", "new device"}
 
 const eventsPerPage = 100
@@ -162,10 +184,12 @@ const eventsPerPage = 100
 // eventPage: the events of the log and of the accounts database (sign-ups, new
 // devices), newest first, before ?before= (milliseconds), of ?kind=, containing ?q=;
 // older is where the next page starts (0: no more)
-func (a *App) eventPage(r *http.Request, errs *[]string) (events []Event, older int64, kind, q string, paged bool) {
+func (a *App) eventPage(r *http.Request, errs *[]string) (events []Event, older int64, kind, q string, paged, hide bool) {
 	ctx := r.Context()
 	query := r.URL.Query()
 	kind, q = query.Get("kind"), oneLine(strings.TrimSpace(query.Get("q")), 100)
+	// ?hide=sign-ins: without the admins' own sign-ins
+	hide = query.Get("hide") == "sign-ins"
 	before := time.Now().Add(time.Minute)
 	if ms, err := strconv.ParseInt(query.Get("before"), 10, 64); err == nil && ms > 0 {
 		before, paged = time.UnixMilli(ms), true
@@ -175,7 +199,7 @@ func (a *App) eventPage(r *http.Request, errs *[]string) (events []Event, older 
 	// accounts' events in it
 	var since time.Time
 	if kind != "sign-up" && kind != "new device" {
-		logged, err := a.rec.Events(ctx, before, kind, q, eventsPerPage)
+		logged, err := a.rec.Events(ctx, before, kind, q, hide, eventsPerPage)
 		if err != nil {
 			*errs = append(*errs, "Event log: "+err.Error())
 		}
@@ -205,29 +229,101 @@ func (a *App) eventPage(r *http.Request, errs *[]string) (events []Event, older 
 			events, older = events[:n], older+1
 		}
 	}
-	return events, older, kind, q, paged
+	return events, older, kind, q, paged, hide
 }
 
-// barChart draws the points as an SVG bar chart (numbers only, nothing from users)
-func barChart(points []int64) template.HTML {
-	const width, height = 600, 80
-	var max int64 = 1
+// chart sizes: the SVG stretches to the width of its box, the lines keep 1 px
+const chartWidth, chartHeight = 600, 120
+
+func peak(points []int64) int64 {
+	var max int64
 	for _, p := range points {
-		if p > max {
-			max = p
+		max = maxInt(max, p)
+	}
+	return max
+}
+
+func maxInt(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// chartGrid: the gridlines at the peak (y) and half of it, and the baseline
+func chartGrid(b *strings.Builder, y float64) {
+	for _, y := range []float64{y, (y + chartHeight) / 2} {
+		fmt.Fprintf(b, `<line class="grid" x1="0" y1="%.1f" x2="%d" y2="%.1f" vector-effect="non-scaling-stroke"/>`, y, chartWidth, y)
+	}
+	fmt.Fprintf(b, `<line class="base" x1="0" y1="%d" x2="%d" y2="%d" vector-effect="non-scaling-stroke"/>`, chartHeight-1, chartWidth, chartHeight-1)
+}
+
+// barChart draws the points as an SVG bar chart (numbers only, nothing from users);
+// label is its accessible name, the peak with its unit and the time span
+func barChart(points []int64, label string) template.HTML {
+	max := maxInt(peak(points), 1)
+	var b strings.Builder
+	fmt.Fprintf(&b, `<svg class="chart" viewBox="0 0 %d %d" preserveAspectRatio="none" role="img" aria-label="%s">`, chartWidth, chartHeight, template.HTMLEscapeString(label))
+	chartGrid(&b, 1)
+	if n := len(points); n > 0 {
+		step := float64(chartWidth) / float64(n)
+		gap := math.Min(2, step/4)
+		for i, p := range points {
+			h := float64(p) / float64(max) * (chartHeight - 2)
+			if p > 0 && h < 2 {
+				h = 2
+			}
+			if p > 0 {
+				fmt.Fprintf(&b, `<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f"/>`, float64(i)*step+gap/2, chartHeight-1-h, step-gap, h)
+			}
 		}
 	}
+	b.WriteString(`</svg>`)
+	return template.HTML(b.String())
+}
+
+// lineChart draws a measure (a database size) as a line over an area, from 0 with
+// headroom: a size that barely changes is a flat line, not a wall. Points of 0 are
+// hours with no measure, left out
+func lineChart(points []int64, label string) template.HTML {
+	max := maxInt(peak(points), 1)
+	top := float64(max) * 1.25
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg class="chart" viewBox="0 0 %d %d" preserveAspectRatio="none" role="img" aria-label="peak %d">`, width, height, max)
-	if n := len(points); n > 0 {
-		step := float64(width) / float64(n)
-		for i, p := range points {
-			h := float64(p) / float64(max) * (height - 2)
-			if p > 0 && h < 1 {
-				h = 1
-			}
-			fmt.Fprintf(&b, `<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f"/>`, float64(i)*step+0.5, height-h, step-1, h)
+	fmt.Fprintf(&b, `<svg class="chart line" viewBox="0 0 %d %d" preserveAspectRatio="none" role="img" aria-label="%s">`, chartWidth, chartHeight, template.HTMLEscapeString(label))
+	// the peak at 1/5 from the top, where the page puts its label
+	chartGrid(&b, chartHeight-1-(chartHeight-2)/1.25)
+	n := len(points)
+	step := float64(chartWidth) / float64(maxInt(int64(n), 1))
+	// one path per run of measured points
+	for i := 0; i < n; {
+		if points[i] <= 0 {
+			i++
+			continue
 		}
+		j := i
+		for j < n && points[j] > 0 {
+			j++
+		}
+		y := func(k int) float64 { return chartHeight - 1 - float64(points[k])/top*(chartHeight-2) }
+		var line strings.Builder
+		x0, x1 := (float64(i)+0.5)*step, (float64(j)-0.5)*step
+		if j-i == 1 {
+			// a lone point gets the width of its bucket, so it shows
+			x0, x1 = float64(i)*step, float64(j)*step
+			fmt.Fprintf(&line, "M%.1f %.1f L%.1f %.1f", x0, y(i), x1, y(i))
+		} else {
+			for k := i; k < j; k++ {
+				cmd := "L"
+				if k == i {
+					cmd = "M"
+				}
+				fmt.Fprintf(&line, "%s%.1f %.1f ", cmd, (float64(k)+0.5)*step, y(k))
+			}
+		}
+		d := line.String()
+		fmt.Fprintf(&b, `<path class="area" d="%s L%.1f %d L%.1f %d Z"/>`, strings.TrimSpace(d), x1, chartHeight-1, x0, chartHeight-1)
+		fmt.Fprintf(&b, `<path class="stroke" d="%s" vector-effect="non-scaling-stroke"/>`, strings.TrimSpace(d))
+		i = j
 	}
 	b.WriteString(`</svg>`)
 	return template.HTML(b.String())

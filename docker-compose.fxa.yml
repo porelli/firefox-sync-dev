@@ -92,7 +92,7 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # who can create an account (FXA_SIGNUPS, FXA_SIGNUP_ALLOWLIST), enforced by the
+  # who can create an account (FXA_SIGNUPS, FXA_SIGNUP_ALLOWLIST, FXA_MAX_ACCOUNTS), enforced by the
   # accounts database itself; also the database user of the admin UI. See ADMIN.md
   fxa-policy:
     image: ${ADMIN_IMAGE:-${REPOSITORY}:admin-latest}
@@ -109,6 +109,8 @@ services:
       FXA_ADMIN_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:-}
       FXA_SIGNUPS: ${FXA_SIGNUPS:-open}
       FXA_SIGNUP_ALLOWLIST: ${FXA_SIGNUP_ALLOWLIST:-}
+      # the most accounts: N or unlimited (every start), initial:N (once, then the admin UI)
+      FXA_MAX_ACCOUNTS: ${FXA_MAX_ACCOUNTS:-initial:unlimited}
     depends_on:
       fxa-migrations:
         condition: service_completed_successfully
@@ -345,6 +347,8 @@ services:
       FXA_DB_HOST: ${FXA_MYSQL_HOST:-fxa-db}
       FXA_DB_PORT: ${FXA_MYSQL_PORT:-3306}
       FXA_DB_PASSWORD: ${FXA_ADMIN_DB_PASSWORD:-}
+      # initial:N (or not set): the admin UI manages max accounts, otherwise .env does (read-only)
+      FXA_MAX_ACCOUNTS: ${FXA_MAX_ACCOUNTS:-initial:unlimited}
       FXA_AUTH_UPSTREAM: http://fxa-auth:9000
       # health check of the optional pairing server
       FXA_PAIRING_URL: ${FXA_PAIRING_URL:-}

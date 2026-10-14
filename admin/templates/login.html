@@ -1,18 +1,27 @@
-{{template "head"}}
-<main class="login">
-  <h1>firefox-sync admin</h1>
+{{template "head" (page "Sign in" "" .)}}
+<main class="login" id="main">
+  <div class="card login-card">
+  <div class="login-brand">
+    {{template "icon" "logo"}}
+    <h1>Firefox Sync admin</h1>
+    <p class="hint">Sign in to manage this server</p>
+  </div>
   {{if eq .Error "password" "1"}}<p class="failed">Wrong password.</p>{{end}}
   {{if eq .Error "sso"}}<p class="failed">Single sign-on failed: this account is not an admin, its email is not verified, or the sign-in expired. Try again.</p>{{end}}
   {{with .HeaderRefused}}<p class="failed">{{.}} is not an admin (ADMIN_ALLOWED_USERS, ADMIN_ALLOWED_GROUPS).</p>{{end}}
   {{with .HeaderUser}}<p>Signed in by your proxy as {{.}}. <a href="/">Continue</a></p>{{end}}
   {{with .OIDC}}<p><a class="button" href="/auth/login">Sign in with {{.}}</a></p>{{end}}
   {{if .Password}}
+  {{if .OIDC}}<p class="or">or</p>{{end}}
   <form method="post" action="/login">
-    <label for="password">Password (ADMIN_PASSWORD in .env)</label>
-    <input id="password" name="password" type="password" autocomplete="current-password" required{{if not .OIDC}} autofocus{{end}}>
-    <button type="submit">Sign in</button>
+    <label for="password">Admin password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" aria-describedby="password-hint" required{{if not .OIDC}} autofocus{{end}}>
+    <p class="hint" id="password-hint"><code>ADMIN_PASSWORD</code> in the .env file of the server</p>
+    <button type="submit"{{if .OIDC}} class="secondary"{{end}}>Sign in</button>
   </form>
   {{end}}
   {{if and .Header (not .HeaderUser) (not .HeaderRefused)}}<p class="hint">Or sign in through your single sign-on proxy.</p>{{end}}
+  </div>
 </main>
-{{template "foot"}}
+</body>
+</html>

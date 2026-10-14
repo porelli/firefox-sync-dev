@@ -21,8 +21,9 @@ import (
 // pages can show. The trigger installed by fxa-init enforces the same policy in the
 // database, the gate only makes the refusal readable.
 
+// SignupRefusal: "" allowed, refusedPolicy or refusedFull
 type SignupChecker interface {
-	SignupAllowed(ctx context.Context, email string) (bool, error)
+	SignupRefusal(ctx context.Context, email string) (string, error)
 }
 
 // FxA error shown by the accounts pages for a refused sign-up
@@ -88,15 +89,19 @@ func newGate(upstream *url.URL, corsOrigin string, checker SignupChecker, event 
 			// anything that does not parse is left to the auth server (and the trigger)
 			if email := createEmail(body); email != "" {
 				ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-				allowed, err := checker.SignupAllowed(ctx, email)
+				refusal, err := checker.SignupRefusal(ctx, email)
 				cancel()
 				if err != nil {
 					log.Printf("gate: checking the sign-up policy: %v", err)
 					fxaError(w, r, http.StatusServiceUnavailable, 201, "Service Unavailable", "Service unavailable")
 					return
 				}
-				if !allowed {
-					log.Printf("gate: sign-up refused by the policy")
+				if refusal != "" {
+					message := "Sign-ups are restricted on this server"
+					if refusal == refusedFull {
+						message = "This server is full: it takes no new accounts"
+					}
+					log.Printf("gate: sign-up refused: %s", message)
 					if event != nil {
 						// from anybody, unchecked by FxA: into the event log and the
 						// alerts only when it looks like an email
@@ -104,10 +109,12 @@ func newGate(upstream *url.URL, corsOrigin string, checker SignupChecker, event 
 						if len(detail) > 255 || !signupEmail.MatchString(detail) {
 							detail = "invalid email"
 						}
+						if refusal == refusedFull {
+							detail += " (the server is full: FXA_MAX_ACCOUNTS)"
+						}
 						go event("sign-up refused", detail)
 					}
-					fxaError(w, r, http.StatusBadRequest, signupRefusedErrno, "Request blocked",
-						"Sign-ups are restricted on this server")
+					fxaError(w, r, http.StatusBadRequest, signupRefusedErrno, "Request blocked", message)
 					return
 				}
 			}

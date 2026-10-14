@@ -30,6 +30,10 @@ type Component struct {
 	Checked time.Time
 	// not in the health table: one of the setup checks of the overview
 	Hidden bool
+	// a limit of accounts (limits.go): in the table, counted only when near or full
+	Limit bool
+	// the word of the pill instead of "problem" (near the limit, full)
+	Label string
 }
 
 type check struct {
@@ -93,8 +97,13 @@ type Health struct {
 	backups []BackupStatus
 	// when the Sync server last came up: its first metrics follow it (attention.go)
 	syncUpSince time.Time
+	// the latest write of the storage database, read every round: data changed without
+	// metrics is their silence (attention.go)
+	lastWrite time.Time
 	// the state of each condition alerted once per change (attention.go), the errors logged last
 	states, logged map[string]string
+	// the rows of the limits of accounts (limits.go), from the last round or the overview
+	limits []Component
 }
 
 // GitHub's API, for the release check (the tests use their own)
@@ -216,7 +225,7 @@ func (h *Health) run(ctx context.Context) {
 		h.watchBlocks(ctx)
 		h.watchSchema(ctx)
 		h.watchBackups(ctx, time.Now())
-		h.watchThresholds(ctx, time.Now())
+		h.watchThresholds(ctx)
 		if time.Since(lastSizes) >= time.Hour {
 			h.measureSizes(ctx)
 			lastSizes = time.Now()

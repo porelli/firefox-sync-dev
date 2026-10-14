@@ -81,10 +81,59 @@ func openFxaDB() (*FxaDB, error) {
 	return &FxaDB{db: db, redis: env("FXA_REDIS", "fxa-redis:6379")}, nil
 }
 
-func (f *FxaDB) SignupAllowed(ctx context.Context, email string) (bool, error) {
-	var allowed bool
-	err := f.db.QueryRowContext(ctx, "SELECT ffs.signup_allowed(?)", email).Scan(&allowed)
-	return allowed, err
+// SignupRefusal: why a sign-up with this email is refused, "" when it is allowed:
+// refusedPolicy (the sign-up policy) or refusedFull (FXA_MAX_ACCOUNTS reached)
+func (f *FxaDB) SignupRefusal(ctx context.Context, email string) (string, error) {
+	var refusal string
+	err := f.db.QueryRowContext(ctx, "SELECT COALESCE(ffs.signup_refusal(?), '')", email).Scan(&refusal)
+	return refusal, err
+}
+
+const (
+	refusedPolicy = "policy"
+	refusedFull   = "full"
+)
+
+// MaxAccounts: FXA_MAX_ACCOUNTS as fxa-init or the admin UI set it in ffs.settings; none
+// there (before fxa-init set it): no limit, as ffs.signup_refusal reads it
+func (f *FxaDB) MaxAccounts(ctx context.Context) (max int, unlimited bool, err error) {
+	var value string
+	err = f.db.QueryRowContext(ctx, "SELECT value FROM ffs.settings WHERE name = 'max_accounts'").Scan(&value)
+	if err == sql.ErrNoRows {
+		return 0, true, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	// anything else counts as 0 there too: CAST of a word
+	max, unlimited, _ = parseLimitValue(value)
+	return max, unlimited, nil
+}
+
+// AccountLimit: the accounts against FXA_MAX_ACCOUNTS, as ffs.signup_refusal counts them
+func (f *FxaDB) AccountLimit(ctx context.Context) (Limit, error) {
+	max, unlimited, err := f.MaxAccounts(ctx)
+	if err != nil {
+		return Limit{}, err
+	}
+	l := Limit{Max: max, Unlimited: unlimited}
+	err = f.db.QueryRowContext(ctx, "SELECT COUNT(uid) FROM fxa.accounts").Scan(&l.Count)
+	return l, err
+}
+
+// SetMaxAccounts: the limit of ffs.signup_refusal, with FXA_MAX_ACCOUNTS=initial:N (or not set)
+func (f *FxaDB) SetMaxAccounts(ctx context.Context, max int, unlimited bool) error {
+	return setMaxAccounts(ctx, f.db, Limit{Max: max, Unlimited: unlimited}.Setting(), true)
+}
+
+// setMaxAccounts: replace, or only when there is none yet (FXA_MAX_ACCOUNTS=initial:N)
+func setMaxAccounts(ctx context.Context, db *sql.DB, value string, replace bool) error {
+	query := "INSERT INTO ffs.settings (name, value) VALUES ('max_accounts', ?) ON DUPLICATE KEY UPDATE value = VALUES(value)"
+	if !replace {
+		query = "INSERT IGNORE INTO ffs.settings (name, value) VALUES ('max_accounts', ?)"
+	}
+	_, err := db.ExecContext(ctx, query, value)
+	return err
 }
 
 func (f *FxaDB) Policy(ctx context.Context) (*SignupPolicy, error) {

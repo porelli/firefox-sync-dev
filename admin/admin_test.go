@@ -20,13 +20,21 @@ import (
 
 type fakeChecker struct {
 	allowed map[string]bool
-	err     error
-	asked   []string
+	// refused as full (FXA_MAX_ACCOUNTS) rather than by the policy
+	full  bool
+	err   error
+	asked []string
 }
 
-func (f *fakeChecker) SignupAllowed(ctx context.Context, email string) (bool, error) {
+func (f *fakeChecker) SignupRefusal(ctx context.Context, email string) (string, error) {
 	f.asked = append(f.asked, email)
-	return f.allowed[email], f.err
+	switch {
+	case f.allowed[email]:
+		return "", f.err
+	case f.full:
+		return refusedFull, f.err
+	}
+	return refusedPolicy, f.err
 }
 
 type seen struct {
@@ -324,9 +332,17 @@ func TestStatsd(t *testing.T) {
 }
 
 func TestBarChart(t *testing.T) {
-	svg := string(barChart([]int64{0, 5, 10}))
-	if !strings.HasPrefix(svg, "<svg") || strings.Count(svg, "<rect") != 3 || !strings.Contains(svg, `height="78.0"`) {
+	// no bar for 0, the peak at full height, gridlines and a baseline
+	svg := string(barChart([]int64{0, 5, 10}, "peak 10 per hour, from <then> to now"))
+	if !strings.HasPrefix(svg, "<svg") || strings.Count(svg, "<rect") != 2 || !strings.Contains(svg, `height="118.0"`) ||
+		!strings.Contains(svg, `aria-label="peak 10 per hour, from &lt;then&gt; to now"`) || strings.Count(svg, `class="grid"`) != 2 || !strings.Contains(svg, `class="base"`) {
 		t.Errorf("%s", svg)
+	}
+	// a measure: one line per run of measured points, below the top (headroom)
+	line := string(lineChart([]int64{0, 64, 64, 0, 80}, "peak 80 B"))
+	if !strings.Contains(line, `aria-label="peak 80 B"`) || strings.Count(line, `class="stroke"`) != 2 || strings.Count(line, `class="area"`) != 2 ||
+		!strings.Contains(line, "M180.0 43.5 L300.0 43.5") || !strings.Contains(line, `y1="24.6"`) || peak([]int64{3, 9, 2}) != 9 {
+		t.Errorf("%s", line)
 	}
 	if humanBytes(1536) != "1.5 KB" || humanBytes(10) != "10 B" {
 		t.Error(humanBytes(1536))
@@ -399,7 +415,7 @@ func TestMaxUsersFitsTheTriggers(t *testing.T) {
 			t.Errorf("%s: %q", n, s.failed)
 		}
 	}
-	if err := (&SyncDB{}).SetMaxUsers(context.Background(), 1<<31); err == nil {
+	if err := (&SyncDB{}).SetMaxUsers(context.Background(), 1<<31, false); err == nil {
 		t.Error("SetMaxUsers accepted 2^31")
 	}
 }
@@ -705,6 +721,7 @@ func pages(t *testing.T) map[string]string {
 			"Health": []Component{{Name: "Sync server", Up: true}, {Name: "Public Sync URL", Warn: true, Error: "certificate expires in 3 days"}},
 			"Schema": []SchemaLevel{{Database: "fxa", Level: "201"}}, "Setup": []setupCheck{{Name: "Sync node", Text: "x"}},
 			"Alerts": map[string]any{"To": "admin@example.com", "Status": SendStatus{}, "Waiting": 0}, "TestEmail": true, "Mailer": true,
+			"Backup": map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": false}, "AccountLimit": Limit{Count: 1, Max: 10}, "MaxAccountsEditable": true,
 			"Invited": []allowRow{{Email: "bob@example.net"}}, "Domains": []string{"@example.com"},
 			"Policy": &SignupPolicy{Mode: "open"}, "Accounts": []accountRow{{UID: fakeUID, Email: fakeEmail}, {UID: "ff" + fakeUID[2:], Email: "bob@example.com", Disabled: true}},
 			"UnconfirmedCount": 1, "PruneLastRan": time.Now(), "Pages": pager{Page: 1, Pages: 2, Total: 60, From: 1, To: 50, Next: "/?page=2#accounts"},
@@ -724,6 +741,7 @@ func pages(t *testing.T) map[string]string {
 		"security.html": {"CSRF": "x", "FxA": true, "Blocks": []Block{{Key: "k"}}},
 		"login.html":    {"Password": true, "OIDC": "Dex"},
 		"continue.html": {},
+		"error.html":    {"Code": 404, "Text": "404 page not found", "CSRF": "x", "FxA": true},
 		"confirm.html": {"CSRF": "x", "FxA": true, "Account": acc, "Name": acc.Email, "Post": "/x", "Back": "/users/x", "MaxReason": maxReason,
 			"Action":  confirmAction{Title: "Delete", Button: "Delete", TypeEmail: true, Checks: []confirmCheck{{"free_slot", "x"}}, Hidden: map[string]string{"collection": "tabs"}},
 			"Devices": []Device{{ID: "d1", Name: "Firefox"}}, "Rows": []UserRow{{ID: 4}}, "Orphans": []Orphan{{Kind: orphanNoRow, Storage: []int64{9}}},

@@ -50,23 +50,30 @@ DELETE FROM config WHERE config_key = 'max_users_env';
 CREATE OR REPLACE FUNCTION check_user_limit() RETURNS trigger AS $$
 DECLARE
     user_count INT;
+    max_users_value VARCHAR(255);
     max_users_setting INT;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM users WHERE email = NEW.email) THEN
         -- Get max_users from config table, locking the row so concurrent
         -- sign-ups are counted one at a time; a missing value denies
-        SELECT CAST(config_value AS INTEGER) INTO max_users_setting
+        SELECT config_value INTO max_users_value
         FROM config
         WHERE config_key = 'max_users'
         FOR UPDATE;
-        max_users_setting := COALESCE(max_users_setting, 0);
 
-        -- Get current account count
-        SELECT COUNT(DISTINCT email) INTO user_count FROM users;
+        -- 'unlimited' (MAX_USERS=unlimited): no limit, nothing to count
+        IF max_users_value IS DISTINCT FROM 'unlimited' THEN
+            -- a number (db_init.sh and the admin UI write nothing else); anything else denies
+            max_users_setting := CASE WHEN max_users_value ~ '^[0-9]{1,10}$'
+                THEN LEAST(CAST(max_users_value AS BIGINT), 2147483647) ELSE 0 END;
 
-        -- Check if limit is exceeded
-        IF user_count >= max_users_setting THEN
-            RAISE EXCEPTION 'User limit exceeded';
+            -- Get current account count
+            SELECT COUNT(DISTINCT email) INTO user_count FROM users;
+
+            -- Check if limit is exceeded
+            IF user_count >= max_users_setting THEN
+                RAISE EXCEPTION 'User limit exceeded';
+            END IF;
         END IF;
     END IF;
     RETURN NEW;

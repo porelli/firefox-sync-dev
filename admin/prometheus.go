@@ -50,8 +50,12 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 	}
 	if st, err := a.sync.Status(ctx); err == nil {
 		gauge("ffs_sync_accounts", "Accounts using this Sync server", int64(st.Users))
-		gauge("ffs_sync_max_users", "Maximum accounts (MAX_USERS)", int64(st.MaxUsers))
+		// MAX_USERS=unlimited: no limit to compare with
+		if !st.Unlimited {
+			gauge("ffs_sync_max_users", "Maximum accounts (MAX_USERS)", int64(st.MaxUsers))
+		}
 		gauge("ffs_sync_near_max_users", "1 when 90% of max users or more are taken", flag(nearMaxUsers(st)))
+		gauge("ffs_sync_full", "1 when every place of max users is taken: new accounts are refused", flag(st.Limit().State() == limitFull))
 	}
 	if a.storage != nil {
 		if totals, err := a.storage.Totals(ctx); err == nil {
@@ -65,8 +69,13 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if a.fxa != nil {
-		if accounts, err := a.fxa.Accounts(ctx); err == nil {
-			gauge("ffs_accounts", "Accounts of the self-hosted accounts service", int64(len(accounts)))
+		if l, err := a.fxa.AccountLimit(ctx); err == nil {
+			gauge("ffs_accounts", "Accounts of the self-hosted accounts service", int64(l.Count))
+			if !l.Unlimited {
+				gauge("ffs_accounts_max", "Maximum accounts of the self-hosted accounts service (FXA_MAX_ACCOUNTS)", int64(l.Max))
+			}
+			gauge("ffs_accounts_near_max", "1 when 90% of FXA_MAX_ACCOUNTS or more are created", flag(l.State() != limitOK))
+			gauge("ffs_accounts_full", "1 when FXA_MAX_ACCOUNTS accounts are created: sign-ups are refused", flag(l.State() == limitFull))
 		}
 	}
 	if a.health != nil {
@@ -109,7 +118,8 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 		gauge("ffs_alert_send_failing", "1 when the last alert email could not be sent", flag(alertsFailing(&st)))
 	}
 	if a.health != nil {
-		gauge("ffs_statsd_silent", "1 when the Sync server is up and sent no metrics for 30 minutes", flag(statsdSilent(componentUp(a.health.Components(), "Sync server"), a.rec.LastReceived(), a.health.silenceFrom(), time.Now())))
+		_, silent := a.metrics()
+		gauge("ffs_statsd_silent", "1 when the Sync server is up and Sync data changed more than 10 minutes after its last metrics", flag(silent))
 		backupMetrics(&b, a.health.Backups(), time.Now())
 	}
 	// what the Sync server sent since the admin UI started

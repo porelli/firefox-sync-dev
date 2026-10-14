@@ -268,6 +268,9 @@ if [ -n "${EXTDB}" ]; then
   check "$?" 0 "external database server with the databases and users of config/database/"
 fi
 
+# a stack of an earlier KEEP=1 run of this project would make the fail-closed check pass
+# on its old containers: start from nothing
+dc down -v --remove-orphans > /dev/null 2>&1
 echo "== fail closed: a failing init must keep syncstorage down"
 printf 'services:\n  tokenserver_db_init:\n    entrypoint: ["/bin/false"]\n' > "${WORK}/fail-init.yml"
 dc -f "${WORK}/fail-init.yml" up -d > /dev/null 2>&1
@@ -359,12 +362,25 @@ check "${INIT_CODE}" 0 "init container exit code (back to MAX_USERS=1)"
 check "$(max_users)" 1 "switching back to a plain MAX_USERS=1 takes over"
 
 echo "== MAX_USERS not valid: the init container fails, nothing changes"
-for bad in lots initial: fixed:-1 2147483648; do
+for bad in lots initial: fixed:-1 infinite initial:Unlimited 2147483648; do
   set_env MAX_USERS "${bad}"
   check "$(rerun_init)" 1 "init container fails with MAX_USERS=${bad}"
 done
 check "$(dc logs tokenserver_db_init 2>&1 | grep -c "MAX_USERS='2147483648' is not valid")" 1 "init container says why"
 check "$(max_users)" 1 "max users unchanged by a MAX_USERS not valid"
+
+echo "== MAX_USERS=unlimited: no limit, by the trigger itself; 0: no new account at all"
+redeploy_max_users unlimited
+check "${INIT_CODE}" 0 "init container exit code (MAX_USERS=unlimited)"
+check "$(max_users)" unlimited "MAX_USERS=unlimited in the database"
+check "$(ins c@ffs-e2e.invalid 1 aa) $(ins d@ffs-e2e.invalid 1 aa)" "ok ok" "new accounts allowed with no limit"
+sql "DELETE FROM users WHERE email IN ('c@ffs-e2e.invalid', 'd@ffs-e2e.invalid');" > /dev/null
+redeploy_max_users initial:5
+check "$(max_users)" unlimited "MAX_USERS=initial:5 keeps unlimited in the database"
+redeploy_max_users fixed:0
+check "$(max_users) $(ins e@ffs-e2e.invalid 1 aa) $(ins a@ffs-e2e.invalid 3 cc)" "0 rejected ok" "MAX_USERS=0: no new account, the existing one still changes its keys"
+redeploy_max_users 1
+check "$(max_users)" 1 "back to MAX_USERS=1"
 
 # the admin UI tests change max users on the page: initial:1 for the rest, until the
 # upstream tokenserver tests (the Python tests get the number, see in_app)
@@ -441,6 +457,8 @@ if [ -z "${EXTDB}" ]; then
   check "$?" 1 "a failed backup run exits with an error"
   check "$(backups_of "ok = 0 AND error LIKE 'cannot write to /proc/ffs-none%'")" 1 "the failed run in ffs_backups"
   check "$(backup_event 'The backup of the Sync databases failed on %')" yes "admin UI: event and alert for the failed backup"
+  # runs are named by the second: not the one of the run before
+  sleep 1.1
   backup_run
   check "$(backup_event 'The backup of the Sync databases works again%')" yes "admin UI: event when the backups work again"
   dc logs backup 2>&1 | grep -m1 'every day at'

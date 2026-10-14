@@ -151,6 +151,11 @@ func (r *StorageReport) Empty() bool {
 	return len(r.Orphans) == 0 && r.Expired.Items == 0 && r.StaleBatches == 0 && r.StaleItems.Items == 0
 }
 
+// Purgeable: what a purge removes (expired, orphaned and stale), for the line of the overview
+func (r *StorageReport) Purgeable() Usage {
+	return addUsage(addUsage(r.Expired, r.Orphaned), r.StaleItems)
+}
+
 // storageReport reads the storage, the tokenserver rows and the accounts
 func (a *App) storageReport(ctx context.Context) (*StorageReport, error) {
 	if a.storage == nil {

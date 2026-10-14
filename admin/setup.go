@@ -73,7 +73,9 @@ func domainCheck(domain string, counts map[string]int, status *SyncStatus) setup
 	sort.Strings(names)
 	c.Text = fmt.Sprintf("FXA_EMAIL_DOMAIN is %s, but %d accounts of the tokenserver have another domain: %s. The tokenserver names each account <uid>@FXA_EMAIL_DOMAIN: after a change of it everybody comes back as a new account, with empty storage, and counts twice against max users",
 		domain, total, strings.Join(names, ", "))
-	if status != nil {
+	if status != nil && status.Unlimited {
+		c.Text += fmt.Sprintf(" (%d, no limit)", status.Users)
+	} else if status != nil {
 		c.Text += fmt.Sprintf(" (%d of %d used)", status.Users, status.MaxUsers)
 	}
 	c.Text += ". Set FXA_EMAIL_DOMAIN back, or remove the old rows from the users table of the tokenserver database."

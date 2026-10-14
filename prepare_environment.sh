@@ -58,16 +58,20 @@ DEFAULT_CONTAINER_EXPORT_PORT=5000
 read -e -p "Listening port for syncstorage-rs [${DEFAULT_CONTAINER_EXPORT_PORT}]: " CONTAINER_EXPORT_PORT
 CONTAINER_EXPORT_PORT=${CONTAINER_EXPORT_PORT:-${DEFAULT_CONTAINER_EXPORT_PORT}}
 
+# a limit of accounts: a number (0: nobody new) or unlimited
+valid_limit() {
+    case "${2}" in
+        unlimited) ;;
+        ''|*[!0-9]*) echo "ERROR: ${1} must be a number or unlimited, got '${2}'"; exit 1 ;;
+        *) [ "${#2}" -le 10 ] && [ "${2}" -le 2147483647 ] || { echo "ERROR: ${1} must be at most 2147483647, got '${2}'"; exit 1; } ;;
+    esac
+}
+
 # max users
 DEFAULT_MAX_USERS=1
-read -e -p "Max allowed users [${DEFAULT_MAX_USERS}]: " MAX_USERS
+read -e -p "Max allowed users, a number or unlimited [${DEFAULT_MAX_USERS}]: " MAX_USERS
 MAX_USERS=${MAX_USERS:-${DEFAULT_MAX_USERS}}
-case "${MAX_USERS}" in
-    ''|*[!0-9]*)
-        echo "ERROR: max users must be a number, got '${MAX_USERS}'"
-        exit 1
-        ;;
-esac
+valid_limit "max users" "${MAX_USERS}"
 
 # database backend
 DEFAULT_DATABASE_BACKEND=mariadb
@@ -251,6 +255,16 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     esac
 fi
 
+# the most accounts of the self-hosted accounts, asked last so that scripted answers for
+# the questions above still line up; with the admin UI it manages them (initial:)
+FXA_MAX_ACCOUNTS=initial:unlimited
+if [ "${SELF_HOST_FXA}" = "yes" ]; then
+    read -r -e -p "Max accounts that can be created on the accounts service, a number or unlimited [unlimited]: " FXA_MAX_ACCOUNTS
+    FXA_MAX_ACCOUNTS=${FXA_MAX_ACCOUNTS:-unlimited}
+    valid_limit "max accounts" "${FXA_MAX_ACCOUNTS}"
+    [ "${ADMIN_UI}" = "yes" ] && FXA_MAX_ACCOUNTS=initial:${FXA_MAX_ACCOUNTS}
+fi
+
 # SYNC_DB=mysql: the Sync databases in MySQL containers; with your own server there are none,
 # SYNC_DB then only says what it is
 [ "${SYNC_DB}" = "mysql" ] && [ "${EXTERNAL_DB}" != "yes" ] && SYNC_COMPOSE_MYSQL=yes || SYNC_COMPOSE_MYSQL=no
@@ -327,6 +341,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"$(sed_escape "${FXA_SMTP_SENDER}")\"|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=${FXA_SIGNUPS}|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_MAX_ACCOUNTS=.*|FXA_MAX_ACCOUNTS=${FXA_MAX_ACCOUNTS}|"
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB_CONTAINERS=.*|FXA_DB_CONTAINERS=0|"
         for name in FXA_MYSQL_HOST FXA_MYSQL_PORT FXA_MYSQL_USER FXA_MYSQL_POLICY_USER; do

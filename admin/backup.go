@@ -168,3 +168,14 @@ func upperFirst(s string) string {
 
 // Old: the newest run worked, but more than backupMaxAge ago
 func (b BackupStatus) Old() bool { return b.Last.OK && b.state(time.Now()) == "stale" }
+
+// localClock: a time of day in UTC (BACKUP_TIME, 03:00) in the zone of the pages, today;
+// as given when it is not one
+func localClock(utc string, now time.Time, zone *time.Location) string {
+	t, err := time.Parse("15:04", utc)
+	if err != nil {
+		return utc
+	}
+	y, m, d := now.UTC().Date()
+	return time.Date(y, m, d, t.Hour(), t.Minute(), 0, 0, time.UTC).In(zone).Format("15:04")
+}

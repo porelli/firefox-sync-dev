@@ -1,0 +1,13 @@
+{{/* the errors of http.Error and http.NotFound (errorPages): with the nav when signed in */}}
+{{$title := "Something went wrong"}}{{if eq .Code 404}}{{$title = "Page not found"}}{{else if eq .Code 403}}{{$title = "Not allowed"}}{{else if eq .Code 401}}{{$title = "Not signed in"}}{{else if eq .Code 429}}{{$title = "Too many attempts"}}{{else if eq .Code 502}}{{$title = "Not answering"}}{{end}}
+{{template "head" (page $title (and .CSRF "error") .)}}
+<main id="main" class="{{if not .CSRF}}login{{else}}narrow{{end}}">
+  <div class="card error-card">
+    <p class="code">Error {{.Code}}</p>
+    <h1>{{$title}}</h1>
+    {{if ne .Text "404 page not found"}}<p>{{.Text}}</p>{{else}}<p>There is nothing at this address: the account or the page may be gone.</p>{{end}}
+    <p class="actions"><a class="button" href="/">Back to the Overview</a></p>
+  </div>
+</main>
+{{if .CSRF}}{{template "foot"}}{{else}}</body>
+</html>{{end}}

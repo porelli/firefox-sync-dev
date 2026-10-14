@@ -104,7 +104,7 @@ class Admin:
     def events(self, **query):
         page = self.get("/activity?" + "&".join(f"{k}={requests.utils.quote(v)}" for k, v in query.items()))
         table = page.split('<table id="events"')[1].split("</table>")[0]
-        return re.findall(r"<tr><td>[^<]*</td><td>([^<]*)</td><td>([^<]*)</td></tr>", table)
+        return re.findall(r"<tr[^>]*><td>[^<]*</td><td>([^<]*)</td><td>([^<]*)</td></tr>", table)
 
 
 @pytest.fixture(scope="module")
@@ -338,7 +338,8 @@ def test_sign_out_everywhere(admin):
     assert res.status_code in (400, 401), res.text
     # still active: a new sign-in works right away, and a password reset
     row = account_row(admin, address)
-    assert "<td>active</td>" in row, row
+    # the usual state is kept for screen readers only
+    assert '<td class="status"><span class="visually-hidden">enabled</span>' in row, row
     again = client.login(address, password)
     assert requests.get(f"{AUTH}/v1/recovery_email/status", headers=bearer(again), timeout=30).status_code == 200
     res = use_reset_code(*reset_code(address))
@@ -380,6 +381,43 @@ def test_max_users_from_admin(admin):
         admin.post("/sync/max-users", max_users="7" if before != 7 else "8")
 
 
+def test_max_accounts_from_admin(admin, fxa_db):
+    """FXA_MAX_ACCOUNTS (not set in tests/e2e-fxa.sh: initial:unlimited, managed on the page)"""
+    page = admin.page()
+    assert 'id="fxa-max-accounts">unlimited<' in page and " created, no limit" in page, page[:3000]
+    assert re.search(r'<td>Max accounts</td><td><span class="ok">up</span> <span class="hint">\d+ accounts?, no limit</span>', page), page[:3000]
+    assert not re.search(r'<input id="max_accounts" [^>]*disabled', page)
+    count = int(re.search(r'id="fxa-accounts">(\d+)<', page).group(1))
+    assert count == sql(fxa_db, "SELECT COUNT(*) FROM fxa.accounts").scalar()
+    metrics = lambda: requests.get(f"{ADMIN}/metrics", headers={"Authorization": "Bearer ffs-test-metrics-token"}, timeout=30).text
+    assert f"ffs_accounts {count}\n" in metrics() and "ffs_accounts_max" not in metrics()
+    try:
+        # full: the gate says so, the database refuses it too, the page and the alerts tell
+        page = admin.post("/accounts/max-accounts", max_accounts=str(count))
+        assert f"Max accounts set to {count}" in page and f'id="fxa-max-accounts">{count}<' in page
+        line = f"{count} of {count} accounts are created (FXA_MAX_ACCOUNTS): sign-ups are refused until it is raised."
+        assert (line, "#signups") in attention_of(page), attention_of(page)
+        assert re.search(r'<td>Max accounts</td><td><span class="pill warn">full</span>', page), page[:3000]
+        address = email("example.com")  # on the allowlist: refused only because it is full
+        res = create(address)
+        assert res.status_code == 400 and res.json()["errno"] == 125 and "This server is full" in res.json()["message"], res.text
+        res = create(address, server=DIRECT)
+        assert res.status_code >= 400 and not exists(address), res.text
+        assert any(d == f"{address} (the server is full: FXA_MAX_ACCOUNTS)" for _, d in admin.events(kind="sign-up refused", q=address)), admin.events(kind="sign-up refused")
+        assert "ffs_accounts_full 1\n" in metrics() and f"ffs_accounts_max {count}\n" in metrics()
+        deadline = time.time() + 30
+        while not any("accounts are created (FXA_MAX_ACCOUNTS)" in d for _, d in admin.events(kind="attention")) and time.time() < deadline:
+            time.sleep(1)
+        assert any("accounts are created (FXA_MAX_ACCOUNTS)" in d for _, d in admin.events(kind="attention")), admin.events(kind="attention")
+        # room for one: in
+        admin.post("/accounts/max-accounts", max_accounts=str(count + 1))
+        assert create(address).status_code == 200 and exists(address)
+    finally:
+        page = admin.post("/accounts/max-accounts", max_accounts="", unlimited="1")
+    assert "Max accounts set to unlimited" in page and 'id="fxa-max-accounts">unlimited<' in page
+    assert ("admin", "Max accounts set to unlimited by admin (password)") in admin.events(kind="admin", q="Max accounts")
+
+
 def test_spoofed_forwarded_for_does_not_bypass_rate_limit():
     # the auth server takes the client IP from X-Forwarded-For (CLIENT_ADDRESS_DEPTH):
     # a client sending its own must still be counted as itself
@@ -415,7 +453,7 @@ def test_activity_page():
     deadline = time.time() + 30
     while True:
         page = admin.get("/activity?range=24h")
-        requests_total = int(re.search(r"Sync requests: <strong>(\d+)</strong>", page).group(1))
+        requests_total = int(re.search(r"Sync requests <strong>(\d+)</strong>", page).group(1))
         if requests_total > 0 or time.time() > deadline:
             break
         time.sleep(3)
@@ -423,7 +461,7 @@ def test_activity_page():
     assert "syncstorage.request.post_collection" in page
     for event in ("sign-up refused", "signed in", "Max users set", f"Disabled {INVITED}", "sign-up"):
         assert event in page, event
-    assert re.search(r"Database Tokenserver: <strong>[\d.]+ [KMG]?B", page), "database size chart"
+    assert re.search(r"Database Tokenserver <strong>[\d.]+ [KMG]?B", page), "database size chart"
     admin.get("/activity?range=30d")
 
 
@@ -756,7 +794,7 @@ def test_confirm_an_email_from_the_admin_ui(admin):
     page, done = admin.confirm(f"/accounts/{uid}/confirm-email")
     assert "skips the proof" in page and "signing in again sends a new code" in page, page[:3000]
     assert f"Confirmed the email of {address} (uid {uid[:8]})" in done
-    assert "<td>yes</td>" in account_row(admin, address) and "/confirm-email" not in admin.get(f"/users/{uid}")
+    assert '<span class="visually-hidden">, email confirmed</span></td>' in account_row(admin, address) and "/confirm-email" not in admin.get(f"/users/{uid}")
     # a new sign-in, and Sync
     again = signed_in(client, address, password)
     bearer_token, key_id = sync_token(again, created)
@@ -971,6 +1009,10 @@ def test_schema_levels(admin):
     assert int(levels["fxa"]) >= 201 and int(levels["fxa_oauth"]) >= 40, levels
     for name in ("fxa_profile", "Tokenserver", "Sync storage"):
         assert levels.get(name), (name, levels)
+    # FxA records no time: said, not left blank; syncstorage-rs's migrations have theirs
+    for name in ("fxa", "fxa_oauth", "fxa_profile", "pushbox"):
+        assert re.search(r"<tr><td>" + name + r'</td><td>\d+</td><td><span class="quiet-text">not recorded by FxA</span></td></tr>', schema), (name, schema)
+    assert re.search(r"<tr><td>Tokenserver</td><td>\d+[^<]*</td><td>\d{4}-\d\d-\d\d \d\d:\d\d</td></tr>", schema), schema
 
 
 def allowlist_row(admin, address):
@@ -1001,7 +1043,10 @@ def test_invite_sign_up_and_remove(admin):
     session.verify_email_code(wait_for_code(address))
     row = allowlist_row(admin, address)
     assert row and re.search(r"signed up on \d{4}-\d\d-\d\d", row) and f'href="/users/{session.uid}"' in row, row
-    page = admin.post("/accounts/allowlist/remove", entry=address)
+    # Remove is a link to a confirm page, which says what happens; its form removes it
+    assert f'href="/accounts/allowlist/remove?entry={requests.utils.quote(address)}"' in row and 'action="/accounts/allowlist/remove"' not in admin.page()
+    confirm, page = admin.confirm(f"/accounts/allowlist/remove?entry={requests.utils.quote(address)}")
+    assert "An account already created with it stays" in confirm and f'<input type="hidden" name="entry" value="{address}">' in confirm, confirm[:3000]
     assert f"Removed {address} from the sign-up allowlist" in page and not allowlist_row(admin, address)
     assert ("admin", f"Removed {address} from the sign-up allowlist by admin (password)") in admin.events(kind="admin", q=address)
     # the account stays
@@ -1233,7 +1278,10 @@ def test_prune_expired_tokens(admin, fxa_db):
     sql(fxa_db, "INSERT INTO fxa.devices (uid, id, sessionTokenId, name, type, createdAt) VALUES (UNHEX(:uid), :id, :token, 'ffs prune test', 'desktop', :at)",
         uid=uid, id=os.urandom(16), token=kept, at=old)
     count = lambda q, **a: sql(fxa_db, q, uid=uid, **a).scalar()
-    page = admin.post("/maintenance/prune")
+    # a confirm page first: it deletes for good
+    assert '<a href="/maintenance/prune" class="button secondary" id="prune">' in admin.get("/activity")
+    confirm, page = admin.confirm("/maintenance/prune")
+    assert "Prune the accounts database?" in confirm and "older than 30 days" in confirm, confirm[:3000]
     assert re.search(r"Pruned the accounts database: [1-9]\d* unblock codes, \d+ sign-in codes, \d+ reset and password tokens, [1-9]\d* sessions without a device", page), page[:3000]
     assert count("SELECT COUNT(*) FROM fxa.unblockCodes WHERE uid = UNHEX(:uid)") == 0
     assert count("SELECT COUNT(*) FROM fxa.sessionTokens WHERE tokenId = :t", t=stale) == 0

@@ -1,21 +1,35 @@
+{{/* head: called with (page "Title" "nav entry" .); a page with a nav entry gets the sidebar */}}
 {{define "head"}}<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>firefox-sync admin</title>
+<title>{{with .Title}}{{.}} · {{end}}Firefox Sync admin</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-{{end}}
-{{define "nav"}}<header>
-  <h1>firefox-sync admin</h1>
-  <nav aria-label="Pages"><a href="/">Overview</a> <a href="/activity">Activity</a> <a href="/connect">Connect a device</a>{{if .FxA}} <a href="/security">Security</a>{{end}}</nav>
-  {{with .User}}<span class="hint">{{.}}</span>{{end}}
-  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="link">Sign out</button></form>
+<body class="{{if .Current}}app{{else}}plain{{end}}">
+{{if .Current}}<a class="skip" href="#main">Skip to the content</a>
+{{template "nav" .}}{{end}}{{end}}
+{{define "nav"}}<header class="sidebar">
+  <a class="brand" href="/">{{template "icon" "logo"}}<span>Firefox Sync <small>admin</small></span></a>
+  {{template "light" .Data.Status}}
+  {{/* the pages of the server, then apart (a border, still an item of the list) the steps for the people */}}
+  <nav aria-label="Pages"><ul>
+    <li><a href="/"{{if eq .Current "overview"}} aria-current="page"{{end}}>{{template "icon" "overview"}}<span>Overview</span></a></li>
+    <li><a href="/activity"{{if eq .Current "activity"}} aria-current="page"{{end}}>{{template "icon" "activity"}}<span>Activity</span></a></li>
+    {{if .Data.FxA}}<li><a href="/security"{{if eq .Current "security"}} aria-current="page"{{end}}>{{template "icon" "shield"}}<span>Security</span></a></li>{{end}}
+    <li class="nav-apart"><a href="/connect"{{if eq .Current "connect"}} aria-current="page"{{end}}>{{template "icon" "connect"}}<span>Connect<span class="wide"> a device</span></span></a></li>
+  </ul></nav>
+  <div class="who">
+    {{with .Data.User}}<span class="avatar" aria-hidden="true">{{printf "%.1s" .}}</span><span class="hint">{{.}}</span>{{end}}
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.Data.CSRF}}"><button type="submit" class="signout">{{template "icon" "signout"}}<span class="label">Sign out</span></button></form>
+  </div>
 </header>
 {{end}}
+{{/* light: the health of the components on every page, from the last checks; down looks worse than a warning */}}
+{{define "light"}}{{with .}}<a class="light {{if .Down}}is-bad{{else if .Warn}}is-warn{{else}}is-ok{{end}}" href="/#health-card" id="health-light">
+    <span class="dot" aria-hidden="true"></span>{{if .Down}}<span class="n">{{.Down}}</span><span class="word"><span class="part"> part{{if gt .Down 1}}s{{end}}</span> down</span>{{else if .Warn}}<span class="n">{{.Warn}}</span><span class="word"><span class="part"> part{{if gt .Warn 1}}s{{end}}</span> to check</span>{{else}}<span class="word">All up</span>{{end}}<span class="sr"> (health of the server)</span></a>{{end}}{{end}}
 {{define "flash"}}{{if .Message}}<p class="message" role="status">{{.Message}}</p>{{end}}
 {{if .Failed}}<p class="failed" role="alert">{{.Failed}}</p>{{end}}
 {{range .Errors}}<p class="failed" role="alert">{{.}}</p>{{end}}{{end}}
@@ -23,3 +37,24 @@
 </body>
 </html>
 {{end}}
+{{define "crumb"}}<p class="crumb"><a href="{{.}}">{{template "icon" "back"}}<span>Overview</span></a></p>{{end}}
+{{/* icons: decorative, 24 px grid, drawn with the text colour */}}
+{{define "icon"}}<svg class="icon{{if eq . "logo"}} logo{{end}}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+{{- if eq . "logo"}}<path d="M20 12a8 8 0 0 1-14.3 4.9M4 12a8 8 0 0 1 14.3-4.9"/><path d="M18.6 3.2v4h-4M5.4 20.8v-4h4"/>
+{{- else if eq . "overview"}}<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>
+{{- else if eq . "activity"}}<path d="M3 12h4l3-7 4 14 3-7h4"/>
+{{- else if eq . "connect"}}<rect x="2.5" y="4.5" width="13" height="10" rx="1.5"/><path d="M1.5 18.5h15"/><rect x="18" y="8.5" width="4.5" height="11" rx="1"/>
+{{- else if eq . "shield"}}<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.9-7.5-9.5V6z"/>
+{{- else if eq . "signout"}}<path d="M14 4h4.5a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5H14M9.5 16.5 5 12l4.5-4.5M5 12h10"/>
+{{- else if eq . "back"}}<path d="M15 18l-6-6 6-6"/>
+{{- else if eq . "heart"}}<path d="M3 12h4l2-3 3 6 2-3h7"/>
+{{- else if eq . "users"}}<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2A6.5 6.5 0 0 1 21.5 20"/>
+{{- else if eq . "database"}}<ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/>
+{{- else if eq . "archive"}}<rect x="3" y="4" width="18" height="4.5" rx="1"/><path d="M5 8.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8.5M10 12.5h4"/>
+{{- else if eq . "mail"}}<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>
+{{- else if eq . "sync"}}<path d="M20 12a8 8 0 0 1-14.3 4.9M4 12a8 8 0 0 1 14.3-4.9"/><path d="M18.6 3.2v4h-4M5.4 20.8v-4h4"/>
+{{- else if eq . "check"}}<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.7 2.7L16.2 9.5"/>
+{{- else if eq . "alert"}}<path d="M10.3 4.2 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 17h.01"/>
+{{- else if eq . "computer"}}<rect x="3" y="4.5" width="18" height="12" rx="1.5"/><path d="M8.5 20h7M12 16.5V20"/>
+{{- else if eq . "phone"}}<rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path d="M11 18.5h2"/>
+{{- end}}</svg>{{end}}

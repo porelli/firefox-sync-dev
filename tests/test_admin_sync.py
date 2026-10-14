@@ -119,7 +119,7 @@ def admin(alice):
 def test_sign_in_needs_the_password():
     http = requests.Session()
     res = http.get(f"{ADMIN}/", timeout=30)
-    assert res.url.endswith("/login") and "Password" in res.text
+    assert res.url.endswith("/login") and '<label for="password">' in res.text and 'name="password"' in res.text
     res = http.post(f"{ADMIN}/login", data={"password": "wrong"}, timeout=30)
     assert "Wrong password" in res.text
     assert http.get(f"{ADMIN}/", timeout=30).url.endswith("/login")
@@ -150,9 +150,17 @@ def test_health(admin):
     # the databases report their versions (MariaDB 11.x, MySQL 8.4.x on your own server or with SYNC_DB=mysql, PostgreSQL 18.x)
     database = os.environ.get("DATABASE_SERVER") or ("MariaDB" if MYSQL else "PostgreSQL")
     assert re.search(r"<td>Tokenserver database</td><td>.*?</td><td>" + database + r" \d+\.\d+", health), health
+    # max users, with the accounts against it (1 of 1 here: full, a problem to check)
+    users, max_users = (int(re.search(r'id="sync-' + i + r'">(\d+)<', page).group(1)) for i in ("users", "max-users"))
+    limit = re.search(r"<td>Max users</td><td>(.*?)</td>", health)
+    assert limit, health
+    if users >= max_users:
+        assert '<span class="pill warn">full</span>' in limit.group(1) and f"{users} of {max_users} accounts are taken (MAX_USERS)" in limit.group(1), limit.group(1)
+    else:
+        assert f"{users} of {max_users} taken" in limit.group(1), limit.group(1)
     # without self-hosted accounts there is nothing else to check; no SMTP server
     # (FXA_SMTP_HOST empty), no public checks (ADMIN_PUBLIC_CHECK=false in the test stack)
-    assert len(re.findall(r"<tr><td>", health)) == len(components), health
+    assert len(re.findall(r"<tr><td>", health)) == len(components) + 1, health
     assert "Accounts" not in health and "Email (SMTP)" not in health and "Public" not in health
     assert 'action="/alerts/test"' not in page and "ffs_cert_expiry_seconds" not in requests.get(
         f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
@@ -314,23 +322,30 @@ def test_activity_page(admin, alice):
     deadline = time.time() + 60
     while True:
         # the Sync server buffers its metrics until a datagram is full: more traffic sends them
+        # (a POST too: the one of the fixture can be lost when e2e.sh restarts the admin UI,
+        # and the Sync server with it, while it still buffers)
+        # an empty batch: a post_collection request that stores nothing (later tests count
+        # alice's items)
+        posted_batch = alice.request("POST", "/storage/bookmarks", [])
+        assert posted_batch.status_code == 200, posted_batch.text
         for _ in range(10):
             assert alice.request("GET", "/info/collections").status_code == 200
         page = admin.get("/activity?range=24h")
-        requests_total = int(re.search(r"Sync requests: <strong>(\d+)</strong>", page).group(1))
-        tokens = re.search(r"Sync tokens issued: <strong>[1-9]\d*</strong>", page)
-        if requests_total > 0 and tokens and "Max users set to 1" in page or time.time() > deadline:
+        requests_total = int(re.search(r"Sync requests <strong>(\d+)</strong>", page).group(1))
+        tokens = re.search(r"Sync tokens issued <strong>[1-9]\d*</strong>", page)
+        posted = "<code>syncstorage.request.post_collection</code>" in page
+        if requests_total > 0 and tokens and posted and "Max users set to 1" in page or time.time() > deadline:
             break
         time.sleep(3)
     assert requests_total > 0, page[:3000]
     assert "Last metrics received" in page
-    assert re.search(r"Sync tokens issued: <strong>[1-9]\d*</strong>", page), page[:3000]
+    assert re.search(r"Sync tokens issued <strong>[1-9]\d*</strong>", page), page[:3000]
     assert "<code>syncstorage.request.post_collection</code>" in page
     events = page.split('<table id="events"')[1].split("</table>")[0]
     for event in ("signed in (password)", "failed sign-in (password)", "Max users set to 2 by admin (password)", "Max users set to 1 by admin (password)"):
         assert f"<td>{event}</td>" in events, (event, events[:3000])
     for name in DB_SIZES:
-        assert re.search(r"Database " + re.escape(name) + r": <strong>[\d.]+ [KMG]?B</strong>", page), (name, page[:3000])
+        assert re.search(r"Database " + re.escape(name) + r" <strong>[\d.]+ [KMG]?B</strong>", page), (name, page[:3000])
     for span in ("7d", "30d"):
         assert "Sync requests" in admin.get(f"/activity?range={span}")
 
@@ -338,7 +353,7 @@ def test_activity_page(admin, alice):
 def events_of(page):
     """The rows of the event log of an activity page: (when, kind, detail)"""
     table = page.split('<table id="events"')[1].split("</table>")[0]
-    return re.findall(r"<tr><td>([^<]*)</td><td>([^<]*)</td><td>([^<]*)</td></tr>", table)
+    return re.findall(r"<tr[^>]*><td>([^<]*)</td><td>([^<]*)</td><td>([^<]*)</td></tr>", table)
 
 
 @editable
@@ -375,6 +390,11 @@ def test_local_time_label(admin):
     # ADMIN_TZ=Europe/Rome in tests/docker-compose.test.yml: said once, at the bottom
     for path in ("/", "/activity", "/users/alice"):
         page = admin.get(path)
+        # BACKUP_TIME is set in UTC: the backups say so, with the local time first
+        if path == "/":
+            card = re.search(r'<section class="card" aria-labelledby="backups-title".*?</section>', page, re.S).group(0)
+            assert re.search(r"[Ee]very night at \d\d:\d\d \(<code>BACKUP_TIME=\d\d:\d\d</code>, in UTC\)", card), card[:1000]
+            page = page.replace(card, "")
         assert page.count("Times in Europe/Rome") == 1 and "UTC" not in page.replace("Times in Europe/Rome", ""), (path, page[-500:])
 
 
@@ -384,8 +404,11 @@ def test_no_security_page_without_accounts(admin):
     assert admin.http.get(f"{ADMIN}/security", timeout=30).status_code == 404
     # nor the forms of the self-hosted accounts
     csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', admin.get("/")).group(1)
-    for path in ("/accounts/signups", "/accounts/alice/disable", "/accounts/invite", "/accounts/allowlist/remove"):
+    for path in ("/accounts/signups", "/accounts/alice/disable", "/accounts/invite", "/accounts/allowlist/remove", "/accounts/max-accounts", "/maintenance/prune"):
         assert admin.http.post(f"{ADMIN}{path}", data={"csrf": csrf, "mode": "closed"}, timeout=30).status_code == 404, path
+    # and their confirm pages
+    for path in ("/maintenance/prune", "/accounts/allowlist/remove?entry=x%40example.com"):
+        assert admin.http.get(f"{ADMIN}{path}", timeout=30).status_code == 404, path
 
 
 def test_label_on_a_sync_account(admin):
@@ -598,24 +621,59 @@ def test_backups_on_the_overview(admin):
 def test_near_max_users_line(admin, db):
     before = re.search(r'id="sync-max-users">(\d+)<', admin.get("/")).group(1)
     users = int(re.search(r'id="sync-users">(\d+)<', admin.get("/")).group(1))
+    metrics = lambda: requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
     try:
-        # every place taken: a line, a link to the form, a gauge, an event (and alert) once
+        # every place taken: a line, a link to the form, the health row (counted by the
+        # light), gauges, an event (and alert) once
         page = admin.post("/sync/max-users", max_users=str(users))
-        assert (f"{users} of {users} accounts are taken (90% or more): new accounts are refused once all are.", "#sync") in attention_of(page), attention_of(page)
-        assert 'id="sync">' in page
-        metrics = requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
-        assert "ffs_sync_near_max_users 1\n" in metrics
-        query = sqltext("SELECT COUNT(*) FROM ffs_events WHERE kind = 'attention' AND detail LIKE '%accounts are taken (90% or more)%'")
+        line = f"{users} of {users} accounts are taken (MAX_USERS): new accounts are refused by the Sync server until it is raised."
+        assert (line, "#sync") in attention_of(page), attention_of(page)
+        assert 'id="sync">' in page and 'id="sync-limit-state">full: new accounts are refused<' in page
+        health = page.split('<table id="health"')[1].split("</table>")[0]
+        assert re.search(r'<td>Max users</td><td><span class="pill warn">full</span>', health), health
+        assert re.search(r'id="health-light">.*?<span class="n">\d+</span><span class="word"><span class="part"> parts?</span> to check', page, re.S), page[:2000]
+        assert "ffs_sync_near_max_users 1\n" in metrics() and "ffs_sync_full 1\n" in metrics()
+        query = sqltext("SELECT COUNT(*) FROM ffs_events WHERE kind = 'attention' AND detail LIKE '%accounts are taken (MAX_USERS)%'")
         deadline = time.time() + 30
         while db.execute(query).scalar() == 0 and time.time() < deadline:
             time.sleep(1)
         assert db.execute(query).scalar() >= 1
         page = admin.post("/sync/max-users", max_users=str(users * 10 + 10))
-        assert not [a for a in attention_of(page) if "90%" in a[0]], attention_of(page)
-        metrics = requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
-        assert "ffs_sync_near_max_users 0\n" in metrics
+        assert not [a for a in attention_of(page) if "accounts are taken" in a[0]], attention_of(page)
+        health = page.split('<table id="health"')[1].split("</table>")[0]
+        assert re.search(rf'<td>Max users</td><td><span class="ok">up</span> <span class="hint">{users} of {users * 10 + 10} taken</span>', health), health
+        assert "ffs_sync_near_max_users 0\n" in metrics() and "ffs_sync_full 0\n" in metrics()
     finally:
         admin.post("/sync/max-users", max_users=before)
+
+
+@editable
+def test_unlimited_max_users(admin, db):
+    """No limit (MAX_USERS=initial:unlimited, or "No limit" on the page): the trigger lets everybody in"""
+    before = re.search(r'id="sync-max-users">(\d+)<', admin.get("/")).group(1)
+    bob = f"bob-unlimited@{EMAIL_DOMAIN}"
+    try:
+        page = admin.post("/sync/max-users", max_users=before, unlimited="1")
+        assert "Max users set to unlimited" in page and 'id="sync-max-users">unlimited<' in page, page[:3000]
+        assert "with no limit (<code>MAX_USERS=unlimited</code>)" in page
+        assert re.search(r'<input type="checkbox" name="unlimited" value="1" checked>', page)
+        assert db.execute(sqltext("SELECT config_value FROM config WHERE config_key = 'max_users'")).scalar() == "unlimited"
+        # a new account: let in, not counted against anything
+        res = login("bob-unlimited")
+        assert res.status_code == 200, res.text
+        page = admin.get("/")
+        assert not [a for a in attention_of(page) if "accounts are taken" in a[0]], attention_of(page)
+        assert re.search(r"<td>Max users</td><td><span class=\"ok\">up</span> <span class=\"hint\">\d+ accounts?, no limit</span>", page), page[:3000]
+        metrics = requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
+        assert "ffs_sync_max_users" not in metrics and "ffs_sync_full 0\n" in metrics, metrics[:2000]
+        assert "Max users set to unlimited by admin (password)" in [d for _, _, d in events_of(admin.get("/activity?kind=admin&q=unlimited"))]
+    finally:
+        db.execute(sqltext("DELETE FROM users WHERE email = :e"), {"e": bob})
+        page = admin.post("/sync/max-users", max_users=before)
+        assert f'id="sync-max-users">{before}<' in page
+    # a number again: the trigger counts again
+    if int(re.search(r'id="sync-users">(\d+)<', page).group(1)) >= int(before):
+        assert login("carol-unlimited").status_code != 200
 
 
 def test_sign_out(admin):

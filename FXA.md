@@ -59,6 +59,8 @@ MariaDB 12 names unnamed foreign keys `1`, `2`, ... MySQL and MariaDB 11 name th
 
 Anybody who can reach your accounts pages can create an account, and with it use your sync server (up to `MAX_USERS`). To allow only some emails or domains, or nobody, set `FXA_SIGNUPS` and `FXA_SIGNUP_ALLOWLIST` in `.env` (`prepare_environment.sh` asks for the allowlist), or use the [admin UI](ADMIN.md), which can also disable accounts. The accounts database enforces it, see [ADMIN.md](ADMIN.md#who-can-sign-up-self-hosted-accounts).
 
+`FXA_MAX_ACCOUNTS` caps how many accounts can be created at all, whoever signs up: a number (`0`: nobody new) or `unlimited` (the default, `initial:unlimited`). Like `MAX_USERS`, `N` or `fixed:N` is set on every start, `initial:N` once and then in the admin UI; `prepare_environment.sh` asks for it last. Every row of `fxa.accounts` counts (confirmed or not, disabled too); when full, the sign-up page says the server is full and the database refuses the account itself, see [ADMIN.md](ADMIN.md#max-accounts-self-hosted-accounts).
+
 ## What works and what doesn't
 
 - Works and is tested: sign-up, email confirmation, sign-in, OAuth for Sync, syncing, a second device. Tested with Firefox 157 desktop: two profiles signed up and in through the accounts pages and synced bookmarks between them.

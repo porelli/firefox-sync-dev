@@ -12,12 +12,14 @@ import (
 
 // Needs attention: one list at the top of the overview, built from what the overview
 // loads anyway, each line with a link to where it is fixed. Three thresholds also
-// alert, once per change of their state: accounts at 90% of max users, no metrics from
-// a Sync server that is up, alert emails that fail.
+// alert, once per change of their state: accounts at 90% of max users, Sync data that
+// changed without metrics from the Sync server, alert emails that fail.
 
 const (
-	// no statsd packet for this long while the Sync server answers: it lost the admin UI
-	statsdSilence = 30 * time.Minute
+	// Sync data written this long after the last statsd packet (or the start) while the
+	// Sync server answers: it lost the admin UI. The margin covers the metrics a request
+	// leaves in the Sync server's buffer until the next ones fill a datagram
+	statsdMargin = 10 * time.Minute
 	// the daily prune of the accounts database
 	pruneLate = 48 * time.Hour
 )
@@ -44,21 +46,45 @@ type attentionInput struct {
 	inactiveDevices map[string]int // per account uid
 	staleDays       int
 	alerts          *SendStatus // nil without ADMIN_ALERT_EMAIL
-	lastStatsd      time.Time
-	silenceFrom     time.Time // see Health.silenceFrom
+	// FXA_MAX_ACCOUNTS, nil when not read
+	accountLimit *Limit
 }
 
-// nearMaxUsers: 90% of max users or more are taken (0: no new account at all, not a warning)
+// nearMaxUsers: 90% of max users or more are taken, full too (0: no new account at all,
+// not a warning; unlimited: never)
 func nearMaxUsers(st *SyncStatus) bool {
-	return st != nil && st.MaxUsers > 0 && st.Users*10 >= st.MaxUsers*9
+	return st != nil && st.Limit().State() != limitOK
 }
 
-// statsdSilent: the Sync server answers but its metrics stopped (or never came) for
-// statsdSilence since from: it resolved the admin UI before a new container. It reports its
-// database pool every few seconds, so a quiet night is not silence
-func statsdSilent(syncUp bool, last, from, now time.Time) bool {
-	return syncUp && now.Sub(latest(last, from)) >= statsdSilence
+// statsdSilent: the Sync server answers and the storage database changed more than
+// statsdMargin after its last metrics (or after from, when none came since): it resolved
+// the admin UI before a new container. syncstorage-rs only sends metrics while it serves
+// requests (and buffers them until a datagram fills), so an idle server sends nothing for
+// hours: only data written without metrics is silence. No storage database or no write
+// yet (lastWrite zero): never
+func statsdSilent(syncUp bool, lastWrite, last, from time.Time) bool {
+	return syncUp && !lastWrite.IsZero() && lastWrite.After(latest(last, from).Add(statsdMargin))
 }
+
+// metricsCheck: the row of the health table while the metrics are missing (see statsdSilent)
+const metricsCheck = "Sync metrics"
+
+// metricsRow: the Sync metrics row of the health table, a warning, when they are missing.
+// Fine: no row, like the setup checks (hidden when fine, shown and counted when failing)
+func metricsRow(syncUp bool, lastWrite, last, from time.Time) (Component, bool) {
+	if !statsdSilent(syncUp, lastWrite, last, from) {
+		return Component{}, false
+	}
+	since := "the last ones at " + formatTime(last, adminZone)
+	if !last.After(from) {
+		since = formatTime(from, adminZone) + " (the start of the admin UI or the Sync server)"
+	}
+	return Component{Name: metricsCheck, Warn: true, Checked: time.Now(),
+		Error: fmt.Sprintf("Sync data changed at %s but no metrics arrived since %s", formatTime(lastWrite, adminZone), since)}, true
+}
+
+// restartSync: how to restart the Sync server, for the missing metrics
+const restartSync = "restart it (docker compose restart syncstorage, or systemctl --user restart firefox-sync-syncstorage.service)"
 
 // silenceFrom: since when no metrics count as silence, the start of the admin UI or the
 // Sync server's last coming up (after an outage the old last packet is no measure)
@@ -91,6 +117,8 @@ func needsAttention(in attentionInput) []attention {
 		switch {
 		case c.Name == "Email (SMTP)" && !c.Up:
 			add("#health", "Health", "The SMTP server does not work (%s): no alerts, invitations or notices go out.", c.Error)
+		case c.Name == metricsCheck && c.Warn:
+			add("/activity", "Activity", "%s: %s.", c.Error, restartSync)
 		case c.Name == "Sign-up gate" && c.Warn:
 			add("#health", "Health", "Sign-ups bypass the sign-up gate: refused sign-ups see \"Unexpected error\" instead of why.")
 		case c.Hidden && !c.Up:
@@ -112,8 +140,15 @@ func needsAttention(in attentionInput) []attention {
 			add("#health", "Health", "The certificate of %s expires in %d days (%s): is its renewal running?", host, int(left/(24*time.Hour)), formatTime(in.certs[host], adminZone))
 		}
 	}
-	if nearMaxUsers(in.status) {
-		add("#sync", "Max users", "%d of %d accounts are taken (90%% or more): new accounts are refused once all are.", in.status.Users, in.status.MaxUsers)
+	if in.status != nil {
+		if line := syncLimit.line(in.status.Limit()); line != "" {
+			add(syncLimit.href, syncLimit.link, "%s.", line)
+		}
+	}
+	if in.accountLimit != nil {
+		if line := accountsLimit.line(*in.accountLimit); line != "" {
+			add(accountsLimit.href, accountsLimit.link, "%s.", line)
+		}
 	}
 	for _, b := range in.backups {
 		if p := b.Problem(in.now); p != "" {
@@ -159,10 +194,6 @@ func needsAttention(in attentionInput) []attention {
 	}
 	if alertsFailing(in.alerts) {
 		add("#alert-status", "Alert emails", "The last alert email failed on %s: %s.", formatTime(in.alerts.At, adminZone), in.alerts.Err)
-	}
-	if statsdSilent(componentUp(in.components, "Sync server"), in.lastStatsd, in.silenceFrom, in.now) {
-		add("/activity", "Activity", "No metrics from the Sync server for %d minutes while it is up: restart it (docker compose restart syncstorage, or systemctl --user restart firefox-sync-syncstorage.service).",
-			int(statsdSilence.Minutes()))
 	}
 	return list
 }
@@ -210,23 +241,25 @@ func (h *Health) logOnce(key string, err error) {
 	h.logged[key] = msg
 }
 
-// thresholdEvents: the events of the thresholds whose state changed
-func (h *Health) thresholdEvents(st *SyncStatus, syncUp bool, lastStatsd time.Time, alerts *SendStatus, now time.Time) []string {
+// thresholdEvents: the events of the thresholds whose state changed. The limits (nil:
+// not read, no change) alert at 90% and when full, and when under 90% again
+func (h *Health) thresholdEvents(st *SyncStatus, accounts *Limit, syncUp bool, lastWrite, lastStatsd time.Time, alerts *SendStatus) []string {
 	var events []string
-	if st != nil {
-		on := nearMaxUsers(st)
-		if h.changed("near-max-users", okState(!on)) {
-			if on {
-				events = append(events, fmt.Sprintf("%d of %d accounts are taken (90%% or more): raise max users, or new accounts are refused once all are", st.Users, st.MaxUsers))
-			} else {
-				events = append(events, fmt.Sprintf("%d of %d accounts are taken, under 90%% again", st.Users, st.MaxUsers))
-			}
+	limit := func(k limitKind, l Limit) {
+		if h.changed(k.key, l.State()) {
+			events = append(events, k.event(l))
 		}
 	}
+	if st != nil {
+		limit(syncLimit, st.Limit())
+	}
+	if accounts != nil {
+		limit(accountsLimit, *accounts)
+	}
 	// the Sync server down: its health alerts, the silence keeps its state until it is up
-	if silent := statsdSilent(syncUp, lastStatsd, h.silenceFrom(), now); syncUp && h.changed("statsd-silent", okState(!silent)) {
+	if row, silent := metricsRow(syncUp, lastWrite, lastStatsd, h.silenceFrom()); syncUp && h.changed("statsd-silent", okState(!silent)) {
 		if silent {
-			events = append(events, fmt.Sprintf("No metrics from the Sync server for %d minutes while it is up: restart it", int(statsdSilence.Minutes())))
+			events = append(events, row.Error+": "+restartSync)
 		} else {
 			events = append(events, "Metrics from the Sync server arrive again")
 		}
@@ -251,12 +284,26 @@ func okState(ok bool) string {
 	return "problem"
 }
 
-// watchThresholds: the thresholds of the overview, as events and alerts
-func (h *Health) watchThresholds(ctx context.Context, now time.Time) {
+// watchThresholds: the thresholds of the overview, as events and alerts, and the rows
+// of the limits
+func (h *Health) watchThresholds(ctx context.Context) {
 	st, err := h.app.sync.Status(ctx)
 	if err != nil {
 		st = nil
 	}
+	var syncLimit, accounts *Limit
+	if st != nil {
+		l := st.Limit()
+		syncLimit = &l
+	}
+	if h.app.fxa != nil {
+		if l, err := h.app.fxa.AccountLimit(ctx); err == nil {
+			accounts = &l
+		} else {
+			h.logOnce("max accounts", err)
+		}
+	}
+	h.setLimits(syncLimit, accounts)
 	var alerts *SendStatus
 	if h.app.alerter != nil {
 		s := h.app.alerter.Status()
@@ -266,8 +313,90 @@ func (h *Health) watchThresholds(ctx context.Context, now time.Time) {
 	if h.app.rec != nil {
 		last = h.app.rec.LastReceived()
 	}
-	for _, e := range h.thresholdEvents(st, componentUp(h.Components(), "Sync server"), last, alerts, now) {
+	h.watchLastWrite(ctx)
+	for _, e := range h.thresholdEvents(st, accounts, componentUp(h.Components(), "Sync server"), h.LastWrite(), last, alerts) {
 		h.app.event("attention", e)
+	}
+}
+
+// watchLastWrite reads the latest write of the storage database, for the metrics (on an
+// error the last one read stays)
+func (h *Health) watchLastWrite(ctx context.Context) {
+	if h.app.storage == nil {
+		return
+	}
+	at, err := h.app.storage.LastWrite(ctx)
+	h.logOnce("latest write of the storage database", err)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	h.lastWrite = at
+	h.mu.Unlock()
+}
+
+// LastWrite: the latest write of the storage database at the last round (zero: none, or
+// no storage database)
+func (h *Health) LastWrite() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastWrite
+}
+
+// metrics: the Sync metrics row while they are missing, from the last round of checks
+// and the last packet; the overview, the health light, the activity page and Prometheus
+func (a *App) metrics() (Component, bool) {
+	if a.health == nil || a.rec == nil {
+		return Component{}, false
+	}
+	return metricsRow(componentUp(a.health.Components(), "Sync server"), a.health.LastWrite(), a.rec.LastReceived(), a.health.silenceFrom())
+}
+
+// healthRows: the components of the last round, with the Sync metrics row when they are
+// missing and the rows of the limits of accounts
+func (a *App) healthRows() []Component {
+	components := a.health.Components()
+	if row, silent := a.metrics(); silent {
+		components = append(components, row)
+	}
+	return append(components, a.health.Limits()...)
+}
+
+// setLimits: the rows of the limits, read in a round of checks or by the overview
+func (h *Health) setLimits(sync, accounts *Limit) {
+	rows := limitRows(sync, accounts)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.limits = rows
+}
+
+func (h *Health) Limits() []Component {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]Component(nil), h.limits...)
+}
+
+// readLimits: the limits of accounts now, nil those that cannot be read (or with
+// Mozilla's accounts, the accounts')
+func (a *App) readLimits(ctx context.Context) (sync, accounts *Limit) {
+	if st, err := a.sync.Status(ctx); err == nil {
+		l := st.Limit()
+		sync = &l
+	}
+	if a.fxa != nil {
+		if l, err := a.fxa.AccountLimit(ctx); err == nil {
+			accounts = &l
+		} else {
+			a.health.logOnce("max accounts", err)
+		}
+	}
+	return sync, accounts
+}
+
+// refreshLimits: after a change of a limit, its row at once (the light of every page)
+func (a *App) refreshLimits(ctx context.Context) {
+	if a.health != nil {
+		a.health.setLimits(a.readLimits(ctx))
 	}
 }
 

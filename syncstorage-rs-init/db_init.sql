@@ -33,7 +33,7 @@ WHERE n.node <> '@DOMAIN@';
 
 -- MAX_USERS (validated by db_init.sh): N or fixed:N sets the limit on every start
 -- (the flag below is 1), initial:N only when there is none yet (first start, 0),
--- then it is managed in the admin UI and kept.
+-- then it is managed in the admin UI and kept. N is a number or 'unlimited'.
 INSERT INTO config (config_key, config_value)
 VALUES ('max_users', '@MAX_USERS@')
 ON DUPLICATE KEY UPDATE config_value = IF(@MAX_USERS_FIXED@, '@MAX_USERS@', config_value);
@@ -51,24 +51,29 @@ DELIMITER //
 CREATE PROCEDURE CheckUserLimit(IN new_email VARCHAR(255))
 BEGIN
     DECLARE user_count INT;
+    DECLARE max_users_value VARCHAR(255) DEFAULT NULL;
     DECLARE max_users_setting INT;
 
     IF NOT EXISTS (SELECT 1 FROM users WHERE email = new_email) THEN
         -- Get max_users from config table, locking the row so concurrent
         -- sign-ups are counted one at a time; a missing value denies
-        SELECT CAST(config_value AS UNSIGNED) INTO max_users_setting
+        SELECT config_value INTO max_users_value
         FROM config
         WHERE config_key = 'max_users'
         FOR UPDATE;
-        SET max_users_setting = COALESCE(max_users_setting, 0);
 
-        -- Get current account count
-        SELECT COUNT(DISTINCT email) INTO user_count FROM users;
+        -- 'unlimited' (MAX_USERS=unlimited): no limit, nothing to count
+        IF max_users_value IS NULL OR max_users_value <> 'unlimited' THEN
+            SET max_users_setting = COALESCE(CAST(max_users_value AS UNSIGNED), 0);
 
-        -- Check if limit is exceeded
-        IF user_count >= max_users_setting THEN
-            SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'User limit exceeded';
+            -- Get current account count
+            SELECT COUNT(DISTINCT email) INTO user_count FROM users;
+
+            -- Check if limit is exceeded
+            IF user_count >= max_users_setting THEN
+                SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'User limit exceeded';
+            END IF;
         END IF;
     END IF;
 END //

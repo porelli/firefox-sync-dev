@@ -135,7 +135,7 @@ func TestActivityPagesSplitNoMillisecond(t *testing.T) {
 		app := testApp()
 		app.rec = fakeRecorder(&fakeFxa{events: rows})
 		var errs []string
-		events, older, _, _, _ := app.eventPage(httptest.NewRequest("GET", "/activity", nil), &errs)
+		events, older, _, _, _, _ := app.eventPage(httptest.NewRequest("GET", "/activity", nil), &errs)
 		if len(errs) > 0 {
 			t.Fatal(errs)
 		}

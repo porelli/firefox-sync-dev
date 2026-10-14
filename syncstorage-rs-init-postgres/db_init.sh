@@ -26,7 +26,8 @@ echo "=========================================="
 
 # MAX_USERS: N or fixed:N is applied on every start (the admin UI shows it read-only),
 # initial:N only when there is no limit yet (first start), then it is managed in the
-# admin UI. Anything else stops here: the stack must not start with a broken limit.
+# admin UI. N is a number, or unlimited (no limit; 0: no new account at all). Anything
+# else stops here: the stack must not start with a broken limit.
 parse_max_users() {
   local value=$1 number
   case "${value}" in
@@ -34,6 +35,10 @@ parse_max_users() {
     fixed:*)   MAX_USERS_MODE=fixed;   number=${value#fixed:} ;;
     *)         MAX_USERS_MODE=fixed;   number=${value} ;;
   esac
+  if [ "${number}" = unlimited ]; then
+    MAX_USERS_VALUE=unlimited
+    return 0
+  fi
   case "${number}" in ''|*[!0-9]*) return 1 ;; esac
   # no leading zeros, and it must fit the INT the triggers read it into
   number=${number#"${number%%[!0]*}"}
@@ -43,8 +48,8 @@ parse_max_users() {
 }
 
 if ! parse_max_users "${MAX_USERS:-}"; then
-  echo "✗ ERROR: MAX_USERS='${MAX_USERS:-}' is not valid: use a number from 0 to 2147483647,"
-  echo "  optionally prefixed with fixed: (the default, applied on every start) or"
+  echo "✗ ERROR: MAX_USERS='${MAX_USERS:-}' is not valid: use a number from 0 to 2147483647"
+  echo "  or unlimited, optionally prefixed with fixed: (the default, applied on every start) or"
   echo "  initial: (applied on the first start only, then managed in the admin UI)"
   exit 1
 fi

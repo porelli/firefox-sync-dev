@@ -46,6 +46,10 @@ Environment="ADMIN_PURGE=%ADMIN_PURGE%"
 Environment="ADMIN_DELETE_UNCONFIRMED_DAYS=%ADMIN_DELETE_UNCONFIRMED_DAYS%"
 Environment="ADMIN_SIGNUP_BURST=%ADMIN_SIGNUP_BURST%"
 Environment="ADMIN_TZ=%ADMIN_TZ%"
+# what the backup units do (firefox-sync-backup.timer), for their help on the overview
+Environment="BACKUP_TIME=%BACKUP_TIME%"
+Environment="BACKUP_KEEP=%BACKUP_KEEP%"
+Environment="ADMIN_DEPLOYMENT=quadlets"
 # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
 Environment="ADMIN_OIDC_ISSUER=%ADMIN_OIDC_ISSUER%"
 Environment="ADMIN_OIDC_CLIENT_ID=%ADMIN_OIDC_CLIENT_ID%"
@@ -63,6 +67,8 @@ Environment="ADMIN_ALLOWED_GROUPS=%ADMIN_ALLOWED_GROUPS%"
 Environment="FXA_DB_HOST=%FXA_MYSQL_HOST%"
 Environment="FXA_DB_PORT=%FXA_MYSQL_PORT%"
 Environment="FXA_DB_PASSWORD=%FXA_ADMIN_DB_PASSWORD%"
+# initial:N (or empty): the admin UI manages max accounts, otherwise .env does (read-only)
+Environment="FXA_MAX_ACCOUNTS=%FXA_MAX_ACCOUNTS%"
 Environment="FXA_AUTH_UPSTREAM=http://fxa-auth:9000"
 Environment="FXA_CONTENT_URL=%FXA_CONTENT_URL%"
 # the public checks, the sign-up gate through FXA_AUTH_URL

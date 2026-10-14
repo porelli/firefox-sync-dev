@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -176,5 +177,70 @@ func (a *App) confirmSession(w http.ResponseWriter, r *http.Request, s *session)
 		return
 	}
 	data["Devices"], data["Sessions"] = nil, only
+	a.render(w, "confirm.html", data)
+}
+
+// confirmPrune: what "Prune the accounts database now" removes (the Activity page)
+func (a *App) confirmPrune(w http.ResponseWriter, r *http.Request, s *session) {
+	if a.fxa == nil {
+		http.NotFound(w, r)
+		return
+	}
+	data := a.base(s)
+	data["Name"], data["Back"], data["MaxReason"], data["Post"] = "the accounts database", "/activity#maintenance", maxReason, "/maintenance/prune"
+	data["Crumb"], data["Nav"] = "Activity", "activity"
+	data["Action"] = confirmAction{Title: "Prune", Button: "Prune now", Effects: []string{
+		"Deletes for good what has expired: unblock and sign-in codes older than 30 days, password reset and change tokens and sessions without a device older than 4 weeks (the session of a Firefox has its device and stays), OAuth codes older than 15 minutes.",
+		fmt.Sprintf("Also the security events of the account settings older than %s (ADMIN_RETENTION_DAYS): the account owners no longer see them.", plural(a.retentionDays(), "day")),
+		"The accounts, their devices and their Sync data stay. It runs by itself every day anyway: this only runs it now.",
+	}}
+	a.render(w, "confirm.html", data)
+}
+
+// confirmAllowlistRemove: removing an email or a domain from the sign-up allowlist
+func (a *App) confirmAllowlistRemove(w http.ResponseWriter, r *http.Request, s *session) {
+	if a.fxa == nil {
+		http.NotFound(w, r)
+		return
+	}
+	entry := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("entry")))
+	entries, err := a.fxa.AllowlistEntries(r.Context())
+	if err != nil {
+		http.Error(w, "Allowlist: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	found := false
+	for _, e := range entries {
+		found = found || e.Entry == entry
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	policy, err := a.fxa.Policy(r.Context())
+	if err != nil {
+		http.Error(w, "Sign-up policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	effects := []string{"It goes from the sign-up allowlist: whoever has this email can no longer create an account here. An account already created with it stays, and keeps working."}
+	if strings.HasPrefix(entry, "@") {
+		effects = []string{"The domain goes from the sign-up allowlist: nobody with an email of " + entry[1:] + " can create an account any more, unless their own email is on the list. Accounts already created stay, and keep working."}
+	}
+	if policy.Mode != SignupsAllowlist {
+		effects = append(effects, fmt.Sprintf("Sign-ups are %s now: the list only applies with \"Only people I list\".", map[string]string{SignupsOpen: "open to anybody", SignupsClosed: "closed"}[policy.Mode]))
+	}
+	if strings.HasPrefix(entry, "@") {
+		effects = append(effects, "To undo it, add it again to the list under Sign-ups.")
+	} else {
+		effects = append(effects, "To undo it, invite the email again or add it to the list under Sign-ups: it then counts as invited today.")
+	}
+	data := a.base(s)
+	// back to where it is listed, its fold open (?list=open): the domains under Sign-ups,
+	// the emails under Invitations
+	data["Name"], data["Back"], data["MaxReason"], data["Post"], data["Crumb"] = entry, "/?list=open#invitations", maxReason, "/accounts/allowlist/remove", "Invitations"
+	if strings.HasPrefix(entry, "@") {
+		data["Back"], data["Crumb"] = "/?list=open#signups", "Sign-ups"
+	}
+	data["Action"] = confirmAction{Title: "Remove", Button: "Remove from the list", Hidden: map[string]string{"entry": entry}, Effects: effects}
 	a.render(w, "confirm.html", data)
 }

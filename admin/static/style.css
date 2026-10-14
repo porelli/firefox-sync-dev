@@ -1,83 +1,663 @@
-:root { color-scheme: light dark; --accent: #0060df; --danger: #c50042; --muted: #6b6b75; }
+/* firefox-sync admin. No scripts, no inline styles (CSP): everything is here.
+   Text pairs are WCAG AA (4.5:1) or better in both schemes; input borders, focus
+   rings and the dots of the health light and the event log are 3:1 or better. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f8; --surface: #fff; --surface-2: #f1f1f4; --border: #e4e4e9; --border-strong: #cdcdd5; --input-border: #85858f;
+  --text: #17171c; --muted: #5c5c69;
+  --accent: #4f46e5; --accent-hover: #4338ca; --accent-text: #4338ca; --accent-soft: #eef0ff; --on-accent: #fff;
+  --ok: #12704f; --ok-soft: #e5f5ee; --warn: #8a4b00; --warn-soft: #fcf1dc; --bad: #b4232a; --bad-soft: #fdecec; --bad-solid: #b4232a;
+  --chart: #6366f1; --chart-soft: #6366f126;
+  --shadow: 0 1px 2px #1018280a, 0 2px 10px #1018280d;
+  --radius: 12px; --radius-sm: 8px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e0e11; --surface: #17171b; --surface-2: #202027; --border: #2a2a31; --border-strong: #3c3c46; --input-border: #70707c;
+    --text: #ececf1; --muted: #a1a1ad;
+    --accent: #5850e0; --accent-hover: #6a63f0; --accent-text: #a5a6ff; --accent-soft: #24234a; --on-accent: #fff;
+    --ok: #5fd3a0; --ok-soft: #14271f; --warn: #f2b757; --warn-soft: #2a2112; --bad: #ff8a8f; --bad-soft: #2d1618; --bad-solid: #c42b33;
+    --chart: #8183f4; --chart-soft: #8183f42e;
+    --shadow: 0 1px 2px #0006, 0 0 0 1px #ffffff08;
+  }
+}
+
 * { box-sizing: border-box; }
-body { margin: 0; font: 15px/1.5 system-ui, sans-serif; }
-header { display: flex; justify-content: space-between; align-items: center; padding: .5rem 1.5rem; border-bottom: 1px solid #8884; }
-header h1 { font-size: 1.1rem; margin: 0; }
-main { max-width: 60rem; margin: 0 auto; padding: 1rem 1.5rem 3rem; }
-main.login { max-width: 22rem; margin-top: 10vh; }
-section { margin-top: 2rem; }
-h2 { font-size: 1.2rem; border-bottom: 1px solid #8884; padding-bottom: .25rem; }
-label { display: block; margin: .5rem 0 .25rem; }
-fieldset { border: 0; padding: 0; margin: 0; }
-fieldset label { margin: .25rem 0; }
-legend { font-weight: 600; }
-input, textarea, button { font: inherit; }
-input[type=password], input[type=number], input[type=text], input[type=search], input[type=email], select, textarea { width: 100%; padding: .4rem; border: 1px solid #8888; border-radius: 4px; background: transparent; color: inherit; }
+html { background: var(--bg); }
+body { margin: 0; color: var(--text); background: var(--bg); font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+/* links look like links: the link colour, underlined when pointed at or focused */
+a { color: var(--accent-text); text-decoration: none; text-underline-offset: 2px; }
+a:hover, a:focus-visible { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; border-radius: 4px; }
+code { font-family: var(--mono); font-size: .86em; padding: .1em .35em; border-radius: 5px; background: var(--surface-2); overflow-wrap: anywhere; }
+p, li, dd, .hint { overflow-wrap: anywhere; }
+h1, h2, h3, .h3 { line-height: 1.25; letter-spacing: -.01em; }
+h1 { font-size: 1.6rem; font-weight: 650; margin: 0; overflow-wrap: break-word; }
+h2 { font-size: 1.135rem; font-weight: 600; margin: 0 0 .25rem; }
+h3, .h3 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .5rem; }
+.hint { color: var(--muted); font-size: .875rem; }
+.icon { width: 1.15rem; height: 1.15rem; flex: none; }
+/* for screen readers only: names of columns without a visible title, the usual states of the lists */
+.sr, .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.skip { position: absolute; left: .75rem; top: -4rem; z-index: 10; padding: .6rem 1rem; border-radius: var(--radius-sm); background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.skip:focus { top: .75rem; }
+
+/* ---- the shell: a sidebar on wide screens, a top bar on phones ---- */
+body.app { display: grid; grid-template-columns: 15.5rem minmax(0, 1fr); grid-template-rows: 1fr auto; min-height: 100vh;
+  /* the sidebar's surface and border down the whole page, however long */
+  background: linear-gradient(to right, var(--surface) calc(15.5rem - 1px), var(--border) calc(15.5rem - 1px), var(--border) 15.5rem, var(--bg) 15.5rem); }
+/* the sidebar: its own height and scroll, so its background runs the full height */
+.sidebar { grid-row: 1 / 3; grid-column: 1; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1.25rem;
+  padding: 1.25rem .9rem; border-right: 1px solid var(--border); background: var(--surface); }
+.sidebar > * { flex: none; }
+.brand { display: flex; align-items: center; gap: .65rem; padding: .25rem .5rem; color: var(--text); font-weight: 650; }
+.brand:hover, .brand:focus-visible { text-decoration: none; }
+.brand .logo { width: 2rem; height: 2rem; padding: .35rem; border-radius: 9px; background: var(--accent); color: var(--on-accent); }
+.brand small { display: block; font-size: .75rem; font-weight: 500; color: var(--muted); }
+.sidebar nav ul { display: flex; flex-direction: column; gap: .15rem; margin: 0; padding: 0; list-style: none; }
+/* Connect a device: for the people, not the server; apart, after a line */
+.sidebar nav li.nav-apart { margin-top: .6rem; padding-top: .75rem; border-top: 1px solid var(--border); }
+.sidebar nav a { display: flex; align-items: center; gap: .7rem; min-height: 2.5rem; padding: .5rem .65rem; border-radius: var(--radius-sm); color: var(--muted); font-weight: 500; }
+.sidebar nav a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.sidebar nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.who { margin-top: auto; display: flex; align-items: center; gap: .6rem; padding: .75rem .5rem 0; border-top: 1px solid var(--border); }
+.avatar { display: grid; place-items: center; flex: none; width: 2rem; height: 2rem; border-radius: 50%; background: var(--surface-2); color: var(--text); font-weight: 600; text-transform: uppercase; font-size: .85rem; }
+.who .hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
+.who form { margin: 0; }
+button.signout { display: inline-flex; gap: .4rem; min-height: 2.25rem; margin: 0; padding: 0 .6rem; font-size: .825rem; font-weight: 500; border-radius: var(--radius-sm); background: none; color: var(--muted); }
+button.signout:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+
+/* the health light: green all up, amber to check, red down (and filled, so it reads worse) */
+.light { display: inline-flex; align-items: center; gap: .5rem; align-self: flex-start; margin: 0 .5rem; padding: .25rem .7rem .25rem .55rem; border-radius: 999px;
+  font-size: .8rem; font-weight: 600; white-space: nowrap; }
+.light:hover, .light:focus-visible { text-decoration: underline; }
+.light .dot { width: .6rem; height: .6rem; border-radius: 50%; background: currentColor; flex: none; }
+.light.is-ok { color: var(--ok); background: var(--ok-soft); }
+.light.is-warn { color: var(--warn); background: var(--warn-soft); box-shadow: inset 0 0 0 1px var(--warn); }
+.light.is-bad { color: #fff; background: var(--bad-solid); }
+.light.is-bad .dot { box-shadow: 0 0 0 2px #ffffff80; }
+
+body.app > main { grid-column: 2; max-width: 76rem; width: 100%; margin: 0 auto; padding: 2rem 2.5rem 1rem; }
+body.app > main.narrow { max-width: 50rem; margin: 0; }
+body.app > footer { grid-column: 2; max-width: 76rem; width: 100%; margin: 0 auto; padding: 0 2.5rem 1.5rem; }
+footer .hint { margin: 0; font-size: .8rem; }
+
+/* ---- page heads ---- */
+.crumb { margin: 0 0 .75rem; font-size: .875rem; }
+.crumb a { display: inline-flex; align-items: center; gap: .3rem; min-height: 2rem; color: var(--muted); overflow-wrap: anywhere; }
+.crumb .icon { width: 1rem; height: 1rem; }
+.page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
+.page-head > div:first-child { min-width: 0; flex: 1 1 18rem; }
+.page-head p { margin: .35rem 0 0; }
+.page-head .actions { margin: 0; justify-content: flex-end; }
+.head-actions { max-width: 28rem; }
+.head-actions .hint { margin: .45rem 0 0; text-align: right; font-size: .8rem; text-wrap: balance; }
+.group-title { margin: 2.5rem 0 .75rem; font-size: .8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+/* ---- cards ---- */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.25rem 1.5rem; margin: 0 0 1.25rem; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; margin-bottom: .75rem; }
+.card-head h2 { margin: 0; }
+.card-head .hint { margin: 0; }
+.card > :last-child { margin-bottom: 0; }
+.cards-2 { align-items: start; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 0 1.25rem; }
+.cards-2 > .card { min-width: 0; }
+.danger-zone { border-color: var(--bad); }
+.danger-zone h2 { color: var(--bad); }
+
+/* stat tiles */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 1rem; margin: 0 0 1.25rem; padding: 0; list-style: none; }
+.stats li { display: flex; min-width: 0; }
+.stat { flex: 1; min-width: 0; display: block; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1rem 1.15rem; color: var(--text); }
+a.stat:hover, a.stat:focus-visible { text-decoration: none; border-color: var(--input-border); }
+.stat .label { display: flex; align-items: center; gap: .45rem; color: var(--muted); font-size: .8rem; font-weight: 600; }
+.stat .label .icon { width: 1rem; height: 1rem; }
+.stat .value { display: block; margin-top: .35rem; font-size: 1.5rem; font-weight: 650; letter-spacing: -.02em; line-height: 1.25; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat .value strong { font-weight: inherit; }
+.stat .value small { display: block; font-size: .85rem; font-weight: 500; color: var(--muted); letter-spacing: 0; line-height: 1.35; }
+.stat .sub { display: block; margin-top: .25rem; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
+.stat.is-bad { border-color: var(--bad); box-shadow: var(--shadow), inset 3px 0 0 var(--bad); }
+.stat.is-bad .value, .stat.is-bad .sub { color: var(--bad); }
+.stat.is-warn { border-color: var(--warn); box-shadow: var(--shadow), inset 3px 0 0 var(--warn); }
+.stat.is-warn .value, .stat.is-warn .sub { color: var(--warn); }
+meter { display: block; width: 100%; height: .5rem; margin-top: .55rem; border: 0; border-radius: 999px; background: var(--surface-2); -webkit-appearance: none; appearance: none; }
+meter::-moz-meter-bar { background: var(--accent); border-radius: 999px; }
+meter::-webkit-meter-bar { background: var(--surface-2); border: 0; border-radius: 999px; height: .5rem; }
+meter::-webkit-meter-optimum-value { background: var(--accent); border-radius: 999px; }
+
+/* ---- pills and badges ---- */
+.ok, .disabled, .update, .badge, .pill { display: inline-flex; align-items: center; gap: .3rem; padding: .05rem .55rem; border-radius: 999px;
+  font-size: .78rem; font-weight: 550; line-height: 1.5; white-space: nowrap; vertical-align: .05em; }
+.ok { color: var(--ok); background: var(--ok-soft); }
+.disabled { color: var(--bad); background: var(--bad-soft); }
+.update, .pill.warn, .t-warn .badge { color: var(--warn); background: var(--warn-soft); }
+/* a badge's colour comes from its wrapper (t-ok, t-warn, t-bad): the badge itself stays plain */
+.badge { color: var(--muted); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+.t-ok .badge, #account-security tr:first-child .badge, .pill.ok { color: var(--ok); background: var(--ok-soft); box-shadow: none; }
+.t-warn .badge { box-shadow: none; }
+.t-bad .badge, .pill.bad { color: var(--bad); background: var(--bad-soft); box-shadow: none; }
+.pill { color: var(--muted); background: var(--surface-2); }
+.pill::before, .ok::before, .disabled::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pills { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 0; }
+.note { display: block; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+
+/* ---- forms and buttons ---- */
+label { display: block; margin: .75rem 0 .3rem; font-size: .875rem; font-weight: 550; }
+label .hint { font-weight: 400; }
+fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+legend { padding: 0; font-size: .875rem; font-weight: 550; margin-bottom: .4rem; }
+input, textarea, button, select { font: inherit; }
+/* drawn here, not the browser's: its 1px light grey ring is under 3:1 once a phone scales it;
+   this one has the inputs' border (3:1 or better) and the accent when checked */
+input[type=radio], input[type=checkbox] { -webkit-appearance: none; appearance: none; display: inline-block; width: 1.1rem; height: 1.1rem; margin: 0; flex: none;
+  border: 2px solid var(--input-border); border-radius: 5px; background: var(--surface); cursor: pointer; vertical-align: -.2em; }
+input[type=radio] { border-radius: 50%; }
+input[type=radio]:checked { border-color: var(--accent-text); background: radial-gradient(circle, var(--accent-text) 0 38%, var(--surface) 44%); }
+input[type=checkbox]:checked { border-color: var(--accent); background: var(--accent) url(check.svg) center / 100% no-repeat; }
+input[type=radio]:hover:not(:checked), input[type=checkbox]:hover:not(:checked) { border-color: var(--text); }
+input[type=radio]:focus-visible, input[type=checkbox]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; border-radius: 5px; }
+input[type=radio]:focus-visible { border-radius: 50%; }
+/* high contrast: the system's own controls, the backgrounds above would be dropped */
+@media (forced-colors: active) { input[type=radio], input[type=checkbox] { -webkit-appearance: auto; appearance: auto; } }
+input[type=password], input[type=number], input[type=text], input[type=search], input[type=email], select, textarea {
+  width: 100%; min-height: 2.5rem; padding: .45rem .7rem; border: 1px solid var(--input-border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); }
+input:hover, textarea:hover, select:hover { border-color: var(--text); }
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 0; border-color: transparent; }
+input:disabled, button:disabled { opacity: .6; cursor: not-allowed; }
+::placeholder { color: var(--muted); opacity: 1; }
 input[type=number] { width: 8rem; }
-textarea { font-family: ui-monospace, monospace; }
-button { margin-top: .5rem; padding: .35rem .9rem; border: 0; border-radius: 4px; background: var(--accent); color: #fff; cursor: pointer; }
-button.danger { background: var(--danger); }
-button.link { background: none; color: inherit; text-decoration: underline; margin: 0; padding: 0; }
-form.inline { display: flex; gap: .5rem; align-items: center; }
+textarea { font-family: var(--mono); font-size: .875rem; resize: vertical; }
+label.check { display: flex; align-items: flex-start; gap: .6rem; font-weight: 400; margin: .9rem 0; }
+label.check input { margin-top: .2rem; }
+/* the four kinds: primary (filled), secondary (outline), danger-outline (leads to a confirm
+   page), danger (solid red: only the button of a confirm page) */
+button, a.button { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.5rem; margin-top: .75rem; padding: .45rem 1rem;
+  border: 1px solid transparent; border-radius: var(--radius-sm); background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: .9rem;
+  cursor: pointer; text-decoration: none; white-space: nowrap; }
+button:hover:not(:disabled), a.button:hover { background: var(--accent-hover); text-decoration: none; }
+button.secondary, a.button.secondary { background: var(--surface); color: var(--text); border-color: var(--input-border); }
+button.secondary:hover:not(:disabled), a.button.secondary:hover { background: var(--surface-2); }
+button.danger, a.button.danger { background: var(--bad-solid); color: #fff; }
+button.danger:hover:not(:disabled), a.button.danger:hover { background: var(--bad-solid); filter: brightness(1.1); }
+a.button.danger-outline { background: var(--surface); color: var(--bad); border-color: var(--bad); }
+a.button.danger-outline:hover { background: var(--bad-soft); }
+button.small, a.button.small, td button, td a.button { min-height: 2.25rem; margin: 0; padding: .2rem .8rem; font-size: .85rem; }
+/* danger links (Disable…, Sign out…): the danger text colour, underlined when pointed at */
+a.danger { color: var(--bad); font-weight: 550; }
+/* repeated on every row (Reset…): quiet grey, still a link */
+a.quiet-link { color: var(--muted); font-weight: 550; text-decoration: underline; text-decoration-color: var(--border-strong); }
+a.quiet-link:hover, a.quiet-link:focus-visible { color: var(--bad); text-decoration-color: currentColor; }
+a.quiet { color: var(--text); text-decoration: underline; text-decoration-color: var(--border-strong); }
+a.quiet:hover, a.quiet:focus-visible { color: var(--accent-text); text-decoration-color: currentColor; }
+form.inline { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; }
 form.inline label, form.inline button { margin: 0; }
-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #8883; vertical-align: middle; }
-td form button { margin: 0; }
-.hint { color: var(--muted); font-size: .9rem; }
-.message { padding: .5rem .75rem; border-left: 4px solid #2ac3a2; background: #2ac3a222; }
-.failed { padding: .5rem .75rem; border-left: 4px solid var(--danger); background: #c5004222; }
-.disabled { color: var(--danger); font-weight: 600; }
-header nav { flex: 1; margin-left: 2rem; }
-header nav a { margin-right: 1rem; }
-h3 { font-size: 1rem; margin-top: 1.5rem; }
-figure { margin: 1rem 0; }
-figcaption { margin-bottom: .25rem; }
-svg.chart { width: 100%; height: 80px; background: #8881; border-radius: 4px; }
-svg.chart rect { fill: var(--accent); }
-.ranges a { margin-right: .5rem; }
-.ranges a.current { font-weight: 700; text-decoration: none; }
-details { margin-top: 1rem; }
-.axis { display: flex; justify-content: space-between; color: var(--muted); font-size: .8rem; }
-.ok { color: #2ac3a2; font-weight: 600; }
-.update, .badge { font-size: .8rem; padding: .05rem .4rem; border-radius: 3px; background: #8883; }
-.update { background: #ffe90055; }
-a.button { display: inline-block; padding: .35rem .9rem; border-radius: 4px; background: var(--accent); color: #fff; text-decoration: none; }
-header .hint { margin-right: 1rem; }
-a.button.danger, a.danger { color: var(--danger); }
-a.button.danger { background: var(--danger); color: #fff; }
-.actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .75rem 0; }
-.actions form, .actions button { margin: 0; }
+.stack { margin: 1rem 0 0; }
+.stack .hint { margin: .4rem 0 0; }
+/* the limits of accounts: the number, "No limit", Save */
+form.limit-form label.check { margin: 0; align-items: center; }
+form.limit-form label.check input { margin-top: 0; }
+form.limit-form input[type=number] { width: 9rem; }
+/* what the backups are, a term and its text on a line */
+dl.backup-facts { margin: .5rem 0 0; font-size: .875rem; }
+dl.backup-facts > div { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 1rem; padding: .35rem 0; }
+dl.backup-facts dt { font-weight: 600; }
+dl.backup-facts dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+#backup-help .h3 { margin: 1.1rem 0 .3rem; font-size: .925rem; }
+#backup-help .hint { margin: 0; }
+.field-row { display: flex; gap: .5rem; align-items: center; }
+.field-row input { flex: 1; min-width: 0; }
+.field-row button { margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: 1rem 0 0; }
+.actions form, .actions button, .actions .button { margin: 0; }
 form.filter { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; }
 form.filter label { margin-top: 0; }
-form.filter input[type=search] { width: 16rem; }
-form.filter select { width: auto; }
-.pages a { margin-right: 1rem; }
-footer { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem 2rem; }
-/* wide tables scroll inside their box, not the page */
-.scroll { overflow-x: auto; position: relative; }
-/* for screen readers only: names of columns without a visible title */
-.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-p, li, .hint { overflow-wrap: anywhere; }
+form.filter > div { min-width: 0; }
+form.filter select { width: auto; min-width: 10rem; }
+form.filter button { margin: 0; }
+.search { flex: 1 1 16rem; max-width: 30rem; }
+.search input[type=search] { width: 100%; }
 
-/* phones */
-@media (max-width: 40rem) {
-  header { flex-wrap: wrap; gap: .25rem 1rem; padding: .5rem 1rem; }
-  header nav { order: 3; flex-basis: 100%; margin-left: 0; }
-  main, footer { padding-left: 1rem; padding-right: 1rem; }
-  button, a.button, header nav a, .ranges a, .pages a, td a, .actions a, select,
-  input[type=text], input[type=search], input[type=number], input[type=password], input[type=email] { min-height: 44px; }
-  button, a.button, header nav a, .ranges a, .pages a, td a, .actions a { display: inline-flex; align-items: center; }
-  button.link { padding: 0 .25rem; }
-  main form, form.filter input[type=search], input[type=number], select { width: 100%; }
-  form.inline, form.filter { flex-wrap: wrap; }
-  form.filter > div { flex: 1 1 100%; }
-  .scroll table { min-width: 34rem; }
-}
-.box { padding: .75rem 1rem; border: 1px solid #8886; border-radius: 4px; margin: 1rem 0; }
-.box.warn { border-left: 4px solid var(--danger); }
+/* who can sign up: large choices, each with what it means */
+fieldset.choices { display: grid; gap: .5rem; }
+label.choice { display: flex; align-items: flex-start; gap: .75rem; margin: 0; padding: .75rem .9rem; border: 1px solid var(--input-border); border-radius: var(--radius-sm); font-weight: 400; cursor: pointer; }
+label.choice input { margin-top: .2rem; }
+label.choice strong { display: block; font-weight: 600; }
+label.choice .hint { display: block; font-size: .825rem; }
+label.choice:hover { background: var(--surface-2); }
+label.choice:has(input:checked) { border-color: var(--accent-text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-text); }
+label.choice:has(input:focus-visible) { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+
+/* ---- messages: tinted boxes with an icon (drawn here, so the text follows the tag) ---- */
+.message, .failed { position: relative; padding: .7rem 1rem .7rem 2.6rem; margin: 0 0 1rem; border-radius: var(--radius-sm); font-size: .925rem; color: var(--text); }
+.message { background: var(--ok-soft); box-shadow: inset 3px 0 0 var(--ok); }
+.failed { background: var(--bad-soft); box-shadow: inset 3px 0 0 var(--bad); }
+.message::before, .failed::before { position: absolute; left: .85rem; top: .8rem; width: 1.1rem; height: 1.1rem; border-radius: 50%; display: grid; place-items: center;
+  font-size: .75rem; font-weight: 700; line-height: 1; color: var(--surface); }
+.message::before { content: "✓"; background: var(--ok); }
+.failed::before { content: "!"; background: var(--bad); }
+.box { padding: 1rem 1.15rem; border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 1rem 0; background: var(--surface-2); }
+.box.warn { background: var(--bad-soft); border-color: transparent; box-shadow: inset 3px 0 0 var(--bad); }
+.box.warn-soft { background: var(--warn-soft); border-color: transparent; box-shadow: inset 3px 0 0 var(--warn); }
+.box-title { display: flex; align-items: center; gap: .5rem; color: var(--bad); }
+.box-title strong { color: var(--text); }
 .box form, .box button { margin: 0; }
 .box p { margin: 0 0 .5rem; }
-.note { color: var(--muted); font-size: .9rem; display: block; }
-ul.attention { padding-left: 1.25rem; }
-ul.attention li { margin: .35rem 0; }
+.box ul { margin: .25rem 0 0; padding-left: 1.25rem; }
+.box > :last-child { margin-bottom: 0; }
+ul.box { padding-left: 2rem; }
+
+/* the banner of the overview: green when all is well, amber, red when something is down */
+.banner { position: relative; padding: 1rem 1.25rem 1rem 3.25rem; margin: 0 0 1.25rem; border-radius: var(--radius); border: 1px solid transparent; }
+.banner::before { position: absolute; left: 1.1rem; top: 1.05rem; width: 1.4rem; height: 1.4rem; border-radius: 50%; display: grid; place-items: center;
+  font-size: .85rem; font-weight: 700; line-height: 1; color: var(--surface); }
+.banner h2 { margin: 0; font-size: 1.05rem; }
+.banner.is-ok { background: var(--ok-soft); border-color: var(--ok); }
+.banner.is-ok::before { content: "✓"; background: var(--ok); }
+.banner.is-warn { background: var(--warn-soft); border-color: var(--warn); }
+.banner.is-warn::before { content: "!"; background: var(--warn); }
+.banner.is-bad { background: var(--bad-soft); border-color: var(--bad); }
+.banner.is-bad::before { content: "!"; background: var(--bad); }
+#all-good { margin: .15rem 0 0; color: var(--text); }
+/* the parts of the health card that are down or to check, above the folded table */
+ul.problems { list-style: none; margin: 0; padding: 0; }
+ul.problems li { padding: .55rem 0; border-top: 1px solid var(--border); }
+ul.problems li:first-child { border-top: 0; padding-top: 0; }
+ul.problems li:last-child { padding-bottom: 0; }
+ul.problems .problem-name { font-weight: 600; margin-right: .25rem; }
+ul.problems .hint { display: block; margin-top: .15rem; }
+ul.attention { list-style: none; margin: .5rem 0 0; padding: 0; }
+ul.attention li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .25rem 1.25rem; padding: .55rem 0;
+  border-top: 1px solid var(--border-strong); font-size: .925rem; }
+ul.attention li a { flex: none; margin-left: auto; font-weight: 600; }
+ul.attention li a::after { content: " →"; }
+
+/* ---- tables ---- */
+/* a table keeps to its box; on phones the lists become cards (below), not a sideways scroll */
+.scroll { overflow-x: auto; position: relative; margin: .5rem 0 0; }
+table { width: 100%; border-collapse: collapse; font-size: .9375rem; }
+th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+th:first-child, td:first-child { padding-left: 0; }
+th:last-child, td:last-child { padding-right: 0; }
+thead th { padding-top: .35rem; padding-bottom: .5rem; font-size: .75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+tbody tr:last-child > * { border-bottom: 0; }
+tbody th { font-weight: 500; color: var(--muted); width: 15rem; }
+td form { margin: 0; }
+td form button { margin: 0; }
+tr.current td { background: var(--accent-soft); }
+/* (the important: the column rules by id would win otherwise) */
+td.empty { padding: 1rem 0 !important; color: var(--muted) !important; font-weight: 400 !important; text-align: left !important; }
+table:has(td.empty) thead { display: none; }
+/* short values stay on one line */
+#storage-totals td:nth-child(n+2):nth-child(-n+3), #top-accounts td:nth-child(n+2), #collections td:nth-child(n+2):nth-child(-n+4),
+#devices td:nth-child(n+3):nth-child(-n+4), #events td:first-child, #health td:first-child, #jobs td:nth-child(2), #nodes td:nth-child(n+2),
+#emails td:nth-child(n+2), #account-security td:last-child, #health td:nth-child(3) { white-space: nowrap; }
+/* who is on the list: the email, its status under it, Remove on the right */
+#allowlist thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#allowlist tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: .75rem; padding: .65rem 0; }
+#allowlist tr + tr { box-shadow: inset 0 1px 0 var(--border); }
+#allowlist td { padding: 0; border: 0; }
+#allowlist td:first-child { font-weight: 550; overflow-wrap: break-word; }
+#allowlist td:nth-child(2) { grid-column: 1; color: var(--muted); font-size: .875rem; }
+#allowlist td:last-child { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+#allowlist td:only-child { grid-column: 1 / -1; grid-row: auto; }
+.num, #storage-totals td:nth-child(n+2):nth-child(-n+3), #collections td:nth-child(n+2):nth-child(-n+3), #top-accounts td:nth-child(n+2), #nodes td:nth-child(n+3) { font-variant-numeric: tabular-nums; }
+#allowlist td:last-child, #allowlist-domains td:last-child, #collections td:last-child, #devices td:last-child, #sessions td:last-child, #blocks td:last-child,
+#account-security td:last-child, #accounts td:last-child, #accounts th:last-child { text-align: right; }
+#health td:nth-child(2) .hint { display: block; font-size: .8rem; }
+
+/* the accounts: a real table, the email first; the usual values quiet, only problems as badges */
+#accounts td { overflow-wrap: break-word; }
+#accounts td:first-child a { font-weight: 600; overflow-wrap: break-word; }
+#accounts td:nth-child(n+2):nth-child(-n+3) { color: var(--muted); font-size: .875rem; }
+#accounts .created { display: block; color: var(--muted); font-size: .8rem; white-space: nowrap; }
+/* the email gets the room, the facts (and Status, empty on most rows) keep to what they need */
+#accounts th:nth-child(1) { width: 48%; }
+#accounts th:nth-child(2) { width: 16%; }
+#accounts th:nth-child(4) { width: 15%; }
+#accounts td.status .badge, #accounts td.status .disabled { margin: .1rem 0; }
+.quiet-text { color: var(--muted); font-size: .825rem; }
+#accounts td.security .badge { margin: .1rem .15rem .1rem 0; }
+/* "no recovery key" in a list is quiet grey text, not a pill: it is on most rows. On the
+   account page, where it is the subject, it is an amber pill (t-warn) */
+td.security > .badge { padding: 0; background: none; box-shadow: none; color: var(--muted); font-weight: 400; font-size: .825rem; }
+#accounts td:last-child a.danger, #devices td:last-child a.danger, #sessions td:last-child a.danger { display: inline-flex; align-items: center; min-height: 2.25rem; }
+
+/* the event log: a dot of the kind's colour, the admins' own sign-ins muted */
+#events td:first-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+#events td:nth-child(2) { white-space: nowrap; font-weight: 550; }
+#events td:nth-child(2)::before { content: ""; display: inline-block; width: .55rem; height: .55rem; margin-right: .5rem; border-radius: 50%; background: var(--muted); vertical-align: .05em; }
+#events tr[data-kind="admin"] td:nth-child(2)::before { background: var(--accent-text); }
+#events tr[data-kind="sign-up"] td:nth-child(2)::before, #events tr[data-kind="new device"] td:nth-child(2)::before, #events tr[data-kind="update"] td:nth-child(2)::before { background: var(--ok); }
+#events tr[data-kind="sign-in"] td:nth-child(2)::before, #events tr[data-kind="attention"] td:nth-child(2)::before, #events tr[data-kind="sign-up burst"] td:nth-child(2)::before { background: var(--warn); }
+#events tr[data-kind="blocked"] td:nth-child(2)::before, #events tr[data-kind="health"] td:nth-child(2)::before, #events tr[data-kind="sign-up refused"] td:nth-child(2)::before { background: var(--bad); }
+#events tr.routine td { color: var(--muted); }
+.charts + details { margin-top: 1.25rem; }
+#events tr.routine td:nth-child(2) { font-weight: 400; }
+#events tr.routine td:nth-child(2)::before { background: none; box-shadow: inset 0 0 0 1.5px var(--muted); }
+
+/* pages of a list */
+.pages { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 1rem 0 0; }
+.pages a { display: inline-flex; align-items: center; min-height: 2.25rem; padding: 0 .9rem; border: 1px solid var(--input-border); border-radius: var(--radius-sm); color: var(--text); font-size: .875rem; font-weight: 600; }
+.pages a:hover { background: var(--surface-2); text-decoration: none; }
+.pages a[rel="next"] { margin-left: auto; }
+#accounts-shown, #accounts-total { font-variant-numeric: tabular-nums; }
+#accounts { scroll-margin-top: 1rem; }
+
+/* filters as chips, ranges as a segmented control */
+.chips, .ranges { display: flex; flex-wrap: wrap; gap: .4rem; margin: .9rem 0 0; padding: 0; }
+.chips a { display: inline-flex; align-items: center; min-height: 2.25rem; padding: 0 .9rem; border-radius: 999px; border: 1px solid var(--input-border); color: var(--text); font-size: .85rem; font-weight: 550; white-space: nowrap; }
+.chips a:hover { text-decoration: none; background: var(--surface-2); }
+.chips a[aria-current] { background: var(--accent-soft); border-color: var(--accent-text); color: var(--accent-text); }
+.ranges { display: inline-flex; gap: 0; padding: .2rem; margin: 0; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+.ranges a { display: inline-flex; align-items: center; justify-content: center; min-height: 2.25rem; padding: 0 1rem; border-radius: 7px; color: var(--muted); font-size: .875rem; font-weight: 600; white-space: nowrap; }
+.ranges a:hover { color: var(--text); text-decoration: none; }
+.ranges a.current { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px #0000001f, 0 0 0 1px var(--input-border); }
+
+/* details: the folded parts */
+details { margin-top: 1rem; }
+details > summary { display: flex; align-items: center; gap: .45rem; min-height: 2.25rem; cursor: pointer; color: var(--accent-text); font-size: .9rem; font-weight: 600; list-style: none; border-radius: 4px; }
+details > summary .hint { font-weight: 400; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: ""; flex: none; width: .45rem; height: .45rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform .15s; margin-right: .2rem; }
+details[open] > summary::before { transform: rotate(45deg); }
+details > summary:hover { text-decoration: underline; text-underline-offset: 2px; }
+details.fold { border-top: 1px solid var(--border); margin: 1rem 0 0; padding-top: .6rem; }
+details.tech { margin: 0; }
+details.tech > summary { font-size: 1rem; color: var(--text); }
+details.card > summary { color: var(--text); }
+
+/* labelled facts of an account */
+dl.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: 1rem 1.5rem; margin: 0; }
+dl.facts div { min-width: 0; }
+dl.facts .wide-fact { grid-column: span 2; }
+dl.facts dt { font-size: .75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+dl.facts dd { margin: .2rem 0 0; font-weight: 550; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+dl.facts dd .pill { vertical-align: .1em; }
+dl.facts.compact { display: flex; flex-wrap: wrap; gap: .75rem 2.5rem; margin: 1rem 0 0; padding: 1rem 1.15rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+#note { margin-top: 1.25rem; padding-top: .25rem; border-top: 1px solid var(--border); }
+#note-hint { margin: .4rem 0 0; }
+#confirm { margin: 1.5rem 0 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.25rem 1.5rem; }
+#confirm .actions { margin-top: 1.25rem; }
+
+/* connect a device: the addresses to type, then a card per platform */
+dl.addresses { display: grid; gap: .6rem; margin: 1rem 0; }
+dl.addresses div { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: .25rem 1rem; align-items: baseline; }
+dl.addresses dt { font-size: .875rem; color: var(--muted); font-weight: 550; }
+dl.addresses dd { margin: 0; }
+dl.addresses code { display: inline-block; padding: .35rem .6rem; font-size: .9rem; border: 1px solid var(--border); user-select: all; }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); gap: 0 1.25rem; align-items: start; }
+.steps .card { min-width: 0; }
+.steps h2 { display: flex; align-items: center; gap: .55rem; }
+.steps h2 .icon { color: var(--accent-text); }
+.steps ol { margin: .5rem 0 0; padding-left: 1.25rem; }
+.steps li { margin: .35rem 0; }
+
+/* ---- charts ---- */
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(19rem, 100%), 1fr)); gap: 1.25rem; }
+figure { margin: 0; min-width: 0; }
+.charts figure { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1rem 1.15rem .85rem; }
+figcaption { color: var(--muted); font-size: .875rem; font-weight: 500; margin-bottom: .6rem; }
+figcaption strong { display: block; margin-top: .15rem; color: var(--text); font-size: 1.45rem; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+figcaption .hint { font-size: .8rem; }
+/* the value of the top gridline, just above it on the left */
+.plot { position: relative; padding-top: .9rem; }
+.ymax { position: absolute; left: 0; top: .9rem; color: var(--muted); font-size: .75rem; line-height: 1; font-variant-numeric: tabular-nums; transform: translateY(-120%); }
+.plot.line .ymax { top: calc(.9rem + 96px * .2); }
+svg.chart { display: block; width: 100%; height: 96px; overflow: visible; }
+svg.chart rect { fill: var(--chart); }
+svg.chart .grid { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+svg.chart .base { stroke: var(--input-border); stroke-width: 1; }
+svg.chart .area { fill: var(--chart-soft); }
+svg.chart .stroke { fill: none; stroke: var(--chart); stroke-width: 2; stroke-linejoin: round; }
+.axis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin-top: .4rem; color: var(--muted); font-size: .75rem; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.axis span:nth-child(2) { text-align: center; }
+.axis span:last-child { text-align: right; }
+
+/* ---- sign-in and the pages without the nav ---- */
+body.plain { display: grid; place-items: center; min-height: 100vh; margin: 0; padding: 1.5rem 1rem; }
+main.login { width: 100%; max-width: 24rem; }
+.login-card { padding: 2rem; }
+.login-brand { text-align: center; margin-bottom: 1.5rem; }
+.login-brand .logo { width: 3rem; height: 3rem; padding: .7rem; border-radius: 14px; background: var(--accent); color: var(--on-accent); }
+.login-brand h1 { margin-top: .9rem; font-size: 1.35rem; }
+.login-brand p { margin: .25rem 0 0; }
+main.login .button, main.login button { width: 100%; }
+main.login p { margin: 0 0 1rem; }
+main.login label { margin-top: 0; }
+main.login form .hint { margin: .4rem 0 0; font-size: .8rem; }
+.or { display: flex; align-items: center; gap: .75rem; color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--border-strong); }
+.error-card .code { margin: 0 0 .25rem; color: var(--muted); font-size: .8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.error-card h1 { margin-bottom: .5rem; }
+main.login .error-card .actions { margin: 0; }
+
+/* ---- below 70rem: the accounts list as cards, its columns would be cramped: the email,
+   then its facts on a line, the badges, and Disable on the right ---- */
+@media (max-width: 70rem) {
+  #accounts thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  #accounts, #accounts tbody { display: block; }
+  #accounts tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .9rem; padding: .7rem 0; border: 0; }
+  /* a shadow, not a border: a 1px border of a flex row can vanish at fractional positions */
+  #accounts tr + tr { box-shadow: inset 0 1px 0 var(--border); }
+  #accounts td { display: block; padding: 0; border: 0; text-align: left; white-space: normal; width: auto; min-width: 0; font-size: .85rem; }
+  #accounts td:empty { display: none; }
+  /* the email leaves just the room of the action on its line: the facts wrap under */
+  #accounts td:first-child { order: -2; flex: 1 1 calc(100% - 7rem); font-size: .95rem; }
+  #accounts td:nth-child(2)::before { content: "Last sync "; }
+  #accounts td:nth-child(2):has(> .nosync:first-child)::before { content: ""; }
+  #accounts td:nth-child(3)::before { content: "Stored "; }
+  #accounts td.security { min-width: 0; }
+  #accounts td:last-child { order: -1; flex: none; margin-left: auto; text-align: right; }
+  #accounts td:only-child { flex: 1 1 100%; }
+}
+
+/* ---- phones ---- */
+@media (max-width: 52rem) {
+  body.app { display: block; background: var(--bg); }
+  /* the sticky top bar (about 107 px) must not cover link targets or focused controls */
+  html { scroll-padding-top: 7.5rem; }
+  #accounts { scroll-margin-top: 0; }
+  .skip:focus { top: .5rem; }
+  /* the top bar: brand, health light and sign out, then 4 tabs */
+  .sidebar { position: sticky; z-index: 2; height: auto; overflow: visible; flex-direction: row; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; padding: .4rem .75rem 0; border-right: 0; border-bottom: 1px solid var(--border); }
+  .brand { padding: .25rem; min-width: 0; flex: 0 1 auto; }
+  .brand .logo { width: 1.75rem; height: 1.75rem; padding: .3rem; }
+  .brand small { display: inline; margin-left: .25rem; }
+  .light { order: 2; align-self: center; margin: 0 0 0 auto; padding: 0 .75rem; }
+  .who { order: 3; margin: 0; padding: 0; border: 0; }
+  .who .avatar, .who .hint { display: none; }
+  button.signout { width: 44px; min-height: 44px; padding: 0; }
+  button.signout .label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  /* the full width of the bar, past its padding */
+  .sidebar nav { order: 4; flex-basis: calc(100% + 1.5rem); margin: 0 -.75rem; padding: 0 .25rem; }
+  .sidebar nav ul { flex-direction: row; gap: 0; }
+  .sidebar nav li { flex: 1 1 0; min-width: 0; display: flex; }
+  /* apart: a line before the last tab, as tall as the labels */
+  .sidebar nav li.nav-apart { margin: .55rem 0 .55rem .25rem; padding: 0 0 0 .25rem; border-top: 0; border-left: 1px solid var(--border-strong); }
+  .sidebar nav li.nav-apart a { margin: -.55rem 0; }
+  .sidebar nav a { flex: 1 1 0; min-width: 0; flex-direction: column; gap: .15rem; min-height: 3.25rem; justify-content: center; padding: .35rem .15rem; border-radius: 0; font-size: .75rem; text-align: center;  }
+  .sidebar nav a:hover { background: none; }
+  /* the bar of the current tab as a background: an inset shadow left a 1px seam on its side */
+  .sidebar nav a[aria-current="page"] { background: linear-gradient(var(--accent-text), var(--accent-text)) bottom / 100% 3px no-repeat; }
+  .wide { display: none; }
+  .page-head > div:first-child { flex: none; }
+  #confirm { padding: 1rem; }
+  body.app > main { padding: 1.25rem 1rem .5rem; }
+  body.app > footer { padding: 0 1rem 1.25rem; }
+  .card { padding: 1rem; border-radius: 10px; margin-bottom: 1rem; }
+  /* tighter paragraphs and group titles: the overview is long on a phone */
+  .card p { margin: .6rem 0; }
+  .card > p:first-child, .card-head + p { margin-top: 0; }
+  .group-title { margin: 1.75rem 0 .6rem; }
+  .page-head { margin-bottom: 1rem; }
+  .stats { margin-bottom: 1rem; }
+  .banner { padding: .85rem 1rem .85rem 2.85rem; }
+  .banner::before { left: .85rem; top: .9rem; }
+  ul.attention li { display: block; }
+  /* the list takes the width under the icon too */
+  ul.attention { margin-left: -1.85rem; }
+  ul.attention li a { margin-left: .4rem; white-space: nowrap; }
+  h1 { font-size: 1.4rem; }
+  .stats { grid-template-columns: 1fr 1fr; gap: .75rem; }
+  .stats li:last-child:nth-child(odd) { grid-column: span 2; }
+  .stat { padding: .65rem .85rem; }
+  .stat .value { font-size: 1.25rem; }
+  .stat .value small { font-size: .8rem; }
+  dl.facts { grid-template-columns: 1fr 1fr; gap: .75rem 1rem; }
+  dl.addresses div { grid-template-columns: minmax(0, 1fr); }
+  .chips { flex-wrap: nowrap; overflow-x: auto; margin-left: -1rem; margin-right: -1rem; padding: 0 1rem 2px; scrollbar-width: none; }
+  .chips a { flex: none; }
+  .search { max-width: none; }
+  .page-head { align-items: stretch; flex-direction: column; }
+  .head-actions { max-width: none; }
+  .head-actions .hint { text-align: left; }
+  .page-head .actions { justify-content: flex-start; }
+  /* touch targets: 44 px */
+  button, a.button, .pages a, .chips a, .ranges a, select, td a.danger, td a.quiet-link, td button, details > summary, .crumb a, .light,
+  input[type=text], input[type=search], input[type=number], input[type=password], input[type=email] { min-height: 44px; }
+  button.small, a.button.small, td button, td a.button { min-height: 44px; }
+  td a.danger, td a.quiet-link { display: inline-flex; align-items: center; }
+  main form, form.filter input[type=search], input[type=number], select, form.filter select { width: 100%; }
+  /* a long label wraps inside its card */
+  main button, main a.button { max-width: 100%; white-space: normal; text-align: center; }
+  form.inline, form.filter { flex-wrap: wrap; }
+  form.inline { column-gap: .5rem; }
+  form.filter > div, .search { flex: 1 1 100%; }
+  form.filter button { width: 100%; }
+  .charts { grid-template-columns: minmax(0, 1fr); }
+  .ranges { display: flex; width: 100%; }
+  .ranges a { flex: 1; padding: 0 .4rem; }
+  .steps { grid-template-columns: minmax(0, 1fr); }
+
+  /* every table becomes a list of cards: one per row, the column names from the CSS
+     (the header row is hidden), no sideways scroll */
+  .scroll { overflow: visible; }
+  .scroll thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .scroll table, .scroll tbody { display: block; }
+  .scroll tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .75rem; padding: .75rem 0; border: 0; }
+  /* the divider as a shadow: a 1px border of a grid row can vanish at fractional positions */
+  .scroll tr + tr { box-shadow: inset 0 1px 0 var(--border); }
+  .scroll td, .scroll tbody th { display: block; grid-column: 1; padding: 0; border: 0; text-align: left; white-space: normal; overflow-wrap: break-word; font-size: .9rem; width: auto; }
+  .scroll td:empty { display: none; }
+  .scroll td:first-child { font-weight: 600; color: var(--text); }
+  .scroll td:only-child { grid-column: 1 / -1; font-weight: 400; color: var(--muted); }
+  /* an empty list: its own padding only, no gap of a row on top */
+  .scroll tr:has(> td.empty) { padding: 0; }
+  tr.current td { background: none; }
+  tr.current { box-shadow: inset 3px 0 0 var(--accent-text); padding-left: .75rem; }
+  .scroll tr + tr.current { box-shadow: inset 0 1px 0 var(--border), inset 3px 0 0 var(--accent-text); }
+  /* an action: on the right of its card */
+  /* (not the empty-state cell: it is the last child too) */
+  #devices td:last-child:not(:only-child), #sessions td:last-child:not(:only-child), #collections td:last-child:not(:only-child), #allowlist td:last-child:not(:only-child),
+  #allowlist-domains td:last-child:not(:only-child), #blocks td:last-child:not(:only-child), #account-security td:last-child:not(:only-child) { grid-column: 2; grid-row: 1 / span 6; align-self: center; text-align: right; }
+  #account-security td:last-child:empty { display: none; }
+  /* labels */
+  #devices td:nth-child(2)::before { content: "Type: "; }
+  #devices td:nth-child(3)::before { content: "Added "; }
+  #devices td:nth-child(4)::before { content: "Last used "; }
+  #sessions td:nth-child(2)::before { content: "System: "; }
+  #sessions td:nth-child(3)::before { content: "Signed in "; }
+  #sessions td:nth-child(4)::before { content: "Confirmed: "; }
+  #sessions td:nth-child(5)::before { content: "Last used "; }
+  #confirm-devices td:nth-child(3)::before, #confirm-sessions td:nth-child(3)::before { content: "Added "; }
+  #confirm-sessions td:nth-child(3)::before { content: "Signed in "; }
+  #confirm-devices td:nth-child(4)::before, #confirm-sessions td:nth-child(4)::before { content: "Last used "; }
+  #health td:nth-child(3)::before { content: "Version "; }
+  #setup td:nth-child(2) { grid-column: 2; grid-row: 1; }
+  #schema td:nth-child(2)::before { content: "Schema "; }
+  #schema td:nth-child(3)::before { content: "Applied "; }
+  #jobs td:nth-child(2)::before { content: "Last run "; }
+  #emails td:nth-child(3)::before { content: "Confirmed: "; }
+  #emails td:nth-child(4)::before { content: "Added "; }
+  #blocks td:nth-child(2)::before, #attempts td:nth-child(2)::before { content: "Action: "; }
+  #blocks td:nth-child(3)::before, #attempts td:nth-child(3)::before { content: "Attempts: "; }
+  #blocks td:nth-child(4)::before { content: "Until "; }
+  #attempts td:nth-child(4)::before { content: "Time window: "; }
+  #events td:nth-child(3), #setup td:nth-child(3), #storage-totals td:nth-child(4) { grid-column: 1 / -1; }
+  /* numbers: side by side on one line */
+  #collections tr, #top-accounts tr, #storage-totals tr, #metrics tr, #nodes tr, #confirm-rows tr, #orphans tr, #confirm-orphans tr, #other-domains tr, #sync-rows tr { display: flex; flex-wrap: wrap; gap: .15rem 1rem; }
+  #collections td:first-child, #top-accounts td:first-child, #storage-totals td:first-child, #metrics td:first-child, #nodes td:first-child,
+  #confirm-rows td:first-child, #orphans td:first-child, #confirm-orphans td:first-child, #other-domains td:first-child, #sync-rows td:first-child { flex: 1 0 100%; }
+  #collections td, #top-accounts td, #storage-totals td, #metrics td, #nodes td, #confirm-rows td, #orphans td, #confirm-orphans td, #other-domains td, #sync-rows td { color: var(--muted); }
+  #collections td:first-child, #top-accounts td:first-child, #storage-totals td:first-child, #nodes td:first-child, #sync-rows td:first-child { color: var(--text); }
+  #collections td:last-child { margin-left: auto; }
+  #collections tr { align-items: center; }
+  #collections td:first-child { flex: 1 0 60%; }
+  #collections td:nth-child(2)::before { content: "Items "; }
+  #collections td:nth-child(4)::before { content: "changed "; }
+  #collections td:nth-child(2) { order: 2; }
+  #collections td:nth-child(3) { order: 3; }
+  #collections td:nth-child(4) { order: 4; }
+  #collections td:last-child { order: 1; }
+  #top-accounts td:nth-child(2)::before, #storage-totals td:nth-child(2)::before { content: "Items "; }
+  #storage-totals td:nth-child(4) { flex: 1 0 100%; }
+  #metrics td:nth-child(2)::before { content: "Count "; }
+  #metrics td:nth-child(3)::before { content: "Average "; }
+  #nodes td:nth-child(3)::before { content: "Accounts "; }
+  #nodes td:nth-child(4)::before { content: "Capacity "; }
+  #nodes td:nth-child(5)::before { content: "Load "; }
+  #nodes td:nth-child(6)::before { content: "Available "; }
+  #nodes td:nth-child(7)::before { content: "Backoff "; }
+  #other-domains td:nth-child(2)::after { content: " rows"; }
+  #sync-rows td:nth-child(2)::before { content: "Client state "; }
+  #sync-rows td:nth-child(3)::before { content: "Keys changed "; }
+  #sync-rows td:nth-child(4)::before { content: "Node "; }
+  #sync-rows td:nth-child(5)::before { content: "Created "; }
+  #sync-rows td:nth-child(6)::before { content: "Replaced "; }
+  #confirm-rows td:nth-child(2)::before, #orphans td:nth-child(1)::before { content: ""; }
+  #confirm-rows td:nth-child(2)::before { content: "Created "; }
+  #confirm-rows td:nth-child(3)::before { content: "Replaced "; }
+  #events tr { grid-template-columns: auto minmax(0, 1fr); }
+  #events td:first-child { grid-column: 1; font-weight: 400; color: var(--muted); font-size: .85rem; }
+  #events td:nth-child(2) { grid-column: 2; font-size: .85rem; }
+  #events td:only-child { grid-column: 1 / -1; }
+  #account-security tr { grid-template-columns: minmax(0, 1fr) auto; }
+  #account-security th { grid-column: 1; font-size: .8rem; }
+  #account-security td:nth-child(2) { grid-column: 1; }
+  #allowlist td:nth-child(2) { color: var(--muted); font-size: .85rem; }
+  /* the accounts: two short lines a row, the email then its facts and badges. The date of
+     creation and Disable are on the account page; Enable of a disabled one stays */
+  #accounts tr { gap: 0 .75rem; padding: .4rem 0; }
+  #accounts td { font-size: .8rem; line-height: 1.4; }
+  #accounts td:first-child { flex-basis: 100%; font-weight: 600; font-size: .95rem; line-height: 1.35; }
+  /* the counts of the hint are in the banner above */
+  #accounts-hint { display: none; }
+  #accounts tr:has(> td:last-child form) td:first-child { flex-basis: calc(100% - 7rem); }
+  #accounts td:last-child:has(> a.danger) { display: none; }
+  #accounts .created { display: none; }
+  #accounts td.security .badge, #accounts td.status .badge { margin-top: 0; margin-bottom: 0; }
+  /* the search: the field and its button on a line */
+  #find { flex-wrap: nowrap; }
+  #find .search { flex: 1 1 auto; }
+  #find button { flex: none; width: auto; }
+  /* the tiles: the value; the line under it only when it says what is wrong */
+  .stat:not(.is-bad):not(.is-warn) .sub { display: none; }
+  .stat .value { margin-top: .2rem; }
+  /* a folded part's title wraps under itself, its hint after it on the same line */
+  details > summary { display: block; position: relative; padding: .55rem 0 .55rem 1.15rem; line-height: 1.35; }
+  details > summary::before { position: absolute; left: .1rem; top: calc(.55rem + .675em - .225rem); margin: 0; }
+  details[open] > summary::before { top: calc(.45rem + .675em - .225rem); }
+  details.fold { margin-top: .75rem; padding-top: .2rem; }
+  .banner { margin-bottom: 1rem; }
+  /* max users: the field and Save on a line */
+  /* the limits: the title on its line, then the number, "No limit" and Save */
+  form.limit-form { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+  form.limit-form > label:first-of-type { grid-column: 1 / -1; }
+  form.limit-form input[type=number] { width: 100%; }
+  dl.backup-facts > div { grid-template-columns: minmax(0, 1fr); gap: .1rem; }
+  /* the health of each part: its name and status on a line, the version and detail under */
+  #health tr { grid-template-columns: minmax(0, 1fr) auto; gap: 0 .75rem; padding: .55rem 0; }
+  #health td:nth-child(2) { display: contents; }
+  #health td:nth-child(2) > .ok, #health td:nth-child(2) > .disabled, #health td:nth-child(2) > .pill { grid-column: 2; grid-row: 1; justify-self: end; }
+  #health td:nth-child(2) > .hint { grid-column: 1 / -1; grid-row: 3; }
+  #health td:nth-child(3) { grid-row: 2; grid-column: 1 / -1; color: var(--muted); font-size: .825rem; }
+  #health td:nth-child(3)::before { content: ""; }
+}
+/* the smallest phones: the light keeps "to check" (it is not the banner's count), "part" and the brand's "admin" go to screen readers only */
+@media (max-width: 26rem) {
+  .brand small, .light .part { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .light { gap: .35rem; padding: 0 .6rem; font-size: .75rem; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

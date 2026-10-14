@@ -179,6 +179,9 @@ check "$(grep -hcxF 'Environment=MAX_USERS=initial:1' "${QUADLET_DIR}/firefox-sy
   "MAX_USERS=initial:1 in the init and admin UI quadlets"
 # without the accounts: not their settings, nor those of the sign-up gate and of the unconfirmed accounts
 check "$(env_keys_diff "-f docker-compose.yml" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS')" "|" "admin quadlet passes every setting of the compose service"
+# the help of the backups on the overview: their time, how many, the Quadlets' commands
+check "$(grep -cxE 'Environment="(BACKUP_TIME=03:00|BACKUP_KEEP=7|ADMIN_DEPLOYMENT=quadlets)"' "${QUADLET_DIR}/firefox-sync-admin.container")" 3 \
+  "BACKUP_TIME, BACKUP_KEEP and ADMIN_DEPLOYMENT=quadlets in the admin UI quadlet"
 QUADLET=$(ls /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2> /dev/null | head -1)
 "${QUADLET}" -dryrun -user > quadlet-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files"
@@ -360,6 +363,9 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   # no pairing server in the quadlets
   check "$(env_keys_diff "-f docker-compose.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL')" "|" "admin quadlet with the accounts passes every setting of the compose service"
+  # max accounts: not asked here (the last question), unlimited and managed in the admin UI
+  check "$(cat "${QUADLET_DIR}/firefox-sync-fxa-policy.container" "${QUADLET_DIR}/firefox-sync-admin.container" | grep -cxF 'Environment="FXA_MAX_ACCOUNTS=initial:unlimited"')" 2 \
+    "FXA_MAX_ACCOUNTS=initial:unlimited in the sign-up policy and admin UI quadlets"
   check "$(grep -lE '%[A-Z][A-Z0-9_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders"
   check "$(grep -c 'SMTP_PASS=p%%ss|w&rd"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "values escaped for systemd"
   # the admin UI signs in with these accounts: its OAuth client always asks the sign-in code
@@ -398,6 +404,8 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "${ok}" yes "accounts API answers (quadlets)"
   check "$(curl -s http://127.0.0.1:28630/.well-known/fxa-client-configuration | grep -o '"auth_server_base_url":"[^"]*"')" '"auth_server_base_url":"https://api.fxa.invalid"' "client configuration (quadlets)"
   journalctl --user -u firefox-sync-fxa-policy.service --no-pager 2> /dev/null | grep -m1 "sign-ups:"
+  check "$(journalctl --user -u firefox-sync-fxa-policy.service --no-pager 2> /dev/null | grep -q 'max accounts: unlimited (FXA_MAX_ACCOUNTS=initial:unlimited' && echo yes)" yes \
+    "fxa-policy set max accounts (quadlets)"
   check "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"email":"someone@example.org","authPW":"00"}' http://127.0.0.1:28691/v1/account/create)" 400 "sign-up gate refuses an email not on the allowlist (quadlets)"
   # the gate reaches the accounts API by its network alias: give it the same time as the checks above
   gate=""

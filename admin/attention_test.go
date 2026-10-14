@@ -118,7 +118,6 @@ func allGood(now time.Time) attentionInput {
 		accounts:     []accountRow{{UID: fakeUID, Email: fakeEmail}},
 		pruneLastRan: now.Add(-time.Hour),
 		alerts:       &SendStatus{At: now, LastOK: now},
-		lastStatsd:   now.Add(-time.Minute), silenceFrom: now.Add(-time.Hour),
 	}
 }
 
@@ -156,7 +155,10 @@ func TestNeedsAttention(t *testing.T) {
 		{"SMTP down", func(in *attentionInput) { in.components[2] = Component{Name: "Email (SMTP)", Error: "535 auth failed"} }, "#health", "The SMTP server does not work (535 auth failed)"},
 		{"alert send failed", func(in *attentionInput) { in.alerts.Err = "connection refused" }, "#alert-status", "The last alert email failed on"},
 		{"90% of max users", func(in *attentionInput) { in.status.Users = 9 }, "#sync", "9 of 10 accounts are taken (90% or more)"},
-		{"statsd silence", func(in *attentionInput) { in.lastStatsd = now.Add(-31 * time.Minute) }, "/activity", "No metrics from the Sync server for 30 minutes"},
+		{"metrics missing", func(in *attentionInput) {
+			row, _ := metricsRow(true, now.Add(-time.Minute), now.Add(-20*time.Minute), now.Add(-time.Hour))
+			in.components = append(in.components, row)
+		}, "/activity", "Sync data changed at"},
 		{"inactive device", func(in *attentionInput) { in.inactiveDevices = map[string]int{fakeUID: 2} }, "/users/" + fakeUID + "#devices", "2 devices of 1 account not used for 90 days"},
 		{"inactive devices", func(in *attentionInput) { in.inactiveDevices = map[string]int{"aa": 1, "bb": 1} }, "/?show=inactive-devices#accounts", "2 devices of 2 accounts"},
 		{"sign-in keys", func(in *attentionInput) {
@@ -171,21 +173,15 @@ func TestNeedsAttention(t *testing.T) {
 			t.Errorf("%s: %+v", c.name, got)
 		}
 	}
-	// a server with no metrics since the start: only after 30 minutes
-	in := allGood(now)
-	in.lastStatsd, in.silenceFrom = time.Time{}, now.Add(-10*time.Minute)
-	if got := needsAttention(in); len(got) != 0 {
-		t.Errorf("just started: %+v", got)
-	}
 	// max users 0 refuses everybody on purpose; Mozilla's accounts: no accounts checks
-	in = allGood(now)
+	in := allGood(now)
 	in.status, in.fxa, in.pruneLastRan, in.unconfirmed = &SyncStatus{Users: 0, MaxUsers: 0}, false, time.Time{}, 5
 	if got := needsAttention(in); len(got) != 0 {
 		t.Errorf("max users 0, Mozilla's accounts: %+v", got)
 	}
 	// the Sync server down: one line for it, no silence on top
 	in = allGood(now)
-	in.components[1], in.lastStatsd = Component{Name: "Sync server", Error: "x"}, time.Time{}
+	in.components[1] = Component{Name: "Sync server", Error: "x"}
 	if got := needsAttention(in); len(got) != 1 {
 		t.Errorf("down: %+v", got)
 	}
@@ -209,7 +205,7 @@ func TestThresholdsAlertOncePerState(t *testing.T) {
 		// a failed read: no change
 		{nil, true, now, sent, nil},
 		{room, true, now, sent, []string{"under 90% again"}},
-		{room, true, now.Add(-time.Hour), sent, []string{"No metrics from the Sync server for 30 minutes"}},
+		{room, true, now.Add(-time.Hour), sent, []string{"Sync data changed at"}},
 		{room, true, now.Add(-time.Hour), sent, nil},
 		// the Sync server down: its health alerts, the silence stays (no false "again")
 		{room, false, now.Add(-time.Hour), sent, nil},
@@ -222,7 +218,8 @@ func TestThresholdsAlertOncePerState(t *testing.T) {
 		{room, true, now, nil, nil},
 	}
 	for i, s := range steps {
-		got := h.thresholdEvents(s.st, s.up, s.last, s.alerts, now)
+		// the latest write now: silent with metrics from an hour ago
+		got := h.thresholdEvents(s.st, nil, s.up, now, s.last, s.alerts)
 		if len(got) != len(s.want) {
 			t.Fatalf("step %d: %q, want %q", i, got, s.want)
 		}
@@ -232,19 +229,210 @@ func TestThresholdsAlertOncePerState(t *testing.T) {
 			}
 		}
 	}
-	// up again after an outage of more than 30 minutes, its first metrics not yet in:
-	// the silence counts from its coming up
+	// up again after an outage, its first metrics not yet in: the silence counts from its
+	// coming up
 	h.syncUpSince = now.Add(-time.Minute)
-	if got := h.thresholdEvents(room, true, now.Add(-time.Hour), sent, now); len(got) != 0 {
+	if got := h.thresholdEvents(room, nil, true, now, now.Add(-time.Hour), sent); len(got) != 0 {
 		t.Errorf("just up again: %q", got)
 	}
-	if got := h.thresholdEvents(room, true, now.Add(-time.Hour), sent, now.Add(statsdSilence)); len(got) != 1 || !strings.Contains(got[0], "No metrics") {
-		t.Errorf("up again, still silent: %q", got)
+	if got := h.thresholdEvents(room, nil, true, now.Add(statsdMargin), now.Add(-time.Hour), sent); len(got) != 1 || !strings.Contains(got[0], "Sync data changed at") ||
+		!strings.Contains(got[0], "restart it (docker compose restart syncstorage") {
+		t.Errorf("up again, written without metrics: %q", got)
 	}
 	// the first round alerts what is already wrong
 	h = &Health{started: now.Add(-time.Hour)}
-	if got := h.thresholdEvents(full, true, now, failed, now); len(got) != 2 {
+	if got := h.thresholdEvents(full, nil, true, now, now, failed); len(got) != 2 {
 		t.Errorf("first round: %q", got)
+	}
+}
+
+func TestLimitsAlertOncePerState(t *testing.T) {
+	now := time.Now()
+	h := &Health{started: now.Add(-time.Hour)}
+	sent := &SendStatus{At: now, LastOK: now}
+	sync := func(users, max int) *SyncStatus { return &SyncStatus{Users: users, MaxUsers: max} }
+	acc := func(n, max int, unlimited bool) *Limit { return &Limit{Count: n, Max: max, Unlimited: unlimited} }
+	steps := []struct {
+		st   *SyncStatus
+		acc  *Limit
+		want []string
+	}{
+		{sync(1, 10), acc(5, 10, false), nil},
+		// near, then full, then raised: one event each
+		{sync(9, 10), acc(5, 10, false), []string{"9 of 10 accounts are taken (90% or more): new accounts are refused by the Sync server once all are"}},
+		{sync(9, 10), acc(5, 10, false), nil},
+		{sync(10, 10), acc(5, 10, false), []string{"10 of 10 accounts are taken (MAX_USERS): new accounts are refused by the Sync server until it is raised"}},
+		{sync(10, 20), acc(5, 10, false), []string{"10 of 20 accounts are taken, under 90% again"}},
+		// the accounts: full, then no limit
+		{sync(10, 20), acc(10, 10, false), []string{"10 of 10 accounts are created (FXA_MAX_ACCOUNTS): sign-ups are refused until it is raised"}},
+		{sync(10, 20), acc(10, 10, false), nil},
+		// not read: no change
+		{nil, nil, nil},
+		{sync(10, 20), acc(10, 0, true), []string{"Max accounts: no limit now (10 accounts)"}},
+		// unlimited and 0 never warn
+		{&SyncStatus{Users: 100, Unlimited: true}, acc(10, 0, true), nil},
+		{sync(3, 0), acc(10, 0, false), nil},
+		// near or full, then set to 0: says so, not "9 of 0 ... under 90% again"
+		{sync(9, 10), acc(10, 10, false), []string{"9 of 10 accounts are taken (90% or more): new accounts are refused by the Sync server once all are", "10 of 10 accounts are created (FXA_MAX_ACCOUNTS): sign-ups are refused until it is raised"}},
+		{sync(9, 0), acc(10, 0, false), []string{"Max users: 0 now, no new accounts (9 accounts)", "Max accounts: 0 now, no new accounts (10 accounts)"}},
+	}
+	for i, s := range steps {
+		got := h.thresholdEvents(s.st, s.acc, true, now, now, sent)
+		if len(got) != len(s.want) {
+			t.Fatalf("step %d: %q, want %q", i, got, s.want)
+		}
+		for j := range got {
+			if got[j] != s.want[j] {
+				t.Errorf("step %d: %q, want %q", i, got[j], s.want[j])
+			}
+		}
+	}
+	// the first round alerts a limit already reached
+	h = &Health{started: now.Add(-time.Hour)}
+	if got := h.thresholdEvents(sync(5, 5), acc(9, 10, false), true, now, now, sent); len(got) != 2 || !strings.Contains(got[1], "9 of 10 accounts are created (90% or more)") {
+		t.Errorf("first round: %q", got)
+	}
+}
+
+func TestLimitStates(t *testing.T) {
+	for _, c := range []struct {
+		l     Limit
+		state string
+	}{
+		{Limit{Count: 0, Max: 10}, limitOK}, {Limit{Count: 8, Max: 10}, limitOK}, {Limit{Count: 9, Max: 10}, limitNear},
+		{Limit{Count: 10, Max: 10}, limitFull}, {Limit{Count: 12, Max: 10}, limitFull}, {Limit{Count: 1, Max: 1}, limitFull},
+		// 0: no new account on purpose; no limit: never
+		{Limit{Count: 3, Max: 0}, limitOK}, {Limit{Count: 1 << 30, Unlimited: true}, limitOK},
+	} {
+		if got := c.l.State(); got != c.state {
+			t.Errorf("%+v: %s, want %s", c.l, got, c.state)
+		}
+	}
+	for v, want := range map[string]string{"5": "5", "0": "0", "007": "7", "unlimited": "unlimited", " Unlimited ": "unlimited", "2147483647": "2147483647"} {
+		n, unlimited, err := parseLimitValue(v)
+		if got := (Limit{Max: n, Unlimited: unlimited}).Setting(); err != nil || got != want {
+			t.Errorf("%q: %s %v", v, got, err)
+		}
+	}
+	for _, v := range []string{"", "-1", "2147483648", "lots", "1 2", "+5", "infinite"} {
+		if _, _, err := parseLimitValue(v); err == nil {
+			t.Errorf("%q accepted", v)
+		}
+	}
+	for _, c := range []struct {
+		setting, value string
+		fixed          bool
+	}{
+		{"5", "5", true}, {"fixed:5", "5", true}, {"unlimited", "unlimited", true}, {"fixed:unlimited", "unlimited", true},
+		{"initial:5", "5", false}, {"initial:unlimited", "unlimited", false},
+		// FXA_MAX_ACCOUNTS not set: initial:unlimited, existing setups unchanged
+		{"", "unlimited", false},
+	} {
+		value, fixed, err := parseLimitSetting(c.setting, "initial:unlimited")
+		if err != nil || value != c.value || fixed != c.fixed {
+			t.Errorf("%q: %q %v %v", c.setting, value, fixed, err)
+		}
+	}
+	for _, bad := range []string{"initial:", "fixed:-1", "lots", "initial:lots", "Initial:5"} {
+		if _, _, err := parseLimitSetting(bad, "initial:unlimited"); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	for v, want := range map[string]bool{"": true, "initial:5": true, "initial:unlimited": true, "5": false, "unlimited": false, "fixed:5": false} {
+		if got := limitEditable(v, true); got != want {
+			t.Errorf("FXA_MAX_ACCOUNTS=%q editable: %v", v, got)
+		}
+	}
+}
+
+func TestStatsdSilent(t *testing.T) {
+	now := time.Now()
+	start := now.Add(-2 * time.Hour)
+	for _, c := range []struct {
+		name        string
+		up          bool
+		write, last time.Time
+		silent      bool
+	}{
+		// the demo: the last packet during the last sync, nobody synced since
+		{"idle, no write since the last metrics", true, now.Add(-55 * time.Minute), now.Add(-54 * time.Minute), false},
+		{"idle for days", true, now.Add(-72 * time.Hour), now.Add(-72 * time.Hour), false},
+		{"written after the last metrics", true, now.Add(-time.Minute), now.Add(-40 * time.Minute), true},
+		// the metrics of the last requests wait in the Sync server's buffer
+		{"written within the margin", true, now.Add(-time.Minute), now.Add(-5 * time.Minute), false},
+		{"no storage database or no write", true, time.Time{}, now.Add(-5 * time.Hour), false},
+		{"Sync server down", false, now.Add(-time.Minute), now.Add(-40 * time.Minute), false},
+		// none since the start: from the start of the admin UI (or the Sync server)
+		{"none since the start, written soon after", true, start.Add(5 * time.Minute), time.Time{}, false},
+		{"none since the start, written later", true, start.Add(20 * time.Minute), time.Time{}, true},
+		{"written before the start", true, start.Add(-time.Hour), time.Time{}, false},
+	} {
+		if got := statsdSilent(c.up, c.write, c.last, start); got != c.silent {
+			t.Errorf("%s: silent %v", c.name, got)
+		}
+		if row, silent := metricsRow(c.up, c.write, c.last, start); silent != c.silent || silent && (row.Name != metricsCheck || !row.Warn || row.Up) {
+			t.Errorf("%s: row %+v", c.name, row)
+		}
+	}
+	row, _ := metricsRow(true, now.Add(-time.Minute), now.Add(-40*time.Minute), start)
+	if !strings.HasPrefix(row.Error, "Sync data changed at "+formatTime(now.Add(-time.Minute), adminZone)+" but no metrics arrived since the last ones at "+formatTime(now.Add(-40*time.Minute), adminZone)) {
+		t.Error(row.Error)
+	}
+	if row, _ = metricsRow(true, now, time.Time{}, start); !strings.Contains(row.Error, "no metrics arrived since "+formatTime(start, adminZone)+" (the start of") {
+		t.Error(row.Error)
+	}
+}
+
+// the health light, the Health tile and the health table count the same rows
+func TestHealthTableMatchesSummary(t *testing.T) {
+	now := time.Now()
+	components := []Component{{Name: "Admin UI", Up: true}, {Name: "Sync server", Up: true}, {Name: "Tokenserver database", Up: true},
+		{Name: oauthKeysCheck, Up: true, Hidden: true}}
+	for _, c := range []struct {
+		name        string
+		write, last time.Time
+		extra       []Component
+		warn        int
+	}{
+		{"idle", now.Add(-time.Hour), now.Add(-54 * time.Minute), nil, 0},
+		{"no storage database", time.Time{}, time.Time{}, nil, 0},
+		{"metrics missing", now.Add(-time.Minute), now.Add(-time.Hour), nil, 1},
+		{"metrics missing and a warning", now.Add(-time.Minute), now.Add(-time.Hour), []Component{{Name: "Sign-up gate", Warn: true, Error: "x"}}, 2},
+	} {
+		app := &App{rec: &Recorder{received: c.last}}
+		app.health = &Health{app: app, started: now.Add(-2 * time.Hour), lastWrite: c.write, components: append(append([]Component(nil), components...), c.extra...)}
+		rows, shown, status := app.healthTable()
+		notUp := 0
+		for _, r := range shown {
+			if !r.Up {
+				notUp++
+			}
+		}
+		if status.Warn != c.warn || status.Warn+status.Down != notUp || len(rows) != len(shown)+1 {
+			t.Errorf("%s: %+v, %d rows not up in %+v", c.name, status, notUp, shown)
+		}
+		if light := app.healthSummary(); *light != *status {
+			t.Errorf("%s: light %+v, table %+v", c.name, light, status)
+		}
+		// the row in the table, and Needs attention of the same rows
+		in := allGood(now)
+		in.components = rows
+		var lines int
+		for _, a := range needsAttention(in) {
+			if a.Href == "/activity" {
+				lines++
+			}
+		}
+		if silent := c.warn > 0; silent != (lines == 1) || silent != (shown[len(shown)-1].Name == metricsCheck) {
+			t.Errorf("%s: %d lines, rows %+v", c.name, lines, shown)
+		}
+		var b strings.Builder
+		if err := templates.ExecuteTemplate(&b, "light", status); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(b.String(), "to check"); got != (c.warn > 0) {
+			t.Errorf("%s: light %s", c.name, b.String())
+		}
 	}
 }
 
@@ -356,6 +544,13 @@ func TestOverviewSearchAttentionAndDevices(t *testing.T) {
 		if !strings.Contains(page, `value="`+q+`"`) || !strings.Contains(page, `id="search-result"`) {
 			t.Errorf("search %q: not kept in the form", q)
 		}
+		// a search is a filter: All accounts is not the current chip
+		if strings.Contains(page, `aria-current="true">All accounts`) {
+			t.Errorf("search %q: All accounts current", q)
+		}
+	}
+	if page := getPage(h, "/", c).Body.String(); !strings.Contains(page, `<a href="/#accounts" aria-current="true">All accounts</a>`) {
+		t.Error("All accounts not current without a filter")
 	}
 	page = getPage(h, "/?show=blocked", c).Body.String()
 	if strings.Contains(page, `<tr data-email=`) || !strings.Contains(page, `<input type="hidden" name="show" value="blocked">`) ||
@@ -366,7 +561,7 @@ func TestOverviewSearchAttentionAndDevices(t *testing.T) {
 		t.Error("filter unconfirmed sign-in")
 	}
 	user := getPage(h, "/users/"+fakeUID, c).Body.String()
-	if !strings.Contains(user, `<span class="badge">inactive</span>`) || !strings.Contains(user, "not used for 30 days (ADMIN_STALE_DAYS)") {
+	if !strings.Contains(user, `<span class="badge">inactive</span>`) || !strings.Contains(user, "not used for 30 days (<code>ADMIN_STALE_DAYS</code>)") {
 		t.Errorf("device badge: %s", user)
 	}
 	app.staleDays = 365 * 100

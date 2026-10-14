@@ -310,7 +310,8 @@ def test_admin_fits_a_phone():
                 .sort((x, y) => y[0] - x[0]).slice(0, 3)""")
             assert scroll <= width, (path, scroll, width, widest)
             # the stylesheet applies (style-src 'self' of the CSP): buttons tall enough to tap
-            heights = driver.execute_script("return [...document.querySelectorAll('main button, header nav a')].map(e => e.getBoundingClientRect().height)")
+            # (the shown ones: those of a closed <details> have no box)
+            heights = driver.execute_script("return [...document.querySelectorAll('main button, header nav a')].map(e => e.getBoundingClientRect().height).filter(h => h > 0)")
             assert heights and min(heights) >= 44, (path, heights)
             if path == "/":
                 accounts = driver.find_element(By.ID, "accounts")
@@ -336,7 +337,7 @@ def test_admin_disables_through_the_confirm_page(first_device):
         assert f"Disable {EMAIL}?" in page and "Firefox" in page.split('id="confirm-devices"')[1], page[:3000]
         # the CSP blocks inline styles and scripts: the page is styled by the stylesheet only
         color = driver.execute_script("return getComputedStyle(document.querySelector('#confirm button.danger')).backgroundColor")
-        assert color == "rgb(197, 0, 66)", color
+        assert color == "rgb(180, 35, 42)", color
         assert driver.find_element(By.ID, "cancel").get_attribute("href") == f"{admin}/users/{uid}"
         driver.find_element(By.ID, "reason").send_keys("browser test")
         driver.find_element(By.CSS_SELECTOR, "#confirm button[type=submit]").click()

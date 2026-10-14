@@ -30,9 +30,25 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"when":  func(t time.Time) string { return whenIn(t, adminZone) },
 	"zone":  func() string { return adminZone.String() },
 	"bytes": humanBytes,
+	"email": breakEmail,
 	// to the millisecond, for <time datetime>: the pages show minutes
 	"stamp": func(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z07:00") },
+	// routine: an admin's own sign-in, muted in the event log
+	"routine": func(e Event) bool { return e.Kind == "admin" && strings.HasPrefix(e.Detail, adminSignIn) },
+	// page: the title and nav entry of a page for the layout, with the page's data
+	"page": func(title, current string, data any) map[string]any {
+		return map[string]any{"Title": title, "Current": current, "Data": data}
+	},
 }).ParseFS(assets, "templates/*.html"))
+
+// breakEmail: the email escaped, with line breaks allowed after the @ and before each
+// dot, so a long one wraps at its parts and not in the middle of a word. The escaped
+// text has no @ or dot of its own (entities are &#34; and the like)
+func breakEmail(s string) template.HTML {
+	e := template.HTMLEscapeString(s)
+	e = strings.ReplaceAll(e, "@", "@<wbr>")
+	return template.HTML(strings.ReplaceAll(e, ".", "<wbr>."))
+}
 
 // adminZone: the times of the pages and the alerts, ADMIN_TZ (or TZ), UTC by default.
 // Set once at the start, before anything is shown or sent
@@ -96,8 +112,14 @@ type App struct {
 	auth       *authConfig
 	// ADMIN_STALE_DAYS, ADMIN_UNCONFIRMED_HOURS
 	staleDays, unconfirmedHours int
-	// MAX_USERS=initial:N: max users is set on the dashboard, otherwise by .env
-	maxUsersEditable bool
+	// MAX_USERS=initial:N: max users is set on the dashboard, otherwise by .env; the same
+	// for FXA_MAX_ACCOUNTS (also when not given: initial:unlimited)
+	maxUsersEditable, maxAccountsEditable bool
+	// BACKUP_TIME, BACKUP_KEEP of the backup service, for its help on the overview;
+	// ADMIN_DEPLOYMENT=quadlets: the commands of the Quadlets there, compose's otherwise
+	backupTime string
+	backupKeep int
+	quadlets   bool
 	// the token of the gate's answer to the public check (public.go), new on every start
 	gateProbe string
 	// SYNCSTORAGE_DOMAIN, FXA_EMAIL_DOMAIN, FXA_PAIRING_URL: the setup checks and the device steps
@@ -159,6 +181,8 @@ func serve(ctx context.Context) error {
 	}()
 	app := &App{sync: syncDB, storage: storageDB, fxa: fxaDB, rec: rec, auth: auth, sessions: map[string]*session{},
 		staleDays: staleDays, unconfirmedHours: unconfirmedHours, maxUsersEditable: maxUsersEditable(os.Getenv("MAX_USERS")),
+		maxAccountsEditable: limitEditable(os.Getenv("FXA_MAX_ACCOUNTS"), true),
+		backupTime:          env("BACKUP_TIME", "03:00"), backupKeep: envInt("BACKUP_KEEP", 7), quadlets: env("ADMIN_DEPLOYMENT", "") == "quadlets",
 		gateProbe: randomToken(), syncDomain: strings.TrimSuffix(env("SYNCSTORAGE_DOMAIN", ""), "/"),
 		emailDomain: strings.ToLower(env("FXA_EMAIL_DOMAIN", "")), pairingURL: env("FXA_PAIRING_URL", ""),
 		autoPurge: autoPurge, unconfirmedDays: unconfirmedDays, signupBurst: signupBurst}
@@ -236,6 +260,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /metrics", a.prometheus)
 	mux.HandleFunc("POST /sync/max-users", a.authenticated(a.setMaxUsers))
 	mux.HandleFunc("POST /accounts/signups", a.authenticated(a.setSignups))
+	mux.HandleFunc("POST /accounts/max-accounts", a.authenticated(a.setMaxAccounts))
 	mux.HandleFunc("POST /accounts/{uid}/disable", a.authenticated(a.setDisabled(true)))
 	mux.HandleFunc("POST /accounts/{uid}/enable", a.authenticated(a.setDisabled(false)))
 	mux.HandleFunc("POST /accounts/{uid}/sign-out-all", a.authenticated(a.signOutAll))
@@ -261,7 +286,71 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /users/{uid}/delete", a.authenticated(a.confirmSyncAction("delete")))
 	mux.HandleFunc("GET /storage/purge", a.authenticated(a.confirmPurge))
 	mux.HandleFunc("GET /accounts/unconfirmed", a.authenticated(a.confirmUnconfirmed))
-	return securityHeaders(mux)
+	mux.HandleFunc("GET /maintenance/prune", a.authenticated(a.confirmPrune))
+	mux.HandleFunc("GET /accounts/allowlist/remove", a.authenticated(a.confirmAllowlistRemove))
+	return securityHeaders(a.errorPages(mux))
+}
+
+// errorPages: the text errors of http.Error and http.NotFound as a page with the nav and
+// a way back, for browsers (text/html in Accept); scripts get the text as before
+func (a *App) errorPages(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept"), "text/html") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		e := &errorWriter{ResponseWriter: w}
+		next.ServeHTTP(e, r)
+		if e.code == 0 {
+			return
+		}
+		data := map[string]any{"Code": e.code, "Text": strings.TrimSpace(e.text.String()), "CSRF": ""}
+		// the nav for a signed-in admin: nothing is checked or changed here
+		if s := a.peekSession(r); s != nil {
+			data["CSRF"], data["User"], data["FxA"], data["Status"] = s.csrf, s.user, a.fxa != nil, a.healthSummary()
+		}
+		h := w.Header()
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(e.code)
+		a.render(w, "error.html", data)
+	})
+}
+
+// errorWriter keeps a text error (code 400 and up) for errorPages, passes the rest on
+type errorWriter struct {
+	http.ResponseWriter
+	code int
+	text strings.Builder
+}
+
+func (e *errorWriter) WriteHeader(code int) {
+	if e.code == 0 && code >= 400 && strings.HasPrefix(e.Header().Get("Content-Type"), "text/plain") {
+		e.code = code
+		return
+	}
+	e.ResponseWriter.WriteHeader(code)
+}
+
+func (e *errorWriter) Write(b []byte) (int, error) {
+	if e.code != 0 {
+		return e.text.Write(b)
+	}
+	return e.ResponseWriter.Write(b)
+}
+
+// peekSession: the password or single sign-on session of the cookie, if live, without
+// the checks of a proxy's headers (an error page shows no data of its own)
+func (a *App) peekSession(r *http.Request) *session {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s := a.sessions[c.Value]; s != nil && s.method != "header" && time.Now().Before(s.expires) {
+		return s
+	}
+	return nil
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -368,7 +457,7 @@ var accountFilters = map[string]func(accountRow) bool{
 	"inactive-devices":    func(r accountRow) bool { return r.InactiveDevices > 0 },
 }
 
-// what the list shows with each filter: "3 accounts <label>"
+// what the list shows with each filter: "3 accounts <label>" (ADMIN_STALE_DAYS: the days)
 var filterLabels = map[string]string{
 	"unconfirmed": "that never confirmed their email", "unconfirmed-sign-in": "with an unconfirmed sign-in",
 	"blocked": "blocked by the rate limits", "inactive": "not synced for ADMIN_STALE_DAYS", "inactive-devices": "with devices not used for ADMIN_STALE_DAYS",
@@ -390,7 +479,11 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 		show = ""
 	}
 	page, _ := strconv.Atoi(query.Get("page"))
-	data["Q"], data["Show"], data["ShowLabel"] = shownQ, show, filterLabels[show]
+	// in plain words: "not synced for 90 days"
+	label := strings.ReplaceAll(filterLabels[show], "ADMIN_STALE_DAYS", plural(a.staleDays, "day"))
+	data["Q"], data["Show"], data["ShowLabel"] = shownQ, show, label
+	// back from removing an entry of the allowlist: its list open
+	data["ListOpen"] = query.Get("list") == "open"
 	// the account of q as a tokenserver uid, or as any of its emails
 	var matchID string
 	if q != "" {
@@ -411,19 +504,37 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 		errs = append(errs, "Sync database: "+err.Error())
 	}
 	data["Sync"], data["MaxUsersEditable"] = status, a.maxUsersEditable
+	// the limit's form opens by itself once it is close
+	data["NearMaxUsers"] = nearMaxUsers(status)
+	// FXA_MAX_ACCOUNTS, the accounts against it
+	var accountLimit *Limit
+	if a.fxa != nil {
+		if l, err := a.fxa.AccountLimit(ctx); err != nil {
+			errs = append(errs, "Max accounts: "+err.Error())
+		} else {
+			accountLimit = &l
+			data["AccountLimit"] = l
+		}
+		data["MaxAccountsEditable"] = a.maxAccountsEditable
+	}
 	var components []Component
 	var backups []BackupStatus
 	var certs map[string]time.Time
 	if a.health != nil {
-		components = a.health.Components()
-		var shown []Component
-		for _, c := range components {
-			if !c.Hidden {
-				shown = append(shown, c)
-			}
+		// the rows of the limits as read now: the table, the light and Needs attention agree
+		var syncLimit *Limit
+		if status != nil {
+			l := status.Limit()
+			syncLimit = &l
 		}
+		a.health.setLimits(syncLimit, accountLimit)
+		// with the Sync metrics row when they are missing: the table, the counters and
+		// Needs attention of the same rows
+		var shown []Component
+		components, shown, data["Status"] = a.healthTable()
 		backups, certs = a.health.Backups(), a.health.Certs()
 		data["Health"], data["Sizes"], data["Schema"], data["Backups"] = shown, a.health.Sizes(), a.health.Schema(), backups
+		data["BackupState"], data["BackupText"] = backupTile(backups, now)
 	}
 	var alerts *SendStatus
 	if a.alerter != nil {
@@ -433,7 +544,15 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	// a test email goes to ADMIN_ALERT_EMAIL, or to the admin of single sign-on
 	data["TestEmail"] = a.mailer != nil && (a.alerter != nil || s.method == "oidc")
-	data["Setup"] = a.setupChecks(ctx, status, components)
+	setup := a.setupChecks(ctx, status, components)
+	// the checks fold to a line while they all pass, open with a failing one
+	warnings := 0
+	for _, c := range setup {
+		if !c.OK {
+			warnings++
+		}
+	}
+	data["Setup"], data["SetupWarnings"] = setup, warnings
 	staleBefore := now.AddDate(0, 0, -a.staleDays)
 	data["StaleDays"] = a.staleDays
 	syncUsers, err := a.sync.Users(ctx)
@@ -454,13 +573,9 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 
 	in := attentionInput{now: now, components: components, certs: certs, status: status, backups: backups, fxa: a.fxa != nil,
-		staleDays: a.staleDays, alerts: alerts}
-	if a.rec != nil {
-		in.lastStatsd = a.rec.LastReceived()
-	}
-	if a.health != nil {
-		in.silenceFrom = a.health.silenceFrom()
-	}
+		staleDays: a.staleDays, alerts: alerts, accountLimit: accountLimit}
+	// what the backup service does, for its help (the admin UI cannot see the volume)
+	data["Backup"] = map[string]any{"Time": a.backupTime, "Local": localClock(a.backupTime, now, adminZone), "Keep": a.backupKeep, "Quadlets": a.quadlets}
 	var pages pager
 	if a.fxa != nil {
 		if policy, err := a.fxa.Policy(ctx); err != nil {
@@ -519,6 +634,13 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 		var from, to int
 		pages, from, to = newPager(len(matched), page, shownQ, show)
 		data["Accounts"], data["StaleCount"], data["UnconfirmedCount"] = matched[from:to], stale, unconfirmed
+		notVerified := 0
+		for _, row := range rows {
+			if !row.Verified {
+				notVerified++
+			}
+		}
+		data["AccountCount"], data["NotVerified"] = len(rows), notVerified
 	} else {
 		// Mozilla's accounts: the tokenserver only knows the account ids
 		rows := make([]syncUserRow, 0, len(syncUsers))
@@ -532,7 +654,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 		}
 		var from, to int
 		pages, from, to = newPager(len(rows), page, shownQ, "")
-		data["SyncUsers"] = rows[from:to]
+		data["SyncUsers"], data["AccountCount"] = rows[from:to], len(syncUsers)
 	}
 	data["Pages"] = pages
 	if a.storage != nil {
@@ -560,11 +682,98 @@ func (a *App) done(w http.ResponseWriter, r *http.Request, s *session, message s
 // base is the data of every page: the form token, whether there are self-hosted
 // accounts, and the result of the last change (shown once)
 func (a *App) base(s *session) map[string]any {
+	status := a.healthSummary()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	data := map[string]any{"CSRF": s.csrf, "FxA": a.fxa != nil, "User": s.user, "Message": s.message, "Failed": s.failed}
+	data := map[string]any{"CSRF": s.csrf, "FxA": a.fxa != nil, "User": s.user, "Message": s.message, "Failed": s.failed, "Status": status}
 	s.message, s.failed = "", ""
 	return data
+}
+
+// healthSummary: the health light of every page and the Health tile of the overview,
+// from the last round of checks (nothing is checked here)
+type healthSummary struct {
+	Total, Up, Down, Warn int
+	// what is wrong, the first of each: "Sync server", "Sign-up gate"
+	FirstDown, FirstWarn string
+}
+
+// healthTable: the rows of the last round (with the Sync metrics row when they are
+// missing), those of the health table (not the hidden setup checks) and their counts
+func (a *App) healthTable() (rows, shown []Component, status *healthSummary) {
+	rows = a.healthRows()
+	for _, c := range rows {
+		if !c.Hidden {
+			shown = append(shown, c)
+		}
+	}
+	return rows, shown, summarize(rows)
+}
+
+func (a *App) healthSummary() *healthSummary {
+	if a.health == nil {
+		return nil
+	}
+	return summarize(a.healthRows())
+}
+
+// summarize: the counts of the rows of the health table (a.healthRows), the hidden setup
+// checks only when they fail
+func summarize(rows []Component) *healthSummary {
+	h := &healthSummary{}
+	for _, c := range rows {
+		switch {
+		case c.Up:
+		case c.Warn:
+			h.Warn++
+			if h.FirstWarn == "" {
+				h.FirstWarn = c.Name
+			}
+		default:
+			h.Down++
+			if h.FirstDown == "" {
+				h.FirstDown = c.Name
+			}
+		}
+		// the hidden ones are setup checks, the limits no parts: in the count only when
+		// they fail
+		quiet := c.Hidden || c.Limit
+		if !quiet || !c.Up {
+			h.Total++
+		}
+		if c.Up && !quiet {
+			h.Up++
+		}
+	}
+	return h
+}
+
+// backupTile: the Backups tile of the overview, ok, warn (stale or none) or bad (failed)
+func backupTile(backups []BackupStatus, now time.Time) (state, text string) {
+	if len(backups) == 0 {
+		return "warn", "None recorded yet"
+	}
+	state, text = "ok", "Up to date"
+	for _, b := range backups {
+		switch b.state(now) {
+		case "failed":
+			return "bad", "Failed " + ago(now.Sub(b.Last.Finished))
+		case "stale":
+			state, text = "warn", "Last good one "+ago(now.Sub(b.LastOK.Finished))
+		}
+	}
+	return state, text
+}
+
+// ago: "3 hours ago", "2 days ago"
+func ago(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return "just now"
+	case d < 48*time.Hour:
+		return plural(int(d/time.Hour), "hour") + " ago"
+	}
+	return plural(int(d/(24*time.Hour)), "day") + " ago"
 }
 
 // doneTo shows the result of a change on the next page, and records it with who made
@@ -640,14 +849,42 @@ func (a *App) setMaxUsers(w http.ResponseWriter, r *http.Request, s *session) {
 		a.done(w, r, s, "", errMaxUsersReadOnly)
 		return
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("max_users")))
+	n, unlimited, err := limitForm(r.PostFormValue("max_users"), r.PostFormValue("unlimited"))
 	// the tokenserver triggers keep it in an INT
-	if err != nil || n < 0 || n > math.MaxInt32 {
-		a.done(w, r, s, "", fmt.Errorf("max users must be a number from 0 to %d", math.MaxInt32))
+	if err != nil {
+		a.done(w, r, s, "", fmt.Errorf("max users must be a number from 0 to %d, or no limit", math.MaxInt32))
 		return
 	}
-	err = a.sync.SetMaxUsers(r.Context(), n)
-	a.done(w, r, s, fmt.Sprintf("Max users set to %d", n), err)
+	err = a.sync.SetMaxUsers(r.Context(), n, unlimited)
+	if err == nil {
+		a.refreshLimits(r.Context())
+	}
+	a.done(w, r, s, "Max users set to "+Limit{Max: n, Unlimited: unlimited}.Setting(), err)
+}
+
+var errMaxAccountsReadOnly = errors.New("max accounts is managed by FXA_MAX_ACCOUNTS in .env: set FXA_MAX_ACCOUNTS=initial:N there to manage it here")
+
+// setMaxAccounts: FXA_MAX_ACCOUNTS of the self-hosted accounts, from the Sign-ups card
+func (a *App) setMaxAccounts(w http.ResponseWriter, r *http.Request, s *session) {
+	if a.fxa == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !a.maxAccountsEditable {
+		// fxa-policy sets FXA_MAX_ACCOUNTS again on its next start
+		a.doneTo(w, r, s, "/#signups", "", errMaxAccountsReadOnly)
+		return
+	}
+	n, unlimited, err := limitForm(r.PostFormValue("max_accounts"), r.PostFormValue("unlimited"))
+	if err != nil {
+		a.doneTo(w, r, s, "/#signups", "", fmt.Errorf("max accounts must be a number from 0 to %d, or no limit", math.MaxInt32))
+		return
+	}
+	err = a.fxa.SetMaxAccounts(r.Context(), n, unlimited)
+	if err == nil {
+		a.refreshLimits(r.Context())
+	}
+	a.doneTo(w, r, s, "/#signups", "Max accounts set to "+Limit{Max: n, Unlimited: unlimited}.Setting(), err)
 }
 
 func (a *App) setSignups(w http.ResponseWriter, r *http.Request, s *session) {

@@ -43,8 +43,15 @@ type SyncUser struct {
 
 type SyncStatus struct {
 	MaxUsers int
-	Users    int
-	Nodes    []SyncNode
+	// MAX_USERS=unlimited: no limit (MaxUsers 0)
+	Unlimited bool
+	Users     int
+	Nodes     []SyncNode
+}
+
+// Limit: the accounts against max users
+func (st *SyncStatus) Limit() Limit {
+	return Limit{Count: st.Users, Max: st.MaxUsers, Unlimited: st.Unlimited}
 }
 
 func openSyncDB() (*SyncDB, error) {
@@ -112,7 +119,8 @@ func (s *SyncDB) Status(ctx context.Context) (*SyncStatus, error) {
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
-	st.MaxUsers, _ = strconv.Atoi(maxUsers.String)
+	// a number, or unlimited (db_init.sql); anything else denies, as the trigger does
+	st.MaxUsers, st.Unlimited, _ = parseLimitValue(maxUsers.String)
 	// accounts, not rows: syncstorage-rs adds a row when the keys of an account change
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT email) FROM users").Scan(&st.Users); err != nil {
 		return nil, err
@@ -209,17 +217,18 @@ func (s *SyncDB) User(ctx context.Context, uid string) (*SyncUser, error) {
 // fixed:N is set again on every start, so a change here would not last: read-only, and
 // so when MAX_USERS is not given.
 func maxUsersEditable(maxUsers string) bool {
-	return strings.HasPrefix(strings.TrimSpace(maxUsers), "initial:")
+	return limitEditable(maxUsers, false)
 }
 
 // SetMaxUsers changes the limit enforced by the tokenserver trigger (syncstorage-rs-init),
-// with MAX_USERS=initial:N (see maxUsersEditable).
-func (s *SyncDB) SetMaxUsers(ctx context.Context, maxUsers int) error {
-	if maxUsers < 0 || maxUsers > math.MaxInt32 {
+// with MAX_USERS=initial:N (see maxUsersEditable); unlimited: no limit
+func (s *SyncDB) SetMaxUsers(ctx context.Context, maxUsers int, unlimited bool) error {
+	if !unlimited && (maxUsers < 0 || maxUsers > math.MaxInt32) {
 		// the triggers read it into an INT: refusing every new account
 		return fmt.Errorf("max users must be from 0 to %d", math.MaxInt32)
 	}
-	res, err := s.db.ExecContext(ctx, s.q("UPDATE config SET config_value = ? WHERE config_key = ?"), strconv.Itoa(maxUsers), "max_users")
+	value := Limit{Max: maxUsers, Unlimited: unlimited}.Setting()
+	res, err := s.db.ExecContext(ctx, s.q("UPDATE config SET config_value = ? WHERE config_key = ?"), value, "max_users")
 	if err != nil {
 		return err
 	}

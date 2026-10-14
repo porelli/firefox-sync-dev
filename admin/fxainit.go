@@ -29,24 +29,34 @@ var fxaPolicySQL = []string{
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`,
 	"DROP FUNCTION IF EXISTS ffs.signup_allowed",
-	// an email or its domain (@example.com) on the allowlist; anything but open,
-	// allowlist or closed (e.g. a missing setting) denies
-	`CREATE FUNCTION ffs.signup_allowed(address VARCHAR(255)) RETURNS BOOLEAN
+	"DROP FUNCTION IF EXISTS ffs.signup_refusal",
+	// why a sign-up is refused, NULL when it is allowed. 'policy': not an email or a
+	// domain (@example.com) of the allowlist, or anything but open, allowlist or closed
+	// (e.g. a missing setting). 'full': FXA_MAX_ACCOUNTS accounts or more (a number, or
+	// unlimited; missing: no limit, as before it existed; 0: nobody new)
+	`CREATE FUNCTION ffs.signup_refusal(address VARCHAR(255)) RETURNS VARCHAR(16)
 	READS SQL DATA
 	SQL SECURITY DEFINER
 	BEGIN
 		DECLARE mode VARCHAR(16) DEFAULT NULL;
+		DECLARE max_accounts VARCHAR(32) DEFAULT NULL;
 		DECLARE normalized VARCHAR(255) DEFAULT LOWER(TRIM(address));
-		SELECT value INTO mode FROM ffs.settings WHERE name = 'signups';
-		IF mode = 'open' THEN
-			RETURN TRUE;
+		SET mode = (SELECT value FROM ffs.settings WHERE name = 'signups');
+		IF NOT (mode <=> 'open' OR (mode <=> 'allowlist' AND EXISTS (SELECT 1 FROM ffs.signup_allowlist
+				WHERE entry = normalized OR entry = CONCAT('@', SUBSTRING_INDEX(normalized, '@', -1))))) THEN
+			RETURN 'policy';
 		END IF;
-		IF mode = 'allowlist' THEN
-			RETURN EXISTS (SELECT 1 FROM ffs.signup_allowlist
-				WHERE entry = normalized OR entry = CONCAT('@', SUBSTRING_INDEX(normalized, '@', -1)));
+		SET max_accounts = (SELECT value FROM ffs.settings WHERE name = 'max_accounts');
+		IF max_accounts IS NOT NULL AND max_accounts <> 'unlimited'
+			AND (SELECT COUNT(*) FROM fxa.accounts) >= CAST(max_accounts AS UNSIGNED) THEN
+			RETURN 'full';
 		END IF;
-		RETURN FALSE;
+		RETURN NULL;
 	END`,
+	`CREATE FUNCTION ffs.signup_allowed(address VARCHAR(255)) RETURNS BOOLEAN
+	READS SQL DATA
+	SQL SECURITY DEFINER
+	RETURN ffs.signup_refusal(address) IS NULL`,
 	// sizes of the accounts databases for the admin UI, which has no access to their
 	// tables: the view runs with the privileges of its definer
 	`CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.database_sizes AS
@@ -331,10 +341,19 @@ var fxaPolicySQL = []string{
 	END`,
 	"DROP TRIGGER IF EXISTS fxa.ffs_signup_policy",
 	// the gate in front of the accounts API answers with a proper error first, this
-	// catches whatever reaches the auth server another way
+	// catches whatever reaches the auth server another way. With a limit, sign-ups wait
+	// for each other on its row (until the account's transaction ends): two at once
+	// cannot both take the last place
 	`CREATE TRIGGER fxa.ffs_signup_policy BEFORE INSERT ON fxa.accounts FOR EACH ROW
 	BEGIN
-		IF NOT ffs.signup_allowed(NEW.normalizedEmail) THEN
+		DECLARE refusal VARCHAR(16) DEFAULT NULL;
+		DECLARE locked VARCHAR(32) DEFAULT NULL;
+		DECLARE CONTINUE HANDLER FOR NOT FOUND SET locked = NULL;
+		SELECT value INTO locked FROM ffs.settings WHERE name = 'max_accounts' FOR UPDATE;
+		SET refusal = ffs.signup_refusal(NEW.normalizedEmail);
+		IF refusal = 'full' THEN
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Sign-up refused: the server is full (FXA_MAX_ACCOUNTS)';
+		ELSEIF refusal IS NOT NULL THEN
 			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Sign-up refused by the firefox-sync sign-up policy';
 		END IF;
 	END`,
@@ -355,6 +374,7 @@ var fxaAdminGrants = []string{
 	"GRANT SELECT ON ffs.emails TO 'ffs_admin'@'%'",
 	"GRANT SELECT ON ffs.schema_levels TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON FUNCTION ffs.signup_allowed TO 'ffs_admin'@'%'",
+	"GRANT EXECUTE ON FUNCTION ffs.signup_refusal TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON PROCEDURE ffs.sign_out_session TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON PROCEDURE ffs.sign_out_device TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON PROCEDURE ffs.sign_out_all TO 'ffs_admin'@'%'",
@@ -545,6 +565,33 @@ func fxaInit(ctx context.Context) error {
 		return err
 	}
 	log.Printf("sign-ups: %s", describePolicy(policy))
+	return applyEnvMaxAccounts(ctx, db)
+}
+
+// applyEnvMaxAccounts sets FXA_MAX_ACCOUNTS like MAX_USERS: N, fixed:N or unlimited on
+// every start (read-only in the admin UI), initial:N only when there is none yet (then
+// the admin UI manages it); not set: initial:unlimited. Anything else stops fxa-policy,
+// and with it the accounts service: never a limit other than the one written
+func applyEnvMaxAccounts(ctx context.Context, db *sql.DB) error {
+	setting := env("FXA_MAX_ACCOUNTS", "")
+	value, fixed, err := parseLimitSetting(setting, "initial:"+unlimitedSetting)
+	if err != nil {
+		return fmt.Errorf("FXA_MAX_ACCOUNTS=%q is not valid: %v, optionally after fixed: (the default, set on every start) or initial: (set once, then managed in the admin UI)", setting, err)
+	}
+	if err := setMaxAccounts(ctx, db, value, fixed); err != nil {
+		return fmt.Errorf("FXA_MAX_ACCOUNTS: %w", err)
+	}
+	current := &FxaDB{db: db}
+	max, unlimited, err := current.MaxAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	now := Limit{Max: max, Unlimited: unlimited}.Setting()
+	if fixed {
+		log.Printf("max accounts: %s (FXA_MAX_ACCOUNTS, set on every start, read-only in the admin UI)", now)
+	} else {
+		log.Printf("max accounts: %s (FXA_MAX_ACCOUNTS=initial:%s applies to a new database only, the admin UI manages it)", now, value)
+	}
 	return nil
 }
 

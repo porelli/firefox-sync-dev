@@ -163,7 +163,8 @@ answers=(sync.example.org "${SETUP}" 5000 2 mariadb)
 command -v podman > /dev/null && answers+=(2)
 admin_answer=$((${#answers[@]} + 2))
 answers+=("" latest "" y "" smtp.example.org 587 mailer 'p@ss|w&rd\#1 $x' "" "alice@example.org, @example.net" "admin@example.org" "")
-printf '%s\n' "${answers[@]}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
+# the last questions: your own database servers for Sync and the accounts (no, no), the accounts database (mysql), max accounts
+printf '%s\n' "${answers[@]}" "" "" "" 5 | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
 check "$?" 0 "prepare_environment.sh with self-hosted accounts"
 password='p@ss|w&rd\#1 $x'
 check "$(grep -cxF "FXA_SMTP_PASS='${password}'" "${SETUP}/.env")" 1 "SMTP password written as typed"
@@ -172,6 +173,14 @@ check "$(cd "${SETUP}" && docker compose config --services 2> /dev/null | grep -
 check "$(grep -c '^COMPOSE_PROFILES=admin$' "${SETUP}/.env")" 1 "admin UI enabled"
 check "$(grep -c '^MAX_USERS=initial:2$' "${SETUP}/.env")" 1 "max users managed in the admin UI (MAX_USERS=initial:2)"
 check "$(grep -c '^FXA_SIGNUPS=allowlist$' "${SETUP}/.env") $(grep -c '^FXA_SIGNUP_ALLOWLIST=alice@example.org,@example.net$' "${SETUP}/.env")" "1 1" "sign-up allowlist"
+check "$(grep -c '^FXA_MAX_ACCOUNTS=initial:5$' "${SETUP}/.env")" 1 "max accounts managed in the admin UI (FXA_MAX_ACCOUNTS=initial:5)"
+check "$(cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} docker compose config 2> /dev/null | sed -n '/^  fxa-policy:/,/^  [a-z]/p' | grep -cE '^ +FXA_MAX_ACCOUNTS: "?initial:5"?$')" 1 \
+  "fxa-policy gets FXA_MAX_ACCOUNTS"
+# not a number: refused before anything is written
+rm -f "${SETUP}/.env"
+printf '%s\n' "${answers[@]}" "" "" "" lots | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-bad-max.log" 2>&1
+check "$? $(grep -c "max accounts must be a number or unlimited, got 'lots'" "${WORK}/setup-bad-max.log")" "1 1" "prepare_environment.sh refuses max accounts lots"
+printf '%s\n' "${answers[@]}" "" "" "" 5 | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
 check "$(grep -c 'server_name accounts.example.org;' "${SETUP}/config/nginx/fxa.conf")" 1 "nginx example for the accounts"
 check "$(grep -c 'proxy_pass http://127.0.0.1:8091;' "${SETUP}/config/nginx/fxa.conf")" 1 "nginx sends sign-ups to the gate"
 env_value() { grep "^$1=" "${SETUP}/.env" | cut -d= -f2-; }
@@ -223,6 +232,7 @@ check "$(grep -cE 'ADMIN_GATE_EXPORT_PORT|8091' "${SETUP}/config/nginx/fxa.conf"
 check "$(grep -cE 'server_name admin\.|<ADMIN_' "${SETUP}/config/nginx/fxa.conf") [$(env_value ADMIN_FXA_CLIENT_ID)]" "0 []" "no admin UI sign-in without the admin UI"
 check "$(grep -c '^COMPOSE_PROFILES=' "${SETUP}/.env")" 0 "no compose profile without the admin UI"
 check "$(grep -c '^MAX_USERS=2$' "${SETUP}/.env")" 1 "plain MAX_USERS=2 without the admin UI"
+check "$(grep -c '^FXA_MAX_ACCOUNTS=unlimited$' "${SETUP}/.env")" 1 "max accounts unlimited by default, plain without the admin UI"
 check "$(setup_compose config --services | grep -cxE 'fxa-policy|ffs-admin')" 1 "sign-up policy without the admin UI"
 check "$(setup_compose config --services | grep -cx ffs-admin)" 0 "no admin UI service"
 # your own servers for Sync and the accounts: the questions after all the others
@@ -472,6 +482,25 @@ check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'"
 set_env MAX_USERS initial:12
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
 check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "MAX_USERS=initial:12 keeps the value in the database"
+# FXA_MAX_ACCOUNTS the same way (not set here: initial:unlimited); test_fxa_admin.py set it to unlimited on the page
+fxa_max() { fxa_sql "SELECT value FROM ffs.settings WHERE name = 'max_accounts'"; }
+check "$(fxa_max)" unlimited "max accounts set in the admin UI kept (FXA_MAX_ACCOUNTS not set)"
+set_env FXA_MAX_ACCOUNTS 500
+dc run --rm --no-deps fxa-policy > /dev/null 2>&1
+check "$(fxa_max)" 500 "plain FXA_MAX_ACCOUNTS=500 in .env applied over the admin UI"
+set_env FXA_MAX_ACCOUNTS initial:9
+dc run --rm --no-deps fxa-policy > /dev/null 2>&1
+check "$(fxa_max)" 500 "FXA_MAX_ACCOUNTS=initial:9 keeps the value in the database"
+set_env FXA_MAX_ACCOUNTS lots
+dc run --rm --no-deps fxa-policy > "${WORK}/fxa-policy-bad.log" 2>&1
+check "$? $(grep -c 'FXA_MAX_ACCOUNTS="lots" is not valid' "${WORK}/fxa-policy-bad.log")" "1 1" "fxa-policy refuses FXA_MAX_ACCOUNTS=lots, and says why"
+check "$(fxa_max)" 500 "max accounts unchanged by a FXA_MAX_ACCOUNTS not valid"
+# the trigger on its own: full refuses an insert that skips the gate and the auth server
+set_env FXA_MAX_ACCOUNTS initial:unlimited
+fxa_sql "UPDATE ffs.settings SET value = '0' WHERE name = 'max_accounts'" > /dev/null
+check "$(fxa_sql "SELECT ffs.signup_refusal('nobody@example.com'), ffs.signup_allowed('nobody@example.com')" | tr '\t' ' ')" "full 0" "max accounts 0: ffs.signup_refusal says full"
+fxa_sql "UPDATE ffs.settings SET value = 'unlimited' WHERE name = 'max_accounts'" > /dev/null
+check "$(fxa_sql "SELECT COALESCE(ffs.signup_refusal('nobody@example.com'), 'allowed')")" allowed "max accounts unlimited: allowed (@example.com on the list)"
 fi
 
 if [ -z "${RERUN:-}" ] && [ "${FXA_DB_CONTAINERS:-1}" = 1 ] && [ "${DB_CONTAINERS:-1}" = 1 ]; then
