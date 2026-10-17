@@ -577,7 +577,7 @@ What a restore needs, from most to least important:
 
 Optional: add `backup` to `COMPOSE_PROFILES` in `.env` (`COMPOSE_PROFILES=admin,backup`), then `docker compose up -d`. With Quadlets the units are installed already, off: `systemctl --user enable --now firefox-sync-backup.timer`.
 
-Every night at `BACKUP_TIME` (`03:00`, UTC) it dumps each database, with `mariadb-dump --single-transaction --routines --triggers` (MariaDB), `pg_dump --no-owner --no-privileges` (PostgreSQL: the roles the dump would name exist on a new server only after the init container, which gives the grants again at every start; `ffs_admin` also with `--clean --if-exists`, restored over its tables), and for the accounts `mysqldump` (or `mariadb-dump` with `FXA_DB=mariadb`) with the events too and without the trigger of the sign-up policy (`fxa-policy` installs it again at every start, before the accounts service: a copy restored elsewhere does not put it on the real `fxa.accounts`), into `<scope>/<UTC time>/<database>.sql.gz` of the `backups` volume (`<project>_backups`, e.g. `firefox-sync_backups`; `firefox-sync-backups` with Quadlets), `sync/` and `accounts/`. Each file passes `gzip -t` or the run fails; the files are readable by root only (0600). The newest `BACKUP_KEEP` runs (7) stay, older ones go; a failed run leaves nothing and keeps the older copies. It runs in the images of the databases, already on the host (`mariadb:lts`, `postgres:18`, `mysql:8.4`, `mariadb:11.8`), as the stack's users: the tokenserver and storage users, the admin UI's user for its own database (`ffs_admin.sql.gz`), and `FXA_MYSQL_USER` for the accounts. With compose, a backup container that starts after `BACKUP_TIME` and did not run that day runs at once (the first start); with Quadlets the timer catches up after a night the host was off.
+Every night at `BACKUP_TIME` (`03:00`, UTC) it dumps each database, with `mariadb-dump --single-transaction --routines --triggers` (MariaDB), `pg_dump --no-owner --no-privileges` (PostgreSQL: the roles the dump would name exist on a new server only after the init container, which gives the grants again at every start; `ffs_admin` also with `--clean --if-exists`, restored over its tables), and for the accounts `mysqldump` (or `mariadb-dump` with `FXA_DB=mariadb`) with the events too and without the trigger of the sign-up policy (`fxa-policy` installs it again at every start, before the accounts service: a copy restored elsewhere does not put it on the real `fxa.accounts`), into `<scope>/<UTC time>/<database>.sql.gz` of the `backups` volume (`<project>_backups`, e.g. `firefox-sync_backups`; `firefox-sync-backups` with Quadlets), `sync/` and `accounts/`. Each file passes `gzip -t` or the run fails; the files are readable by root only (0600). The newest `BACKUP_KEEP` runs (7) stay, older ones go; a failed run leaves nothing and keeps the older copies. It runs in the images of the databases, already on the host (`mariadb:lts`, `postgres:18`, `mysql:8.4`, `mariadb:11.8`), as the stack's users: the tokenserver and storage users (with PostgreSQL the Sync server's role `POSTGRES_SYNC_USER`, the owner of its tables), the admin UI's user for its own database (`ffs_admin.sql.gz`), and `FXA_MYSQL_USER` for the accounts. With compose, a backup container that starts after `BACKUP_TIME` and did not run that day runs at once (the first start); with Quadlets the timer catches up after a night the host was off.
 
 The Backups card of the overview says all of this with the values of this server: the admin UI gets `BACKUP_TIME` and `BACKUP_KEEP` (and with Quadlets `ADMIN_DEPLOYMENT=quadlets`, for their commands), and describes the volume, which it cannot read, without listing it.
 
@@ -597,7 +597,7 @@ The volume is on the same disk as the databases: a dead disk takes both. Copy it
 
 ```bash
 # docker compose (the volume is named after the directory of the stack)
-docker run --rm -v firefox-sync_backups:/backups:ro -v "$PWD":/out busybox tar -C /backups -czf /out/ffs-backups.tar.gz sync accounts
+docker run --rm -v firefox-sync_backups:/backups:ro -v "$PWD":/out busybox tar -C /backups -czf /out/ffs-backups.tar.gz .
 # Podman (Quadlets)
 podman volume export firefox-sync-backups > ffs-backups.tar
 # and once, after each change: .env and the accounts' keys
@@ -629,30 +629,36 @@ mariadb -h db.example.com -u ffs_admin_ui -p"$ADMIN_DB_PASSWORD" ffs_admin -e \
 
 On the same host or a new one, with the `.env` of the stack (and the `fxa-keys` volume put back, with `tar -x` into it):
 
-1. Stop the stack, `docker compose down` (not `-v`). On a new host, or to start from empty databases, remove their volumes, then start the databases alone: `docker compose up -d tokenserver_db syncstorage_db fxa-db` (`postgres_db` with PostgreSQL).
-2. Pick a run: `docker compose run --rm --no-deps --entrypoint ls backup /backups/sync /backups/accounts`.
-3. The accounts, as the user that made the dumps (`FXA_MYSQL_USER`, root in the stack): the views and procedures of `ffs` carry it as their `DEFINER`, which only that user (or one with `SET_USER_ID`) can restore. `ffs` last, its views read the others; at the next start `fxa-policy` installs the trigger of the sign-up policy again, and the admin UI's user and its grants, before the accounts service starts. With `FXA_DB=mariadb`, `mariadb` instead of `mysql`:
+1. Stop the stack, `docker compose down` (not `-v`). To start from empty databases, remove their volumes (a new host has none yet): `docker volume rm firefox-sync_tokenserver-db firefox-sync_syncstorage-db`; with `SYNC_DB=mysql` `docker volume rm firefox-sync_tokenserver-db-mysql firefox-sync_syncstorage-db-mysql`; with PostgreSQL `docker volume rm firefox-sync_postgres-db`; with self-hosted accounts also `docker volume rm firefox-sync_fxa-db` (`docker volume rm firefox-sync_fxa-db-mariadb` with `FXA_DB=mariadb`). PostgreSQL's dump loads only into an empty database: there, always remove `postgres-db`. The dumps of MariaDB and MySQL drop and create each table again, into the old databases too. On a new host, put the copy of the backups volume back: `docker run --rm -v firefox-sync_backups:/backups -v "$PWD":/in busybox tar -C /backups -xzf /in/ffs-backups.tar.gz` (compose then warns that it did not create that volume: it uses it all the same). Then start the databases alone and wait until they answer: `docker compose up -d --wait tokenserver_db syncstorage_db`; with PostgreSQL `docker compose up -d --wait postgres_db`; with self-hosted accounts add `fxa-db` (its service has that name with `FXA_DB=mariadb` too).
+2. Pick a run: `docker compose run --rm --no-deps --entrypoint ls backup /backups/sync` (and `/backups/accounts` with self-hosted accounts). Each command below checks its file with `gunzip -t` first: without it, a wrong run (or one already pruned by `BACKUP_KEEP`) gives the client an empty input, which it takes as a success.
+3. The accounts, as the user that made the dumps (`FXA_MYSQL_USER`, root in the stack): the views and procedures of `ffs` carry it as their `DEFINER`, which only that user (or one with `SET_ANY_DEFINER`, on MySQL before 8.2 `SET_USER_ID`, on MariaDB `SET USER`) can restore. `ffs` last, its views read the others; at the next start `fxa-policy` installs the trigger of the sign-up policy again, and the admin UI's user and its grants, before the accounts service starts. With `FXA_DB=mariadb`, `mariadb` instead of `mysql`:
 
     ```bash
     docker compose run --rm --no-deps --entrypoint sh backup-fxa -c '
       run=/backups/accounts/20261013T030000Z
       for db in fxa fxa_oauth fxa_profile pushbox ffs; do
         mysql -h "$FXA_DB_HOST" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $db" &&
-        gunzip -c $run/$db.sql.gz | mysql -h "$FXA_DB_HOST" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" $db || exit 1
+        gunzip -t $run/$db.sql.gz && gunzip -c $run/$db.sql.gz | mysql -h "$FXA_DB_HOST" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" $db || exit 1
       done'
     ```
 
-4. The tokenserver, as the tokenserver user (it is the `DEFINER` of the `MAX_USERS` trigger and procedure):
+4. The tokenserver, as the tokenserver user (it is the `DEFINER` of the `MAX_USERS` trigger and procedure). With `SYNC_DB=mysql`, `mysql` instead of `mariadb`:
 
     ```bash
     docker compose run --rm --no-deps --entrypoint sh backup -c '
-      gunzip -c /backups/sync/20261013T030000Z/$TOKENSERVER_DB_NAME.sql.gz |
+      f=/backups/sync/20261013T030000Z/$TOKENSERVER_DB_NAME.sql.gz
+      gunzip -t "$f" && gunzip -c "$f" |
         mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" -p"$TOKENSERVER_DB_PASSWORD" "$TOKENSERVER_DB_NAME"'
-    # PostgreSQL (tokenserver and storage, one database): into the empty database, as
-    # POSTGRES_USER; the dump names no role (pg_dump --no-owner --no-privileges), the init
-    # container gives the tables to the Sync server's role and the grants at the next start
+    # PostgreSQL (tokenserver and storage, one database): into the empty database, as the
+    # Sync server's role POSTGRES_SYNC_USER (TOKENSERVER_DB_USER of the backups, POSTGRES_USER
+    # without it), which this creates first. Not as the superuser: what the dump holds is
+    # that role's, its functions would run with the superuser's rights. The dump names no
+    # role (pg_dump --no-owner --no-privileges), the init container gives the grants at the
+    # next start
+    docker compose run --rm sync_role_init
     docker compose run --rm --no-deps --entrypoint sh backup -c '
-      gunzip -c /backups/sync/20261013T030000Z/$TOKENSERVER_DB_NAME.sql.gz |
+      f=/backups/sync/20261013T030000Z/$TOKENSERVER_DB_NAME.sql.gz
+      gunzip -t "$f" && gunzip -c "$f" |
         PGPASSWORD="$TOKENSERVER_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$TOKENSERVER_DB_USER" -d "$TOKENSERVER_DB_NAME" -v ON_ERROR_STOP=1'
     ```
 
@@ -660,17 +666,20 @@ On the same host or a new one, with the `.env` of the stack (and the `fxa-keys` 
 
     ```bash
     docker compose run --rm --no-deps --entrypoint sh backup -c '
-      gunzip -c /backups/sync/20261013T030000Z/$ADMIN_DB_NAME.sql.gz |
+      f=/backups/sync/20261013T030000Z/$ADMIN_DB_NAME.sql.gz
+      gunzip -t "$f" && gunzip -c "$f" |
         mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
     # PostgreSQL: the init container creates it and the roles, after step 4 (it runs the
-    # migrations first, on the database restored there): docker compose up -d tokenserver_db_init
+    # migrations first, on the database restored there), then exits:
+    docker compose run --rm tokenserver_db_init
     docker compose run --rm --no-deps --entrypoint sh backup -c '
-      gunzip -c /backups/sync/20261013T030000Z/$ADMIN_DB_NAME.sql.gz |
+      f=/backups/sync/20261013T030000Z/$ADMIN_DB_NAME.sql.gz
+      gunzip -t "$f" && gunzip -c "$f" |
         PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'
     ```
 
     A dump of the tokenserver from before `ADMIN_DB_PASSWORD` brings the admin UI's old tables back there: they are not copied again (the setup check names them), drop them as the tokenserver user.
-6. The storage: prefer to leave it empty. A copy of last night is older than what the browsers have: Firefox gets items back that were changed or deleted since. With the storage empty (a new `syncstorage-db` volume, or [Reset the Sync data](#sync-data-of-an-account) of each account after the restore) each Firefox finds the server empty and uploads what it has. Restore it only when no device has the data any more, as above with `$STORAGE_DB_NAME`, `$STORAGE_DB_USER` and `$STORAGE_DB_PASSWORD`.
+6. The storage: prefer to leave it empty. A copy of last night is older than what the browsers have: Firefox gets items back that were changed or deleted since. With the storage empty (a new `syncstorage-db` volume, or [Reset the Sync data](#sync-data-of-an-account) of each account after the restore) each Firefox finds the server empty and uploads what it has. Restore it only when no device has the data any more, as in step 4 with `$STORAGE_DB_NAME`, `$STORAGE_DB_HOST`, `$STORAGE_DB_USER` and `$STORAGE_DB_PASSWORD`. With PostgreSQL the storage is in the one dump of step 4, it comes back with the tokenserver: reset the Sync data of each account afterwards to have it empty.
 7. `docker compose up -d`. The migrations bring an older schema up to date; the overview records the change of the schema levels (an event of kind `update`).
 
 With Quadlets, stop every unit but the databases, including the one-shot units that ran at start (they stay "active" and would not run again):
@@ -687,6 +696,7 @@ systemctl --user stop firefox-sync-fxa-content.service firefox-sync-fxa-profile.
 Then read each file out of the volume into the database container, as its own user:
 
 ```bash
+set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore
 run=20261013T030000Z
 dump() { podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts gunzip -c "/backups/$1"; }
 for db in fxa fxa_oauth fxa_profile pushbox ffs; do   # MariaDB accounts: mariadb and $MARIADB_ROOT_PASSWORD
@@ -695,7 +705,11 @@ for db in fxa fxa_oauth fxa_profile pushbox ffs; do   # MariaDB accounts: mariad
 done
 dump sync/$run/tokenserver.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
 dump sync/$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c 'mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+# only when no device has the data any more (step 6 above)
+dump sync/$run/syncstorage.sql.gz | podman exec -i firefox-sync-syncstorage-db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
 ```
+
+With `SYNC_DB=mysql` the Sync databases take `mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"`. The files are named after the databases of `.env` (`MARIADB_TOKENSERVER_DATABASE`, `MARIADB_SYNCSTORAGE_DATABASE`).
 
 Start them again as at install: the Sync server and the accounts' units pull in the one-shot ones. `firefox-sync-fxa-policy.service` must run again: the dump of `fxa` has no trigger of the sign-up policy, and without it only the admin UI's gate holds closed or allowlist sign-ups.
 
@@ -718,7 +732,7 @@ docker compose run --rm --no-deps --entrypoint sh backup-fxa -c '
   $db -e "DROP DATABASE ffs_restore_test"'
 ```
 
-The two counts match (or the restored one is a bit lower: accounts created since the night). The tokenserver user cannot create databases: for the Sync databases `gzip -t` is checked at every run; the full test is a restore on another machine, with a copy of `.env`.
+The two counts match (or the restored one is a bit lower: accounts created since the night). The tokenserver user cannot create databases: for the Sync databases `gzip -t` is checked at every run; the full test is a restore on another machine, with a copy of `.env` (what `tests/e2e.sh` does, see [Tests](#tests)).
 
 ## Confirm pages
 
@@ -744,10 +758,10 @@ The accounts service limits sign-in attempts per client IP address, which it tak
 
 A real Firefox follows the link of an invitation (the sign-up page with the email), checks the error shown for a refused sign-up, that the admin UI lists its two devices and its bookmarks, fits a 360 pixel wide screen, and disables the account through the confirm page with the CSP enforced ([`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py)).
 
-[`tests/e2e.sh`](/tests/e2e.sh) and [`tests/podman.sh`](/tests/podman.sh) check max users with `MAX_USERS=N` (set again on every start, read-only page), `MAX_USERS=initial:N` (set on the page, kept across restarts), `unlimited` (the trigger lets everybody in, also from the page's "No limit") and `0` (nobody new), that the UI and the gate start with compose and Quadlets and reach every component (Prometheus `ffs_up`), the container healthcheck, signing in over `http://localhost` with the default cookie, that the Sync server sends its metrics (and is restarted with a new admin UI container), the pruning of old metrics and events (the audit trail kept longer), the event filters and pages, a label on an account of Mozilla's accounts, the tokenserver rows after a key change and the search by tokenserver uid, resetting the Sync data (one collection, all of it, freeing the slot) and syncing again, the storage report and a purge of expired items and replaced keys that leaves the live data, deleting the Sync data of an account id, the schema levels, the setup checks (an account of another email domain is a warning), the accounts per node, the Connect a device page, no SMTP row without `FXA_SMTP_HOST` and no public checks with `ADMIN_PUBLIC_CHECK=false`, a Sync server going down and back up, that the logs have no background errors, and with `COMPOSE_PROFILES=backup` and `BACKUP_KEEP=1` two backup runs (recorded, one copy kept, the dumps passing `gzip -t`, 0600), a failed run (recorded, its event and alert, then "works again"), the backup line on the overview and `ffs_backup_age_seconds`, the line of a full max users (its health row, gauges and event), the search by tokenserver uid; with `EXTERNAL_DB=1` the INSERT of your own backups. Both start as an install from before `ADMIN_DB_PASSWORD` (the admin UI's tables in the tokenserver database; `e2e.sh` with `UPGRADE_FROM` runs that release itself, its compose files, admin UI and init image), add an audit event, a note and a backup run there, then upgrade (`podman.sh` with `prepare_environment.sh --upgrade`): the tables move into `ffs_admin` once (also after a restart), the old ones are dropped, and the Sync server's users cannot read, add to or delete from the event log (`e2e.sh`: with MariaDB, MySQL, PostgreSQL and your own servers; in the stack's PostgreSQL container the Sync server's own role, no superuser, owns the Sync tables and cannot connect to `ffs_admin`). The admin UI's reader `ffs_admin_sync` cannot change the tokenserver's tables but through the init container's procedures and cannot read the event log, `ffs_admin_ui` cannot read the Sync databases, and a procedure (MariaDB, MySQL) or function (PostgreSQL) the Sync server's user puts in place of the init container's, with `SQL SECURITY INVOKER`, cannot delete the audit trail or open `ffs_admin` when the admin UI runs it; the init container puts its own back. A new install has the admin UI's users from the first start of the database containers (MySQL: through `mysqld --initialize`). The backups dump `ffs_admin` with the audit trail, the dump restores as `ffs_admin_ui` over its tables, and with PostgreSQL the dump of the Sync database names no role and restores into an empty database with `ON_ERROR_STOP`.
+[`tests/e2e.sh`](/tests/e2e.sh) and [`tests/podman.sh`](/tests/podman.sh) check max users with `MAX_USERS=N` (set again on every start, read-only page), `MAX_USERS=initial:N` (set on the page, kept across restarts), `unlimited` (the trigger lets everybody in, also from the page's "No limit") and `0` (nobody new), that the UI and the gate start with compose and Quadlets and reach every component (Prometheus `ffs_up`), the container healthcheck, signing in over `http://localhost` with the default cookie, that the Sync server sends its metrics (and is restarted with a new admin UI container), the pruning of old metrics and events (the audit trail kept longer), the event filters and pages, a label on an account of Mozilla's accounts, the tokenserver rows after a key change and the search by tokenserver uid, resetting the Sync data (one collection, all of it, freeing the slot) and syncing again, the storage report and a purge of expired items and replaced keys that leaves the live data, deleting the Sync data of an account id, the schema levels, the setup checks (an account of another email domain is a warning), the accounts per node, the Connect a device page, no SMTP row without `FXA_SMTP_HOST` and no public checks with `ADMIN_PUBLIC_CHECK=false`, a Sync server going down and back up, that the logs have no background errors, and with `COMPOSE_PROFILES=backup` and `BACKUP_KEEP=1` two backup runs (recorded, one copy kept, the dumps passing `gzip -t`, 0600), a failed run (recorded, its event and alert, then "works again"), the backup line on the overview and `ffs_backup_age_seconds`, the line of a full max users (its health row, gauges and event), the search by tokenserver uid; with `EXTERNAL_DB=1` the INSERT of your own backups. Both start as an install from before `ADMIN_DB_PASSWORD` (the admin UI's tables in the tokenserver database; `e2e.sh` with `UPGRADE_FROM` runs that release itself, its compose files, admin UI and init image), add an audit event, a note and a backup run there, then upgrade (`podman.sh` with `prepare_environment.sh --upgrade`): the tables move into `ffs_admin` once (also after a restart), the old ones are dropped, and the Sync server's users cannot read, add to or delete from the event log (`e2e.sh`: with MariaDB, MySQL, PostgreSQL and your own servers; in the stack's PostgreSQL container the Sync server's own role, no superuser, owns the Sync tables and cannot connect to `ffs_admin`). The admin UI's reader `ffs_admin_sync` cannot change the tokenserver's tables but through the init container's procedures and cannot read the event log, `ffs_admin_ui` cannot read the Sync databases, and a procedure (MariaDB, MySQL) or function (PostgreSQL) the Sync server's user puts in place of the init container's, with `SQL SECURITY INVOKER`, cannot delete the audit trail or open `ffs_admin` when the admin UI runs it; the init container puts its own back. A new install has the admin UI's users from the first start of the database containers (MySQL: through `mysqld --initialize`). The backups dump `ffs_admin` with the audit trail, the dump restores as `ffs_admin_ui` over its tables, and with PostgreSQL the dump of the Sync database names no role and restores into an empty database with `ON_ERROR_STOP`. At the end they restore a backup the way [Restoring](#restoring) says, as on a new host: two accounts store their data, the backups volume is copied off the host, the stack goes down, the volumes of the databases and of the backups are removed, the copy is put back, and each dump is loaded into the empty databases as its user; then every table has the same rows, the triggers and procedures are back, and after `docker compose up -d` the two accounts get their uids and read back what they stored (MariaDB, MySQL 8.4 and PostgreSQL).
 
 `tests/e2e.sh` also signs in through [Dex](https://dexidp.io) with OpenID Connect and with a trusted header ([`tests/test_admin_auth.py`](/tests/test_admin_auth.py)): an allowed user or group gets in, anybody else, a replayed callback, a tampered state or code are refused, a header that changes or disappears ends the session, forms need the session token, and the event log says who signed in and how.
 
-`tests/podman.sh` checks the backup timer (installed, off) and a backup by hand with the Quadlets, with the accounts too, and that the admin UI quadlets get `BACKUP_TIME`, `BACKUP_KEEP`, `ADMIN_DEPLOYMENT=quadlets` and `FXA_MAX_ACCOUNTS` (fxa-policy too).
+`tests/podman.sh` checks the backup timer (installed, off) and a backup by hand with the Quadlets, with the accounts too, a restore of the Sync databases as Restoring says for the Quadlets (the units stopped, rows deleted, the dumps read out of the volume into the database containers: every table as it was, the units started again), and that the admin UI quadlets get `BACKUP_TIME`, `BACKUP_KEEP`, `ADMIN_DEPLOYMENT=quadlets` and `FXA_MAX_ACCOUNTS` (fxa-policy too).
 
 The program itself has unit tests (`cd admin && go test ./...`): the age and failure of the backups and their alerts, each line of Needs attention, the thresholds and the limits alerting once per state, the limits' values, rows and forms, that every POST form of the pages is either behind a confirm page or one of the one-click forms above, the paging and the search.

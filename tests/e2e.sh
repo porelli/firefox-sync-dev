@@ -5,7 +5,8 @@
 # Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL 8.4
 # Runs with the admin UI and the backups (COMPOSE_PROFILES=admin,backup, BACKUP_KEEP=1; with
 # EXTERNAL_DB=1 the admin UI only, your own backups record their runs), with Mozilla's accounts
-# (mock): Sync part only.
+# (mock): Sync part only. At the end a backup is restored as ADMIN.md#restoring says, into
+# empty volumes (not with EXTERNAL_DB=1).
 # The admin UI signs in with its password, Dex (OpenID Connect) and a trusted header.
 # Environment:
 #   REPOSITORY      image repository (default: ghcr.io/porelli/firefox-sync)
@@ -213,7 +214,7 @@ old_tables() {
 # run a command in a one-off container of the app image, on the stack network
 in_app() {
   dc run --rm -T --no-deps --user root \
-    -v "${TESTS}:/tests:ro" \
+    -v "${TESTS}:/tests:ro" -v "${WORK}:/state" \
     -e SYNC_SERVER_URL=http://syncstorage:8000 \
     -e TOKENSERVER_HOST=http://syncstorage:8000 \
     -e SYNC_MASTER_SECRET="${MASTER_SECRET}" \
@@ -300,6 +301,8 @@ teardown() {
   [ -n "${KEEP:-}" ] && { echo "keeping stack ${PROJECT} (env: ${ENV_FILE})${EXTDB:+ and its database server ${EXTDB}}"; return; }
   echo "== teardown"
   dc down -v --remove-orphans > /dev/null 2>&1
+  # the backups volume put back by the restore test is not compose's
+  docker volume rm -f "${PROJECT}_backups" > /dev/null 2>&1
   if [ -n "${EXTDB}" ]; then
     docker rm -f "${EXTDB}" > /dev/null 2>&1
     docker network rm "${EXTDB}" > /dev/null 2>&1
@@ -309,6 +312,7 @@ teardown() {
     [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
     [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
     [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mysql:8.4' && docker rmi mysql:8.4 > /dev/null 2>&1
+    docker rmi busybox > /dev/null 2>&1
   fi
   rm -rf "${WORK}"
 }
@@ -816,6 +820,150 @@ check "$(dc logs syncstorage 2>&1 | grep -c 'Sending metrics to the admin UI')" 
 sql "DELETE FROM users;" > /dev/null
 pytest_in_app "/tests/test_client_flow.py -k first_sign_in"
 check "$?" 0 "a first sign-in and sync without the admin UI"
+
+if [ -z "${EXTDB}" ]; then
+  echo "== a backup restores, the way ADMIN.md#restoring says, on a new host (empty volumes)"
+  # the storage database (MariaDB, MySQL): PostgreSQL has one database, sql's
+  sql_storage() { dc exec -T -e MYSQL_PWD="${MARIADB_SYNCSTORAGE_PASSWORD}" syncstorage_db "${DB_CLIENT}" -u"${MARIADB_SYNCSTORAGE_USER}" "${MARIADB_SYNCSTORAGE_DATABASE}" -sN -e "$1" < /dev/null; }
+  # every table of a database with its rows, its triggers and procedures: <sql function>
+  inventory() {
+    local q t
+    if [ "${BACKEND}" = mysql ]; then
+      q="SELECT 'triggers', COUNT(*) FROM information_schema.triggers WHERE trigger_schema = DATABASE()
+         UNION ALL SELECT 'routines', COUNT(*) FROM information_schema.routines WHERE routine_schema = DATABASE()"
+      for t in $("$1" "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE';"); do
+        q="${q} UNION ALL SELECT '${t}', COUNT(*) FROM \`${t}\`"
+      done
+    else
+      q="SELECT 'triggers', COUNT(*) FROM information_schema.triggers WHERE trigger_schema = 'public'
+         UNION ALL SELECT 'routines', COUNT(*) FROM information_schema.routines WHERE routine_schema = 'public'"
+      for t in $("$1" "SELECT tablename FROM pg_tables WHERE schemaname = 'public';"); do
+        q="${q} UNION ALL SELECT '${t}', COUNT(*) FROM \"${t}\""
+      done
+    fi
+    "$1" "${q} ORDER BY 1;" | tr '\t|' '  '
+  }
+  databases() {
+    inventory sql | sed 's/^/tokenserver /'
+    [ "${BACKEND}" = mysql ] && inventory sql_storage | sed 's/^/storage /'
+  }
+  # Sync data of two accounts (tests/migrate_client.py: their uids and collections to
+  # /state), then nothing writes: the databases hold what the dump holds. Without the
+  # tokenserver rows of before (alice signed in with other keys), their storage stays
+  sql "DELETE FROM users;" > /dev/null
+  in_app "python3 /tests/migrate_client.py write"
+  check "$?" 0 "Sync data of two accounts before the backup"
+  dc stop ffs-admin syncstorage > /dev/null 2>&1
+  BEFORE=$(databases) EVENTS=$(admin_sql "SELECT COUNT(*) FROM ffs_events;")
+  echo "${BEFORE}" | paste -sd' ' | fold -s -w 110 | sed 's/^/  /'
+  check "$(echo "${BEFORE}" | grep -cE '^tokenserver users [1-9]|^(tokenserver|storage) bsos? [1-9]')" 2 "tokenserver users and Sync items to back up"
+  dc exec -T backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1
+  check "$?" 0 "the backup of the Sync data"
+  # copied off the host, as ADMIN.md#copy-them-off-the-host says, put back on the new one
+  docker run --rm -v "${PROJECT}_backups:/backups:ro" -v "${WORK}:/out" busybox tar -C /backups -czf /out/ffs-backups.tar.gz . > /dev/null 2>&1
+  check "$?" 0 "the backups volume copied off the host"
+
+  # the commands of ADMIN.md#restoring, as it writes them (firefox-sync_ the project,
+  # 20261013T030000Z the run): each is checked to be there word for word, then run
+  ADMIN_MD=$(sed 's/^ *//' "${CODE}/ADMIN.md")
+  # shellcheck disable=SC2001
+  documented() { [[ "${ADMIN_MD}" == *"$(sed 's/^ *//' <<< "$1")"* ]] && echo yes || echo "not in ADMIN.md: $1"; }
+  as_here() { sed -e "s/firefox-sync_/${PROJECT}_/g" -e "s/20261013T030000Z/${2:-${RUN:-}}/g" -e 's/^docker compose /dc /' <<< "$1"; }
+  # 1. the stack down, the databases' volumes gone (a new host), the copy of the backups
+  # volume put back, the databases alone
+  if [ "${BACKEND}" = postgres ]; then
+    DBS=(postgres_db) VOLUMES=(postgres-db)
+  elif [ "${SYNC_DB}" = mysql ]; then
+    DBS=(tokenserver_db syncstorage_db) VOLUMES=(tokenserver-db-mysql syncstorage-db-mysql)
+  else
+    DBS=(tokenserver_db syncstorage_db) VOLUMES=(tokenserver-db syncstorage-db)
+  fi
+  RM="docker volume rm ${VOLUMES[*]/#/firefox-sync_}"
+  # shellcheck disable=SC2016 # (expanded where they run: by eval here, in the container)
+  PUT_BACK='docker run --rm -v firefox-sync_backups:/backups -v "$PWD":/in busybox tar -C /backups -xzf /in/ffs-backups.tar.gz'
+  UP="docker compose up -d --wait ${DBS[*]}"
+  LS='docker compose run --rm --no-deps --entrypoint ls backup /backups/sync'
+  for c in "${RM}" "${PUT_BACK}" "${UP}" "${LS}"; do check "$(documented "\`${c}\`")" yes "ADMIN.md#restoring says \`${c}\`"; done
+  dc down > /dev/null 2>&1
+  eval "$(as_here "${RM}")" > /dev/null && docker volume rm "${PROJECT}_backups" > /dev/null
+  check "$?" 0 "the volumes of the databases removed (${RM}), and the backups' (a new host)"
+  (cd "${WORK}" && eval "$(as_here "${PUT_BACK}")") > /dev/null 2>&1
+  check "$?" 0 "the copy put back into a new backups volume"
+  eval "$(as_here "${UP}")" > /dev/null 2>&1
+  check "$?" 0 "the databases alone, empty (${UP})"
+  check "$(sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'users' AND table_schema NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys', 'pg_catalog');")" 0 "no tokenserver tables before the restore"
+  # 2. the run
+  RUN=$(eval "$(as_here "${LS}")" < /dev/null 2> /dev/null | tail -1)
+  check "$(echo "${RUN}" | grep -cE '^[0-9]{8}T[0-9]{6}Z$')" 1 "a run to restore in the backups volume: ${RUN}"
+  # 4. the tokenserver (with PostgreSQL the one database), 6. the storage: "as in step 4 with
+  # $STORAGE_DB_NAME..."; with SYNC_DB=mysql "mysql instead of mariadb"
+  # shellcheck disable=SC2016
+  if [ "${BACKEND}" = postgres ]; then
+    LOAD='PGPASSWORD="$TOKENSERVER_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$TOKENSERVER_DB_USER" -d "$TOKENSERVER_DB_NAME" -v ON_ERROR_STOP=1'
+  else
+    LOAD='mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" -p"$TOKENSERVER_DB_PASSWORD" "$TOKENSERVER_DB_NAME"'
+  fi
+  RESTORE="docker compose run --rm --no-deps --entrypoint sh backup -c '
+    f=/backups/sync/20261013T030000Z/\$TOKENSERVER_DB_NAME.sql.gz
+    gunzip -t \"\$f\" && gunzip -c \"\$f\" |
+      ${LOAD}'"
+  check "$(documented "${RESTORE}")" yes "ADMIN.md#restoring step 4 as run here"
+  if [ "${BACKEND}" = postgres ]; then
+    # the dump is loaded as the Sync server's role (TOKENSERVER_DB_USER of the backups): first
+    # the role, in the empty database
+    ROLE='docker compose run --rm sync_role_init'
+    check "$(documented "${ROLE}")" yes "ADMIN.md#restoring says \`${ROLE}\`"
+    eval "$(as_here "${ROLE}")" < /dev/null >> "${WORK}/restore.log" 2>&1
+    check "$?" 0 "the Sync server's role in the empty database"
+  fi
+  restore() { # TOKENSERVER|STORAGE [run]
+    local c
+    c=$(as_here "${RESTORE}" "${2:-}" | sed -e "s/TOKENSERVER_DB_/$1_DB_/g" -e "s/^\( *\)mariadb /\1${DB_CLIENT} /")
+    eval "${c}" < /dev/null >> "${WORK}/restore.log" 2>&1
+  }
+  # a run that is not there (pruned, mistyped) fails, nothing loaded
+  restore TOKENSERVER 20000101T000000Z || echo failed > "${WORK}/missing-run"
+  check "$(cat "${WORK}/missing-run" 2> /dev/null)" failed "a restore of a run that is not there fails"
+  check "$(sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'users' AND table_schema NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys', 'pg_catalog');")" 0 "and loads nothing"
+  restore TOKENSERVER
+  check "$?" 0 "the tokenserver restored as its user"
+  if [ "${BACKEND}" = mysql ]; then
+    restore STORAGE
+    check "$?" 0 "the storage restored as its user"
+  fi
+  [ "${FAILED}" = 0 ] || tail -20 "${WORK}/restore.log"
+  # what the dump had, before the init container and the admin UI touch it
+  AFTER=$(databases)
+  check "${AFTER}" "${BEFORE}" "the same rows in every table, the same triggers and procedures"
+  # 5. the admin UI's database, as its user: the database containers made it empty at their
+  # start, with PostgreSQL the init container does, once the tokenserver is back
+  # shellcheck disable=SC2016
+  if [ "${BACKEND}" = postgres ]; then
+    INIT='docker compose run --rm tokenserver_db_init'
+    check "$(documented "${INIT}")" yes "ADMIN.md#restoring says \`${INIT}\`"
+    eval "$(as_here "${INIT}")" < /dev/null >> "${WORK}/restore.log" 2>&1
+    check "$?" 0 "the init container makes the admin UI's database again"
+    LOAD='PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'
+  else
+    LOAD='mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+  fi
+  RESTORE="docker compose run --rm --no-deps --entrypoint sh backup -c '
+    f=/backups/sync/20261013T030000Z/\$ADMIN_DB_NAME.sql.gz
+    gunzip -t \"\$f\" && gunzip -c \"\$f\" |
+      ${LOAD}'"
+  check "$(documented "${RESTORE}")" yes "ADMIN.md#restoring step 5 as run here"
+  eval "$(as_here "${RESTORE}" | sed "s/^\( *\)mariadb /\1${DB_CLIENT} /")" < /dev/null >> "${WORK}/restore.log" 2>&1
+  check "$?" 0 "the admin UI's database restored as its user"
+  check "$(admin_sql "SELECT COUNT(*) FROM ffs_events;")" "${EVENTS}" "the event log of the dump"
+  # 7. the whole stack
+  dc up -d > /dev/null 2>&1
+  check "$(wait_init)" 0 "init container exit code (restored)"
+  check "$(state syncstorage_migrate ExitCode)" 0 "migrate container exit code (restored)"
+  check "$(hb)" 200 "/__heartbeat__ after the restore"
+  in_app "python3 /tests/migrate_client.py check"
+  check "$?" 0 "the same accounts, uids and items after the restore"
+  check "$(admin_healthy)" healthy "admin UI healthy after the restore"
+fi
 
 RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL 8.4)")
 [ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"

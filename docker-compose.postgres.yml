@@ -248,8 +248,10 @@ services:
       TOKENSERVER_DB_HOST: ${POSTGRES_SERVER}
       TOKENSERVER_DB_PORT: ${POSTGRES_SERVER_PORT}
       TOKENSERVER_DB_NAME: ${POSTGRES_DATABASE}
-      TOKENSERVER_DB_USER: ${POSTGRES_USER}
-      TOKENSERVER_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # as the Sync server's own role, the owner of every table (ADMIN.md#restoring loads the
+      # dump as it too); without POSTGRES_SYNC_USER POSTGRES_USER
+      TOKENSERVER_DB_USER: ${POSTGRES_SYNC_USER:-${POSTGRES_USER}}
+      TOKENSERVER_DB_PASSWORD: ${POSTGRES_SYNC_PASSWORD:-${POSTGRES_PASSWORD}}
       # the admin UI's database: dumped too, and where the runs are recorded
       ADMIN_DB_USER: ${ADMIN_DB_USER:-ffs_admin_ui}
       ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}

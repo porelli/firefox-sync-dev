@@ -356,6 +356,76 @@ check "$(admin_db_sql "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND
 check "$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" && basename "$f"; done' | sort | paste -sd' ')" \
   "ffs_admin.sql.gz syncstorage.sql.gz tokenserver.sql.gz" "the dumps in the firefox-sync-backups volume (quadlets)"
 [ "${FAILED}" = 0 ] || journalctl --user -u firefox-sync-backup.service --no-pager | tail -20
+
+echo "== a backup restores, the way ADMIN.md#restoring says for the Quadlets"
+st_sql() { podman exec -e MYSQL_PWD="$(grep '^MARIADB_SYNCSTORAGE_PASSWORD=' .env | cut -d= -f2)" firefox-sync-syncstorage-db \
+  sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -u"$(grep '^MARIADB_SYNCSTORAGE_USER=' .env | cut -d= -f2)" "$(grep '^MARIADB_SYNCSTORAGE_DATABASE=' .env | cut -d= -f2)" -sN -e "$1"; }
+# every table of a database with its rows, its triggers and procedures: <sql function>
+inventory() {
+  local q t
+  q="SELECT 'triggers', COUNT(*) FROM information_schema.triggers WHERE trigger_schema = DATABASE()
+     UNION ALL SELECT 'routines', COUNT(*) FROM information_schema.routines WHERE routine_schema = DATABASE()"
+  for t in $("$1" "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE';"); do
+    q="${q} UNION ALL SELECT '${t}', COUNT(*) FROM \`${t}\`"
+  done
+  "$1" "${q} ORDER BY 1;" | tr '\t' ' '
+}
+ts_sql "INSERT INTO users (service, email, generation, client_state, created_at, nodeid) SELECT service, 'restore@ffs-e2e.invalid', 1, 'aa', 1, id FROM nodes LIMIT 1;"
+# Sync items of that user, as the Sync server writes them (no client here): payloads with
+# quotes, a backslash and a line break, which the dump has to carry as they are (Firefox's
+# are encrypted JSON, ASCII)
+uid=$(ts_sql "SELECT uid FROM users WHERE email = 'restore@ffs-e2e.invalid'")
+st_sql "SET @c = (SELECT id FROM collections WHERE name = 'bookmarks'), @m = UNIX_TIMESTAMP() * 1000;
+  INSERT INTO user_collections (userid, collection, last_modified) VALUES (${uid}, @c, @m);
+  INSERT INTO bso (userid, collection, id, payload, payload_size, modified, ttl) VALUES
+    (${uid}, @c, 'restore-1', '{\"ciphertext\":\"it''s \\\\ ok\"}', 30, @m, @m + 86400000),
+    (${uid}, @c, 'restore-2', CONCAT('line', CHAR(10), 'break'), 20, @m, @m + 86400000);"
+payloads() { st_sql "SELECT MD5(GROUP_CONCAT(id, ':', payload ORDER BY id SEPARATOR '|')) FROM bso"; }
+PAYLOADS=$(payloads)
+# the units stopped as ADMIN.md says (nothing writes: the databases hold what the dump holds)
+systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service \
+  firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service
+BEFORE=$(inventory ts_sql | sed 's/^/tokenserver /'; inventory st_sql | sed 's/^/storage /')
+check "$(echo "${BEFORE}" | grep -cE '^tokenserver users 1$|^storage collections [1-9]|^storage bso 2$')" 3 "a tokenserver user, the storage's collections and 2 Sync items to back up (quadlets)"
+timeout 300 systemctl --user start firefox-sync-backup.service
+check "$?" 0 "a backup with the units stopped (quadlets)"
+# what the restore has to bring back
+EVENTS=$(admin_db_sql "SELECT COUNT(*) FROM ffs_events")
+ts_sql "DELETE FROM users;"
+admin_db_sql "DELETE FROM ffs_events;"
+st_sql "DELETE FROM bso; DELETE FROM user_collections; DELETE FROM collections;"
+check "$(ts_sql 'SELECT COUNT(*) FROM users')-$(st_sql 'SELECT COUNT(*) FROM collections')-$(st_sql 'SELECT COUNT(*) FROM bso')" 0-0-0 "rows deleted before the restore (quadlets)"
+# the newest run, read out of the volume into each database container, as its own user
+run=$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts ls /backups/sync | tail -1)
+dump() { podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts gunzip -c "/backups/$1"; }
+# shellcheck disable=SC2016 # (expanded in the database container)
+if [ "${SYNC_DB}" = mysql ]; then load='mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'; else load='mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'; fi
+# with set -o pipefail, as ADMIN.md says: a run that is not there fails, instead of loading nothing
+check "$(grep -cxF 'set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore' ADMIN.md)" 1 "ADMIN.md's Quadlet restore sets pipefail"
+missing=$( (set -o pipefail; dump "sync/20000101T000000Z/tokenserver.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${load}") >> restore.log 2>&1 || echo failed)
+check "${missing}" failed "a restore of a run that is not there fails (quadlets)"
+for db in tokenserver syncstorage; do
+  (set -o pipefail; dump "sync/${run}/${db}.sql.gz" | podman exec -i "firefox-sync-${db}-db" sh -c "${load}") >> restore.log 2>&1
+  check "$?" 0 "${db} restored from ${run} as its user (quadlets)"
+done
+# the admin UI's database, as its user (the line of ADMIN.md, the client of the image)
+# shellcheck disable=SC2016
+admin_load='mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+check "$(grep -cF "dump sync/\$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c '${admin_load}'" ADMIN.md)" 1 "ADMIN.md's Quadlet restore of the admin UI's database"
+[ "${SYNC_DB}" = mysql ] && admin_load=${admin_load/#mariadb/mysql}
+(set -o pipefail; dump "sync/${run}/ffs_admin.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${admin_load}") >> restore.log 2>&1
+check "$?" 0 "ffs_admin restored from ${run} as its user (quadlets)"
+check "$(admin_db_sql "SELECT COUNT(*) FROM ffs_events")" "${EVENTS}" "the event log as it was (quadlets)"
+check "$(inventory ts_sql | sed 's/^/tokenserver /'; inventory st_sql | sed 's/^/storage /')" "${BEFORE}" \
+  "the same rows in every table, the same triggers and procedures (quadlets)"
+check "$(payloads)" "${PAYLOADS}" "the Sync items' payloads as they were (quadlets)"
+[ "${FAILED}" = 0 ] || tail -20 restore.log
+timeout 900 systemctl --user start firefox-sync-syncstorage.service
+check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service (restored)"
+check "$(hb)" 200 "/__heartbeat__ after the restore (quadlets)"
+check "$(ts_sql "SELECT COUNT(*) FROM users WHERE email = 'restore@ffs-e2e.invalid'") $(systemctl --user is-active firefox-sync-admin.service)" "1 active" \
+  "the restored user kept by the init, the admin UI started again (quadlets)"
+
 if [ "${FAILED}" != 0 ]; then
   tail -20 quadlet-dryrun.log
   journalctl --user -u 'firefox-sync-*' --no-pager | tail -60
