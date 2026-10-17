@@ -1,0 +1,12 @@
+Firefox Sync is starting: the pod {{ include "firefox-sync.fullname" . }}-syncstorage serves
+once the migrations and the MAX_USERS init ({{ .Values.maxUsers }}) succeeded.
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Publish {{ include "firefox-sync.fullname" . }}-syncstorage:{{ .Values.syncstorage.service.port }} at {{ .Values.syncDomain }}
+(your Ingress or reverse proxy), then point Firefox to the token server
+
+  {{ trimSuffix "/" .Values.syncDomain }}/1.0/sync/1.5
+
+as identity.sync.tokenserver.uri in about:config, see
+https://github.com/porelli/firefox-sync/blob/main/SYNC.md#firefox-setup

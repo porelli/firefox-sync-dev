@@ -81,9 +81,9 @@ Accepts a dict with "root" (the root context) and "name" (syncstorage|init|admin
 {{/*
 Return the database host for tokenserver or storage
 Accepts a dict with "root" (the root context) and "db" (tokenserver|storage)
-For bundled databases:
-  - mariadb/mysql: tokenserver_db and syncstorage_db (separate databases)
-  - postgres: postgres_db (shared database)
+For bundled databases (the Services of databases.yaml):
+  - mariadb/mysql: <fullname>-tokenserver-db and <fullname>-storage-db (separate databases)
+  - postgres: <fullname>-postgres (shared database)
 For external databases: use the configured host
 */}}
 {{- define "firefox-sync.dbHost" -}}
@@ -93,12 +93,12 @@ For external databases: use the configured host
 {{- if $root.Values.database.bundled }}
 {{- $fullname := include "firefox-sync.fullname" $root }}
 {{- if eq $backend "postgres" }}
-{{- printf "%s-postgres-db" $fullname }}
+{{- printf "%s-postgres" $fullname }}
 {{- else }}
 {{- if eq $db "tokenserver" }}
 {{- printf "%s-tokenserver-db" $fullname }}
 {{- else }}
-{{- printf "%s-syncstorage-db" $fullname }}
+{{- printf "%s-storage-db" $fullname }}
 {{- end }}
 {{- end }}
 {{- else }}
@@ -218,5 +218,107 @@ Return the name of the secret containing database passwords
 {{- .Values.existingSecret }}
 {{- else }}
 {{- include "firefox-sync.fullname" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+The Secret key holding the password of the tokenserver or storage database user
+Accepts a dict with "root" and "db" (tokenserver|storage)
+*/}}
+{{- define "firefox-sync.dbPasswordKey" -}}
+{{- if eq .root.Values.database.backend "postgres" }}
+{{- print "POSTGRES_PASSWORD" }}
+{{- else if eq .db "tokenserver" }}
+{{- print "TOKENSERVER_DB_PASSWORD" }}
+{{- else }}
+{{- print "STORAGE_DB_PASSWORD" }}
+{{- end }}
+{{- end }}
+
+{{/*
+An env entry read from the chart's Secret
+Accepts a dict with "root", "name" (the env var) and "key" (the Secret key)
+*/}}
+{{- define "firefox-sync.secretEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "firefox-sync.secretName" .root }}
+      key: {{ .key }}
+{{- end }}
+
+{{/*
+The env vars named like the Secret keys of the database passwords, referenced as $(VAR)
+by firefox-sync.dbUrl: they must come before the URLs in every container
+*/}}
+{{- define "firefox-sync.dbPasswordEnv" -}}
+{{- if eq .Values.database.backend "postgres" }}
+{{- include "firefox-sync.secretEnv" (dict "root" . "name" "POSTGRES_PASSWORD" "key" "POSTGRES_PASSWORD") }}
+{{- else }}
+{{- include "firefox-sync.secretEnv" (dict "root" . "name" "TOKENSERVER_DB_PASSWORD" "key" "TOKENSERVER_DB_PASSWORD") }}
+{{ include "firefox-sync.secretEnv" (dict "root" . "name" "STORAGE_DB_PASSWORD" "key" "STORAGE_DB_PASSWORD") }}
+{{- end }}
+{{- end }}
+
+{{/*
+The env of syncstorage-rs, as compose's x-syncstorage (docker-compose.yml and
+docker-compose.postgres.yml), for the migrate init container and the server
+*/}}
+{{- define "firefox-sync.syncstorageEnv" -}}
+{{- include "firefox-sync.dbPasswordEnv" . }}
+- name: SYNC_HOST
+  value: 0.0.0.0
+- name: SYNC_HUMAN_LOGS
+  value: "1"
+{{ include "firefox-sync.secretEnv" (dict "root" . "name" "SYNC_MASTER_SECRET" "key" "SYNC_MASTER_SECRET") }}
+- name: SYNC_SYNCSTORAGE__DATABASE_URL
+  value: {{ include "firefox-sync.dbUrl" (dict "root" . "db" "storage") | quote }}
+- name: SYNC_TOKENSERVER__ENABLED
+  value: "true"
+- name: SYNC_TOKENSERVER__RUN_MIGRATIONS
+  value: "true"
+- name: SYNC_TOKENSERVER__NODE_TYPE
+  value: {{ ternary "postgres" "mysql" (eq .Values.database.backend "postgres") }}
+- name: SYNC_TOKENSERVER__DATABASE_URL
+  value: {{ include "firefox-sync.dbUrl" (dict "root" . "db" "tokenserver") | quote }}
+- name: SYNC_TOKENSERVER__INIT_NODE_URL
+  value: {{ .Values.syncDomain | quote }}
+- name: SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN
+  value: {{ .Values.fxa.emailDomain | quote }}
+- name: SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL
+  value: {{ .Values.fxa.oauthServerUrl | quote }}
+{{ include "firefox-sync.secretEnv" (dict "root" . "name" "SYNC_TOKENSERVER__FXA_METRICS_HASH_SECRET" "key" "METRICS_HASH_SECRET") }}
+- name: SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS
+  value: "2"
+- name: RUST_LOG
+  value: info
+{{- end }}
+
+{{/*
+The image of the bundled database, also the client of wait-db: as compose
+*/}}
+{{- define "firefox-sync.dbImage" -}}
+{{- $backend := .Values.database.backend }}
+{{- if eq $backend "postgres" }}
+{{- print "postgres:18" }}
+{{- else if eq $backend "mysql" }}
+{{- print "mysql:8.4" }}
+{{- else }}
+{{- print "mariadb:lts" }}
+{{- end }}
+{{- end }}
+
+{{/*
+MARIADB_TLS_VERIFY of the init container: the bundled MySQL's certificate is self-signed
+(docker-compose.sync-mysql.yml sets false), the bundled MariaDB's is checked; your own
+server: database.external.tlsVerify
+*/}}
+{{- define "firefox-sync.tlsVerify" -}}
+{{- if not .Values.database.bundled }}
+{{- .Values.database.external.tlsVerify | toString }}
+{{- else if eq .Values.database.backend "mysql" }}
+{{- print "false" }}
+{{- else }}
+{{- print "true" }}
 {{- end }}
 {{- end }}
