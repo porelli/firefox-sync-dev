@@ -121,6 +121,34 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "className": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "secretName": {
+                  "type": "string"
+                }
+              }
+            },
+            "annotations": {
+              "type": "object"
+            }
+          }
         }
       }
     },
@@ -151,34 +179,6 @@
       }
     },
     "ingress": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "className": {
-          "type": "string"
-        },
-        "host": {
-          "type": "string"
-        },
-        "tls": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "secretName": {
-              "type": "string"
-            }
-          }
-        },
-        "annotations": {
-          "type": "object"
-        }
-      }
-    },
-    "adminIngress": {
       "type": "object",
       "properties": {
         "enabled": {

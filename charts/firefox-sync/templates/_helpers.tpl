@@ -187,8 +187,9 @@ Return the database user for tokenserver or storage
 {{/*
 Return the database URL for tokenserver or storage
 Accepts a dict with "root" (the root context) and "db" (tokenserver|storage)
-The password is read from the environment variable $(TOKENSERVER_DB_PASSWORD) or $(STORAGE_DB_PASSWORD)
-via Kubernetes dependent env, not inlined here
+The password is read from the environment variable via Kubernetes dependent env, not inlined here:
+- Postgres: $(POSTGRES_PASSWORD) for both tokenserver and storage (single database, single password)
+- MySQL/MariaDB: $(TOKENSERVER_DB_PASSWORD) or $(STORAGE_DB_PASSWORD) (separate databases)
 */}}
 {{- define "firefox-sync.dbUrl" -}}
 {{- $root := .root }}
@@ -199,11 +200,7 @@ via Kubernetes dependent env, not inlined here
 {{- $name := include "firefox-sync.dbName" (dict "root" $root "db" $db) }}
 {{- $user := include "firefox-sync.dbUser" (dict "root" $root "db" $db) }}
 {{- if eq $backend "postgres" }}
-{{- if eq $db "tokenserver" }}
-{{- printf "postgres://%s:$(TOKENSERVER_DB_PASSWORD)@%s:%s/%s" $user $host $port $name }}
-{{- else }}
-{{- printf "postgres://%s:$(STORAGE_DB_PASSWORD)@%s:%s/%s" $user $host $port $name }}
-{{- end }}
+{{- printf "postgres://%s:$(POSTGRES_PASSWORD)@%s:%s/%s" $user $host $port $name }}
 {{- else }}
 {{- if eq $db "tokenserver" }}
 {{- printf "mysql://%s:$(TOKENSERVER_DB_PASSWORD)@%s:%s/%s" $user $host $port $name }}
