@@ -122,8 +122,15 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 		gauge("ffs_statsd_silent", "1 when the Sync server is up and Sync data changed more than 10 minutes after its last metrics", flag(silent))
 		backupMetrics(&b, a.health.Backups(), time.Now())
 	}
+	if a.health != nil {
+		thresholdMetrics(&b, a.health)
+	}
 	// what the Sync server sent since the admin UI started
 	cumulative := a.rec.Cumulative()
+	b.WriteString("# HELP ffs_sync_errors_total Errors of the Sync server by kind since the admin UI started (the tokens refused: ffs_statsd_total of syncstorage_token_verification minus syncstorage_token_creation)\n# TYPE ffs_sync_errors_total counter\n")
+	for _, r := range errorTotals(cumulative) {
+		fmt.Fprintf(&b, "ffs_sync_errors_total{service=\"%s\",status=\"%s\",kind=\"%s\"} %d\n", promLabel(r.Service), promLabel(r.Status), promLabel(errorLabel(r)), r.Count)
+	}
 	names := make([]string, 0, len(cumulative))
 	for n := range cumulative {
 		names = append(names, n)
@@ -141,6 +148,31 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Write([]byte(b.String()))
+}
+
+// thresholdMetrics: the error rate of the last check and the growth of the databases,
+// with whether each alerts (only when on, and once checked)
+func thresholdMetrics(b *strings.Builder, h *Health) {
+	flag := func(v bool) int {
+		if v {
+			return 1
+		}
+		return 0
+	}
+	if e := h.ErrorRate(); e != nil {
+		fmt.Fprintf(b, "# HELP ffs_sync_error_ratio Share of the Sync requests that failed in the last 15 minutes\n# TYPE ffs_sync_error_ratio gauge\nffs_sync_error_ratio %g\n", e.Window.Percent()/100)
+		fmt.Fprintf(b, "# HELP ffs_sync_error_spike 1 during a spike of errors (ADMIN_ERROR_RATE_PERCENT)\n# TYPE ffs_sync_error_spike gauge\nffs_sync_error_spike %d\n", flag(e.Spike))
+	}
+	if growth := h.Growth(); len(growth) > 0 {
+		b.WriteString("# HELP ffs_database_growth_bytes Growth of a database in the last 24 hours\n# TYPE ffs_database_growth_bytes gauge\n")
+		for _, g := range growth {
+			fmt.Fprintf(b, "ffs_database_growth_bytes{database=\"%s\"} %d\n", promLabel(g.Database), g.PerDay)
+		}
+		b.WriteString("# HELP ffs_database_growth_alert 1 when a database grows faster than ADMIN_DB_GROWTH_MB or ADMIN_DB_GROWTH_FACTOR\n# TYPE ffs_database_growth_alert gauge\n")
+		for _, g := range growth {
+			fmt.Fprintf(b, "ffs_database_growth_alert{database=\"%s\"} %d\n", promLabel(g.Database), flag(g.Alert))
+		}
+	}
 }
 
 // backupMetrics: per scope the age of the last good backup, and whether the last run worked

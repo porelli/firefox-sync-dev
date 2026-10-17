@@ -121,9 +121,15 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	var errs []string
 
-	series, totals, err := a.rec.Activity(ctx, since, rg.bucket)
+	series, totals, errorRows, err := a.rec.Activity(ctx, since, rg.bucket)
 	if err != nil {
 		errs = append(errs, "Metrics: "+err.Error())
+	}
+	data["ErrorKinds"] = errorRows
+	if a.health != nil {
+		if c := a.health.errorRate; c.on() {
+			data["ErrorRate"], data["ErrorRateConfig"] = a.health.ErrorRate(), map[string]any{"Percent": c.percent, "Min": c.minErrors}
+		}
 	}
 	type chart struct {
 		Series

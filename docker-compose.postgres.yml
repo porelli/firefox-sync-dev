@@ -201,6 +201,11 @@ services:
       ADMIN_STALE_DAYS: ${ADMIN_STALE_DAYS:-90}
       ADMIN_RETENTION_DAYS: ${ADMIN_RETENTION_DAYS:-30}
       ADMIN_AUDIT_RETENTION_DAYS: ${ADMIN_AUDIT_RETENTION_DAYS:-365}
+      # the alerts on a spike of Sync errors and on the growth of the databases (ADMIN.md)
+      ADMIN_ERROR_RATE_PERCENT: ${ADMIN_ERROR_RATE_PERCENT:-10}
+      ADMIN_ERROR_RATE_MIN_ERRORS: ${ADMIN_ERROR_RATE_MIN_ERRORS:-20}
+      ADMIN_DB_GROWTH_MB: ${ADMIN_DB_GROWTH_MB:-1024}
+      ADMIN_DB_GROWTH_FACTOR: ${ADMIN_DB_GROWTH_FACTOR:-5}
       # the daily purge of the Sync storage, the old unconfirmed accounts, sign-up bursts (ADMIN.md)
       ADMIN_PURGE: ${ADMIN_PURGE:-}
       ADMIN_DELETE_UNCONFIRMED_DAYS: ${ADMIN_DELETE_UNCONFIRMED_DAYS:-}

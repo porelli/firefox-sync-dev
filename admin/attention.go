@@ -119,6 +119,10 @@ func needsAttention(in attentionInput) []attention {
 			add("#health", "Health", "The SMTP server does not work (%s): no alerts, invitations or notices go out.", c.Error)
 		case c.Name == metricsCheck && c.Warn:
 			add("/activity", "Activity", "%s: %s.", c.Error, restartSync)
+		case c.Name == errorRateCheck && c.Warn:
+			add("/activity#errors", "Activity", "%s: see the errors by kind.", c.Error)
+		case c.Name == growthCheck && c.Warn:
+			add("/activity", "Activity", "%s.", c.Error)
 		case c.Name == "Sign-up gate" && c.Warn:
 			add("#health", "Health", "Sign-ups bypass the sign-up gate: refused sign-ups see \"Unexpected error\" instead of why.")
 		case c.Hidden && !c.Up:
@@ -314,6 +318,7 @@ func (h *Health) watchThresholds(ctx context.Context) {
 		last = h.app.rec.LastReceived()
 	}
 	h.watchLastWrite(ctx)
+	h.watchErrorRate(ctx, time.Now())
 	for _, e := range h.thresholdEvents(st, accounts, componentUp(h.Components(), "Sync server"), h.LastWrite(), last, alerts) {
 		h.app.event("attention", e)
 	}
@@ -359,7 +364,24 @@ func (a *App) healthRows() []Component {
 	if row, silent := a.metrics(); silent {
 		components = append(components, row)
 	}
-	return append(components, a.health.Limits()...)
+	components = append(components, a.health.Limits()...)
+	return append(components, a.health.thresholdRows()...)
+}
+
+// thresholdRows: the rows of the error rate and of the growth of the databases, once
+// checked (and on)
+func (h *Health) thresholdRows() []Component {
+	var rows []Component
+	if row, ok := errorRateRow(h.ErrorRate(), h.errorRate); ok {
+		rows = append(rows, row)
+	}
+	h.mu.Lock()
+	measured := h.growthMeasured
+	h.mu.Unlock()
+	if row, ok := growthRow(h.Growth(), h.growth, measured); ok {
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // setLimits: the rows of the limits, read in a round of checks or by the overview

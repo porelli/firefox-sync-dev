@@ -104,6 +104,13 @@ type Health struct {
 	states, logged map[string]string
 	// the rows of the limits of accounts (limits.go), from the last round or the overview
 	limits []Component
+	// the thresholds of the error rate (errors.go) and of the growth of the databases
+	// (growth.go), their last rounds
+	errorRate      errorRateConfig
+	lastErrorRate  *ErrorRate
+	growth         growthConfig
+	dbGrowth       []DBGrowth
+	growthMeasured bool
 }
 
 // GitHub's API, for the release check (the tests use their own)
@@ -155,7 +162,8 @@ func versionOf(client *http.Client, url string) func(ctx context.Context) (strin
 
 func newHealth(app *App) *Health {
 	client := &http.Client{Timeout: 10 * time.Second}
-	h := &Health{app: app, client: client, latest: map[string]string{}, notified: map[string]bool{}, alerted: map[string]time.Time{}}
+	h := &Health{app: app, client: client, latest: map[string]string{}, notified: map[string]bool{}, alerted: map[string]time.Time{},
+		errorRate: errorRateSettings(), growth: growthSettings()}
 	h.lastSignup, h.started = time.Now(), time.Now()
 	sync := strings.TrimSuffix(env("SYNCSTORAGE_URL", "http://syncstorage:8000"), "/")
 	h.checks = append(h.checks,
@@ -468,6 +476,7 @@ func (h *Health) measureSizes(ctx context.Context) {
 	for name, n := range sizes {
 		h.app.rec.Gauge("db.size."+name, n)
 	}
+	h.watchGrowth(ctx, time.Now())
 }
 
 // releasesDue: time to ask GitHub again, every 12 hours. Never with ADMIN_UPDATE_CHECK=false:

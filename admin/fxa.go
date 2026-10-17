@@ -777,9 +777,12 @@ func procedureError(err error) error {
 }
 
 // Size of the accounts databases, through a view of fxa-init (ffs_admin cannot see
-// the tables themselves)
+// the tables themselves), with the sizes of now on MySQL (the view reads them in the
+// session of ffs_admin)
 func (f *FxaDB) Size(ctx context.Context) (int64, error) {
 	var n int64
-	err := f.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(bytes), 0) FROM ffs.database_sizes").Scan(&n)
+	err := withFreshStats(ctx, f.db, func(c *sql.Conn) error {
+		return c.QueryRowContext(ctx, "SELECT COALESCE(SUM(bytes), 0) FROM ffs.database_sizes").Scan(&n)
+	})
 	return n, err
 }

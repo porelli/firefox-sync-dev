@@ -342,21 +342,25 @@ type MetricTotal struct {
 	AvgMs float64
 }
 
-// series of the activity charts: name prefixes (after the statsd label) to sum
+// series of the activity charts: which metrics each sums. The errors are those of
+// errors.go, with the tokens refused of each minute
 var chartSeries = []struct {
-	title   string
-	include []string
-	exclude string
+	title string
+	match func(name string) bool
 }{
-	{"Sync requests", []string{"syncstorage.request."}, ".error."},
-	{"Sync tokens issued", []string{"syncstorage.token_creation"}, ""},
-	{"Errors", []string{"syncstorage.request.error.", "syncstorage.oauth.error.", "syncstorage.error.", "syncstorage.tokenserver.error."}, ""},
+	{"Sync requests", isRequest},
+	{"Sync tokens issued", func(name string) bool { return name == tokenIssued }},
+	{"Errors", func(name string) bool { _, ok := classifyError(name); return ok }},
 }
 
-func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Duration) ([]Series, []MetricTotal, error) {
+// errorSeries: the chart the tokens refused are added to
+const errorSeries = 2
+
+// Activity: the charts, the totals of each metric and the errors by kind since
+func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Duration) ([]Series, []MetricTotal, []ErrorRow, error) {
 	rows, err := r.db.mine().QueryContext(ctx, r.db.q("SELECT minute, name, count, total FROM ffs_metrics WHERE minute >= ?"), since.UnixMilli())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 	n := int(time.Since(since)/bucket) + 1
@@ -366,23 +370,25 @@ func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Du
 	}
 	totals := map[string]*MetricTotal{}
 	timers := map[string]float64{}
+	tally := newErrorTally()
 	for rows.Next() {
 		var minute, count int64
 		var name string
 		var total float64
 		if err := rows.Scan(&minute, &name, &count, &total); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		i := int(time.UnixMilli(minute).Sub(since) / bucket)
 		if i < 0 || i >= n {
 			continue
 		}
 		for s, c := range chartSeries {
-			if matches(name, c.include, c.exclude) {
+			if c.match(name) {
 				series[s].Points[i] += count
 				series[s].Total += count
 			}
 		}
+		tally.add(minute, name, count)
 		t := totals[name]
 		if t == nil {
 			t = &MetricTotal{Name: name}
@@ -392,7 +398,14 @@ func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Du
 		timers[name] += total
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	_, _, refused := tally.refused()
+	for minute, count := range refused {
+		if i := int(time.UnixMilli(minute).Sub(since) / bucket); i >= 0 && i < n {
+			series[errorSeries].Points[i] += count
+			series[errorSeries].Total += count
+		}
 	}
 	list := make([]MetricTotal, 0, len(totals))
 	for name, t := range totals {
@@ -402,19 +415,7 @@ func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Du
 		list = append(list, *t)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Count > list[j].Count })
-	return series, list, nil
-}
-
-func matches(name string, include []string, exclude string) bool {
-	if exclude != "" && strings.Contains(name, exclude) {
-		return false
-	}
-	for _, p := range include {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
+	return series, list, tally.Rows(), nil
 }
 
 // Gauge records a value now (e.g. the size of a database), replacing one of the same minute

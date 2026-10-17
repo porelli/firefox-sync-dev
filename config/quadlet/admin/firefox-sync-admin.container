@@ -46,6 +46,11 @@ Environment="ADMIN_UPDATE_CHECK=%ADMIN_UPDATE_CHECK%"
 Environment="ADMIN_STALE_DAYS=%ADMIN_STALE_DAYS%"
 Environment="ADMIN_RETENTION_DAYS=%ADMIN_RETENTION_DAYS%"
 Environment="ADMIN_AUDIT_RETENTION_DAYS=%ADMIN_AUDIT_RETENTION_DAYS%"
+# the alerts on a spike of Sync errors and on the growth of the databases (ADMIN.md)
+Environment="ADMIN_ERROR_RATE_PERCENT=%ADMIN_ERROR_RATE_PERCENT%"
+Environment="ADMIN_ERROR_RATE_MIN_ERRORS=%ADMIN_ERROR_RATE_MIN_ERRORS%"
+Environment="ADMIN_DB_GROWTH_MB=%ADMIN_DB_GROWTH_MB%"
+Environment="ADMIN_DB_GROWTH_FACTOR=%ADMIN_DB_GROWTH_FACTOR%"
 # the daily purge of the Sync storage (ADMIN.md)
 Environment="ADMIN_PURGE=%ADMIN_PURGE%"
 Environment="ADMIN_TZ=%ADMIN_TZ%"

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -375,11 +376,32 @@ func (s *SyncDB) Size(ctx context.Context) (int64, error) {
 }
 
 func dbSize(ctx context.Context, db *sql.DB, postgres bool) (int64, error) {
-	query := `SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = DATABASE()`
-	if postgres {
-		query = `SELECT pg_database_size(current_database())`
-	}
 	var n int64
-	err := db.QueryRowContext(ctx, query).Scan(&n)
+	if postgres {
+		err := db.QueryRowContext(ctx, `SELECT pg_database_size(current_database())`).Scan(&n)
+		return n, err
+	}
+	err := withFreshStats(ctx, db, func(c *sql.Conn) error {
+		return c.QueryRowContext(ctx, `SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = DATABASE()`).Scan(&n)
+	})
 	return n, err
+}
+
+// withFreshStats runs the query of a size on a connection that reads the sizes of
+// the tables from InnoDB: MySQL 8 caches them in information_schema for a day
+// (information_schema_stats_expiry), and a database growing fast would show a day
+// late. MariaDB has no cache (nor the variable: error 1193)
+func withFreshStats(ctx context.Context, db *sql.DB, query func(*sql.Conn) error) error {
+	c, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if _, err := c.ExecContext(ctx, "SET SESSION information_schema_stats_expiry = 0"); err != nil {
+		var e *mysql.MySQLError
+		if !errors.As(err, &e) || e.Number != 1193 {
+			return err
+		}
+	}
+	return query(c)
 }

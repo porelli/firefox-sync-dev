@@ -19,13 +19,14 @@ import json
 import os
 import re
 import time
+import urllib.parse as urlparse
 
 import pytest
 import requests
 from sqlalchemy import create_engine
 from sqlalchemy.sql import text as sqltext
 
-from test_client_flow import EMAIL_DOMAIN, Storage, db, login  # noqa: F401 (db is a fixture)
+from test_client_flow import EMAIL_DOMAIN, PROXY_HEADERS, SERVER, Storage, db, login  # noqa: F401 (db is a fixture)
 
 ADMIN = os.environ["ADMIN_URL"].rstrip("/")
 MYSQL = os.environ["BACKEND"] == "mysql"
@@ -170,9 +171,14 @@ def test_health(admin):
         assert '<span class="pill warn">full</span>' in limit.group(1) and f"{users} of {max_users} accounts are taken (MAX_USERS)" in limit.group(1), limit.group(1)
     else:
         assert f"{users} of {max_users} taken" in limit.group(1), limit.group(1)
+    # the thresholds of the errors and of the growth of the databases (too little history
+    # here to compare: a day), fine
+    for name, detail in (("Sync error rate", "in the last 15 minutes, alert from 10% and 20 errors"), ("Database growth", "from a day of history on")):
+        row = re.search(r"<td>" + name + r"</td><td>(.*?)</td>", health)
+        assert row and '<span class="ok">up</span>' in row.group(1) and detail in row.group(1), (name, health)
     # without self-hosted accounts there is nothing else to check; no SMTP server
     # (FXA_SMTP_HOST empty), no public checks (ADMIN_PUBLIC_CHECK=false in the test stack)
-    assert len(re.findall(r"<tr><td>", health)) == len(components) + 1, health
+    assert len(re.findall(r"<tr><td>", health)) == len(components) + 3, health
     assert "Accounts" not in health and "Email (SMTP)" not in health and "Public" not in health
     assert 'action="/alerts/test"' not in page and "ffs_cert_expiry_seconds" not in requests.get(
         f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
@@ -364,6 +370,50 @@ def test_activity_page(admin, alice):
         assert re.search(r"Database " + re.escape(name) + r" <strong>[\d.]+ [KMG]?B</strong>", page), (name, page[:3000])
     for span in ("7d", "30d"):
         assert "Sync requests" in admin.get(f"/activity?range={span}")
+
+
+def error_count(page, metric):
+    """The count of a kind of the errors of an activity page, 0 when it has none"""
+    row = re.search(r'<tr data-metric="' + re.escape(metric) + r'"><td>[^<]*</td><td>[^<]*</td><td>[^<]*</td><td>(\d+)</td>', page)
+    return int(row.group(1)) if row else 0
+
+
+def test_errors_by_kind(admin, alice):
+    # the statsd names syncstorage-rs counts them by (admin/testdata/statsd-packets.jsonl)
+    kinds = ("syncstorage.request.error.hawk.missing_header", "syncstorage.request.validate.bad_bso_body", "tokens refused")
+    before = {k: error_count(admin.get("/activity"), k) for k in kinds}
+    # a request without Hawk, an item that is no string, a token of an older generation
+    path = urlparse.urlparse(alice.endpoint).path
+    assert requests.get(f"{SERVER}{path}/info/collections", headers=PROXY_HEADERS, timeout=30).status_code == 401
+    assert alice.request("PUT", "/storage/bookmarks/bad", {"payload": 5}).status_code == 400
+    assert login("alice", generation=1, keys_changed_at=1, client_state="cccc").status_code == 401
+    # the refused token counts once metrics of a later minute came in
+    deadline = time.time() + 120
+    while True:
+        # more traffic: the Sync server sends its metrics when a datagram is full
+        for _ in range(10):
+            assert alice.request("GET", "/info/collections").status_code == 200
+        page = admin.get("/activity")
+        counts = {k: error_count(page, k) for k in kinds}
+        if all(counts[k] > before[k] for k in kinds) or time.time() > deadline:
+            break
+        time.sleep(3)
+    assert all(counts[k] > before[k] for k in kinds), (before, counts, page.split('id="errors"')[1][:3000])
+    errors = page.split('id="errors"')[1].split("</table>")[0]
+    for row in ("<td>Hawk authentication: missing header</td><td>401</td><td>Sync storage</td>",
+                "<td>invalid request: bad bso body</td><td>400</td><td>Sync storage</td>", "<td>tokens refused</td><td>401, 500</td><td>Tokenserver</td>"):
+        assert row in errors, (row, errors)
+    assert int(re.search(r"Errors <strong>(\d+)</strong>", page).group(1)) >= 3, page[:3000]
+    assert 'id="error-rate">Last 15 minutes: ' in page and "An alert from 10% of the requests and 20 errors" in page, page[:3000]
+    metrics = requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
+    for kind, status, service in (("request.error.hawk.missing_header", "401", "Sync storage"), ("request.validate.bad_bso_body", "400", "Sync storage")):
+        assert re.search(r'^ffs_sync_errors_total\{service="' + service + '",status="' + status + '",kind="' + re.escape(kind) + r'"\} [1-9]', metrics, re.M), (kind, metrics[-3000:])
+    # the tokens refused: no counter (verified minus issued goes down), the two to subtract
+    assert 'kind="tokens_refused"' not in metrics, metrics[-3000:]
+    verified, issued = (int(re.search(r'^ffs_statsd_total\{name="syncstorage_token_' + n + r'"\} (\d+)$', metrics, re.M).group(1)) for n in ("verification", "creation"))
+    assert verified > issued, (verified, issued)
+    # a handful of errors: no spike (ADMIN_ERROR_RATE_MIN_ERRORS 20)
+    assert "\nffs_sync_error_spike 0\n" in metrics and re.search(r"^ffs_sync_error_ratio [0-9.e-]+$", metrics, re.M), metrics[-3000:]
 
 
 def events_of(page):
