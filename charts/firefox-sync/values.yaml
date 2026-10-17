@@ -60,13 +60,17 @@ database:
     # Storage class (empty for default)
     storageClass: ""
 
-# Name of existing secret containing database passwords and secrets
-# If not set, a secret will be generated with name: {{ include "firefox-sync.fullname" . }}
+# Name of existing secret containing database passwords and secrets, with the keys
+# SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD and TOKENSERVER_DB_PASSWORD +
+# STORAGE_DB_PASSWORD (mariadb, mysql) or POSTGRES_PASSWORD (postgres)
+# If not set, a secret named like the release (<release>-firefox-sync) is generated on the
+# first install and kept as it is on upgrades (and on uninstall, like the database volumes)
 existingSecret: ""
 
 # Syncstorage service configuration
 syncstorage:
-  # Number of replicas
+  # Number of replicas: more than one runs the migrations and the MAX_USERS init
+  # concurrently, which is not tested
   replicas: 1
 
   # Resource limits and requests

@@ -1,0 +1,128 @@
+{{- /*
+The bundled databases, as compose's tokenserver_db and syncstorage_db (MariaDB, or MySQL
+with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.postgres.yml)
+*/ -}}
+{{- if .Values.database.bundled }}
+{{- $root := . }}
+{{- $backend := .Values.database.backend }}
+{{- $persistence := .Values.database.persistence }}
+{{- $dbs := list }}
+{{- if eq $backend "postgres" }}
+{{- $dbs = list (dict "component" "postgres" "db" "tokenserver") }}
+{{- else }}
+{{- $dbs = list (dict "component" "tokenserver-db" "db" "tokenserver") (dict "component" "storage-db" "db" "storage") }}
+{{- end }}
+{{- range $dbs }}
+{{- $component := .component }}
+{{- $name := include "firefox-sync.dbHost" (dict "root" $root "db" .db) }}
+{{- $dbName := include "firefox-sync.dbName" (dict "root" $root "db" .db) }}
+{{- $dbUser := include "firefox-sync.dbUser" (dict "root" $root "db" .db) }}
+{{- $passwordKey := include "firefox-sync.dbPasswordKey" (dict "root" $root "db" .db) }}
+{{- $port := include "firefox-sync.dbPort" (dict "root" $root) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" $root "component" $component) | nindent 4 }}
+spec:
+  selector:
+    {{- include "firefox-sync.selectorLabels" (dict "root" $root "component" $component) | nindent 4 }}
+  ports:
+    - name: db
+      port: {{ $port }}
+      targetPort: db
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" $root "component" $component) | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" $root "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firefox-sync.selectorLabels" (dict "root" $root "component" $component) | nindent 8 }}
+    spec:
+      containers:
+        - name: db
+          image: {{ include "firefox-sync.dbImage" $root }}
+          {{- if eq $backend "mariadb" }}
+          args: [mariadbd, --explicit_defaults_for_timestamp]
+          env:
+            - name: MARIADB_RANDOM_ROOT_PASSWORD
+              value: "true"
+            - name: MARIADB_DATABASE
+              value: {{ $dbName | quote }}
+            - name: MARIADB_USER
+              value: {{ $dbUser | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "MARIADB_PASSWORD" "key" $passwordKey) | nindent 12 }}
+            - name: MARIADB_AUTO_UPGRADE
+              value: "true"
+          readinessProbe:
+            exec:
+              command: [healthcheck.sh, --connect, --innodb_initialized]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- else if eq $backend "mysql" }}
+          # no binary logging, as docker-compose.sync-mysql.yml: the init container's MAX_USERS
+          # procedure and trigger would otherwise need log_bin_trust_function_creators
+          args: [mysqld, --disable-log-bin]
+          env:
+            - name: MYSQL_RANDOM_ROOT_PASSWORD
+              value: "yes"
+            - name: MYSQL_DATABASE
+              value: {{ $dbName | quote }}
+            - name: MYSQL_USER
+              value: {{ $dbUser | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "MYSQL_PASSWORD" "key" $passwordKey) | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: [sh, -c, 'mysqladmin ping -h 127.0.0.1 --protocol=tcp -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" --silent']
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          {{- else }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ $dbName | quote }}
+            - name: POSTGRES_USER
+              value: {{ $dbUser | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "POSTGRES_PASSWORD" "key" $passwordKey) | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: [sh, -c, 'pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"']
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- end }}
+          ports:
+            - name: db
+              containerPort: {{ $port }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ ternary "/var/lib/postgresql" "/var/lib/mysql" (eq $backend "postgres") }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $persistence.size }}
+{{- end }}
+{{- end }}

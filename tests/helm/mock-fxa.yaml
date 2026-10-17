@@ -1,0 +1,48 @@
+# Test-only: upstream's mock FxA OAuth server, shipped in the syncstorage-rs image, as in
+# tests/docker-compose.test.yml (mock_fxa). Install the chart with
+# --set fxa.oauthServerUrl=http://mock-fxa:6000; tests/helm.sh swaps the image for the
+# backend's (syncstorage-rs-postgres-latest with Postgres).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-fxa
+  labels:
+    app: mock-fxa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-fxa
+  template:
+    metadata:
+      labels:
+        app: mock-fxa
+    spec:
+      containers:
+        - name: mock-fxa
+          image: ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-latest
+          command: ["sh", "/app/scripts/start_mock_fxa_server.sh"]
+          env:
+            - name: MOCK_FXA_SERVER_HOST
+              value: 0.0.0.0
+            - name: MOCK_FXA_SERVER_PORT
+              value: "6000"
+          ports:
+            - name: http
+              containerPort: 6000
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-fxa
+spec:
+  selector:
+    app: mock-fxa
+  ports:
+    - name: http
+      port: 6000
+      targetPort: http
