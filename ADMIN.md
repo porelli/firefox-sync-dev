@@ -480,7 +480,7 @@ How it works:
 
 At most 20 invitations an hour go out, whoever sends them, so that a stolen session cannot make your SMTP server a spammer. Each one is in the event log.
 
-**Connect a device** (in the menu) shows the same steps, built from `FXA_CONTENT_URL`, the Sync node and `FXA_PAIRING_URL`, exactly as in [FXA.md](FXA.md#setup): on a computer `identity.fxaccounts.autoconfig.uri` in `about:config`; on Android the debug menu (tap the Firefox logo 5 times in About Firefox), then `Custom Mozilla account server` and `Custom Sync server` (`<node>/1.0/sync/1.5`); on iOS the version number 5 times, then `Custom Account Content Server URI`; a phone can also pair with the QR code of a computer already signed in, through your pairing server or Mozilla's. With Mozilla's accounts the page shows the steps of the [README](README.md#firefox-setup) instead: `identity.sync.tokenserver.uri`, and the custom Sync server of the phones.
+**Connect a device** (in the menu) shows the same steps, built from `FXA_CONTENT_URL`, the Sync node and `FXA_PAIRING_URL`, exactly as in [FXA.md](FXA.md#firefox-setup): on a computer `identity.fxaccounts.autoconfig.uri` in `about:config`; on Android the debug menu (tap the Firefox logo 5 times in About Firefox), then `Custom Mozilla account server` and `Custom Sync server` (`<node>/1.0/sync/1.5`); on iOS the version number 5 times, then `Custom Account Content Server URI`; a phone can also pair with the QR code of a computer already signed in, through your pairing server or Mozilla's. With Mozilla's accounts the page shows the steps of [SYNC.md](SYNC.md#firefox-setup) instead: `identity.sync.tokenserver.uri`, and the custom Sync server of the phones.
 
 ## Disabling an account
 

@@ -26,7 +26,7 @@ type deviceSetup struct {
 }
 
 // deviceSteps: the steps of FXA.md (self-hosted accounts: content is FXA_CONTENT_URL)
-// or of README.md (Mozilla's accounts, content empty) with this server's values. node is
+// or of SYNC.md (Mozilla's accounts, content empty) with this server's values. node is
 // the Sync node, pairing FXA_PAIRING_URL (empty: Mozilla's pairing server)
 func deviceSteps(content, node, pairing string) []deviceSetup {
 	tokenserver := strings.TrimSuffix(node, "/") + "/1.0/sync/1.5"

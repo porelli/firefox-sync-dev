@@ -39,7 +39,48 @@ By default Firefox signs in with Mozilla accounts (`accounts.firefox.com`) and o
     ```
     The first start takes a few minutes: the databases are created, then the keys are generated (kept in the `fxa-keys` volume, do not lose it or every session becomes invalid).
     With Podman, choose Quadlets in `prepare_environment.sh`: the accounts get their own units (`firefox-sync-fxa-*`), start them with `systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile.service firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service`.
-1. In Firefox, set `identity.fxaccounts.autoconfig.uri` to `https://accounts.example.com` in `about:config`, restart it and sign up. On Android, enable the debug menu (tap the Firefox logo 5 times in `About Firefox`), then in `Sync Debug` set `Custom Mozilla account server` to `https://accounts.example.com` and `Custom Sync server` to `https://sync.example.com/1.0/sync/1.5`. On iOS, enable it by tapping the version number 5 times in `Settings`, then in `Advanced Sync Settings` turn on `Use Custom FxA Content Server` with `Custom Account Content Server URI` set to `https://accounts.example.com`. The admin UI's [Connect a device](ADMIN.md#invitations-and-connect-a-device) page shows these steps with your values, and its invitations send them by email.
+1. [Set up Firefox](#firefox-setup).
+
+## Firefox setup
+
+Do this on every device, starting with the one that has the most data. Firefox is pointed to your accounts server, which tells it where your Sync server is.
+
+**Before you start**:
+- Mozilla's accounts do not work with your server: each person needs an account created on your server (sign up from Firefox, or from an [invitation](ADMIN.md#invitations-and-connect-a-device) of the admin UI).
+- If Firefox is already signed in, to a Mozilla account or to a Sync server of yours, sign out first (`Settings` > `Sync` > `Sign out`, and keep the data on the device when Firefox asks). Firefox reads the addresses only when it signs in.
+
+The examples below use `https://accounts.example.com` (your `FXA_CONTENT_URL`) and `https://sync.example.com` (your `SYNCSTORAGE_DOMAIN`). The admin UI's [Connect a device](ADMIN.md#invitations-and-connect-a-device) page shows the same steps with your values, and its invitations send them by email.
+
+### Desktop
+
+1. open `about:config` in a tab, accept the warning and search for `identity.fxaccounts.autoconfig.uri`
+1. set it to `https://accounts.example.com`
+1. restart Firefox
+1. sign in from the account icon of the toolbar (or `Settings` > `Sync`): the sign-in page must be on `accounts.example.com`. New accounts are created there too, with a code sent by email
+1. turn on Sync
+
+To check it works, open `about:sync-log`: the newest logs show no errors. To go back to Mozilla's accounts, sign out, reset `identity.fxaccounts.autoconfig.uri` in `about:config` and restart Firefox.
+
+### Android
+
+1. go to App Menu `⋮` > `Settings` > `About Firefox` and tap the logo 5 times. You should see a `debug menu enabled` notification
+1. go back to the main settings menu: `Sync Debug` is at the top. Tap it
+1. set `Custom Mozilla account server` to `https://accounts.example.com`
+1. set `Custom Sync server` to `https://sync.example.com/1.0/sync/1.5`
+1. restart Firefox when it asks, then sign in and turn on Sync
+
+### iOS
+
+1. go to App Menu `≡` > `Settings` and tap 5 times the version number towards the bottom
+1. go back to the top of the main settings menu and tap `Advanced Sync Settings`
+1. turn on `Use Custom FxA Content Server` and set `Custom Account Content Server URI` to `https://accounts.example.com`
+1. sign in and turn on Sync
+
+### A phone, from a computer already signed in
+
+1. set up Firefox on the phone as above first
+1. on the computer open `Settings` > `Sync` > `Connect another device`: it shows a QR code
+1. scan it with Firefox on the phone. The two pair through Mozilla's pairing server, or yours with `FXA_PAIRING_URL` (see [What works and what doesn't](#what-works-and-what-doesnt))
 
 ## MySQL or MariaDB
 
@@ -122,7 +163,7 @@ Don't stay too far behind either: Firefox itself refuses to sign in to accounts 
 
 ## Tests
 
-[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit), then [`tests/test_fxa_flow.py`](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token from the tokenserver and syncs, then signs in again as a second device. [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) checks the sign-up policy and the [admin UI](ADMIN.md). Then [`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [`tests/browser`](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it. No Mozilla service is involved. With `FXA_DB=mariadb` the same runs with the accounts on MariaDB 11.8.
+[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit), then [`tests/test_fxa_flow.py`](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token from the tokenserver and syncs, then signs in again as a second device. [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) checks the sign-up policy and the [admin UI](ADMIN.md). Then [`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [`tests/browser`](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it. No Mozilla service is involved. With `FXA_DB=mariadb` the same runs with the accounts on MariaDB 11.8. All the tests: [TESTING.md](TESTING.md).
 
 [`tests/fxa-upgrade.sh`](/tests/fxa-upgrade.sh) upgrades an install in place, with the steps of [Upgrades](#upgrades): it starts the stack on an older release (`FXA_FROM`), where [`tests/test_fxa_upgrade.py`](/tests/test_fxa_upgrade.py) signs up, registers a device, gets a refresh token and syncs; then a backup, the new `FXA_VERSION`, `docker compose pull` and `docker compose up -d`. With `FXA_SAME_TAG=1` the older release is installed under the new tag, as an install following `fxa-mono-latest` has it, and `docker compose up -d` without the pull must keep it. After it the migrations ran with the new image up to the levels of its `target-patch.json`, the sign-up policy and the admin UI's procedures were installed again, the old session, device and refresh token still work, the Sync data reads back on the same tokenserver user, a new sign-in and a new sign-up work, and the admin UI is all up, shows the new release and recorded each migrated schema as an event. [fxa.yml](/.github/workflows/fxa.yml) runs it from the published `fxa-mono-latest` to every new release before publishing it (amd64; not for a rebuild of a release older than the published one). It upgrades to `FXA_IMAGE:FXA_VERSION` (default: `REPOSITORY`, `fxa-mono-latest`) and reads the release the admin UI must show from that image, and refuses a target older than `FXA_FROM`. Our builds are in the registry of the repository whose fxa.yml built them; the examples use the development builds. Locally, e.g. from Mozilla's own image (amd64, emulated on arm64) with older schemas, from one of our older builds on MariaDB, and from an older `fxa-mono-latest`:
 

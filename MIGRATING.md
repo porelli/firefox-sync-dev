@@ -6,9 +6,9 @@ How to move from the other self-hosted Firefox Sync setups found on GitHub to th
 
 The Sync server keeps a copy of what your browsers already have, encrypted with keys derived from your account password. When Firefox finds an empty server for an account whose keys did not change, it uploads everything it has on its next sync. Other devices merge their own data in when they sync after it. So for every server that only does Sync (you sign in with Mozilla's accounts, or your accounts stay where they are), the simplest and safest way is to start fresh:
 
-1. Set up firefox-sync ([README.md](README.md#server-setup)). Set `MAX_USERS` to at least the number of accounts that will use it.
+1. Set up firefox-sync ([SYNC.md](SYNC.md#setup)). Set `MAX_USERS` to at least the number of accounts that will use it.
 1. Start with the device that has the most data, usually your main desktop:
-    - if the address of the Sync server changes: disconnect Sync and choose to keep the data on the device (Firefox asks), set the new address ([Firefox setup](README.md#firefox-setup): `identity.sync.tokenserver.uri` on desktop, `Custom Sync server` on Android, `Custom Sync Token Server URI` on iOS), sign in again and sync
+    - if the address of the Sync server changes: disconnect Sync and choose to keep the data on the device (Firefox asks), set the new address ([Firefox setup](SYNC.md#firefox-setup): `identity.sync.tokenserver.uri` on desktop, `Custom Sync server` on Android, `Custom Sync Token Server URI` on iOS), sign in again and sync
     - if you keep the same address (your reverse proxy now sends it to firefox-sync, see below): restart Firefox and use `Sync Now`. Firefox may use its token from the old server for up to an hour; disconnecting and signing in again switches it at once
 1. Wait until that device has synced (`about:sync-log` on desktop, or the account's storage in the [admin UI](ADMIN.md)), then do the other devices one at a time.
 

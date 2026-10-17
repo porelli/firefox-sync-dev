@@ -1,41 +1,63 @@
 # firefox-sync
 
-The purpose of this repository is to provide a docker-compose that can be used to self host what otherwise Firefox sync would send to Mozilla's servers. By default you keep signing in with your Mozilla account; optionally (experimental) you can self-host the accounts service too, see [FXA.md](FXA.md).
+Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history, tabs and the rest are stored on your own server instead of Mozilla's. Optionally, and experimental, the Mozilla accounts too, so that no Mozilla server is involved at all.
 
-**🐳 Docker and 🦭 Podman supported** - See [PODMAN.md](PODMAN.md) for Podman-specific instructions, including rootless setup and Quadlet integration.
+**🐳 Docker and 🦭 Podman supported**
 
 ## Disclaimer
 
 - ⚠️ The project is under development
 - ⚠️ Expect bugs, breaking changes and headache
 - ⚠️ **This is not endorsed or supported by Mozilla in any way or form**
-- ⚠️ **Do not solely relay on this project to store your bookmarks, passwords and/or other important items**
+- ⚠️ **Do not solely rely on this project to store your bookmarks, passwords and/or other important items**
 
-## Security considerations
+## Choose your setup
 
-1. ~~- syncstorage-rs does NOT support account allowlisting. This means that ANY person that has network access to your server can use it.~~
-    - **This has been implemented with a SQL trigger workaround that prevents the token database to insert more rows when a new user tries to use the server. This is tested and prevents a new account from using your server if the number of MAX_USERS defined in your .env file is already reached.**
-    - The limit counts accounts, not database rows: an account changing its keys (e.g. after a password reset) is never locked out.
-    - Possible alternative (better) solutions:
-        - implement the feature directly in syncstorage-rs
-        - self-host the accounts service as well, so that only accounts created on your server can sign in: experimental support in [FXA.md](FXA.md), and choose who can create one (allowlist of emails and domains, or closed sign-ups)
-    - `MAX_USERS=5` (or `fixed:5`) sets the limit on every start; `MAX_USERS=initial:5` sets it on the first start only, then the [admin UI](ADMIN.md#max-users) manages it (`prepare_environment.sh` writes `initial:` when you enable the admin UI). `MAX_USERS=unlimited` (or `initial:unlimited`) means no limit, `0` no new account at all. Anything else stops the stack from starting.
-    - With self-hosted accounts, `FXA_MAX_ACCOUNTS` limits how many accounts can be created the same way (unlimited by default), see [ADMIN.md](ADMIN.md#max-accounts-self-hosted-accounts).
-1. The optional [admin UI](ADMIN.md) changes the max users without a restart (with `MAX_USERS=initial:N`) and, with self-hosted accounts, controls sign-ups and disables accounts.
+| | Sync server only | Sync server and accounts (experimental) |
+|---|---|---|
+| Signing in | your Mozilla account, at `accounts.firefox.com` | accounts created on your server |
+| Stored on your server | the Sync data (encrypted by Firefox) | the Sync data, the accounts and their keys |
+| Who can use it | anybody with a Mozilla account who points Firefox to it, up to `MAX_USERS` | who you allow to sign up: everybody, an allowlist of emails and domains, or nobody |
+| Needs | a host name with HTTPS | four host names with HTTPS, 3-4 GB of RAM, an SMTP server |
+| Guide | [SYNC.md](SYNC.md) | [SYNC.md](SYNC.md), then [FXA.md](FXA.md) |
+
+Both are set up by `./prepare_environment.sh`, which asks the questions and writes `.env`:
+
+```bash
+git clone https://github.com/porelli/firefox-sync.git
+cd firefox-sync
+./prepare_environment.sh
+docker compose up -d        # with Podman Quadlets: see PODMAN.md
+```
+
+Then point your reverse proxy to it and set up Firefox: [for the Sync server only](SYNC.md#firefox-setup), or [with self-hosted accounts](FXA.md#firefox-setup).
+
+## Documentation
+
+- [SYNC.md](SYNC.md): the Sync server: setup, who can use it (`MAX_USERS`), Firefox on desktop, Android and iOS, backups and upgrades
+- [FXA.md](FXA.md): self-hosted Mozilla accounts (experimental): setup, who can sign up, Firefox setup, upgrades
+- [ADMIN.md](ADMIN.md): the optional admin UI: max users, sign-ups and accounts, storage, health, alerts, backups, Prometheus, signing in with OpenID Connect or a trusted header
+- [DATABASES.md](DATABASES.md): MariaDB, MySQL or PostgreSQL, in containers or on a database server you already run
+- [PODMAN.md](PODMAN.md): rootless Podman, with Quadlets or `docker compose` on the Podman socket
+- [MIGRATING.md](MIGRATING.md): coming from another self-hosted Sync server, or an older firefox-sync
+- [TESTING.md](TESTING.md): the tests every image build runs, and how to run them locally
 
 ## Background
 
 Mozilla's server side components are open source and Firefox allows to easily change the official endpoints.
 [Some documentation](https://mozilla-services.readthedocs.io/en/latest/index.html) is provided to install the each component on your own server but this is neither officially supported or very well maintained. Furthermore, there are no official Docker images that can be used to avoid installing everything manually; all the instructions and artifacts provided are focused on setting up a developer environment rather than a production self hosted service. For example, `syncstorage-rs` has a [docker release on docker-hub](https://hub.docker.com/r/mozilla/syncstorage-rs/) but it is targeted to work exclusively with Google Spanner which is what Mozilla uses to provide the service.
 
-## Content and scope of this project
-- GitHub workflows to create docker images as vanilla as possible from Mozilla's code
-- Docker compose to setup required component to self host Mozilla sync components
-- examples to configure other parts of the infrastructure
-- instructions to setup your browser to use the self hosted infrastructure
-- optionally, and experimental, [Mozilla accounts (fxa)](https://github.com/mozilla/fxa) as well, so that no Mozilla server is involved: see [FXA.md](FXA.md)
+This project provides:
+- GitHub workflows that build images as vanilla as possible from Mozilla's code (below)
+- Docker compose files and Podman Quadlets to run the components, with their databases
+- examples for the rest of the infrastructure (nginx, systemd)
+- instructions to set up Firefox to use your server
+- optionally, and experimental, [Mozilla accounts (fxa)](https://github.com/mozilla/fxa) as well, see [FXA.md](FXA.md)
+- an optional [admin UI](ADMIN.md)
 
-### Docker images currently published
+## Images
+
+All the images are updated weekly to the latest tag available from Mozilla's official repositories, and published only after the [tests](TESTING.md) passed
 All the images are updated weekly to the latest tag available from Mozilla's official repositories
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - GitHub [workflow](/.github/workflows/syncstorage-rs.yml) and [logs](https://github.com/porelli/firefox-sync/actions/workflows/syncstorage-rs.yml)
@@ -72,84 +94,6 @@ All the images are updated weekly to the latest tag available from Mozilla's off
         - code changes: none
     - used by default with self-hosted accounts (`FXA_VERSION=fxa-mono-latest`); Mozilla's own image works too on amd64
 - `ghcr.io/porelli/firefox-sync:fxa-channelserver-<release>` and `fxa-channelserver-latest`, amd64 and arm64: the optional QR code pairing server, built the same way from [Mozilla's channelserver](https://github.com/mozilla-services/channelserver)
-
-## Server setup
-
-### Docker Compose
-
-1. clone this repository
-1. run `./prepare_environment.sh` to automatically prepare your `.env` file and conf examples according with your variables
-    - you can choose between MariaDB (default, [docker-compose.yml](/docker-compose.yml)), MySQL 8.4 (`mysql`: the same file with [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml), what upstream syncstorage-rs is developed and tested on, see [DATABASES.md](DATABASES.md#mariadb-or-mysql-containers)) and PostgreSQL ([docker-compose.postgres.yml](/docker-compose.postgres.yml)) as database backend. For MySQL and PostgreSQL, the script sets `COMPOSE_FILE` in `.env` so that `docker compose` picks the right files automatically
-    - you can pin the syncstorage image to a specific tag (default: `latest`)
-    - you can also self-host Mozilla accounts (experimental, see [FXA.md](FXA.md)): the script asks for the host names and your SMTP server and sets everything up. Their database is MySQL 8.4 by default, or MariaDB 11.8 ([MySQL or MariaDB](FXA.md#mysql-or-mariadb))
-    - you can use a MariaDB, MySQL or PostgreSQL server you already run instead of the database containers: the script writes the SQL for the databases and users, see [DATABASES.md](DATABASES.md)
-    - coming from another self-hosted Sync server (Mozilla's compose files, other images, NixOS, YunoHost, the Python syncserver, fxa-selfhosting): see [MIGRATING.md](MIGRATING.md)
-1. setup your reverse proxy server
-    1. if you use nginx, check the [syncstorage-rs.conf](/config/nginx/syncstorage-rs-example.conf) as example (and [fxa.conf](/config/nginx/fxa-example.conf) with self-hosted accounts)
-1. start docker compose:
-    ```bash
-    docker compose up -d
-    ```
-    - with Podman, use the Quadlets below or `docker compose` with the Podman socket, see [PODMAN.md](PODMAN.md#method-2-using-docker-compose-with-the-podman-socket). `podman-compose` is not supported because it cannot run the one-shot migration and init containers before the service ([why](PODMAN.md#why-not-podman-compose))
-1. OPTIONAL: Install the systemd service
-    - **Docker**: See [firefox-sync.service](/config/systemd/syncstorage-rs-example.service)
-    - **Podman**: See [PODMAN.md](PODMAN.md#method-1-using-quadlets) for Quadlet setup (recommended)
-    - All containers are set to restart automatically
-1. OPTIONAL: nightly backups of the databases into a volume, watched by the admin UI: add `backup` to `COMPOSE_PROFILES` in `.env` (Quadlets: `systemctl --user enable --now firefox-sync-backup.timer`), and copy them off the host with `.env`, see [ADMIN.md](ADMIN.md#backups)
-
-### Podman with Quadlets (Recommended for Podman)
-
-For native systemd integration with Podman, see the comprehensive [Podman Guide](PODMAN.md#method-1-using-quadlets). Quadlets are currently provided for MariaDB and MySQL only, with or without self-hosted accounts.
-
-Quick start:
-```bash
-./prepare_environment.sh  # Choose option 1 (Quadlets, the default) when prompted
-systemctl --user start firefox-sync-syncstorage.service
-```
-
-## Tests
-
-Every image build runs the tests in [tests/](/tests) before the multi-arch tags (e.g. `syncstorage-rs-mysql-latest`) are published:
-- [`tests/e2e.sh`](/tests/e2e.sh) `<mysql|postgres>`: starts the docker compose stack (for `mysql` on MariaDB, with `SYNC_DB=mysql` on MySQL 8.4) and checks start-up order, MAX_USERS, domain changes, a Firefox-like sign-in and sync through the tokenserver ([`test_client_flow.py`](/tests/test_client_flow.py), using upstream's mock FxA server) and runs upstream's storage and tokenserver integration tests, after an upgrade from an install before `ADMIN_DB_PASSWORD` (with `UPGRADE_FROM=<checkout>` that release's own files and images) that moves the admin UI's event log out of the Sync server's users' reach ([DATABASES.md](DATABASES.md#the-admin-uis-own-database)). With `EXTERNAL_DB=1` the same on a database server outside the stack ([DATABASES.md](DATABASES.md)) with only the documented grants: MySQL 8.4 with binary logging, or PostgreSQL 18 set up by a role that is no superuser, with an owner that is no superuser. `tests/e2e-fxa.sh` and `tests/podman.sh` take it too: one MySQL 8.4, or MariaDB 11.8 with `FXA_DB=mariadb`, for Sync and the accounts, MariaDB with binary logging for the Quadlets; `EXTERNAL_DB=fxa` puts only the accounts there, with one user for the accounts and the sign-up policy. The builds of the Sync images run `EXTERNAL_DB=1 tests/e2e.sh` on both backends and `SYNC_DB=mysql tests/e2e.sh mysql`, those of the admin UI that and `EXTERNAL_DB=1 tests/e2e-fxa.sh` (MySQL, amd64); the other combinations run locally only
-- [`tests/podman.sh`](/tests/podman.sh): rootless Podman, with Quadlets (also with self-hosted accounts) and with `docker compose` on the Podman socket, configured with `prepare_environment.sh`. It also checks the MySQL Quadlets as rendered, and with `SYNC_DB=mysql` it runs the compose and Quadlet phases on MySQL 8.4
-- [`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh): the stack with self-hosted Mozilla accounts behind an HTTPS proxy and a mail catcher: the setup with `prepare_environment.sh`, sign-up, OAuth and sync like Firefox does ([`test_fxa_flow.py`](/tests/test_fxa_flow.py)), the sign-up policy and the admin UI ([`test_fxa_admin.py`](/tests/test_fxa_admin.py)), a real Firefox signing up on one profile and syncing to a second one ([`test_fxa_browser.py`](/tests/test_fxa_browser.py)) and the pairing server. It runs with the newest Mozilla accounts release every week, and on amd64 and arm64 for the [accounts images](/.github/workflows/fxa.yml). With `FXA_DB=mariadb` the accounts database is MariaDB 11.8 instead of MySQL 8.4 (`tests/podman.sh` takes it too, for the Quadlets)
-
-All can be run locally against any published tag, e.g. `TAG=latest tests/e2e.sh mysql`.
-
-[`tests/fxa-upgrade.sh`](/tests/fxa-upgrade.sh) upgrades the self-hosted accounts in place from an older release (`FXA_FROM`) with the steps of [FXA.md](FXA.md#upgrades), and checks that sessions, devices, refresh tokens and Sync data survive the migrations; the accounts images run it from the published release before publishing a new one.
-
-Not run by the image builds, locally only: [`tests/migrate.sh`](/tests/migrate.sh) `<scenario>`, the database moves of [MIGRATING.md](MIGRATING.md) from other Sync servers (Mozilla's compose files, dan-r, jeena, NixOS, YunoHost) and the upgrades of older firefox-sync releases, run with the commands of the guide as written there and checked with a client of upstream's mock FxA ([`migrate_client.py`](/tests/migrate_client.py)).
-
-## Firefox setup
-
-**Pre-requisite**: if you already logged into your Firefox account you need to temporarily disconnect it
-
-The below examples assume your server respond to this domain: `firefox-sync.example.com`.
-With self-hosted Mozilla accounts, see [FXA.md](FXA.md#setup) instead: Firefox is pointed to your accounts server, which tells it where the sync server is.
-With the [admin UI](ADMIN.md), its Connect a device page shows the steps below with your server's values.
-
-### Desktop
-
-1. point a browser tab to `about:config` and search for `identity.sync.tokenserver.uri`
-1. change it from the default to `https://firefox-sync.example.com/1.0/sync/1.5`
-1. log in to Firefox and start syncing.
-
-#### Debug
-1. check logs pointing a browser tab to `about:sync-log`
-
-### Android
-
-1. go to App Menu `⋮` > `Settings` > `About Firefox` and click the logo 5 times. You should see a `debug menu enabled` notification
-1. go back to the main setting menu and you will see `Sync Debug` at the top, just under the `Synchronize and save your data` box. Tap on it
-1. tap on `Custom Sync server` and set it to `https://firefox-sync.example.com/1.0/sync/1.5`
-1. log in to Firefox and start syncing.
-
-### iOS
-
-1. go to App Menu `≡` > `Settings` and tap 5 times on the version number (i.e.: `Firefox 127.1 (42781)`) towards the bottom
-1. go back at the top of the main setting menu and you will see `Advanced Sync Settings` at the top, just under the `Sync and Save Data`. Tap on it
-1. activate `Use Custom Sync Token Server` and set `Custom Sync Token Server URI` to `https://firefox-sync.example.com/1.0/sync/1.5` (the `Custom FxA Content Server` options are only for self-hosted accounts)
-1. log in to Firefox and start syncing.
 
 ## Credits
 - [Mozilla](https://www.mozilla.org/) for [Firefox](https://www.mozilla.org/firefox) and opensourcing all their software, including the backend
