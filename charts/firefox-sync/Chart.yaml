@@ -1,0 +1,17 @@
+apiVersion: v2
+name: firefox-sync
+description: Self-hosted Firefox Sync server with syncstorage-rs, tokenserver, and optional admin UI
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - firefox
+  - sync
+  - syncstorage
+  - tokenserver
+home: https://github.com/porelli/firefox-sync
+sources:
+  - https://github.com/porelli/firefox-sync
+maintainers:
+  - name: Michele Porelli
+    url: https://github.com/porelli

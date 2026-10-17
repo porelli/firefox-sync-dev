@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["syncDomain"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "syncstorageTag": {
+          "type": "string"
+        },
+        "initTag": {
+          "type": "string"
+        },
+        "adminTag": {
+          "type": "string"
+        }
+      }
+    },
+    "syncDomain": {
+      "type": "string",
+      "pattern": "^https?://",
+      "minLength": 1
+    },
+    "maxUsers": {
+      "type": "string",
+      "pattern": "^(fixed:|initial:)?([0-9]+|unlimited)$"
+    },
+    "fxa": {
+      "type": "object",
+      "properties": {
+        "oauthServerUrl": {
+          "type": "string"
+        },
+        "emailDomain": {
+          "type": "string"
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["mariadb", "mysql", "postgres"]
+        },
+        "bundled": {
+          "type": "boolean"
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "tokenserverDatabase": {
+              "type": "string"
+            },
+            "storageDatabase": {
+              "type": "string"
+            },
+            "tokenserverUser": {
+              "type": "string"
+            },
+            "storageUser": {
+              "type": "string"
+            },
+            "tlsVerify": {
+              "type": "boolean"
+            }
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "size": {
+              "type": "string"
+            },
+            "storageClass": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "existingSecret": {
+      "type": "string"
+    },
+    "syncstorage": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "type": "object"
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "admin": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "schedule": {
+          "type": "string"
+        },
+        "keep": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "size": {
+              "type": "string"
+            },
+            "storageClass": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            }
+          }
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "adminIngress": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            }
+          }
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}
