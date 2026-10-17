@@ -2,8 +2,9 @@ name: fxa-mono
 
 # amd64 and arm64 builds of Mozilla's accounts image (mozilla/fxa-mono, published for
 # amd64 only) from the upstream release tags, tested with tests/e2e-fxa.sh and
-# tests/podman.sh on both architectures before the multi-arch tags are published
-# (and on MariaDB, without holding back the publishing, see test-mariadb).
+# tests/podman.sh on both architectures, and an upgrade from the published release
+# with tests/fxa-upgrade.sh, before the multi-arch tags are published (and on
+# MariaDB, without holding back the publishing, see test-mariadb).
 # Experimental, see FXA.md.
 
 on:
@@ -236,10 +237,21 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Init images from this commit
+        # the admin UI of this commit needs the procedures and grants of its init scripts: the
+        # published init images may be older (the syncstorage-rs workflow rebuilds them)
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+        run: |
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+
       - name: End-to-end tests with our ${{ matrix.arch }} image
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
+          # the init images above (the others are pulled when missing)
+          SKIP_PULL: 1
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
           FXA_ARCH: ${{ matrix.arch }}
@@ -268,16 +280,89 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Init images from this commit
+        # the admin UI of this commit needs the procedures and grants of its init scripts: the
+        # published init images may be older (the syncstorage-rs workflow rebuilds them)
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+        run: |
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+
       - name: End-to-end tests with our amd64 image, the accounts on MariaDB
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
+          SKIP_PULL: 1
           FXA_DB: mariadb
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-amd64
           FXA_ARCH: amd64
           FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-amd64
         run: ./tests/e2e-fxa.sh
+
+  # an install of the published release (fxa-mono-latest, not moved yet) with an account,
+  # a device and Sync data, upgraded in place to the candidate as FXA.md says
+  test-upgrade:
+    needs: [prepare, build, build-pairing]
+    if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free disk space
+        # two accounts images of 5 GB
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Init images from this commit
+        # the admin UI of this commit needs the procedures and grants of its init scripts: the
+        # published init images may be older (the syncstorage-rs workflow rebuilds them)
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+        run: |
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+
+      - name: Upgrade from the published release to our amd64 image
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          # the init images above; the accounts images are pulled, and the upgrade's own
+          # docker compose pull runs anyway
+          SKIP_PULL: 1
+          FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-amd64
+          FXA_ARCH: amd64
+        run: |
+          from="${REPOSITORY}:fxa-mono-latest"
+          # the first release published here has nothing to upgrade from
+          if ! docker buildx imagetools inspect "${from}" > /dev/null 2>&1; then
+            echo "no ${from} yet, nothing to upgrade"
+            exit 0
+          fi
+          # a rebuild of an older release (workflow_dispatch) would be a downgrade
+          docker pull -q --platform linux/amd64 "${from}" > /dev/null
+          published=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "${from}")
+          candidate="${{ needs.prepare.outputs.version }}"
+          if [ "${published}" != "${candidate}" ] && [ "$(printf '%s\n' "${published}" "${candidate}" | sort -V | tail -n 1)" = "${published}" ]; then
+            echo "${from} is ${published}, newer than ${candidate}: nothing to upgrade"
+            exit 0
+          fi
+          FXA_FROM="${from}" ./tests/fxa-upgrade.sh
 
   # the candidate under rootless podman too: quadlets with the accounts, set up by
   # prepare_environment.sh like a user would (and compose on the Podman socket)
@@ -328,6 +413,14 @@ jobs:
           echo "${TOKEN}" | podman login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
           echo "${TOKEN}" | docker login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
 
+      - name: Init images from this commit
+        # see the test job; podman has its own image store
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+        run: |
+          podman build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
+          podman build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+
       - name: Podman tests with our ${{ matrix.arch }} image
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
@@ -336,8 +429,8 @@ jobs:
         run: ./tests/podman.sh
 
   publish:
-    needs: [prepare, test, test-podman]
-    if: ${{ !failure() && !cancelled() && needs.test.result == 'success' && needs.test-podman.result == 'success' }}
+    needs: [prepare, test, test-podman, test-upgrade]
+    if: ${{ !failure() && !cancelled() && needs.test.result == 'success' && needs.test-podman.result == 'success' && needs.test-upgrade.result == 'success' }}
     permissions:
       packages: write
     runs-on: ubuntu-latest

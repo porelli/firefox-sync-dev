@@ -116,6 +116,8 @@ Every image build runs the tests in [tests/](/tests) before the multi-arch tags 
 
 All can be run locally against any published tag, e.g. `TAG=latest tests/e2e.sh mysql`.
 
+[`tests/fxa-upgrade.sh`](/tests/fxa-upgrade.sh) upgrades the self-hosted accounts in place from an older release (`FXA_FROM`) with the steps of [FXA.md](FXA.md#upgrades), and checks that sessions, devices, refresh tokens and Sync data survive the migrations; the accounts images run it from the published release before publishing a new one.
+
 Not run by the image builds, locally only: [`tests/migrate.sh`](/tests/migrate.sh) `<scenario>`, the database moves of [MIGRATING.md](MIGRATING.md) from other Sync servers (Mozilla's compose files, dan-r, jeena, NixOS, YunoHost) and the upgrades of older firefox-sync releases, run with the commands of the guide as written there and checked with a client of upstream's mock FxA ([`migrate_client.py`](/tests/migrate_client.py)).
 
 ## Firefox setup

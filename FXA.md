@@ -85,16 +85,52 @@ Privacy, plainly:
 
 ## Upgrades
 
-Like the sync server, the accounts follow `latest` by default (`FXA_VERSION=fxa-mono-latest`): a new Mozilla release, about every two weeks, is published here only after the tests passed with it on amd64 and arm64, including a real Firefox signing up and syncing. The database migrations run before the services start, and cannot be undone, so:
+Like the sync server, the accounts follow `latest` by default (`FXA_VERSION=fxa-mono-latest`): a new Mozilla release, about every two weeks, is published here only after the tests passed with it on amd64 and arm64, including a real Firefox signing up and syncing, and an install of the previous release upgraded to it ([below](#tests)). The database migrations (`fxa-migrations`) run before the services start and cannot be undone: once a release migrated the databases, going back means restoring a backup. Sessions, devices, OAuth tokens and Sync data are kept: Firefox stays signed in. So:
 
-1. Back up the `fxa-db` (`fxa-db-mariadb` with MariaDB) and `fxa-keys` volumes regularly (the keys sign every session and OAuth token). With [your own database server](DATABASES.md), back up its `fxa`, `fxa_oauth`, `fxa_profile`, `pushbox` and `ffs` databases instead.
-1. To decide when to upgrade instead, pin a release: `FXA_VERSION=fxa-mono-v1.347.1`, then change it and run `docker compose up -d`.
+1. Back up the `fxa-db` (`fxa-db-mariadb` with MariaDB) and `fxa-keys` volumes regularly (the keys sign every session and OAuth token). With [your own database server](DATABASES.md), back up its `fxa`, `fxa_oauth`, `fxa_profile`, `pushbox` and `ffs` databases instead. With the [backup service](ADMIN.md#backups), take one right before: `docker compose exec backup-fxa sh /ffs-backup/backup.sh now`.
+1. To decide when to upgrade instead, pin a release: `FXA_VERSION=fxa-mono-v1.347.1`, and to upgrade change it in `.env`.
+1. Then, pinned or not, pull and start:
+    ```bash
+    docker compose pull
+    docker compose up -d
+    ```
+    `docker compose up -d` alone does not upgrade `fxa-mono-latest`: it keeps the image it has. `up -d` runs `fxa-migrations` again with the new image, then `fxa-policy` (it installs the sign-up policy and the admin UI's procedures again over the migrated databases), and only then replaces the accounts services.
+1. Check: `docker compose ps -a fxa-migrations fxa-policy` says `Exited (0)` for both, and the [admin UI](ADMIN.md)'s overview shows the new release next to "Accounts API", all parts up, and the new schema levels of the accounts databases (with an event of kind `update` for each one that migrated). If `fxa-migrations` failed, `docker compose up -d` stops there with an error and `docker compose logs fxa-migrations` says why; restore the backup to go back to the older release.
+
+To move from Mozilla's image to the builds of this repository (or back), change `FXA_IMAGE`, `FXA_VERSION` and `FXA_ARCH` together, e.g. from `FXA_IMAGE=docker.io/mozilla/fxa-mono`, `FXA_VERSION=v1.345.2`, `FXA_ARCH=amd64` to `FXA_IMAGE=ghcr.io/porelli/firefox-sync`, `FXA_VERSION=fxa-mono-latest`, `FXA_ARCH=arm64`, then the same steps: it is the same software, the databases and keys stay.
+
+With Quadlets, the image is written in the unit files when `prepare_environment.sh` installs them, and the one-shot units of the migrations and of the sign-up policy ran at the first start and stay active: a new image alone does not migrate. To upgrade:
+
+1. A backup: `systemctl --user start firefox-sync-backup.service` (the accounts first).
+1. The new image: with `fxa-mono-latest`, `podman pull ghcr.io/porelli/firefox-sync:fxa-mono-latest` (`--arch` as `FXA_ARCH`); pinned, change the release in the `Image=` lines and pull it:
+    ```bash
+    sed -i 's|:fxa-mono-v1.347.1$|:fxa-mono-v1.347.3|' ~/.config/containers/systemd/firefox-sync-fxa-*.container
+    systemctl --user daemon-reload
+    podman pull ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.3
+    ```
+    (and `FXA_VERSION` in `.env`, for the next `prepare_environment.sh`).
+1. Run the migrations again. Restarting their unit restarts, in order, the units that require it: the sign-up policy, then the auth server, the accounts pages, the profile server and the admin UI. The profile worker and its static server do not require it:
+    ```bash
+    systemctl --user restart firefox-sync-fxa-migrations.service firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service
+    journalctl --user -u firefox-sync-fxa-migrations.service -n 20
+    ```
+    It returns once the migrations ran; the other units restart after, as at the first start (minutes).
+
+`podman auto-update` (and its timer) replaces the running accounts services when `fxa-mono-latest` moves, without running the migrations: the new release then runs on the old schema until they run. With self-hosted accounts, pin `FXA_VERSION` and upgrade with the steps above, or run the restart of step 3 right after each `podman auto-update`.
 
 Don't stay too far behind either: Firefox itself refuses to sign in to accounts servers that are too old for it (for example Firefox 154 needs a recent release because it switched to Bearer tokens).
 
 ## Tests
 
 [`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit), then [`tests/test_fxa_flow.py`](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token from the tokenserver and syncs, then signs in again as a second device. [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) checks the sign-up policy and the [admin UI](ADMIN.md). Then [`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [`tests/browser`](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it. No Mozilla service is involved. With `FXA_DB=mariadb` the same runs with the accounts on MariaDB 11.8.
+
+[`tests/fxa-upgrade.sh`](/tests/fxa-upgrade.sh) upgrades an install in place, with the steps of [Upgrades](#upgrades): it starts the stack on an older release (`FXA_FROM`), where [`tests/test_fxa_upgrade.py`](/tests/test_fxa_upgrade.py) signs up, registers a device, gets a refresh token and syncs; then a backup, the new `FXA_VERSION`, `docker compose pull` and `docker compose up -d`. With `FXA_SAME_TAG=1` the older release is installed under the new tag, as an install following `fxa-mono-latest` has it, and `docker compose up -d` without the pull must keep it. After it the migrations ran with the new image up to the levels of its `target-patch.json`, the sign-up policy and the admin UI's procedures were installed again, the old session, device and refresh token still work, the Sync data reads back on the same tokenserver user, a new sign-in and a new sign-up work, and the admin UI is all up, shows the new release and recorded each migrated schema as an event. [fxa.yml](/.github/workflows/fxa.yml) runs it from the published `fxa-mono-latest` to every new release before publishing it (amd64; not for a rebuild of a release older than the published one). It upgrades to `FXA_IMAGE:FXA_VERSION` (default: `REPOSITORY`, `fxa-mono-latest`) and reads the release the admin UI must show from that image, and refuses a target older than `FXA_FROM`. Our builds are in the registry of the repository whose fxa.yml built them; the examples use the development builds. Locally, e.g. from Mozilla's own image (amd64, emulated on arm64) with older schemas, from one of our older builds on MariaDB, and from an older `fxa-mono-latest`:
+
+```bash
+FXA_FROM=docker.io/mozilla/fxa-mono:v1.345.2 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_VERSION=fxa-mono-v1.347.3 tests/fxa-upgrade.sh
+FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.1 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_DB=mariadb tests/fxa-upgrade.sh
+FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.1 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_SAME_TAG=1 tests/fxa-upgrade.sh
+```
 
 ## Credits
 
