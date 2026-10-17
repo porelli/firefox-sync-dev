@@ -1,0 +1,34 @@
+{{template "head" (page "Configuration" "config" .)}}
+<main id="main">
+<div class="page-head">
+  <div>
+    <h1>Configuration</h1>
+    <p class="hint">What this server runs with, as the admin UI sees it: the settings of <code>.env</code> it is given, and the limits and sign-ups of the databases. Change them in <code>.env</code>, then <code>docker compose up -d</code> (or restart the Quadlets); the limits and the sign-ups on the overview. Secrets are never shown, only whether they are set.</p>
+  </div>
+</div>
+{{template "flash" .}}
+{{/* the settings that disagree, each with where to look */}}
+<section id="hints">
+<div class="banner {{if .Hints}}is-warn{{else}}is-ok{{end}}" role="region" aria-labelledby="hints-title">
+  {{with .Hints}}<h2 id="hints-title">{{if eq (len .) 1}}1 setting to check{{else}}{{len .}} settings to check{{end}}</h2>
+  <ul class="attention">{{range .}}<li>{{.Text}} <a href="{{.Href}}">{{.Link}}</a></li>{{end}}</ul>
+  {{else}}<h2 id="hints-title">The settings agree</h2>
+  <p id="no-hints" class="hint">No mismatch found between the settings.</p>{{end}}
+</div>
+</section>
+<nav class="chips" aria-label="Groups">{{range .Groups}}<a href="#{{.ID}}-settings">{{.Title}}</a>{{end}}</nav>
+{{range .Groups}}
+{{/* -settings: the ids of the overview (accounts, sync, metrics) have their own styles */}}
+<section class="card" aria-labelledby="{{.ID}}-settings-title" id="{{.ID}}-settings">
+  <h2 id="{{.ID}}-settings-title">{{.Title}}</h2>
+  {{with .Intro}}<p class="hint">{{.}}</p>{{end}}
+  {{if .Rows}}<div class="scroll"><table id="{{.ID}}-settings-table" aria-label="{{.Title}}">
+    <thead><tr><th>Setting</th><th>Value</th><th>From</th></tr></thead>
+    <tbody>{{range .Rows}}<tr><td>{{.Setting}}</td>
+      <td>{{if .Secret}}{{if .Default}}<span class="pill">not set</span>{{else}}<span class="ok">set</span>{{end}}{{else if .Value}}{{if .Fact}}{{.Value}}{{else}}<code>{{.Value}}</code>{{end}}{{if .Default}} <span class="quiet-text">(default)</span>{{end}}{{else}}<span class="pill">not set</span>{{end}}</td>
+      <td>{{range $i, $v := .Vars}}{{if $i}}, {{end}}<code>{{$v}}</code>{{end}}{{with .Note}}<span class="hint config-note">{{.}}</span>{{end}}</td></tr>{{end}}</tbody>
+  </table></div>{{end}}
+</section>
+{{end}}
+</main>
+{{template "foot"}}

@@ -222,6 +222,9 @@ services:
       BACKUP_KEEP: ${BACKUP_KEEP:-7}
       # the commands it shows: compose's (the Quadlets say quadlets)
       ADMIN_DEPLOYMENT: compose
+      # the configuration page (no secrets): the databases, where the admin UI is published
+      SYNC_DB: ${SYNC_DB:-mariadb}
+      ADMIN_EXPORT_PORT: ${ADMIN_EXPORT_PORT:-127.0.0.1:8090}
       # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
       ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-}

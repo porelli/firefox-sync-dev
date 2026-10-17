@@ -31,6 +31,11 @@ func publicChecks() bool {
 	return v != "0" && v != "false"
 }
 
+// updateChecks: ADMIN_UPDATE_CHECK=false (exactly) turns the release checks off
+func updateChecks() bool {
+	return env("ADMIN_UPDATE_CHECK", "true") != "false"
+}
+
 // httpsURL: u parsed when it is https, nil otherwise (http and unset are not checked)
 func httpsURL(raw string) *url.URL {
 	u, err := url.Parse(strings.TrimSpace(raw))

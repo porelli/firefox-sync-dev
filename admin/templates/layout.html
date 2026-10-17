@@ -19,6 +19,7 @@
     <li><a href="/"{{if eq .Current "overview"}} aria-current="page"{{end}}>{{template "icon" "overview"}}<span>Overview</span></a></li>
     <li><a href="/activity"{{if eq .Current "activity"}} aria-current="page"{{end}}>{{template "icon" "activity"}}<span>Activity</span></a></li>
     {{if .Data.FxA}}<li><a href="/security"{{if eq .Current "security"}} aria-current="page"{{end}}>{{template "icon" "shield"}}<span>Security</span></a></li>{{end}}
+    <li><a href="/config"{{if eq .Current "config"}} aria-current="page"{{end}}>{{template "icon" "settings"}}<span>Config<span class="wide">uration</span></span></a></li>
     <li class="nav-apart"><a href="/connect"{{if eq .Current "connect"}} aria-current="page"{{end}}>{{template "icon" "connect"}}<span>Connect<span class="wide"> a device</span></span></a></li>
   </ul></nav>
   <div class="who">
@@ -44,6 +45,7 @@
 {{- else if eq . "overview"}}<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>
 {{- else if eq . "activity"}}<path d="M3 12h4l3-7 4 14 3-7h4"/>
 {{- else if eq . "connect"}}<rect x="2.5" y="4.5" width="13" height="10" rx="1.5"/><path d="M1.5 18.5h15"/><rect x="18" y="8.5" width="4.5" height="11" rx="1"/>
+{{- else if eq . "settings"}}<path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h11M19 17.5h1"/><circle cx="15" cy="6.5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17.5" r="2"/>
 {{- else if eq . "shield"}}<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.9-7.5-9.5V6z"/>
 {{- else if eq . "signout"}}<path d="M14 4h4.5a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5H14M9.5 16.5 5 12l4.5-4.5M5 12h10"/>
 {{- else if eq . "back"}}<path d="M15 18l-6-6 6-6"/>

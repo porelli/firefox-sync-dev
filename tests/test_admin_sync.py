@@ -15,11 +15,13 @@ Environment (besides those of test_client_flow.py):
   ADMIN_DB_URL    the admin UI's own database (the event log, the notes), as its user
 """
 
+import html
 import json
 import os
 import re
 import time
 import urllib.parse as urlparse
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -241,6 +243,48 @@ def test_connect_a_device(admin):
     steps = page.split('id="device-steps"')[1]
     assert f"identity.sync.tokenserver.uri and set it to {domain}/1.0/sync/1.5" in steps, steps[:2000]
     assert "Custom Sync Token Server URI" in steps and "autoconfig" not in steps
+
+
+def config_row(page, setting):
+    """The value and the origin of a setting of the Configuration page, in plain text"""
+    row = re.search(r"<tr><td>" + re.escape(setting) + r"</td>(.*?)</tr>", page, re.S)
+    assert row, (setting, page[:3000])
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", row.group(1))).split())
+
+
+def test_configuration_page(admin):
+    page = admin.get("/config")
+    domain = os.environ["SYNCSTORAGE_DOMAIN"].rstrip("/")
+    assert config_row(page, "Sync server").startswith(f"{domain} SYNCSTORAGE_DOMAIN"), config_row(page, "Sync server")
+    assert config_row(page, "Sync node handed out").startswith(domain)
+    # where max users comes from: initial:N is managed on the overview, N is fixed
+    row = config_row(page, "Max users")
+    assert f"MAX_USERS={os.environ['MAX_USERS_SETTING']}:" in row and ("then on the overview" in row) == EDITABLE, row
+    # the Sync databases, the settings of the test stack (tests/docker-compose.test.yml)
+    assert ("Databases" in page) == MYSQL and ("PostgreSQL, tokenserver and storage in one database" in page) == (not MYSQL)
+    if MYSQL:
+        # the server as the health check read it (MariaDB 11.8.3, MySQL 8.4.6), not only the kind
+        assert re.match(r"(MariaDB|MySQL) \d+\.\d+[.\d]* SYNC_DB ", config_row(page, "Databases")), config_row(page, "Databases")
+    assert config_row(page, "Time zone").startswith("Europe/Rome ADMIN_TZ")
+    assert config_row(page, "OpenID Connect issuer").startswith("http://dex:5556/dex ")
+    assert config_row(page, "Published on").startswith("127.0.0.1:"), config_row(page, "Published on")
+    assert config_row(page, "Public checks").startswith("off ADMIN_PUBLIC_CHECK")
+    # the secrets: whether they are set, never their value
+    assert config_row(page, "Password").startswith("set ADMIN_PASSWORD")
+    assert config_row(page, "Client secret").startswith("set ADMIN_OIDC_CLIENT_SECRET")
+    assert config_row(page, "Prometheus").startswith("set ADMIN_METRICS_TOKEN")
+    # the admin UI's own database and users (ADMIN_DB_PASSWORD): its reader on the Sync data
+    own = urlsplit(os.environ["ADMIN_DB_URL"])
+    row = config_row(page, "Admin UI database")
+    assert row.startswith(f"{own.username} on ") and f"database {own.path.lstrip('/')}" in row, row
+    assert config_row(page, "Admin UI database password").startswith("set ADMIN_DB_PASSWORD")
+    secrets = [os.environ["ADMIN_PASSWORD"], METRICS_TOKEN, "ffs-test-dex-client-secret", os.environ["SYNC_MASTER_SECRET"],
+               urlsplit(os.environ["SYNC_SYNCSTORAGE__DATABASE_URL"]).password, own.password]
+    for secret in secrets:
+        assert secret and secret not in page
+    # what disagrees: the cookie of the test stack over plain HTTP (ADMIN_INSECURE_COOKIE)
+    hints = page.split('<section id="hints">')[1].split("</section>")[0]
+    assert "ADMIN_INSECURE_COOKIE is set" in hints and "not a loopback address" not in hints, hints
 
 
 def test_database_sizes(admin):

@@ -389,7 +389,7 @@ func TestNavAndSchemaAndBackups(t *testing.T) {
 	nav := page[strings.Index(page, `<nav aria-label="Pages">`):]
 	nav = nav[:strings.Index(nav, "</nav>")]
 	items := regexp.MustCompile(`<li( class="[^"]+")?><a href="([^"]+)"`).FindAllStringSubmatch(nav, -1)
-	if len(items) != 4 || items[3][2] != "/connect" || items[3][1] != ` class="nav-apart"` || items[2][2] != "/security" {
+	if len(items) != 5 || items[4][2] != "/connect" || items[4][1] != ` class="nav-apart"` || items[2][2] != "/security" || items[3][2] != "/config" {
 		t.Errorf("nav: %q", items)
 	}
 	// FxA records no time

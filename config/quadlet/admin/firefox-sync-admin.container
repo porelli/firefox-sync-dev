@@ -58,6 +58,9 @@ Environment="ADMIN_TZ=%ADMIN_TZ%"
 Environment="BACKUP_TIME=%BACKUP_TIME%"
 Environment="BACKUP_KEEP=%BACKUP_KEEP%"
 Environment="ADMIN_DEPLOYMENT=quadlets"
+# the configuration page (no secrets): the databases, where the admin UI is published
+Environment="SYNC_DB=%SYNC_DB%"
+Environment="ADMIN_EXPORT_PORT=%ADMIN_EXPORT_PORT%"
 # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
 Environment="ADMIN_OIDC_ISSUER=%ADMIN_OIDC_ISSUER%"
 Environment="ADMIN_OIDC_CLIENT_ID=%ADMIN_OIDC_CLIENT_ID%"

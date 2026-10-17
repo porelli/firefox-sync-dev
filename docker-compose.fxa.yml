@@ -364,6 +364,11 @@ services:
       # the public checks (ADMIN_PUBLIC_CHECK), the sign-up gate through FXA_AUTH_URL
       FXA_AUTH_URL: ${FXA_AUTH_URL}
       FXA_PROFILE_URL: ${FXA_PROFILE_URL}
+      # the configuration page: the accounts database, the gate's port, what fxa-auth runs with
+      FXA_DB: ${FXA_DB:-mysql}
+      ADMIN_GATE_EXPORT_PORT: ${ADMIN_GATE_EXPORT_PORT:-127.0.0.1:8091}
+      FXA_CLIENT_ADDRESS_DEPTH: ${FXA_CLIENT_ADDRESS_DEPTH:-2}
+      FXA_ACCESS_TOKEN_LIFETIME: ${FXA_ACCESS_TOKEN_LIFETIME:-60 minutes}
       # with ADMIN_FXA_CLIENT_ID, sign in with these accounts (see ADMIN.md), unless set otherwise
       ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-${ADMIN_FXA_CLIENT_ID:+${FXA_CONTENT_URL}}}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-${ADMIN_FXA_CLIENT_ID:-}}

@@ -318,6 +318,8 @@ table:has(td.empty) thead { display: none; }
 #accounts th:nth-child(4) { width: 15%; }
 #accounts td.status .badge, #accounts td.status .disabled { margin: .1rem 0; }
 .quiet-text { color: var(--muted); font-size: .825rem; }
+/* the configuration page: what a setting means, under its variables */
+.config-note { display: block; margin-top: .15rem; }
 #accounts td.security .badge { margin: .1rem .15rem .1rem 0; }
 /* "no recovery key" in a list is quiet grey text, not a pill: it is on most rows. On the
    account page, where it is the subject, it is an amber pill (t-warn) */

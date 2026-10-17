@@ -1221,6 +1221,45 @@ def test_connect_a_device_page(admin):
         assert part in steps, (part, steps[:3000])
 
 
+def config_row(page, setting):
+    """The value and the origin of a setting of the Configuration page, in plain text"""
+    row = re.search(r"<tr><td>" + re.escape(setting) + r"</td>(.*?)</tr>", page, re.S)
+    assert row, (setting, page[:3000])
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", row.group(1))).split())
+
+
+def test_configuration_page(admin):
+    page = admin.get("/config")
+    for setting, value in (("Accounts pages", CONTENT), ("Accounts API", AUTH), ("Sync server", SYNC),
+                           ("Pairing server", "wss://pairing.fxa.test"), ("SMTP server", "mailpit")):
+        assert config_row(page, setting).startswith(value + " "), (setting, config_row(page, setting))
+    accounts = page.split('id="accounts-settings"')[1].split("</section>")[0]
+    # the version the health check read from the server (8.4.6), the image's before the first check
+    assert re.match((os.environ.get("FXA_DB_SERVER") or r"MySQL 8\.4") + r"[.\d]* FXA_DB ", config_row(accounts, "Database")), config_row(accounts, "Database")
+    # the settings of fxa-auth, given to the admin UI for this page (not the defaults)
+    assert config_row(page, "Access token lifetime") == "60 minutes FXA_ACCESS_TOKEN_LIFETIME of the access tokens of Firefox"
+    assert config_row(page, "Client IP address").startswith("2 FXA_CLIENT_ADDRESS_DEPTH")
+    assert config_row(page, "Sign-up gate published on").startswith("127.0.0.1:")
+    assert "FXA_SIGNUPS" in config_row(page, "Sign-ups") and "FXA_MAX_ACCOUNTS=" in config_row(page, "Max accounts")
+    # the security history as the admin UI runs (FXA_ACCOUNT_EVENTS, true in tests/e2e-fxa.sh)
+    want = "on" if EVENTS else "off"
+    assert config_row(page, "Security history").startswith(want + " "), config_row(page, "Security history")
+    # the admin UI signs in with these accounts (ADMIN_FXA_CLIENT_ID)
+    if ADMIN_CLIENT_ID:
+        assert "the self-hosted accounts" in config_row(page, "OpenID Connect issuer")
+    # secrets: set, never their value
+    assert config_row(page, "Password").startswith("set ADMIN_PASSWORD")
+    assert config_row(page, "Password of ffs_admin (accounts)").startswith("set FXA_ADMIN_DB_PASSWORD")
+    secrets = [os.environ["ADMIN_PASSWORD"], "ffs-test-metrics-token", urlsplit(os.environ["FXA_TEST_DB_URL"]).password,
+               urlsplit(os.environ["SYNC_SYNCSTORAGE__DATABASE_URL"]).password, urlsplit(os.environ["ADMIN_DB_URL"]).password]
+    for secret in secrets:
+        assert secret and secret not in page
+    # the test stack agrees with itself: the email domain, the sign-in keys, https
+    hints = page.split('<section id="hints">')[1].split("</section>")[0]
+    for wrong in ("FXA_EMAIL_DOMAIN is", "FXA_OAUTH_SERVER_URL is", "not an https:// URL", "not a wss:// URL", "are both on"):
+        assert wrong not in hints, hints
+
+
 # the life of an account: deleting it, its Sync data, pruning (ADMIN.md)
 
 @pytest.fixture(scope="module")

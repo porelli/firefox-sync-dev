@@ -739,6 +739,8 @@ func pages(t *testing.T) map[string]string {
 			"Events": []Event{{At: time.Now(), Kind: "admin", Detail: "x"}}, "Older": int64(5), "Paged": true, "Q": "x",
 			"FxA": true, "Jobs": []jobRow{{Job{Name: "prune", Result: "x"}, true}, {Job{Name: "purge"}, false}}},
 		"security.html": {"CSRF": "x", "FxA": true, "Blocks": []Block{{Key: "k"}}},
+		"config.html": {"CSRF": "x", "FxA": true, "Hints": []attention{{Text: "x", Href: "#public", Link: "Public URLs"}},
+			"Groups": []configGroup{{ID: "public", Title: "Public URLs", Rows: []configRow{{Setting: "Sync server", Value: "https://sync.example.com", Vars: []string{"SYNCSTORAGE_DOMAIN"}}}}}},
 		"login.html":    {"Password": true, "OIDC": "Dex"},
 		"continue.html": {},
 		"error.html":    {"Code": 404, "Text": "404 page not found", "CSRF": "x", "FxA": true},

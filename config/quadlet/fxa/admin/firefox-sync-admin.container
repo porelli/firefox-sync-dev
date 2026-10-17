@@ -59,6 +59,9 @@ Environment="ADMIN_TZ=%ADMIN_TZ%"
 Environment="BACKUP_TIME=%BACKUP_TIME%"
 Environment="BACKUP_KEEP=%BACKUP_KEEP%"
 Environment="ADMIN_DEPLOYMENT=quadlets"
+# the configuration page (no secrets): the databases, where the admin UI is published
+Environment="SYNC_DB=%SYNC_DB%"
+Environment="ADMIN_EXPORT_PORT=%ADMIN_EXPORT_PORT%"
 # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
 Environment="ADMIN_OIDC_ISSUER=%ADMIN_OIDC_ISSUER%"
 Environment="ADMIN_OIDC_CLIENT_ID=%ADMIN_OIDC_CLIENT_ID%"
@@ -85,6 +88,11 @@ Environment="FXA_AUTH_URL=%FXA_AUTH_URL%"
 Environment="FXA_PROFILE_URL=%FXA_PROFILE_URL%"
 # the security history of the accounts, as firefox-sync-fxa-auth records it
 Environment="FXA_ACCOUNT_EVENTS=%FXA_ACCOUNT_EVENTS%"
+# the configuration page: the accounts database, the gate's port, what fxa-auth runs with
+Environment="FXA_DB=%FXA_DB%"
+Environment="ADMIN_GATE_EXPORT_PORT=%ADMIN_GATE_EXPORT_PORT%"
+Environment="FXA_CLIENT_ADDRESS_DEPTH=%FXA_CLIENT_ADDRESS_DEPTH%"
+Environment="FXA_ACCESS_TOKEN_LIFETIME=%FXA_ACCESS_TOKEN_LIFETIME%"
 PublishPort=%ADMIN_EXPORT_PORT%:8080
 # the sign-up gate: POST /v1/account/create of FXA_AUTH_URL (see config/nginx/fxa-example.conf)
 PublishPort=%ADMIN_GATE_EXPORT_PORT%:8081

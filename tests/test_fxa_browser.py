@@ -296,7 +296,7 @@ def test_admin_fits_a_phone():
         pytest.skip("no admin UI")
     try:
         driver.set_window_size(500, 1028)
-        for path in ("/", "/activity", "/security"):
+        for path in ("/", "/activity", "/security", "/config"):
             driver.get(f"{admin}{path}")
             with driver.context(driver.CONTEXT_CHROME):
                 driver.execute_script("gBrowser.selectedBrowser.fullZoom = 500 / 360")
