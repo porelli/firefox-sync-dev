@@ -19,3 +19,7 @@ data:
         value: {{ .Values.fxa.emailDomain | quote }}
       - name: DATABASE_BACKEND
         value: {{ .Values.database.backend | quote }}
+      - name: TOKENSERVER_DB_URL
+        value: {{ include "firefox-sync.dbUrl" (dict "root" . "db" "tokenserver") | quote }}
+      - name: STORAGE_DB_URL
+        value: {{ include "firefox-sync.dbUrl" (dict "root" . "db" "storage") | quote }}

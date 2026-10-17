@@ -88,6 +88,16 @@ admin:
   enabled: false
   # Additional admin configuration will be added in Task 3
 
+  # Admin ingress configuration (used when admin.enabled: true)
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    tls:
+      enabled: false
+      secretName: ""
+    annotations: {}
+
 # Backup configuration (Task 4 will implement templates)
 backup:
   enabled: false
@@ -114,14 +124,3 @@ ingress:
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt-prod
     # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-
-# Admin ingress configuration
-# (used when admin.enabled: true)
-adminIngress:
-  enabled: false
-  className: ""
-  host: ""
-  tls:
-    enabled: false
-    secretName: ""
-  annotations: {}

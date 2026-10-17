@@ -45,16 +45,28 @@ lint() {
 
   # Test schema validation - invalid backend should fail
   echo "Testing schema validation with invalid backend..."
-  if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=sqlite 2>&1 | grep -q -E '(does not match|not valid|schema)'; then
-    check "Schema validation correctly rejects invalid database.backend"
-  else
-    # Try without expecting error - helm might not have schema validation in all versions
-    if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=sqlite >/dev/null 2>&1; then
-      echo "⚠ Schema validation not enforced (helm version may not support it)"
-    else
-      check "Schema validation correctly rejects invalid database.backend"
-    fi
+  if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=sqlite >/dev/null 2>&1; then
+    fail "Schema validation did not reject invalid database.backend (sqlite)"
   fi
+  check "Schema validation correctly rejects invalid database.backend"
+
+  # Test postgres password consistency - both URLs should use $(POSTGRES_PASSWORD)
+  echo "Testing postgres password consistency..."
+  output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/postgres-values.yaml")
+  tokenserver_url=$(echo "${output}" | grep -A1 'name: TOKENSERVER_DB_URL' | grep 'value:' | head -1)
+  storage_url=$(echo "${output}" | grep -A1 'name: STORAGE_DB_URL' | grep 'value:' | head -1)
+
+  if ! echo "${tokenserver_url}" | grep -q '$(POSTGRES_PASSWORD)'; then
+    fail "Tokenserver URL does not use \$(POSTGRES_PASSWORD): ${tokenserver_url}"
+  fi
+  if ! echo "${storage_url}" | grep -q '$(POSTGRES_PASSWORD)'; then
+    fail "Storage URL does not use \$(POSTGRES_PASSWORD): ${storage_url}"
+  fi
+  # Ensure they don't use the wrong password variables
+  if echo "${output}" | grep -q '$(TOKENSERVER_DB_PASSWORD)' || echo "${output}" | grep -q '$(STORAGE_DB_PASSWORD)'; then
+    fail "Postgres backend should not reference TOKENSERVER_DB_PASSWORD or STORAGE_DB_PASSWORD"
+  fi
+  check "Postgres backend correctly uses \$(POSTGRES_PASSWORD) for both tokenserver and storage"
 
   echo ""
   echo "=== All lint checks passed ==="
