@@ -11,9 +11,28 @@ ALTER USER '@TOKENSERVER_USER@'@'%' IDENTIFIED BY '@TOKENSERVER_PASSWORD@';
 ALTER USER '@SYNCSTORAGE_USER@'@'%' IDENTIFIED BY '@SYNCSTORAGE_PASSWORD@';
 -- tables (migrations; REFERENCES for their foreign keys on MySQL 8.0.22+), the init
 -- container's config table, CheckUserLimit procedure and BeforeInsertUser trigger (MAX_USERS),
--- the admin UI's tables (ffs_metrics, ffs_events, ffs_backups...)
+-- and the procedures the admin UI calls (ffs_set_max_users...)
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES,
   CREATE ROUTINE, ALTER ROUTINE, EXECUTE, TRIGGER ON `@TOKENSERVER_DATABASE@`.* TO '@TOKENSERVER_USER@'@'%';
 -- tables (migrations; one of them creates, calls and drops a procedure)
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES,
   CREATE ROUTINE, ALTER ROUTINE, EXECUTE ON `@SYNCSTORAGE_DATABASE@`.* TO '@SYNCSTORAGE_USER@'@'%';
+-- The admin UI: its own database (the event log, the audit trail, notes, metrics, backup
+-- runs) and two users of its own, which the two users above cannot reach. @ADMIN_USER@ has
+-- its database only (DROP and LOCK TABLES: a restore of its dump). @ADMIN_SYNC_USER@ reads
+-- the Sync databases, and changes them only through the init container's procedures
+-- (EXECUTE: max users, rows of users) and by deleting stored data (DELETE on the storage:
+-- purges, resets); it has nothing on the admin UI's database, so the code the users above
+-- can put in their databases (procedures, views, SQL SECURITY INVOKER) cannot reach it.
+CREATE DATABASE IF NOT EXISTS `@ADMIN_DATABASE@`;
+CREATE USER IF NOT EXISTS '@ADMIN_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+CREATE USER IF NOT EXISTS '@ADMIN_SYNC_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+ALTER USER '@ADMIN_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+ALTER USER '@ADMIN_SYNC_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, LOCK TABLES ON `@ADMIN_DATABASE@`.* TO '@ADMIN_USER@'@'%';
+GRANT SELECT, EXECUTE ON `@TOKENSERVER_DATABASE@`.* TO '@ADMIN_SYNC_USER@'@'%';
+GRANT SELECT, DELETE ON `@SYNCSTORAGE_DATABASE@`.* TO '@ADMIN_SYNC_USER@'@'%';
+-- With the storage database on another server, run there instead of the line above:
+-- CREATE USER IF NOT EXISTS '@ADMIN_SYNC_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+-- ALTER USER '@ADMIN_SYNC_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+-- GRANT SELECT, DELETE ON `@SYNCSTORAGE_DATABASE@`.* TO '@ADMIN_SYNC_USER@'@'%';

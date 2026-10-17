@@ -7,6 +7,8 @@ Requires=firefox-sync-syncstorage-db.service firefox-sync-tokenserver-db.service
 # Runs the database migrations (and creates the sync node) without exposing
 # the service, so that MAX_USERS is enforced before anybody can reach it
 Image=%REPOSITORY%:%SYNCSTORAGE_IMAGE%-%SYNCSTORAGE_IMAGE_TAG%
+# no raw sockets, as compose's cap_drop: [NET_RAW]
+DropCapability=NET_RAW
 ContainerName=firefox-sync-syncstorage-migrate
 Network=firefox-sync-network.network
 

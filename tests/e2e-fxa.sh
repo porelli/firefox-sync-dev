@@ -63,6 +63,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"Mozilla accounts <no-reply@fxa.test>\"|" \
     -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=pairing,admin,backup|" \
     -e "s|^BACKUP_KEEP=.*|BACKUP_KEEP=1|" \
+    -e "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=$(rnd)|" \
     -e "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=allowlist|" \
     -e "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=@example.com,invited@example.net|" \
     -e "s|^# FXA_PAIRING_URL=.*|FXA_PAIRING_URL=wss://pairing.fxa.test|" \
@@ -251,7 +252,11 @@ for f in database-setup.sql database-setup-fxa.sql; do
   check "$(stat -c %a "${SETUP}/${f}" 2> /dev/null) $(grep -c '@[A-Z_]*@' "${SETUP}/${f}")" "600 0" "${f}: for this user only, filled in"
 done
 check "$(grep -c "'tokenserver'@'%' IDENTIFIED BY '$(env_value MARIADB_TOKENSERVER_PASSWORD)'" "${SETUP}/database-setup.sql") $(grep -c 'ON `sync_storage`.\* TO' "${SETUP}/database-setup.sql")" \
-  "2 1" "database-setup.sql with the generated password (created, set again) and the names given"
+  "2 3" "database-setup.sql with the generated password (created, set again) and the names given"
+# the admin UI's own users and database, out of the Sync users' reach (the storage: the names
+# given; with the storage on another server, the commented statements for it)
+check "$(grep -c "'ffs_admin_\(ui\|sync\)'@'%' IDENTIFIED BY '$(env_value ADMIN_DB_PASSWORD)'" "${SETUP}/database-setup.sql") $(grep -cE "^GRANT (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, LOCK TABLES ON \`ffs_admin\`\.\* TO 'ffs_admin_ui'|SELECT, EXECUTE ON \`tokenserver\`\.\* TO 'ffs_admin_sync'|SELECT, DELETE ON \`sync_storage\`\.\* TO 'ffs_admin_sync')@'%';$" "${SETUP}/database-setup.sql")" \
+  "6 3" "database-setup.sql with the admin UI's users (its database; the Sync data) and its database"
 check "$(grep -c "'fxa'@'%' IDENTIFIED WITH mysql_native_password BY '$(env_value FXA_MYSQL_PASSWORD)'" "${SETUP}/database-setup-fxa.sql") $(grep -c "'ffs_policy'@'%' IDENTIFIED BY '$(env_value FXA_MYSQL_POLICY_PASSWORD)'" "${SETUP}/database-setup-fxa.sql")" \
   "2 2" "database-setup-fxa.sql with the generated passwords"
 check "$(grep -c "'ffs_admin'@'%' IDENTIFIED BY '$(env_value FXA_ADMIN_DB_PASSWORD)'" "${SETUP}/database-setup-fxa.sql") $(grep -c 'CREATE USER ON' "${SETUP}/database-setup-fxa.sql")" \
@@ -320,6 +325,8 @@ check "$(env_value DB_CONTAINERS) $(env_value POSTGRES_SERVER):$(env_value POSTG
   "0 db.example.org:5432 syncserver syncserver 1" "Sync on your own PostgreSQL server in .env"
 check "$(stat -c %a "${SETUP}/database-setup.sql" 2> /dev/null) $(grep -c '@[A-Z_]*@' "${SETUP}/database-setup.sql") $(grep -c "ROLE syncserver .*PASSWORD '$(env_value POSTGRES_PASSWORD)'" "${SETUP}/database-setup.sql") [$(ls "${SETUP}/database-setup-fxa.sql" 2> /dev/null)]" \
   "600 0 2 []" "database-setup.sql for PostgreSQL with the generated password, none for the built-in accounts"
+check "$(grep -c "ROLE ffs_admin_\(ui\|sync\) .*PASSWORD '$(env_value ADMIN_DB_PASSWORD)'" "${SETUP}/database-setup.sql") $(grep -cxE '(CREATE DATABASE ffs_admin OWNER ffs_admin_ui TEMPLATE template0 ALLOW_CONNECTIONS false|REVOKE ALL ON DATABASE ffs_admin FROM PUBLIC|ALTER DATABASE ffs_admin ALLOW_CONNECTIONS true|REVOKE CREATE ON SCHEMA public FROM PUBLIC);' "${SETUP}/database-setup.sql")" \
+  "4 4" "database-setup.sql for PostgreSQL with the admin UI's roles and its own database, from template0"
 check "$(grep -c 'psql -h db.example.org -p 5432 -U postgres -f database-setup.sql' "${WORK}/setup-external-postgres.log")" 1 "prepare_environment.sh says how to run the SQL (PostgreSQL)"
 check "$(setup_compose config | sed -n '/^  postgres_db:/,/^  [a-z]/p' | grep -cE '^ +replicas: 0$') $(setup_compose config | sed -n '/^  syncstorage:/,/^  [a-z]/p' | grep -cE '^ +SYNC_(SYNCSTORAGE|TOKENSERVER)__DATABASE_URL: postgres(ql)?://syncserver:[A-Za-z0-9]+@db\.example\.org:5432/syncserver$')" \
   "1 2" "no postgres_db container, the Sync server connects to your server"
@@ -360,6 +367,7 @@ if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   { [ "${DB_CONTAINERS:-1}" = 0 ] && sed -e "s|@TOKENSERVER_DATABASE@|${MARIADB_TOKENSERVER_DATABASE}|g" -e "s|@TOKENSERVER_USER@|${MARIADB_TOKENSERVER_USER}|g" \
         -e "s|@TOKENSERVER_PASSWORD@|${MARIADB_TOKENSERVER_PASSWORD}|g" -e "s|@SYNCSTORAGE_DATABASE@|${MARIADB_SYNCSTORAGE_DATABASE}|g" \
         -e "s|@SYNCSTORAGE_USER@|${MARIADB_SYNCSTORAGE_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${MARIADB_SYNCSTORAGE_PASSWORD}|g" \
+        -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_PASSWORD}|g" \
         "${CODE}/config/database/sync-mariadb.sql"
     fxa_template "${CODE}/config/database/fxa-${FXA_DB}.sql" | sed -e "s|@FXA_USER@|${FXA_MYSQL_USER}|g" -e "s|@FXA_PASSWORD@|${FXA_MYSQL_PASSWORD}|g" \
         -e "s|@FXA_POLICY_USER@|${FXA_MYSQL_POLICY_USER}|g" -e "s|@FXA_POLICY_PASSWORD@|${FXA_MYSQL_POLICY_PASSWORD}|g" \
@@ -413,6 +421,7 @@ dc run --rm -T --no-deps --user root \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_DIRECT_URL=http://fxa-auth:9000 -e ADMIN_FXA_CLIENT_ID \
   -e FXA_DB_SERVER="${FXA_DB_SERVER}" -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
   -e FXA_TEST_DB_URL="mysql://${FXA_MYSQL_USER}:${FXA_MYSQL_PASSWORD}@${FXA_MYSQL_HOST}:${FXA_MYSQL_PORT}/fxa" \
+  -e ADMIN_DB_URL="mysql://${ADMIN_DB_USER}:${ADMIN_DB_PASSWORD}@${MARIADB_TOKENSERVER_SERVER}:${MARIADB_TOKENSERVER_SERVER_PORT}/${ADMIN_DB_NAME}" \
   --entrypoint /bin/sh syncstorage \
   -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
 check "$?" 0 "sign-up policy and admin UI tests"
@@ -436,8 +445,11 @@ else
 fi
 if [ "${DB_CONTAINERS:-1}" = 0 ]; then
   ts_sql() { docker exec -i -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null 2> /dev/null; }
+  admin_sql() { docker exec -i -e MYSQL_PWD="${ADMIN_DB_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -u"${ADMIN_DB_USER}" "${ADMIN_DB_NAME}" -sN -e "$1" < /dev/null 2> /dev/null; }
 else
   ts_sql() { dc exec -T tokenserver_db mariadb -u"${MARIADB_TOKENSERVER_USER}" -p"${MARIADB_TOKENSERVER_PASSWORD}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" 2> /dev/null; }
+  # the admin UI's own database (the event log, the backup runs), as its user
+  admin_sql() { dc exec -T tokenserver_db mariadb -u"${ADMIN_DB_USER}" -p"${ADMIN_DB_PASSWORD}" "${ADMIN_DB_NAME}" -sN -e "$1" 2> /dev/null; }
 fi
 echo "== the admin UI's user changes the accounts only through the procedures of fxa-policy"
 # (the errors too; not the warning of the MariaDB client about MYSQL_PWD)
@@ -511,7 +523,7 @@ if [ -z "${RERUN:-}" ] && [ "${FXA_DB_CONTAINERS:-1}" = 1 ] && [ "${DB_CONTAINER
   dc exec -T backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1
   check "$?" 0 "a backup of the Sync databases"
   [ "${FAILED}" = 0 ] || tail -5 "${WORK}/backup.log"
-  check "$(ts_sql "SELECT scope FROM ffs_backups WHERE ok = 1 AND bytes > 0 ORDER BY scope" | sort -u | paste -sd' ')" "accounts sync" "both runs in ffs_backups"
+  check "$(admin_sql "SELECT scope FROM ffs_backups WHERE ok = 1 AND bytes > 0 ORDER BY scope" | sort -u | paste -sd' ')" "accounts sync" "both runs in ffs_backups"
   run_dir=$(dc exec -T backup-fxa sh -c 'ls -1 /backups/accounts | tail -1' | tr -d '\r')
   check "$(dc exec -T backup-fxa sh -c "cd /backups/accounts/${run_dir} && for f in *.sql.gz; do gzip -t \$f && echo \$f; done" | LC_ALL=C sort | paste -sd' ')" \
     "ffs.sql.gz fxa.sql.gz fxa_oauth.sql.gz fxa_profile.sql.gz pushbox.sql.gz" "the five accounts databases, each passing gzip -t"

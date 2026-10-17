@@ -135,8 +135,13 @@ func markCurrent(rows []UserRow) {
 // DeleteUserRows deletes rows of the users table: the account starts again as a new one
 // on its next Sync token, through max users
 func (s *SyncDB) DeleteUserRows(ctx context.Context, ids []int64) error {
+	// MariaDB and MySQL: a procedure of the init container (see SetMaxUsers)
+	query := "CALL ffs_delete_user_row(?)"
+	if s.postgres {
+		query = "DELETE FROM users WHERE uid = $1"
+	}
 	for _, id := range ids {
-		if _, err := s.db.ExecContext(ctx, s.q("DELETE FROM users WHERE uid = ?"), id); err != nil {
+		if _, err := s.db.ExecContext(ctx, query, id); err != nil {
 			return err
 		}
 	}

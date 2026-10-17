@@ -39,6 +39,8 @@ type fakeFxa struct {
 	// the queries, and their arguments
 	queries []string
 	qargs   [][]driver.Value
+	// queryErr, when set, fails the queries it returns an error for (after recording them)
+	queryErr func(query string) error
 	// answer, when set, answers the queries it returns rows for, before the cases below
 	answer func(query string, args []driver.Value) *fakeRows
 	// the limits: max_users of the tokenserver's config, max_accounts of ffs.settings
@@ -88,7 +90,20 @@ type fakeConn struct{ f *fakeFxa }
 
 func (c *fakeConn) Prepare(string) (driver.Stmt, error) { return nil, driver.ErrSkip }
 func (c *fakeConn) Close() error                        { return nil }
-func (c *fakeConn) Begin() (driver.Tx, error)           { return nil, io.ErrUnexpectedEOF }
+func (c *fakeConn) Begin() (driver.Tx, error)           { c.record("BEGIN"); return &fakeTx{c}, nil }
+
+// fakeTx records the end of a transaction among the statements
+type fakeTx struct{ c *fakeConn }
+
+func (t *fakeTx) Commit() error   { t.c.record("COMMIT"); return nil }
+func (t *fakeTx) Rollback() error { t.c.record("ROLLBACK"); return nil }
+
+func (c *fakeConn) record(statement string) {
+	c.f.mu.Lock()
+	defer c.f.mu.Unlock()
+	c.f.execs = append(c.f.execs, statement)
+	c.f.args = append(c.f.args, nil)
+}
 
 func (c *fakeConn) ExecContext(_ context.Context, query string, named []driver.NamedValue) (driver.Result, error) {
 	var args []driver.Value
@@ -122,6 +137,11 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, args []driver.N
 	c.f.queries = append(c.f.queries, query)
 	c.f.qargs = append(c.f.qargs, values)
 	c.f.mu.Unlock()
+	if c.f.queryErr != nil {
+		if err := c.f.queryErr(query); err != nil {
+			return nil, err
+		}
+	}
 	if c.f.answer != nil {
 		if rows := c.f.answer(query, values); rows != nil {
 			return rows, nil

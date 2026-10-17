@@ -64,9 +64,12 @@ This only works between syncstorage-rs servers (the Rust one) on the same kind o
     docker compose exec -T tokenserver_db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' < tokenserver.sql
     docker compose exec -T syncstorage_db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' < syncstorage.sql
 
-    # PostgreSQL (COMPOSE_FILE=docker-compose.postgres.yml)
+    # PostgreSQL (COMPOSE_FILE=docker-compose.postgres.yml): as the Sync server's role
+    # POSTGRES_SYNC_USER, created first. Not as POSTGRES_USER, the superuser: what the dump
+    # brings (functions in a CHECK, an index, a view) would run with its rights (DATABASES.md)
     docker compose up -d --wait postgres_db
-    docker compose exec -T postgres_db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < syncserver.sql
+    docker compose run --rm sync_role_init
+    docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" psql -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1' < syncserver.sql
     ```
     With Quadlets (MariaDB only, not tested): `systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`, then the same with `podman exec -i firefox-sync-tokenserver-db sh -c '...' < tokenserver.sql` and `firefox-sync-syncstorage-db`, then start `firefox-sync-syncstorage.service`.
     With [your own database server](DATABASES.md), load them with `mariadb`/`psql` as in [Moving an existing install](DATABASES.md#moving-an-existing-install) (not tested).
@@ -82,8 +85,8 @@ This only works between syncstorage-rs servers (the Rust one) on the same kind o
     docker compose exec tokenserver_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
     # MySQL (SYNC_DB=mysql)
     docker compose exec tokenserver_db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
-    # PostgreSQL
-    docker compose exec postgres_db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
+    # PostgreSQL, as the Sync server's role (never POSTGRES_USER on the Sync database, DATABASES.md)
+    docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" psql -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" -d "$POSTGRES_DATABASE" -c "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
     ```
 - On desktop, `about:sync-log` shows syncs without errors, and a new profile signed in to the same account gets the bookmarks without any other device uploading them first.
 
@@ -102,13 +105,25 @@ With docker compose:
 1. Add the lines of [.env-example](.env-example) that your `.env` lacks, with their default values, and change none of yours:
     - releases from before December 2024 have no `MARIADB_TOKENSERVER_SERVER`, `_SERVER_PORT`, `_DATABASE` (and the same for `SYNCSTORAGE`), `REPOSITORY`, `SYNCSTORAGE_IMAGE*`, `FXA_EMAIL_DOMAIN` and `FXA_OAUTH_SERVER_URL`: copy them from `.env-example`
     - the first release (July 2024) had one `MARIADB_USER` and `MARIADB_PASSWORD` for both databases, and no `MAX_USERS`: set `MARIADB_TOKENSERVER_USER` and `MARIADB_SYNCSTORAGE_USER` to that user, `MARIADB_TOKENSERVER_PASSWORD` and `MARIADB_SYNCSTORAGE_PASSWORD` to that password, and `MAX_USERS` to at least the number of accounts
+1. `./prepare_environment.sh --upgrade`: it gives the settings that need a value of their own one, and changes nothing else (the old file stays as `.env.before-upgrade`): `ADMIN_DB_PASSWORD`, the password of the admin UI's database users, with which its event log and audit trail move out of the Sync server's reach at the next start; with the PostgreSQL container `POSTGRES_SYNC_USER` and `POSTGRES_SYNC_PASSWORD`, a role of the Sync server's own that is no superuser. Don't skip it: without them the admin UI keeps the event log in the tokenserver database, which the Sync server's user can rewrite, and its setup check fails ([DATABASES.md](DATABASES.md#an-install-from-before)). With your own database server, run the `database-setup.sql` it writes there first.
 1. `docker compose pull && docker compose up -d`. `MAX_USERS=N` works as before (set at every start); `MAX_USERS=initial:N` lets the admin UI manage it ([ADMIN.md](ADMIN.md#max-users)).
 
-With Quadlets (since November 2025): the passwords are written into the units by `prepare_environment.sh`. Run it again with the same answers (keep a copy of the old `.env`), then, before starting the Sync server, give the database users the new passwords: `systemctl --user start firefox-sync-tokenserver-db.service`, `podman exec firefox-sync-tokenserver-db mariadb -u<MARIADB_TOKENSERVER_USER> -p'<old password>' -e "SET PASSWORD = PASSWORD('<new MARIADB_TOKENSERVER_PASSWORD>')"`, the same for `firefox-sync-syncstorage-db`, then `systemctl --user start firefox-sync-syncstorage.service`.
+With Quadlets (since November 2025): `prepare_environment.sh --upgrade` is for compose only, it does not write the units, which get every password from `prepare_environment.sh` itself:
 
-Firefox: nothing to change. Rollback: the old files and images (pin `SYNCSTORAGE_IMAGE_TAG` and `SYNCSTORAGE_INIT_IMAGE_TAG` to the old tags) with the backup of the volumes: the migrations of the newer syncstorage-rs cannot be undone.
+1. Stop the units, the one-shot ones too (they stay active and would not run again): `systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service` (without the database containers, the last two are not there).
+1. Get the new files and run `./prepare_environment.sh` again with the same answers (keep a copy of the old `.env`): it writes new passwords into `.env` and the units, `ADMIN_DB_PASSWORD` too, that of the admin UI's two database users.
+1. The new images: podman does not pull a tag it has again by itself, `grep -h '^Image=' ~/.config/containers/systemd/firefox-sync-*.container | cut -d= -f2 | sort -u | xargs -n1 podman pull`.
+1. The database users:
+    - with the database containers: `systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`, then give the Sync users the new passwords, `podman exec firefox-sync-tokenserver-db mariadb -u<MARIADB_TOKENSERVER_USER> -p'<old password>' -e "SET PASSWORD = PASSWORD('<new MARIADB_TOKENSERVER_PASSWORD>')"`, the same for `firefox-sync-syncstorage-db` (with `SYNC_DB=mysql`: `mysql` and `SET PASSWORD = '<new password>'`). The admin UI's users need nothing by hand: the database containers create (or update) both with the new `ADMIN_DB_PASSWORD` at their start.
+    - with your own database server (`DB_CONTAINERS=0`): run the new `database-setup.sql` there, as its administrator (`mariadb -h <host> -u root -p < database-setup.sql`, `mysql` for MySQL; its statements can run again). It gives the Sync users their new passwords and creates the admin UI's database `ADMIN_DB_NAME` (`ffs_admin`) and its users `ADMIN_DB_USER` (`ffs_admin_ui`) and `ADMIN_DB_SYNC_USER` (`ffs_admin_sync`) with `ADMIN_DB_PASSWORD`. Before starting the admin UI: its unit has only `ADMIN_DB_PASSWORD`, no `TOKENSERVER_DB_PASSWORD` or `STORAGE_DB_PASSWORD` to fall back to as compose has, so without those users it does not start.
+1. `systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service`: the migrations and the init container run again, and at its first start the admin UI moves its event log into `ffs_admin`, as with compose.
 
-Tested: docker compose, `tests/migrate.sh firefox-sync-2024-12` (4705bda, images 0.18.2) and `firefox-sync-2024-07` (the first release, 7f52fa0, image 0.17.1): the old release's files and `.env`, an account syncs, then the new files over them, the missing lines of `.env-example` added as above, `docker compose pull && docker compose up -d`: same volumes, same accounts on the same node with their data, `MAX_USERS` and the admin UI count them. Not tested: the Quadlets path, the backup and the rollback.
+Firefox: nothing to change. Rollback: the old files and images (pin `SYNCSTORAGE_IMAGE_TAG` and `SYNCSTORAGE_INIT_IMAGE_TAG` to the old tags, `ADMIN_IMAGE` to the admin UI of then) with the backup of the volumes of step 1: the migrations of the newer syncstorage-rs cannot be undone, nor the move of the event log. All of it together, not one image alone:
+
+- An older admin UI (from before `ADMIN_DB_PASSWORD`) creates its tables, empty, in the tokenserver database again and records there, within the Sync server's reach; the event log and the audit trail since the upgrade stay in `ffs_admin`, which it does not read. Going forward again later, the newer admin UI does not copy those tables a second time: its setup check names them, drop them as the tokenserver user once you have looked at them.
+- An older init image with the newer admin UI: on MariaDB and MySQL the admin UI's reader `ffs_admin_sync` changes the tokenserver database only through the init container's procedures (`ffs_set_max_users`, `ffs_delete_user_row`, `ffs_drop_admin_tables`), which an older init image does not create: on the databases of before (the backup) the max users edits, the resets that free a slot and the deleted accounts fail with a missing procedure. Pin the init image back only with the admin UI (`ADMIN_IMAGE`), or keep the init image of this release as long as its admin UI runs.
+
+Tested: docker compose, `tests/migrate.sh firefox-sync-2024-12` (4705bda, images 0.18.2) and `firefox-sync-2024-07` (the first release, 7f52fa0, image 0.17.1): the old release's files and `.env`, an account syncs, then the new files over them, the missing lines of `.env-example` added as above, `./prepare_environment.sh --upgrade`, `docker compose pull && docker compose up -d`: same volumes, same accounts on the same node with their data, `MAX_USERS` and the admin UI count them. The Quadlets: `UPGRADE_FROM=<checkout of the release before> tests/podman.sh` (cb8e519, MariaDB containers) runs the steps above but the pull (it has this tree's images already): the admin UI's audit event of before moves into `ffs_admin`. Not tested: the Quadlets on your own database server, the backup and the rollback.
 
 ## Mozilla's syncstorage-rs compose files
 
@@ -146,8 +161,8 @@ dc="docker compose -f docker/docker-compose.postgres.yaml exec -T"
 $dc tokenserver-db pg_dump -U test --no-owner --no-acl tokenserver > syncserver.sql
 $dc sync-db pg_dump -U test --no-owner --no-acl --exclude-table=__diesel_schema_migrations syncstorage > syncstorage.sql
 $dc sync-db pg_dump -U test --data-only --table=__diesel_schema_migrations syncstorage > syncstorage-migrations.sql
-# then, in firefox-sync, as in "Loading into firefox-sync", with each file in turn:
-# docker compose exec -T postgres_db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < <file>
+# then, in firefox-sync, as in "Loading into firefox-sync" (sync_role_init first), with each file in turn:
+# docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" psql -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1' < <file>
 ```
 
 Then [Loading into firefox-sync](#loading-into-firefox-sync). Firefox: the same `.../1.0/sync/1.5` path, so with the same host name nothing changes on the devices.

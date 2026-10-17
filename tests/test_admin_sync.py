@@ -12,6 +12,7 @@ Environment (besides those of test_client_flow.py):
   ADMIN_PASSWORD  its password
   BACKEND         mysql or postgres
   MAX_USERS_SETTING  MAX_USERS of the stack as in .env (initial:1 or 1), MAX_USERS the number
+  ADMIN_DB_URL    the admin UI's own database (the event log, the notes), as its user
 """
 
 import json
@@ -32,8 +33,8 @@ METRICS_TOKEN = "ffs-test-metrics-token"
 # MAX_USERS=initial:N: max users is changed on the page, otherwise it is read-only there
 EDITABLE = os.environ.get("MAX_USERS_SETTING", "").startswith("initial:")
 editable = pytest.mark.skipif(not EDITABLE, reason="needs MAX_USERS=initial:N")
-# PostgreSQL keeps the storage in the tokenserver database
-DB_SIZES = ("Tokenserver", "Sync storage") if MYSQL else ("Sync (tokenserver and storage)",)
+# PostgreSQL keeps the storage in the tokenserver database; the admin UI has its own
+DB_SIZES = (("Tokenserver", "Sync storage") if MYSQL else ("Sync (tokenserver and storage)",)) + ("Admin UI",)
 
 
 def failed(page):
@@ -104,6 +105,17 @@ def storage_db():
 
 
 @pytest.fixture(scope="module")
+def admin_db():
+    # the admin UI's own database (ADMIN_DB_NAME), as its user: the event log, the notes
+    url = os.environ["ADMIN_DB_URL"]
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    conn = create_engine(url).execution_options(isolation_level="AUTOCOMMIT").connect()
+    yield conn
+    conn.close()
+
+
+@pytest.fixture(scope="module")
 def admin(alice):
     # e2e.sh restarted the admin UI, and with it the Sync server: wait for a health
     # check that sees it up. Not before alice synced: /metrics caches the storage totals
@@ -143,7 +155,7 @@ def test_forms_refuse_other_sites_and_missing_tokens(admin):
 def test_health(admin):
     page = admin.get("/")
     health = page.split('<table id="health"')[1].split("</table>")[0]
-    components = ["Admin UI", "Sync server", "Tokenserver database"] + (["Storage database"] if MYSQL else [])
+    components = ["Admin UI", "Sync server", "Tokenserver database", "Admin UI database"] + (["Storage database"] if MYSQL else [])
     for component in components:
         row = re.search(r"<td>" + re.escape(component) + r"</td><td>(.*?)</td>", health)
         assert row and '<span class="ok">up</span>' in row.group(1), (component, health)
@@ -188,6 +200,10 @@ def test_setup_checks_and_nodes(admin):
     # the mock FxA serves the keys of the sign-ins (FXA_OAUTH_SERVER_URL=http://mock_fxa:6000)
     assert checks["Sign-in keys (FXA_OAUTH_SERVER_URL)"][1] == "ok" and "http://mock_fxa:6000/v1/jwks answers" in checks["Sign-in keys (FXA_OAUTH_SERVER_URL)"][2], checks
     assert checks["Account emails (FXA_EMAIL_DOMAIN)"][1] == "ok", checks
+    # the event log in its own database: out of the Sync server's reach (in the stack's
+    # PostgreSQL container the Sync server has its own role, POSTGRES_SYNC_USER, no superuser)
+    log = checks["Event log (ADMIN_DB_PASSWORD)"]
+    assert log[1] == "ok" and "users cannot read or change them" in log[2], log
     # users per node, with its capacity, load, places and backoff
     node = [row for row in table(page, "nodes") if row[0] == domain]
     assert node and node[0][1] == "in use" and node[0][2] == "1" and all(re.match(r"^-?\d+$", c) for c in node[0][3:]), table(page, "nodes")
@@ -357,7 +373,7 @@ def events_of(page):
 
 
 @editable
-def test_audit_trail_filters_and_pages(admin, db):
+def test_audit_trail_filters_and_pages(admin, admin_db):
     admin.post("/sync/max-users", max_users="1")
     page = admin.get("/activity?kind=admin&q=MAX")
     events = events_of(page)
@@ -369,7 +385,7 @@ def test_audit_trail_filters_and_pages(admin, db):
     marker = f"ffs-page-{int(time.time())}"
     try:
         for i in range(350):
-            db.execute(sqltext("INSERT INTO ffs_events (at, kind, detail) VALUES (:at, 'admin', :detail)"),
+            admin_db.execute(sqltext("INSERT INTO ffs_events (at, kind, detail) VALUES (:at, 'admin', :detail)"),
                        {"at": old + i, "detail": f"{marker} {i:03d} by admin (password)"})
         seen, path, pages = [], f"/activity?kind=admin&q={marker}", 0
         while path:
@@ -383,7 +399,7 @@ def test_audit_trail_filters_and_pages(admin, db):
         # the link back to the newest
         assert 'id="newest"' in page and f"q={marker}" in page
     finally:
-        db.execute(sqltext("DELETE FROM ffs_events WHERE detail LIKE :marker"), {"marker": f"{marker} %"})
+        admin_db.execute(sqltext("DELETE FROM ffs_events WHERE detail LIKE :marker"), {"marker": f"{marker} %"})
 
 
 def test_local_time_label(admin):
@@ -618,7 +634,7 @@ def test_backups_on_the_overview(admin):
 
 
 @editable
-def test_near_max_users_line(admin, db):
+def test_near_max_users_line(admin, db, admin_db):
     before = re.search(r'id="sync-max-users">(\d+)<', admin.get("/")).group(1)
     users = int(re.search(r'id="sync-users">(\d+)<', admin.get("/")).group(1))
     metrics = lambda: requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
@@ -635,9 +651,9 @@ def test_near_max_users_line(admin, db):
         assert "ffs_sync_near_max_users 1\n" in metrics() and "ffs_sync_full 1\n" in metrics()
         query = sqltext("SELECT COUNT(*) FROM ffs_events WHERE kind = 'attention' AND detail LIKE '%accounts are taken (MAX_USERS)%'")
         deadline = time.time() + 30
-        while db.execute(query).scalar() == 0 and time.time() < deadline:
+        while admin_db.execute(query).scalar() == 0 and time.time() < deadline:
             time.sleep(1)
-        assert db.execute(query).scalar() >= 1
+        assert admin_db.execute(query).scalar() >= 1
         page = admin.post("/sync/max-users", max_users=str(users * 10 + 10))
         assert not [a for a in attention_of(page) if "accounts are taken" in a[0]], attention_of(page)
         health = page.split('<table id="health"')[1].split("</table>")[0]

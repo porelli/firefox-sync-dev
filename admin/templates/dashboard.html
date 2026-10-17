@@ -217,7 +217,7 @@
 <section class="card" aria-labelledby="backups-title" id="backups-card">
   <h2 id="backups-title">Backups</h2>
   {{with .Backup}}
-  <p class="hint" id="backup-what">{{if $.Backups}}Every night at {{template "backup-time" .}} the backup service dumps{{else}}Once the backup service is on, every night at {{template "backup-time" .}} it dumps{{end}} the Sync databases (tokenserver and storage){{if $.FxA}} and the accounts databases{{end}} into the backups volume. {{if eq .Keep 1}}Only the newest run is kept{{else}}The newest {{.Keep}} runs are kept{{end}} (<code>BACKUP_KEEP</code>), older ones are deleted.</p>
+  <p class="hint" id="backup-what">{{if $.Backups}}Every night at {{template "backup-time" .}} the backup service dumps{{else}}Once the backup service is on, every night at {{template "backup-time" .}} it dumps{{end}} the Sync databases (tokenserver and storage), the admin UI's{{if $.FxA}} and the accounts databases{{end}} into the backups volume. {{if eq .Keep 1}}Only the newest run is kept{{else}}The newest {{.Keep}} runs are kept{{end}} (<code>BACKUP_KEEP</code>), older ones are deleted.</p>
   {{end}}
   <div id="backups">{{range .Backups}}
     <p class="hint" data-scope="{{.Scope}}">Last backup of the {{.Title}}: {{date .Last.Finished}}, {{if .Last.OK}}{{bytes .Last.Bytes}}, {{if .Old}}<span class="disabled">more than 36 hours ago</span>{{else}}<span class="ok">ok</span>{{end}}{{else}}<span class="disabled">failed</span>{{with .Last.Error}}: {{.}}{{end}}{{if not .LastOK.Finished.IsZero}} (the last good one: {{date .LastOK.Finished}}, {{bytes .LastOK.Bytes}}){{end}}{{end}}.</p>{{else}}

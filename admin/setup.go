@@ -84,6 +84,16 @@ func domainCheck(domain string, counts map[string]int, status *SyncStatus) setup
 
 func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []Component) []setupCheck {
 	var checks []setupCheck
+	if a.sync != nil {
+		st := a.sync.moved
+		// created there since the start, the start refuses the database
+		if found, err := a.sync.foreignObjects(ctx); err != nil {
+			st.ForeignErr = err.Error()
+		} else {
+			st.Foreign = found
+		}
+		checks = append(checks, ownDBCheck(a.sync, st, a.quadlets))
+	}
 	if a.syncDomain != "" && status != nil {
 		checks = append(checks, nodeCheck(a.syncDomain, status.Nodes))
 	}

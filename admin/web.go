@@ -169,9 +169,25 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// before the admin UI writes there (PostgreSQL)
+	if err := syncDB.checkOwnDB(ctx); err != nil {
+		return err
+	}
 	rec, err := newRecorder(ctx, syncDB)
 	if err != nil {
+		if syncDB.own != nil {
+			return fmt.Errorf("metrics and event tables in the admin UI's database %s (ADMIN_DB_*, see DATABASES.md): %w", syncDB.ownName, err)
+		}
 		return fmt.Errorf("metrics and event tables in the tokenserver database: %w", err)
+	}
+	// the tables of an install from before ADMIN_DB_PASSWORD, into the admin UI's own database
+	syncDB.moved = syncDB.moveOwnTables(ctx)
+	if syncDB.moved.Copied != nil {
+		rec.Event("update", fmt.Sprintf("Moved the admin UI's tables of the tokenserver database into %s, out of the Sync server's reach: %s",
+			syncDB.ownName, copiedSummary(syncDB.moved.Copied)))
+	} else if syncDB.own == nil {
+		log.Printf("ADMIN_DB_PASSWORD is not set: the event log is in the tokenserver database, which the Sync server's user can change (%s)",
+			ownDBHint(env("ADMIN_DEPLOYMENT", "") == "quadlets"))
 	}
 	go rec.run(ctx)
 	go func() {

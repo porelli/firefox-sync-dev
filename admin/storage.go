@@ -52,7 +52,11 @@ func openStorageDB(syncDB *SyncDB) (*StorageDB, error) {
 	cfg := mysql.NewConfig()
 	cfg.Net = "tcp"
 	cfg.Addr = net.JoinHostPort(host, env("STORAGE_DB_PORT", "3306"))
-	cfg.User, cfg.Passwd, cfg.DBName = env("STORAGE_DB_USER", ""), env("STORAGE_DB_PASSWORD", ""), env("STORAGE_DB_NAME", "")
+	user, password, _, _, err := dbCredentials("STORAGE")
+	if err != nil {
+		return nil, err
+	}
+	cfg.User, cfg.Passwd, cfg.DBName = user, password, env("STORAGE_DB_NAME", "")
 	cfg.Timeout = 5 * time.Second
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {

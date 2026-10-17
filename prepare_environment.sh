@@ -43,6 +43,80 @@ sed_escape() {
     printf '%s' "${1}" | sed -e 's/[\\/&|]/\\&/g'
 }
 
+# the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
+env_value() { grep "^${1}=" ${SCRIPT_DIR}/.env | cut -d= -f2-; }
+render_sql() {
+    local template=${1} out=${2} pair expressions=()
+    shift 2
+    for pair in "$@"; do
+        expressions+=(-e "s|@${pair%%=*}@|$(sed_escape "${pair#*=}")|g")
+    done
+    rm -f "${out}"
+    (umask 077; sed "${expressions[@]}" "${template}" > "${out}")
+}
+# database-setup.sql of the Sync databases and the admin UI's (postgres, or mariadb and mysql)
+render_sync_sql() {
+    if [ "${1}" = "postgres" ]; then
+        render_sql ${SCRIPT_DIR}/config/database/sync-postgres.sql ${SCRIPT_DIR}/database-setup.sql \
+            POSTGRES_DATABASE="$(env_value POSTGRES_DATABASE)" POSTGRES_USER="$(env_value POSTGRES_USER)" \
+            POSTGRES_PASSWORD="$(env_value POSTGRES_PASSWORD)" ADMIN_DATABASE="$(env_value ADMIN_DB_NAME)" \
+            ADMIN_USER="$(env_value ADMIN_DB_USER)" ADMIN_SYNC_USER="$(env_value ADMIN_DB_SYNC_USER)" ADMIN_PASSWORD="$(env_value ADMIN_DB_PASSWORD)"
+    else
+        render_sql ${SCRIPT_DIR}/config/database/sync-mariadb.sql ${SCRIPT_DIR}/database-setup.sql \
+            TOKENSERVER_DATABASE="$(env_value MARIADB_TOKENSERVER_DATABASE)" TOKENSERVER_USER="$(env_value MARIADB_TOKENSERVER_USER)" \
+            TOKENSERVER_PASSWORD="$(env_value MARIADB_TOKENSERVER_PASSWORD)" \
+            SYNCSTORAGE_DATABASE="$(env_value MARIADB_SYNCSTORAGE_DATABASE)" SYNCSTORAGE_USER="$(env_value MARIADB_SYNCSTORAGE_USER)" \
+            SYNCSTORAGE_PASSWORD="$(env_value MARIADB_SYNCSTORAGE_PASSWORD)" ADMIN_DATABASE="$(env_value ADMIN_DB_NAME)" \
+            ADMIN_USER="$(env_value ADMIN_DB_USER)" ADMIN_SYNC_USER="$(env_value ADMIN_DB_SYNC_USER)" ADMIN_PASSWORD="$(env_value ADMIN_DB_PASSWORD)"
+    fi
+}
+
+# ./prepare_environment.sh --upgrade: the .env of an install that runs (docker compose), given
+# the settings of this release that need a value of their own (MIGRATING.md), nothing else
+# changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
+# Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
+# container (POSTGRES_SYNC_USER, POSTGRES_SYNC_PASSWORD). A value already set is kept; the
+# old file is kept as .env.before-upgrade. With your own database server database-setup.sql
+# is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
+upgrade_env() {
+    local env_file name changed=()
+    SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+    env_file=${SCRIPT_DIR}/.env
+    [ -f "${env_file}" ] || { echo "ERROR: no ${env_file} to upgrade: run ./prepare_environment.sh"; exit 1; }
+    set_value() {
+        if grep -q "^${1}=" "${env_file}"; then
+            apply_sed "${env_file}" "s|^${1}=.*|${1}=$(sed_escape "${2}")|"
+        else
+            printf '%s=%s\n' "${1}" "${2}" >> "${env_file}"
+        fi
+        changed+=("${1}")
+    }
+    cp -p "${env_file}" "${env_file}.upgrading" || exit 1
+    # the names: those of .env-example
+    for name in ADMIN_DB_NAME ADMIN_DB_USER ADMIN_DB_SYNC_USER; do
+        grep -q "^${name}=" "${env_file}" || set_value "${name}" "$(grep "^${name}=" "${SCRIPT_DIR}/.env-example" | cut -d= -f2-)"
+    done
+    [ -n "$(env_value ADMIN_DB_PASSWORD)" ] || set_value ADMIN_DB_PASSWORD "$(generate_random_string 32)"
+    if [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && [ "$(env_value DB_CONTAINERS)" != 0 ] && [ -z "$(env_value POSTGRES_SYNC_PASSWORD)" ]; then
+        [ -n "$(env_value POSTGRES_SYNC_USER)" ] || set_value POSTGRES_SYNC_USER syncserver_app
+        set_value POSTGRES_SYNC_PASSWORD "$(generate_random_string 32)"
+    fi
+    if [ "${#changed[@]}" = 0 ]; then
+        rm -f "${env_file}.upgrading"
+        echo "Nothing to add: ${env_file} has every setting of this release."
+    else
+        mv "${env_file}.upgrading" "${env_file}.before-upgrade"
+        echo "Added to ${env_file} (the old one is .env.before-upgrade): ${changed[*]}"
+    fi
+    if [ "$(env_value DB_CONTAINERS)" = 0 ]; then
+        [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && render_sync_sql postgres || render_sync_sql mariadb
+        echo "Your own database server: run database-setup.sql there first, as its administrator (DATABASES.md)."
+    fi
+    echo "Then: docker compose pull && docker compose up -d"
+    exit 0
+}
+[ "${1:-}" = "--upgrade" ] && upgrade_env
+
 # domain
 DOMAIN_EXAMPLE='firefox-sync.example.com'
 read -e -p "Enter FQDN for your Firefox sync server [${DOMAIN_EXAMPLE}]: " SYNCSTORAGE_DOMAIN
@@ -276,6 +350,7 @@ POSTGRES_PASSWORD=$(generate_random_string 24)
 SYNC_MASTER_SECRET=$(generate_random_string 24)
 METRICS_HASH_SECRET=$(generate_random_string 24)
 ADMIN_PASSWORD=$(generate_random_string 24)
+ADMIN_DB_PASSWORD=$(generate_random_string 32)
 
 # prepare .env file
 cp ${SCRIPT_DIR}/.env-example ${SCRIPT_DIR}/.env
@@ -289,6 +364,8 @@ apply_sed ${SCRIPT_DIR}/.env "s|CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=$
 apply_sed ${SCRIPT_DIR}/.env "s|MAX_USERS=.*|MAX_USERS=${MAX_USERS}|"
 apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG}|"
 apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
+# the admin UI's database user, also for the backups: with or without the admin UI
+apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=${ADMIN_DB_PASSWORD}|"
 [ "${ADMIN_UI}" = "yes" ] && apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
 apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
 if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
@@ -402,32 +479,16 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
     [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.postgres.yml|"
     apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-postgres|"
     apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-postgres-init|"
+    # the database container: the Sync server gets a role of its own, POSTGRES_USER is the
+    # container's superuser (your own server: POSTGRES_USER is the plain owner, DATABASES.md)
+    if [ "${EXTERNAL_DB}" != "yes" ]; then
+        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SYNC_USER=.*|POSTGRES_SYNC_USER=syncserver_app|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SYNC_PASSWORD=.*|POSTGRES_SYNC_PASSWORD=$(generate_random_string 32)|"
+    fi
 fi
 
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
-env_value() { grep "^${1}=" ${SCRIPT_DIR}/.env | cut -d= -f2-; }
-render_sql() {
-    local template=${1} out=${2} pair expressions=()
-    shift 2
-    for pair in "$@"; do
-        expressions+=(-e "s|@${pair%%=*}@|$(sed_escape "${pair#*=}")|g")
-    done
-    rm -f "${out}"
-    (umask 077; sed "${expressions[@]}" "${template}" > "${out}")
-}
-if [ "${EXTERNAL_DB}" = "yes" ]; then
-    if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        render_sql ${SCRIPT_DIR}/config/database/sync-postgres.sql ${SCRIPT_DIR}/database-setup.sql \
-            POSTGRES_DATABASE="$(env_value POSTGRES_DATABASE)" POSTGRES_USER="$(env_value POSTGRES_USER)" \
-            POSTGRES_PASSWORD="$(env_value POSTGRES_PASSWORD)"
-    else
-        render_sql ${SCRIPT_DIR}/config/database/sync-mariadb.sql ${SCRIPT_DIR}/database-setup.sql \
-            TOKENSERVER_DATABASE="$(env_value MARIADB_TOKENSERVER_DATABASE)" TOKENSERVER_USER="$(env_value MARIADB_TOKENSERVER_USER)" \
-            TOKENSERVER_PASSWORD="$(env_value MARIADB_TOKENSERVER_PASSWORD)" \
-            SYNCSTORAGE_DATABASE="$(env_value MARIADB_SYNCSTORAGE_DATABASE)" SYNCSTORAGE_USER="$(env_value MARIADB_SYNCSTORAGE_USER)" \
-            SYNCSTORAGE_PASSWORD="$(env_value MARIADB_SYNCSTORAGE_PASSWORD)"
-    fi
-fi
+[ "${EXTERNAL_DB}" = "yes" ] && render_sync_sql "${DATABASE_BACKEND}"
 if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
     render_sql ${SCRIPT_DIR}/config/database/fxa-${FXA_DB}.sql ${SCRIPT_DIR}/database-setup-fxa.sql \
         FXA_USER="$(env_value FXA_MYSQL_USER)" FXA_PASSWORD="$(env_value FXA_MYSQL_PASSWORD)" \

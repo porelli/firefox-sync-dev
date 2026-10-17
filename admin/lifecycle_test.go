@@ -467,7 +467,7 @@ func TestDeleteAuditsWhatFailsAfter(t *testing.T) {
 		message, failed      string
 	}{
 		{"Redis down", "127.0.0.1:1", "", "Deleted alice@example.com (uid " + fakeUID + ") and its Sync data", "account deleted, but its access tokens are still valid"},
-		{"tokenserver rows", "", "DELETE FROM users", "Deleted alice@example.com (uid " + fakeUID + "), but only part of its Sync data", "the Sync data was not all deleted"},
+		{"tokenserver rows", "", "CALL ffs_delete_user_row", "Deleted alice@example.com (uid " + fakeUID + "), but only part of its Sync data", "the Sync data was not all deleted"},
 		{"the note", "", "DELETE FROM ffs_account_notes", "Deleted alice@example.com (uid " + fakeUID + ") and its Sync data", "its note was not removed"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -632,7 +632,7 @@ func TestAutomaticPurgeSkipsDeleted(t *testing.T) {
 	if err != nil || res.Orphans != 2 || res.Rows != 2 {
 		t.Errorf("with a replaced row: %+v %v %q", res, err, fake.statements())
 	}
-	if !slices.Contains(fake.statements(), "DELETE FROM users WHERE uid = ?") {
+	if !slices.Contains(fake.statements(), "CALL ffs_delete_user_row(?)") {
 		t.Errorf("replaced row kept: %q", fake.statements())
 	}
 	if notes := noteDeletes(fake, 0); len(notes) != 1 || notes[0] != strings.Repeat("b", 32) {

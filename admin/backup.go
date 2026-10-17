@@ -8,8 +8,9 @@ import (
 )
 
 // Backups: the runs of the backup service (config/backup/backup.sh, COMPOSE_PROFILES=backup
-// or the Quadlets' timer), one row of ffs_backups per run and scope, written as the
-// tokenserver user; with your own database servers by your own backups (ADMIN.md#backups).
+// or the Quadlets' timer), one row of ffs_backups per run and scope in the admin UI's
+// database, written as its user (before ADMIN_DB_PASSWORD: in the tokenserver database, as
+// the tokenserver user); with your own database servers by your own backups (ADMIN.md#backups).
 // The admin UI only reads them: it has no access to the backups volume.
 
 // the last good backup may be this old: a nightly run missed once is still fine
@@ -79,7 +80,7 @@ func (s *SyncDB) backupsSchema() string {
 // Backups: the status of each scope that has runs, from the newest runs
 func (s *SyncDB) Backups(ctx context.Context) ([]BackupStatus, error) {
 	// newest first; the same millisecond: the row written last
-	rows, err := s.db.QueryContext(ctx, "SELECT scope, started, finished, ok, bytes, error, location FROM ffs_backups ORDER BY started DESC, id DESC LIMIT 1000")
+	rows, err := s.mine().QueryContext(ctx, "SELECT scope, started, finished, ok, bytes, error, location FROM ffs_backups ORDER BY started DESC, id DESC LIMIT 1000")
 	if err != nil {
 		return nil, err
 	}

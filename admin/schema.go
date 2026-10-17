@@ -75,7 +75,7 @@ func (f *FxaDB) SchemaLevels(ctx context.Context) ([]SchemaLevel, error) {
 // StoredLevels: the levels seen last time (ffs_schema_levels, so that an upgrade of
 // the whole stack, the admin UI too, is still noticed)
 func (s *SyncDB) StoredLevels(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, level FROM ffs_schema_levels")
+	rows, err := s.mine().QueryContext(ctx, "SELECT name, level FROM ffs_schema_levels")
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func (s *SyncDB) StoreLevel(ctx context.Context, l SchemaLevel) error {
 		upsert = `INSERT INTO ffs_schema_levels (name, level, updated_at) VALUES ($1, $2, $3)
 		ON CONFLICT (name) DO UPDATE SET level = EXCLUDED.level, updated_at = EXCLUDED.updated_at`
 	}
-	_, err := s.db.ExecContext(ctx, upsert, oneLine(l.Database, 64), oneLine(l.Level, 255), time.Now().UnixMilli())
+	_, err := s.mine().ExecContext(ctx, upsert, oneLine(l.Database, 64), oneLine(l.Level, 255), time.Now().UnixMilli())
 	return err
 }
 

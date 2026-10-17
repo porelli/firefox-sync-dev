@@ -90,3 +90,42 @@ BEGIN
     CALL CheckUserLimit(NEW.email);
 END //
 DELIMITER ;
+
+-- What the admin UI changes here, with the privileges of this user: its own user
+-- (ADMIN_DB_USER) has SELECT and EXECUTE on this database, nothing that writes
+-- (config/database/admin-user.sh, DATABASES.md)
+
+-- max users, from the admin UI (MAX_USERS=initial:N): a number or 'unlimited', as above
+DROP PROCEDURE IF EXISTS ffs_set_max_users;
+
+DELIMITER //
+CREATE PROCEDURE ffs_set_max_users(IN new_value VARCHAR(255))
+BEGIN
+    IF new_value <> 'unlimited' AND new_value NOT REGEXP '^[0-9]{1,10}$' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'max users must be a number or unlimited';
+    END IF;
+    UPDATE config SET config_value = new_value WHERE config_key = 'max_users';
+END //
+DELIMITER ;
+
+-- one row of users (resets that free the max users slot, deleted accounts, purges)
+DROP PROCEDURE IF EXISTS ffs_delete_user_row;
+
+DELIMITER //
+CREATE PROCEDURE ffs_delete_user_row(IN row_uid BIGINT)
+BEGIN
+    DELETE FROM users WHERE uid = row_uid;
+END //
+DELIMITER ;
+
+-- the admin UI's tables of before ADMIN_DB_PASSWORD, once it moved them into its own
+-- database
+DROP PROCEDURE IF EXISTS ffs_drop_admin_tables;
+
+DELIMITER //
+CREATE PROCEDURE ffs_drop_admin_tables()
+BEGIN
+    DROP TABLE IF EXISTS ffs_events, ffs_metrics, ffs_gauges, ffs_account_notes,
+        ffs_schema_levels, ffs_jobs, ffs_backups;
+END //
+DELIMITER ;

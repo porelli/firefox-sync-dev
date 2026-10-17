@@ -87,3 +87,15 @@ CREATE TRIGGER before_insert_user
 BEFORE INSERT ON users
 FOR EACH ROW
 EXECUTE FUNCTION check_user_limit();
+
+-- The admin UI's tables of before ADMIN_DB_PASSWORD, once it moved them into its own
+-- database: it calls this, with the privileges of the owner of the tables (db_init.sh
+-- gives its role EXECUTE, nobody else has it)
+CREATE OR REPLACE FUNCTION ffs_drop_admin_tables() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+    DROP TABLE IF EXISTS ffs_events, ffs_metrics, ffs_gauges, ffs_account_notes,
+        ffs_schema_levels, ffs_jobs, ffs_backups;
+END;
+$$;
+REVOKE ALL ON FUNCTION ffs_drop_admin_tables() FROM PUBLIC;

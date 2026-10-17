@@ -6,6 +6,7 @@ What changes:
 - `DB_CONTAINERS=0` (and `FXA_DB_CONTAINERS=0` for the accounts) in `.env`: those containers are not started, everything else is the same.
 - You create the databases and users once, with the SQL below. The stack never needs an administrator account on your server.
 - The migrations and the init container still run at every start, as the users below: the tables, the `MAX_USERS` trigger and the sign-up policy are created and updated by the stack.
+- The admin UI has a database and two users of its own there too (the database `ffs_admin`, `ADMIN_DB_NAME`; the users `ffs_admin_ui`, `ADMIN_DB_USER`, for it, and `ffs_admin_sync`, `ADMIN_DB_SYNC_USER`, for the Sync data), which the Sync server's users cannot reach: see [The admin UI's own database](#the-admin-uis-own-database). With self-hosted accounts the admin UI also has a user on the accounts' server named `ffs_admin` too (`FXA_ADMIN_DB_PASSWORD`, [below](#databases-and-users)): a user, not that database, and with one server for both they live side by side without a grant on each other.
 - Backups are yours: the stack's volumes are not used, and the backup service (`COMPOSE_PROFILES=backup`) is for the database containers. Your backup job can record its runs for the admin UI, which then shows the last one and alerts when it fails or gets old: see [ADMIN.md](ADMIN.md#your-own-database-servers).
 
 ## MariaDB or MySQL containers
@@ -71,10 +72,20 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES,
   CREATE ROUTINE, ALTER ROUTINE, EXECUTE, TRIGGER ON `@TOKENSERVER_DATABASE@`.* TO '@TOKENSERVER_USER@'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES,
   CREATE ROUTINE, ALTER ROUTINE, EXECUTE ON `@SYNCSTORAGE_DATABASE@`.* TO '@SYNCSTORAGE_USER@'@'%';
+CREATE DATABASE IF NOT EXISTS `@ADMIN_DATABASE@`;
+CREATE USER IF NOT EXISTS '@ADMIN_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+CREATE USER IF NOT EXISTS '@ADMIN_SYNC_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+ALTER USER '@ADMIN_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+ALTER USER '@ADMIN_SYNC_USER@'@'%' IDENTIFIED BY '@ADMIN_PASSWORD@';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, LOCK TABLES ON `@ADMIN_DATABASE@`.* TO '@ADMIN_USER@'@'%';
+GRANT SELECT, EXECUTE ON `@TOKENSERVER_DATABASE@`.* TO '@ADMIN_SYNC_USER@'@'%';
+GRANT SELECT, DELETE ON `@SYNCSTORAGE_DATABASE@`.* TO '@ADMIN_SYNC_USER@'@'%';
 ```
 
-- The tokenserver user creates the tables (the migrations), the init container's `config` table, the `CheckUserLimit` procedure and the `BeforeInsertUser` trigger that enforce `MAX_USERS` (a number in `config`, or `unlimited`: no check), and the admin UI's `ffs_metrics`, `ffs_events`, `ffs_gauges`, `ffs_account_notes`, `ffs_schema_levels`, `ffs_jobs` and `ffs_backups` tables.
+- The tokenserver user creates the tables (the migrations), the init container's `config` table, the `CheckUserLimit` procedure and the `BeforeInsertUser` trigger that enforce `MAX_USERS` (a number in `config`, or `unlimited`: no check), and the three procedures the admin UI calls (`ffs_set_max_users`, `ffs_delete_user_row`, `ffs_drop_admin_tables`).
 - The storage user creates the tables (the migrations; one of them creates, calls and drops a procedure).
+- The admin UI's users: `ADMIN_DB_USER` (`ffs_admin_ui`) has its own database (`ADMIN_DB_NAME`, `ffs_admin`: the event log, the audit trail, notes, metrics, backup runs) and nothing else; `ADMIN_DB_SYNC_USER` (`ffs_admin_sync`) reads the Sync databases, changes them only as [below](#the-admin-uis-own-database), and has nothing on `ffs_admin`. The two users above cannot reach `ffs_admin`.
+- With the storage on another server, run there the three statements of `ffs_admin_sync` commented at the end of the file (its `CREATE USER`, `ALTER USER` and the storage `GRANT`), and leave out the storage `GRANT` above on the tokenserver's server. `ffs_admin_ui` and `ffs_admin` are on the tokenserver's server only.
 - `REFERENCES` is needed on MySQL 8.0.22+ for the tokenserver's foreign keys.
 - Two databases, not one: both migrations keep their state in a table with the same name.
 
@@ -86,9 +97,17 @@ ALTER ROLE @POSTGRES_USER@ PASSWORD '@POSTGRES_PASSWORD@';
 GRANT @POSTGRES_USER@ TO CURRENT_USER;
 CREATE DATABASE @POSTGRES_DATABASE@ OWNER @POSTGRES_USER@;
 REVOKE ALL ON DATABASE @POSTGRES_DATABASE@ FROM PUBLIC;
+CREATE ROLE @ADMIN_USER@ LOGIN PASSWORD '@ADMIN_PASSWORD@';
+CREATE ROLE @ADMIN_SYNC_USER@ LOGIN PASSWORD '@ADMIN_PASSWORD@';
+ALTER ROLE @ADMIN_USER@ PASSWORD '@ADMIN_PASSWORD@';
+ALTER ROLE @ADMIN_SYNC_USER@ PASSWORD '@ADMIN_PASSWORD@';
+GRANT @ADMIN_USER@ TO CURRENT_USER;
+CREATE DATABASE @ADMIN_DATABASE@ OWNER @ADMIN_USER@;
+REVOKE ALL ON DATABASE @ADMIN_DATABASE@ FROM PUBLIC;
 ```
 
-- The owner of the database creates the tables, the `post_bso` type, the `check_user_limit()` function and its trigger, and the admin UI's tables. It needs no superuser, `CREATEDB` or `CREATEROLE`.
+- The owner of the database creates the tables, the `post_bso` type, the `check_user_limit()` function and its trigger, and the `ffs_drop_admin_tables()` function, and gives the admin UI's reader (`ffs_admin_sync`) its grants on them at every start. It needs no superuser, `CREATEDB` or `CREATEROLE`. Leave `POSTGRES_SYNC_USER` empty: that is for the stack's container, where `POSTGRES_USER` is a superuser.
+- The admin UI's role `ffs_admin_ui` owns its own database (`ffs_admin`), closed to the other roles, the Sync server's and `ffs_admin_sync` too; `ffs_admin_sync` has nothing there. It is a copy of `template0`, not of `template1`, where on PostgreSQL 11 to 14 every role may create tables (the Sync server's role could leave `ffs_*` tables with triggers there, to be copied), and its `public` schema gives `PUBLIC` no `CREATE`. The admin UI does not start when something there (a table, function, operator, type or schema) is not `ffs_admin_ui`'s, and its setup check says what.
 - Run it as a superuser, or as a role with `CREATEROLE` and `CREATEDB` (what managed services such as RDS or Cloud SQL give you, tested): the `GRANT` lets that role create a database owned by the new one, which PostgreSQL 16+ requires.
 - Run again, `CREATE ROLE` and `CREATE DATABASE` fail with "already exists" and `psql -f` goes on: the `ALTER ROLE` sets the new password.
 - The `REVOKE` keeps the other roles of a shared server out (no connections, no temporary tables).
@@ -128,7 +147,7 @@ ALTER USER 'ffs_admin'@'%' IDENTIFIED BY '@FXA_ADMIN_PASSWORD@';
 - `FXA_MYSQL_POLICY_USER` (`ffs_policy`): `fxa-policy` installs the [sign-up policy](ADMIN.md#who-can-sign-up-self-hosted-accounts) at every start: the database `ffs` (with the sign-up settings and `FXA_MAX_ACCOUNTS` in `ffs.settings`), a trigger on `fxa.accounts` that checks both through `ffs.signup_refusal`, views and procedures that read and delete tokens, disable and delete accounts, turn off two-step authentication, remove recovery keys, confirm emails and prune expired tokens with its privileges (they call Mozilla's own procedures, hence `EXECUTE` on `fxa`), and the grants of the admin UI's user (hence `WITH GRANT OPTION`): `SELECT` on a few columns of `fxa.accounts` and on the views (which leave out every secret), `EXECUTE` on those procedures, nothing that changes the accounts' tables directly. `SELECT` on `fxa_profile` and `pushbox` lets the admin UI show the size of all five databases, `DELETE` there removes the profile and the push messages of a deleted account. When a procedure it calls is missing (a newer FxA release, or no `EXECUTE`), `fxa-policy` logs a warning naming it and the accounts keep working, but what needs it in the admin UI answers with an error (ADMIN.md, Disabling an account).
 - Upgrading from a version whose script had no `EXECUTE` in the policy user's grant on `fxa`: run ``GRANT EXECUTE ON `fxa`.* TO '@FXA_POLICY_USER@'@'%' WITH GRANT OPTION;`` once, then restart `fxa-policy`.
 - Upgrading from a version whose script had only `SELECT` on `fxa_profile` and `pushbox`: run ``GRANT DELETE ON `fxa_profile`.* TO '@FXA_POLICY_USER@'@'%'; GRANT DELETE ON `pushbox`.* TO '@FXA_POLICY_USER@'@'%';`` once, otherwise deleting an account in the admin UI fails (and changes nothing).
-- `ffs_admin`, with `FXA_ADMIN_DB_PASSWORD`: the admin UI's user, created here and not by `fxa-policy`. `CREATE USER` is a server-wide privilege that also lets its holder change the password of every other account (on MariaDB including `root`), so the policy user does not get it. `fxa-policy` finds `ffs_admin` there and only gives it its grants.
+- `ffs_admin`, with `FXA_ADMIN_DB_PASSWORD`: the admin UI's user of the accounts database, created here and not by `fxa-policy`. Not the admin UI's own database of the same name (`ADMIN_DB_NAME`, in `database-setup.sql`, which only `ADMIN_DB_USER`, `ffs_admin_ui`, reaches): on one server for Sync and the accounts both are there, this user has no grant on that database. `CREATE USER` is a server-wide privilege that also lets its holder change the password of every other account (on MariaDB including `root`), so the policy user does not get it. `fxa-policy` finds `ffs_admin` there and only gives it its grants.
 - The grants are on whole databases because the tables don't exist yet when you run this.
 - The database names are fixed (`fxa`, `fxa_oauth`, `fxa_profile`, `pushbox`, `ffs`): a server or instance of its own for the accounts is best.
 - One user for both is possible (tested): leave `FXA_MYSQL_POLICY_USER` empty (`FXA_MYSQL_POLICY_PASSWORD` is then not used, `fxa-policy` connects with `FXA_MYSQL_PASSWORD`). In `database-setup-fxa.sql`, delete the policy user's `CREATE USER` and `ALTER USER` lines and put the name of `FXA_MYSQL_USER` in its `GRANT`s. The accounts services, which face the internet, then also hold `GRANT OPTION` on `fxa`, `fxa_oauth` and `ffs`: they could pass their access to the accounts on to any other user of the server.
@@ -150,9 +169,49 @@ All in `.env`. `prepare_environment.sh` writes them when you answer `y`.
 | `FXA_MYSQL_HOST`, `FXA_MYSQL_PORT` | `fxa-db`, `3306` | your MySQL 8 or MariaDB 11 server |
 | `FXA_MYSQL_USER`, `FXA_MYSQL_PASSWORD` | `root` | `fxa` and its password |
 | `FXA_MYSQL_POLICY_USER`, `FXA_MYSQL_POLICY_PASSWORD` | empty: `FXA_MYSQL_USER` and `FXA_MYSQL_PASSWORD` | `ffs_policy` and its password |
-| `FXA_ADMIN_DB_PASSWORD` | generated | the password of `ffs_admin` in `database-setup-fxa.sql` |
+| `FXA_ADMIN_DB_PASSWORD` | generated | the password of the user `ffs_admin` of the accounts (the admin UI reads them as it) in `database-setup-fxa.sql` |
+| `ADMIN_DB_NAME`, `ADMIN_DB_USER`, `ADMIN_DB_SYNC_USER` | `ffs_admin`, `ffs_admin_ui`, `ffs_admin_sync` | the admin UI's own database (not the accounts' user `ffs_admin`), its user, and its reader of the Sync data, in `database-setup.sql` |
+| `ADMIN_DB_PASSWORD` | generated | the password of both (empty: an install from before it, see below) |
+| `POSTGRES_SYNC_USER`, `POSTGRES_SYNC_PASSWORD` | `syncserver_app` and generated with the PostgreSQL container | empty: on your server `POSTGRES_USER` is the owner, no superuser |
 
-The [admin UI](ADMIN.md) uses the same Sync users, and `ffs_admin` for the accounts: no extra grants.
+## The admin UI's own database
+
+The [admin UI](ADMIN.md) keeps the event log, the audit trail (who did what, on which account), the notes, its metrics, the schema levels seen, its daily jobs and the backup runs in a database of its own, `ADMIN_DB_NAME` (`ffs_admin`), on the tokenserver's server (with PostgreSQL the same server). The Sync server's users have no grant on it: a Sync server that is broken into can change what it stores, but cannot read the audit trail or rewrite it.
+
+The admin UI has two users, both with `ADMIN_DB_PASSWORD`, and the Sync users' passwords are not given to it:
+
+- `ADMIN_DB_USER` (`ffs_admin_ui`) reaches `ffs_admin` and nothing else;
+- `ADMIN_DB_SYNC_USER` (`ffs_admin_sync`) reads the Sync data and changes it only as below, and has nothing on `ffs_admin`.
+
+Why two: the tokenserver user owns its database and can put code there, procedures, functions, views over its tables, with `SQL SECURITY INVOKER` (PostgreSQL: `SECURITY INVOKER`, the default). That code runs with the privileges of whoever calls it or reads the view, and on MariaDB and MySQL a session reaches every database by its name. With one user the Sync server's user could replace `ffs_set_max_users` with a procedure that deletes `ffs_admin.ffs_events`, and the next save of max users in the admin UI would run it with the rights on the audit trail. The admin UI only ever runs the Sync databases' code as `ffs_admin_sync` (`tests/e2e.sh` plants such a procedure and function and checks that the event log stays as it was).
+
+What each user ends up with:
+
+| User | MariaDB and MySQL | PostgreSQL |
+|---|---|---|
+| tokenserver (`MARIADB_TOKENSERVER_USER`) | everything on the tokenserver database (tables, the `MAX_USERS` trigger, the procedures below), nothing on `ffs_admin` | the Sync server's role, the owner of the Sync tables, nothing on `ffs_admin` (no `CONNECT`): `POSTGRES_SYNC_USER` (`syncserver_app`, no superuser) in the stack's container, `POSTGRES_USER` on your own server |
+| storage (`MARIADB_SYNCSTORAGE_USER`) | everything on the storage database, nothing on `ffs_admin` | (the same role) |
+| `POSTGRES_USER` in the stack's container | | the image's superuser: `sync_role_init` and the init container only, for the roles, `ffs_admin`, the grants and the owner of the Sync tables (nothing that reads or writes them); its password is not given to the Sync server |
+| `ffs_admin_ui` | on `ffs_admin`: `SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, LOCK TABLES` (`DROP` and `LOCK TABLES`: a restore of its dump); nothing on the Sync databases | owner of `ffs_admin`; nothing on the Sync database (no `CONNECT`) |
+| `ffs_admin_sync` | on the tokenserver database: `SELECT, EXECUTE` (it changes max users and deletes rows of `users` only through `ffs_set_max_users` and `ffs_delete_user_row`, and drops the admin UI's old tables through `ffs_drop_admin_tables`, procedures of the init container that run as the tokenserver user); on the storage database: `SELECT, DELETE` (sizes, purges, resets); nothing on `ffs_admin` | on the Sync database `CONNECT`, `SELECT` on its tables, `UPDATE (config_value)` of `config` (max users), `DELETE` on `users`, `bsos`, `user_collections`, `batches` and `batch_bsos`, `EXECUTE` on `ffs_drop_admin_tables()`, given by the init container at every start; nothing on `ffs_admin` (no `CONNECT`) |
+
+Who creates them:
+
+- **The MariaDB and MySQL containers of the stack**: [config/database/admin-user.sh](/config/database/admin-user.sh) runs before the image's entrypoint and has the server run its statements with all privileges at every start (`--init-file`): the database, the two users with `ADMIN_DB_PASSWORD`, their grants. On the first start (MySQL: also through `mysqld --initialize`) and on the volumes of an existing install alike, whose root password is random: no administrator password is needed anywhere. The storage container gets `ffs_admin_sync` and its `SELECT, DELETE` only.
+- **The PostgreSQL container**: the init container, as `POSTGRES_USER`, which the image makes a superuser (a superuser reaches every database, `ffs_admin` too). So the Sync server does not connect as it: with `POSTGRES_SYNC_USER` and `POSTGRES_SYNC_PASSWORD` (`prepare_environment.sh` sets them) `sync_role_init` creates that role, no superuser, before the migrations, and gives it the right to create tables and every table, function and type of the Sync database (those of an install from before it, [sync_owner.sql](/syncstorage-rs-init-postgres/sync_owner.sql)), at every start; the migrations, the init container's `db_init.sql` and the backups run as that role; then the admin UI's roles, `ffs_admin` and the grants. As the superuser only what runs no code of the Sync tables' owner: creating and changing roles and databases, the grants and the change of owner, with only `pg_catalog` in the search path. Whatever reads or writes those tables does it as their owner, over a login of its own (not `SET ROLE`, which code can undo): a trigger, rule, view or function the Sync server's role put there runs with its rights only (`tests/e2e.sh` has that role plant code that would make it a superuser: triggers on `config` and `nodes`, `config` itself as a view calling its function, an operator `<>` of its own in `public`; then starts the migrations and the init container again and checks that none of it ran as a superuser). So never run `psql` (or `pg_dump`, `pg_restore`) as `POSTGRES_USER` on the Sync database yourself: connect as `POSTGRES_SYNC_USER`, as [MIGRATING.md](MIGRATING.md) and [ADMIN.md#restoring](ADMIN.md#restoring) do. Without `POSTGRES_SYNC_USER` (an install from before it) the Sync server stays `POSTGRES_USER` and the setup check of the event log fails, saying so.
+- **Your own server**: `database-setup.sql` above, as its administrator. Without the roles (PostgreSQL), the init container says so and the admin UI cannot connect.
+
+### An install from before
+
+An install from before `ADMIN_DB_PASSWORD` (its `.env` has none) keeps working as it did: the admin UI connects as the Sync users and keeps its tables in the tokenserver database. Its setup check of the event log fails and says how to move it, and its log says so at every start. To move it, as [MIGRATING.md](MIGRATING.md#older-firefox-sync-releases) says:
+
+1. `./prepare_environment.sh --upgrade`: it adds to `.env` what this release needs and keeps every value already there (the old file is `.env.before-upgrade`): `ADMIN_DB_PASSWORD` (32 letters and digits), `ADMIN_DB_NAME`, `ADMIN_DB_USER`, `ADMIN_DB_SYNC_USER`, and with the PostgreSQL container `POSTGRES_SYNC_USER` and `POSTGRES_SYNC_PASSWORD`. By hand: `ADMIN_DB_PASSWORD=$(tr -dc A-Za-z0-9 < /dev/urandom | head -c 32)` in `.env`, the same for `POSTGRES_SYNC_PASSWORD` with `POSTGRES_SYNC_USER=syncserver_app`.
+2. Your own server only: run the new `database-setup.sql` there (`--upgrade` writes it again; its statements can run again), or the admin UI's statements of the SQL above with that password.
+3. `docker compose pull && docker compose up -d`. The database containers are created again with the users, the init container gives the grants (and with PostgreSQL the Sync tables to the Sync server's role), and at its first start the admin UI copies its tables of the tokenserver database into `ffs_admin` in one transaction (the events in their order, every note, metric and backup run), then drops them through `ffs_drop_admin_tables`. The event log has an event of kind `update` with what it moved; it is done once (recorded in `ffs_meta`). Admin UI tables found in the tokenserver database later (a backup of before restored, or rows the Sync server's user put there) are not copied again: the setup check names them.
+
+If it cannot read them (a grant missing on your own server), it copies nothing, leaves them where they are and the setup check says why: nothing is lost, and the next start tries again. If it copied them but cannot drop them (no `EXECUTE`, an init image from before), they stay in the tokenserver database, within the Sync server's reach, until you drop them as the tokenserver user (`DROP TABLE ffs_events, ffs_metrics, ffs_gauges, ffs_account_notes, ffs_schema_levels, ffs_jobs, ffs_backups;`); the setup check says so too. If `ffs_admin_ui` cannot create its tables in `ffs_admin` (its grant missing), the admin UI does not start and says why, the old tables untouched. Your own backup jobs that record their runs: they now write into `ffs_admin` as `ffs_admin_ui` ([ADMIN.md](ADMIN.md#your-own-database-servers)).
+
+`tests/e2e.sh` checks this upgrade from a checkout of the release before (`UPGRADE_FROM`: its compose files, admin UI and init image), with MariaDB, MySQL 8.4 and PostgreSQL, and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
 
 ## docker compose
 
@@ -177,13 +236,15 @@ With docker compose. Not covered by the tests: check the result before you remov
 1. Dump the data, from the running database containers (start only them: `docker compose up -d tokenserver_db syncstorage_db`):
     - MariaDB: `docker compose exec tokenserver_db sh -c 'mariadb-dump -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" --routines --triggers "$MARIADB_DATABASE"' > tokenserver.sql`, the same for `syncstorage_db`. These load into MariaDB 10.10+ only: their tables use MariaDB's `uca1400` collations, which MySQL rejects.
     - MySQL (`SYNC_DB=mysql`): `docker compose exec tokenserver_db sh -c 'mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" --routines --triggers --no-tablespaces "$MYSQL_DATABASE"' > tokenserver.sql`, the same for `syncstorage_db` (`--no-tablespaces`: the stack's users have no `PROCESS` privilege)
-    - PostgreSQL: `docker compose exec postgres_db sh -c 'pg_dump -U "$POSTGRES_USER" --no-owner --no-acl "$POSTGRES_DB"' > syncserver.sql`
+    - PostgreSQL, as the Sync server's role, like the backups: `docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" pg_dump -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" --no-owner --no-acl "$POSTGRES_DATABASE"' > syncserver.sql` (an install from before `POSTGRES_SYNC_USER`: `docker compose exec postgres_db sh -c 'pg_dump -U "$POSTGRES_USER" --no-owner --no-acl "$POSTGRES_DB"' > syncserver.sql`, its Sync server is that superuser anyway)
+    - the admin UI's database (the event log, the audit trail), as its user: `docker compose exec tokenserver_db sh -c 'mariadb-dump -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" --single-transaction "$ADMIN_DB_NAME"' > ffs_admin.sql` (`mysqldump ... --no-tablespaces` with `SYNC_DB=mysql`; PostgreSQL: `docker compose exec postgres_db pg_dump -U ffs_admin_ui --no-owner --no-acl ffs_admin > ffs_admin.sql`)
     - the accounts: `docker compose exec fxa-db sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --routines --triggers --databases fxa fxa_oauth fxa_profile pushbox ffs'  > fxa.sql` (`mariadb-dump` instead of `mysqldump` with `FXA_DB=mariadb`). Load it into the same kind of server: from MySQL to MariaDB or back is not tested
 1. Create the databases and users on your server with the passwords already in your `.env`: copy the file of [config/database/](/config/database) and replace each `@NAME@` with its value from `.env` (`@TOKENSERVER_PASSWORD@` is `MARIADB_TOKENSERVER_PASSWORD`, `@FXA_ADMIN_PASSWORD@` is `FXA_ADMIN_DB_PASSWORD`, and so on; add `FXA_MYSQL_USER`, `FXA_MYSQL_POLICY_USER` and `FXA_MYSQL_POLICY_PASSWORD` to `.env`, it had `root`). Keep the database and user names of `.env`. Then load the dumps:
     ```bash
     mariadb -h db.example.com -u root -p tokenserver < tokenserver.sql
     mariadb -h db.example.com -u root -p syncstorage < syncstorage.sql
     psql -h db.example.com -U syncserver -d syncserver -f syncserver.sql    # as the owner: its tables
+    mariadb -h db.example.com -u ffs_admin_ui -p ffs_admin < ffs_admin.sql   # psql -U ffs_admin_ui -d ffs_admin -f ffs_admin.sql
     mysql -h db.example.com -u root -p < fxa.sql                             # mariadb with FXA_DB=mariadb
     ```
     The accounts' dump creates its databases itself; its triggers, views and procedures name `root` as their definer: replace `DEFINER=\`root\`@\`%\`` with your `FXA_MYSQL_POLICY_USER` (for the `ffs` objects and the trigger on `fxa.accounts`) and `FXA_MYSQL_USER` (Mozilla's procedures) before loading it, or let `fxa-policy` recreate its own at the next start.

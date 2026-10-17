@@ -18,10 +18,17 @@ import (
 )
 
 // Tokenserver database (MariaDB or PostgreSQL), the tables of syncstorage-rs plus
-// the config table of syncstorage-rs-init (max_users)
+// the config table of syncstorage-rs-init (max_users), and the admin UI's own tables
 type SyncDB struct {
 	db       *sql.DB
 	postgres bool
+	// own: the admin UI's own database (ADMIN_DB_NAME, owndb.go), where its tables are,
+	// out of the Sync server's reach; nil: they are in the tokenserver database (an
+	// install from before ADMIN_DB_PASSWORD)
+	own     *sql.DB
+	ownName string
+	// what moving the tables of before into own did (owndb.go)
+	moved moveState
 }
 
 type SyncNode struct {
@@ -60,18 +67,39 @@ func openSyncDB() (*SyncDB, error) {
 	if host == "" {
 		return nil, fmt.Errorf("TOKENSERVER_DB_HOST is not set")
 	}
-	user, password, name := env("TOKENSERVER_DB_USER", ""), env("TOKENSERVER_DB_PASSWORD", ""), env("TOKENSERVER_DB_NAME", "")
+	if kind != "mysql" && kind != "postgres" {
+		return nil, fmt.Errorf("TOKENSERVER_DB_TYPE must be mysql or postgres, not %q", kind)
+	}
+	user, password, ownUser, own, err := dbCredentials("TOKENSERVER")
+	if err != nil {
+		return nil, err
+	}
+	s := &SyncDB{postgres: kind == "postgres"}
+	if s.db, err = openDB(kind, host, user, password, env("TOKENSERVER_DB_NAME", "")); err != nil {
+		return nil, err
+	}
+	if own != "" {
+		// on the same server, as its other user (owndb.go)
+		if s.own, err = openDB(kind, host, ownUser, password, own); err != nil {
+			return nil, err
+		}
+		s.ownName = own
+	}
+	return s, nil
+}
+
+// openDB: a pool on a database of the tokenserver's server (TOKENSERVER_DB_PORT...)
+func openDB(kind, host, user, password, name string) (*sql.DB, error) {
 	var db *sql.DB
 	var err error
-	switch kind {
-	case "mysql":
+	if kind == "mysql" {
 		cfg := mysql.NewConfig()
 		cfg.Net = "tcp"
 		cfg.Addr = net.JoinHostPort(host, env("TOKENSERVER_DB_PORT", "3306"))
 		cfg.User, cfg.Passwd, cfg.DBName = user, password, name
 		cfg.Timeout = 5 * time.Second
 		db, err = sql.Open("mysql", cfg.FormatDSN())
-	case "postgres":
+	} else {
 		dsn := url.URL{
 			Scheme: "postgres",
 			User:   url.UserPassword(user, password),
@@ -83,15 +111,21 @@ func openSyncDB() (*SyncDB, error) {
 		q.Set("connect_timeout", "5")
 		dsn.RawQuery = q.Encode()
 		db, err = sql.Open("pgx", dsn.String())
-	default:
-		return nil, fmt.Errorf("TOKENSERVER_DB_TYPE must be mysql or postgres, not %q", kind)
 	}
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(4)
 	db.SetConnMaxLifetime(5 * time.Minute)
-	return &SyncDB{db: db, postgres: kind == "postgres"}, nil
+	return db, nil
+}
+
+// mine: where the admin UI's own tables are (the event log, the audit trail, notes...)
+func (s *SyncDB) mine() *sql.DB {
+	if s.own != nil {
+		return s.own
+	}
+	return s.db
 }
 
 // q turns the ? placeholders into $1, $2... for PostgreSQL
@@ -228,7 +262,13 @@ func (s *SyncDB) SetMaxUsers(ctx context.Context, maxUsers int, unlimited bool) 
 		return fmt.Errorf("max users must be from 0 to %d", math.MaxInt32)
 	}
 	value := Limit{Max: maxUsers, Unlimited: unlimited}.Setting()
-	res, err := s.db.ExecContext(ctx, s.q("UPDATE config SET config_value = ? WHERE config_key = ?"), value, "max_users")
+	// MariaDB and MySQL: a procedure of the init container, the admin UI's user cannot
+	// write the tokenserver's tables (PostgreSQL: a grant on this column, by their owner)
+	query, args := "CALL ffs_set_max_users(?)", []any{value}
+	if s.postgres {
+		query, args = "UPDATE config SET config_value = $1 WHERE config_key = $2", []any{value, "max_users"}
+	}
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -256,7 +296,7 @@ type Note struct {
 const maxNote = 500
 
 func (s *SyncDB) Notes(ctx context.Context) (map[string]Note, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT uid, note, updated_at, updated_by FROM ffs_account_notes")
+	rows, err := s.mine().QueryContext(ctx, "SELECT uid, note, updated_at, updated_by FROM ffs_account_notes")
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +319,7 @@ func (s *SyncDB) Notes(ctx context.Context) (map[string]Note, error) {
 func (s *SyncDB) Note(ctx context.Context, uid string) (*Note, error) {
 	var n Note
 	var at int64
-	err := s.db.QueryRowContext(ctx, s.q("SELECT note, updated_at, updated_by FROM ffs_account_notes WHERE uid = ?"), uid).Scan(&n.Text, &at, &n.UpdatedBy)
+	err := s.mine().QueryRowContext(ctx, s.q("SELECT note, updated_at, updated_by FROM ffs_account_notes WHERE uid = ?"), uid).Scan(&n.Text, &at, &n.UpdatedBy)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -312,7 +352,7 @@ func (s *SyncDB) SetNote(ctx context.Context, uid, note, by string) error {
 		return err
 	}
 	if note == "" {
-		_, err := s.db.ExecContext(ctx, s.q("DELETE FROM ffs_account_notes WHERE uid = ?"), uid)
+		_, err := s.mine().ExecContext(ctx, s.q("DELETE FROM ffs_account_notes WHERE uid = ?"), uid)
 		return err
 	}
 	upsert := `INSERT INTO ffs_account_notes (uid, note, updated_at, updated_by) VALUES (?, ?, ?, ?)
@@ -321,7 +361,7 @@ func (s *SyncDB) SetNote(ctx context.Context, uid, note, by string) error {
 		upsert = `INSERT INTO ffs_account_notes (uid, note, updated_at, updated_by) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (uid) DO UPDATE SET note = EXCLUDED.note, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`
 	}
-	_, err = s.db.ExecContext(ctx, upsert, uid, note, time.Now().UnixMilli(), oneLine(by, 255))
+	_, err = s.mine().ExecContext(ctx, upsert, uid, note, time.Now().UnixMilli(), oneLine(by, 255))
 	return err
 }
 

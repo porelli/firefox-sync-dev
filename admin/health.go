@@ -165,6 +165,11 @@ func newHealth(app *App) *Health {
 	if app.storage != nil && !app.sync.postgres {
 		h.checks = append(h.checks, check{name: "Storage database", health: func(ctx context.Context) error { return app.storage.db.PingContext(ctx) }, version: app.storage.Version})
 	}
+	if app.sync != nil && app.sync.own != nil {
+		own := app.sync.own
+		// the event log and the audit trail (owndb.go), on the tokenserver's server
+		h.checks = append(h.checks, check{name: "Admin UI database", health: own.PingContext})
+	}
 	if app.fxa != nil {
 		auth := strings.TrimSuffix(env("FXA_AUTH_UPSTREAM", "http://fxa-auth:9000"), "/")
 		content := strings.TrimSuffix(env("FXA_CONTENT_INTERNAL_URL", "http://fxa-content:3030"), "/")
@@ -441,6 +446,13 @@ func (h *Health) measureSizes(ctx context.Context) {
 			sizes["Sync storage"] = n
 		} else {
 			log.Printf("storage database size: %v", err)
+		}
+	}
+	if own := h.app.sync.own; own != nil {
+		if n, err := dbSize(ctx, own, h.app.sync.postgres); err == nil {
+			sizes["Admin UI"] = n
+		} else {
+			log.Printf("admin UI database size: %v", err)
 		}
 	}
 	if h.app.fxa != nil {

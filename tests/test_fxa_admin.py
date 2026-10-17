@@ -468,7 +468,7 @@ def test_activity_page():
 def test_health_and_sizes(admin):
     page = admin.page()
     health = page.split('<table id="health"')[1].split("</table>")[0]
-    for component in ("Sync server", "Tokenserver database", "Storage database", "Accounts API", "Accounts pages",
+    for component in ("Sync server", "Tokenserver database", "Storage database", "Admin UI database", "Accounts API", "Accounts pages",
                       "Profile server", "Accounts database", "Accounts Redis"):
         row = re.search(r"<td>" + component + r"</td><td>(.*?)</td><td>(.*?)</td>", health)
         assert row and "up" in row.group(1), (component, health)
@@ -1110,9 +1110,10 @@ def fxa_db():
 
 @pytest.fixture(scope="module")
 def sync_dbs():
+    # the tokenserver, the storage, and the admin UI's own database (the notes) as its user
     from sqlalchemy import create_engine
     conns = [create_engine(os.environ[name]).execution_options(isolation_level="AUTOCOMMIT").connect()
-             for name in ("SYNC_TOKENSERVER__DATABASE_URL", "SYNC_SYNCSTORAGE__DATABASE_URL")]
+             for name in ("SYNC_TOKENSERVER__DATABASE_URL", "SYNC_SYNCSTORAGE__DATABASE_URL", "ADMIN_DB_URL")]
     yield conns
     for c in conns:
         c.close()
@@ -1148,7 +1149,7 @@ def room(admin):
 
 
 def test_delete_an_account_for_good(admin, fxa_db, sync_dbs, room):
-    tokens_db, storage_db = sync_dbs
+    tokens_db, storage_db, admin_db = sync_dbs
     address, password = email("example.net"), uuid.uuid4().hex
     # on the allowlist by itself (example.net is not)
     assert "added to the sign-up allowlist" in admin.post("/accounts/invite", email=address)
@@ -1172,7 +1173,7 @@ def test_delete_an_account_for_good(admin, fxa_db, sync_dbs, room):
     admin.confirm(f"/accounts/{uid}/disable")
     assert f'href="{path}"' in admin.get(f"/users/{uid}")
     admin.post(f"/users/{uid}/note", note="ffs test: to be forgotten")
-    assert sql(tokens_db, "SELECT COUNT(*) FROM ffs_account_notes WHERE uid = :u", u=uid).scalar() == 1
+    assert sql(admin_db, "SELECT COUNT(*) FROM ffs_account_notes WHERE uid = :u", u=uid).scalar() == 1
     # the email typed must match
     page, res = admin.confirm(path, ok=False, confirm_email="someone@example.net")
     assert f"Delete {address}?" in page and "fxa-profile-images" in page and '<label for="confirm_email">Type the email of the account' in page, page[:3000]
@@ -1194,7 +1195,7 @@ def test_delete_an_account_for_good(admin, fxa_db, sync_dbs, room):
         assert sql(fxa_db, f"SELECT COUNT(*) FROM {table} WHERE userId = UNHEX(:uid)", uid=uid).scalar() == 0, table
     # the tokenserver rows and the storage of their uids, and its note
     assert sql(tokens_db, "SELECT COUNT(*) FROM users WHERE email LIKE :e", e=f"{uid}@%").scalar() == 0
-    assert sql(tokens_db, "SELECT COUNT(*) FROM ffs_account_notes WHERE uid = :u", u=uid).scalar() == 0
+    assert sql(admin_db, "SELECT COUNT(*) FROM ffs_account_notes WHERE uid = :u", u=uid).scalar() == 0
     assert sql(storage_db, "SELECT COUNT(*) FROM bso WHERE userid = :u", u=token["uid"]).scalar() == 0
     # it cannot sign up again: no longer on the allowlist
     assert not allowlist_row(admin, address)
@@ -1238,7 +1239,7 @@ def test_self_deleted_account_purged(admin, room, sync_dbs):
     token = syncing(session, created)
     assert sync_users(admin) == users + 1
     admin.post(f"/users/{session.uid}/note", note="ffs test: deleted by its owner")
-    count_notes = lambda: sql(sync_dbs[0], "SELECT COUNT(*) FROM ffs_account_notes WHERE uid = :u", u=session.uid).scalar()
+    count_notes = lambda: sql(sync_dbs[2], "SELECT COUNT(*) FROM ffs_account_notes WHERE uid = :u", u=session.uid).scalar()
     assert count_notes() == 1
     # its owner deletes it in the account settings: the Sync side is left behind
     destroy(client, address, password)

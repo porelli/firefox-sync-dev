@@ -17,7 +17,7 @@ import (
 // every day the pruning of the accounts database (expired tokens and codes), and when
 // asked the purge of the Sync storage (ADMIN_PURGE=1) and the deletion of old
 // unconfirmed accounts (ADMIN_DELETE_UNCONFIRMED_DAYS). When each last ran, and what it
-// did, is in ffs_jobs (the tokenserver database): a restart does not run them again.
+// did, is in ffs_jobs (the admin UI's database): a restart does not run them again.
 
 const (
 	jobInterval = 24 * time.Hour
@@ -47,7 +47,7 @@ func (j Job) Title() string {
 }
 
 func (s *SyncDB) Jobs(ctx context.Context) (map[string]Job, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, last_run, result, failed FROM ffs_jobs")
+	rows, err := s.mine().QueryContext(ctx, "SELECT name, last_run, result, failed FROM ffs_jobs")
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (s *SyncDB) StoreJob(ctx context.Context, j Job) error {
 	if j.Failed {
 		failed = 1
 	}
-	_, err := s.db.ExecContext(ctx, upsert, j.Name, j.LastRun.UnixMilli(), oneLine(j.Result, 500), failed)
+	_, err := s.mine().ExecContext(ctx, upsert, j.Name, j.LastRun.UnixMilli(), oneLine(j.Result, 500), failed)
 	return err
 }
 

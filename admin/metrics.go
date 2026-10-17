@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// Metrics and the event log, kept in the tokenserver database (ffs_metrics,
-// ffs_events) for ADMIN_RETENTION_DAYS, what admins did (kind admin) for
+// Metrics and the event log, kept in the admin UI's own database (ffs_metrics,
+// ffs_events, see owndb.go) for ADMIN_RETENTION_DAYS, what admins did (kind admin) for
 // ADMIN_AUDIT_RETENTION_DAYS. syncstorage-rs (and its tokenserver) send
 // statsd metrics over UDP when the admin UI runs, see docker-compose.yml.
 
@@ -108,7 +108,7 @@ func (s *SyncDB) schema() []string {
 
 func newRecorder(ctx context.Context, db *SyncDB) (*Recorder, error) {
 	for _, stmt := range db.schema() {
-		if _, err := db.db.ExecContext(ctx, stmt); err != nil {
+		if _, err := db.mine().ExecContext(ctx, stmt); err != nil {
 			return nil, err
 		}
 	}
@@ -132,7 +132,7 @@ func (r *Recorder) Event(kind, detail string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := r.db.db.ExecContext(ctx, r.db.q("INSERT INTO ffs_events (at, kind, detail) VALUES (?, ?, ?)"),
+	if _, err := r.db.mine().ExecContext(ctx, r.db.q("INSERT INTO ffs_events (at, kind, detail) VALUES (?, ?, ?)"),
 		time.Now().UnixMilli(), kind, detail); err != nil {
 		log.Printf("event log: %v", err)
 	}
@@ -255,7 +255,7 @@ func (r *Recorder) flush() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for name, m := range current {
-		if _, err := r.db.db.ExecContext(ctx, upsert, minute, name, m.count, m.total); err != nil {
+		if _, err := r.db.mine().ExecContext(ctx, upsert, minute, name, m.count, m.total); err != nil {
 			log.Printf("metrics: %v", err)
 			return
 		}
@@ -285,7 +285,7 @@ func (r *Recorder) prune() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	for _, p := range r.pruneStatements(time.Now()) {
-		if _, err := r.db.db.ExecContext(ctx, r.db.q(p.query), p.cutoff); err != nil {
+		if _, err := r.db.mine().ExecContext(ctx, r.db.q(p.query), p.cutoff); err != nil {
 			log.Printf("pruning: %v", err)
 		}
 	}
@@ -311,7 +311,7 @@ func (r *Recorder) Events(ctx context.Context, before time.Time, kind, q string,
 	if q != "" {
 		query, args = query+" AND LOWER(detail) LIKE ?", append(args, "%"+likeEscape(strings.ToLower(q))+"%")
 	}
-	rows, err := r.db.db.QueryContext(ctx, r.db.q(query+" ORDER BY at DESC, id DESC LIMIT ?"), append(args, limit)...)
+	rows, err := r.db.mine().QueryContext(ctx, r.db.q(query+" ORDER BY at DESC, id DESC LIMIT ?"), append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +354,7 @@ var chartSeries = []struct {
 }
 
 func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Duration) ([]Series, []MetricTotal, error) {
-	rows, err := r.db.db.QueryContext(ctx, r.db.q("SELECT minute, name, count, total FROM ffs_metrics WHERE minute >= ?"), since.UnixMilli())
+	rows, err := r.db.mine().QueryContext(ctx, r.db.q("SELECT minute, name, count, total FROM ffs_metrics WHERE minute >= ?"), since.UnixMilli())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -426,7 +426,7 @@ func (r *Recorder) Gauge(name string, value int64) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := r.db.db.ExecContext(ctx, upsert, minute, name, value); err != nil {
+	if _, err := r.db.mine().ExecContext(ctx, upsert, minute, name, value); err != nil {
 		log.Printf("gauge %s: %v", name, err)
 	}
 }
@@ -438,7 +438,7 @@ type GaugeSeries struct {
 }
 
 func (r *Recorder) Gauges(ctx context.Context, since time.Time, bucket time.Duration) ([]GaugeSeries, error) {
-	rows, err := r.db.db.QueryContext(ctx, r.db.q("SELECT minute, name, value FROM ffs_gauges WHERE minute >= ? ORDER BY minute"), since.UnixMilli())
+	rows, err := r.db.mine().QueryContext(ctx, r.db.q("SELECT minute, name, value FROM ffs_gauges WHERE minute >= ? ORDER BY minute"), since.UnixMilli())
 	if err != nil {
 		return nil, err
 	}

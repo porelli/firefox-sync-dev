@@ -16,6 +16,10 @@
 #   ADMIN_IMAGE     admin UI image to test, pulled and used as is (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1-linux-arm64 (default: REPOSITORY:fxa-mono-latest)
+#   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
+#                   the quadlets (SYNC_DB=mariadb) start as an install of it, its files, admin UI
+#                   and init image (built from it), then are upgraded to this tree as MIGRATING.md
+#                   says for the Quadlets, and checked as a new install
 set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -63,7 +67,7 @@ podman info --format 'rootless={{.Host.Security.Rootless}} selinux={{.Host.Secur
 cp -r "${CODE}" "${WORK}/ffs" && cd "${WORK}/ffs" || exit 1
 rm -f .env
 # ports of its own, next to whatever else runs on this host
-sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
+example() { sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
        -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
        -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:28690|" \
        -e "s|^ADMIN_GATE_EXPORT_PORT=.*|ADMIN_GATE_EXPORT_PORT=127.0.0.1:28691|" \
@@ -74,7 +78,8 @@ sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
        -e "s|^FXA_AUTH_EXPORT_PORT=.*|FXA_AUTH_EXPORT_PORT=127.0.0.1:28600|" \
        -e "s|^FXA_PROFILE_EXPORT_PORT=.*|FXA_PROFILE_EXPORT_PORT=127.0.0.1:28611|" \
        -e "s|^FXA_PROFILE_STATIC_EXPORT_PORT=.*|FXA_PROFILE_STATIC_EXPORT_PORT=127.0.0.1:28612|" \
-       -e "s|^FXA_PAIRING_EXPORT_PORT=.*|FXA_PAIRING_EXPORT_PORT=127.0.0.1:28658|" .env-example
+       -e "s|^FXA_PAIRING_EXPORT_PORT=.*|FXA_PAIRING_EXPORT_PORT=127.0.0.1:28658|" "$1/.env-example"; }
+example .
 # the admin UI under test, where compose and the quadlets look for it
 if [ -n "${ADMIN_IMAGE:-}" ]; then
   podman pull -q "${ADMIN_IMAGE}" > build-admin.log 2>&1 && podman tag "${ADMIN_IMAGE}" "${REPOSITORY}:admin-latest" >> build-admin.log 2>&1
@@ -119,13 +124,51 @@ admin_sign_in() {
   curl -s -b "${jar}" http://localhost:28690/ | grep -q 'Sign out' && echo yes
 }
 
+env_of() { grep "^$1=" .env | cut -d= -f2; }
+# SQL in the tokenserver database (MariaDB, MySQL, PostgreSQL), as the user given
+compose_sql() { # backend user password database query
+  if [ "$1" = postgres ]; then
+    podman exec -e PGPASSWORD="$3" "$(ctr postgres_db)" psql -h 127.0.0.1 -U "$2" -d "$4" -tA -c "$5"
+  else
+    podman exec -e MYSQL_PWD="$3" "$(ctr tokenserver_db)" sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -u"$2" "$4" -sN -e "$5"
+  fi
+}
+
 compose_test() {
-  local backend=$1; shift
+  local backend=$1 sync_user sync_password sync_db admin_password sync_role sync_role_password; shift
   echo "== docker compose on the Podman socket (${backend})"
   setup "${backend}" 2
   check "$?" 0 "prepare_environment.sh (${backend}, compose)"
   check "$(grep -c "docker compose $* up -d" "setup-${backend}-2.log")" 1 "prepare_environment.sh prints the compose command (${backend})"
+  # first as an install from before ADMIN_DB_PASSWORD (the admin UI's tables in the
+  # tokenserver database), then upgraded below
+  admin_password=$(env_of ADMIN_DB_PASSWORD)
+  check "$(echo "${admin_password}" | grep -cE '^[A-Za-z0-9]{32}$')" 1 "prepare_environment.sh generates ADMIN_DB_PASSWORD (${backend})"
+  sed -i 's|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=|' .env
+  # PostgreSQL: before, the Sync server connected as POSTGRES_USER, the container's superuser
+  sync_role=$(env_of POSTGRES_SYNC_USER) sync_role_password=$(env_of POSTGRES_SYNC_PASSWORD)
+  if [ "${backend}" = postgres ]; then
+    check "${sync_role} $(echo "${sync_role_password}" | grep -cE '^[A-Za-z0-9]{32}$')" "syncserver_app 1" "prepare_environment.sh gives the Sync server a role of its own (postgres)"
+    sed -i -e 's|^POSTGRES_SYNC_USER=.*|POSTGRES_SYNC_USER=|' -e 's|^POSTGRES_SYNC_PASSWORD=.*|POSTGRES_SYNC_PASSWORD=|' .env
+  fi
+  if [ "${backend}" = postgres ]; then
+    sync_user=$(env_of POSTGRES_USER) sync_password=$(env_of POSTGRES_PASSWORD) sync_db=$(env_of POSTGRES_DATABASE)
+  else
+    sync_user=$(env_of MARIADB_TOKENSERVER_USER) sync_password=$(env_of MARIADB_TOKENSERVER_PASSWORD) sync_db=$(env_of MARIADB_TOKENSERVER_DATABASE)
+  fi
   timeout 600 docker compose "$@" up -d > "compose-${backend}.log" 2>&1
+  check "$?" 0 "docker compose up, before ADMIN_DB_PASSWORD (${backend})"
+  check "$(admin_up /login)" 200 "admin UI before ADMIN_DB_PASSWORD (compose, ${backend})"
+  compose_sql "${backend}" "${sync_user}" "${sync_password}" "${sync_db}" \
+    "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the upgrade by admin (password)')" > /dev/null
+  check "$?" 0 "an audit event in the tokenserver database, as before (${backend})"
+  # the upgrade, as MIGRATING.md says: prepare_environment.sh --upgrade fills in what is missing
+  ./prepare_environment.sh --upgrade > "upgrade-${backend}.log" 2>&1
+  check "$?" 0 "prepare_environment.sh --upgrade (${backend})"
+  check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $([ "${backend}" != postgres ] || env_of POSTGRES_SYNC_USER)" \
+    "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
+  admin_password=$(env_of ADMIN_DB_PASSWORD)
+  timeout 600 docker compose "$@" up -d >> "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up (${backend})"
   check "$(hb)" 200 "/__heartbeat__ (compose, ${backend})"
   check "$(podman inspect -f '{{.State.ExitCode}}' "$(ctr syncstorage_migrate)")" 0 "migrate container exit code (${backend})"
@@ -139,7 +182,28 @@ compose_test() {
   else
     check "$(metrics_show "${SYNC_UP[@]}")" all "admin UI reaches the Sync server and its database (compose, ${backend})"
   fi
-  check "$(podman logs "$(ctr syncstorage)" 2>&1 | grep -c 'Sending metrics to the admin UI')" 1 "Sync server sends metrics to the admin UI (compose, ${backend})"
+  # (once more, restarted with the admin UI of the upgrade)
+  check "$([ "$(podman logs "$(ctr syncstorage)" 2>&1 | grep -c 'Sending metrics to the admin UI')" -ge 1 ] && echo yes)" yes "Sync server sends metrics to the admin UI (compose, ${backend})"
+  # the upgrade moved the event log into the admin UI's own database, out of the Sync user's reach
+  admin_events() { compose_sql "${backend}" "$(env_of ADMIN_DB_USER)" "${admin_password}" "$(env_of ADMIN_DB_NAME)" "SELECT COUNT(*) FROM ffs_events WHERE detail LIKE '$1'"; }
+  for _ in $(seq 1 30); do [ "$(admin_events 'ffs-podman: before the upgrade%' 2> /dev/null)" = 1 ] && break; sleep 2; done
+  check "$(admin_events 'ffs-podman: before the upgrade%') $(admin_events 'Moved the admin UI%')" "1 1" "the audit trail of before moved into the admin UI's database (compose, ${backend})"
+  check "$([ "$(admin_events '%')" -gt 2 ] && echo yes)" yes "the admin UI records its events there (compose, ${backend})"
+  if [ "${backend}" = postgres ]; then
+    # the Sync server's own role, no superuser, owns the Sync tables and cannot reach ffs_admin
+    sync_role=$(env_of POSTGRES_SYNC_USER) sync_role_password=$(env_of POSTGRES_SYNC_PASSWORD)
+    check "$(compose_sql postgres "${sync_role}" "${sync_role_password}" "${sync_db}" "SELECT rolsuper || ' ' || (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'users' AND relnamespace = 'public'::regnamespace) FROM pg_roles WHERE rolname = current_user")" \
+      "false ${sync_role}" "the Sync server's role is no superuser and owns the Sync tables (compose, postgres)"
+    check "$(compose_sql postgres "${sync_role}" "${sync_role_password}" "$(env_of ADMIN_DB_NAME)" "SELECT 1" 2>&1 | grep -c 'permission denied')" 1 \
+      "the Sync server's role cannot connect to the admin UI's database (compose, postgres)"
+    check "$(compose_sql postgres "$(env_of ADMIN_DB_USER)" "${admin_password}" "$(env_of ADMIN_DB_NAME)" "SELECT pg_get_userbyid(datdba) || ' ' || has_database_privilege('public', datname, 'CONNECT') FROM pg_database WHERE datname = current_database()")" \
+      "$(env_of ADMIN_DB_USER) false" "the admin UI's database is its role's, closed to PUBLIC (compose, postgres)"
+  else
+    check "$(compose_sql "${backend}" "${sync_user}" "${sync_password}" "${sync_db}" "SELECT COUNT(*) FROM $(env_of ADMIN_DB_NAME).ffs_events" 2>&1 | grep -c 'denied')" 1 \
+      "the tokenserver user cannot read the event log (compose, ${backend})"
+    check "$(compose_sql "${backend}" "${sync_user}" "${sync_password}" "${sync_db}" "INSERT INTO $(env_of ADMIN_DB_NAME).ffs_events (at, kind, detail) VALUES (1, 'admin', 'forged')" 2>&1 | grep -c 'denied')" 1 \
+      "the tokenserver user cannot write the event log (compose, ${backend})"
+  fi
   podman logs "$(ctr tokenserver_db_init)" 2>&1 | grep -E "Max users|ERROR"
   [ "${FAILED}" = 0 ] || diagnose "compose-${backend}.log"
   docker compose "$@" down -v > /dev/null 2>&1
@@ -171,6 +235,36 @@ env_keys_diff() {
 
 echo "== quadlets (${SYNC_DB})"
 export QUADLET_DIR=${HOME}/.config/containers/systemd
+if [ -n "${UPGRADE_FROM:-}" ]; then
+  echo "== first the quadlets of ${UPGRADE_FROM}, then upgraded as MIGRATING.md says"
+  [ "${SYNC_DB}" = mariadb ] || { echo "UPGRADE_FROM is for SYNC_DB=mariadb"; exit 2; }
+  FROM=${WORK}/from
+  cp -r "${UPGRADE_FROM}" "${FROM}" && rm -f "${FROM}/.env" && example "${FROM}" || exit 1
+  # that release's admin UI and init image under the names of the units, this tree's aside
+  INIT_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-init-${TAG}
+  podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:upgrade-to && podman tag "${INIT_IMAGE}" localhost/ffs-init:upgrade-to &&
+    podman build -q --format docker -t "${REPOSITORY}:admin-latest" "${FROM}/admin" > build-from.log 2>&1 &&
+    podman build -q -t "${INIT_IMAGE}" "${FROM}/syncstorage-rs-init" >> build-from.log 2>&1
+  check "$?" 0 "the admin UI and init images of ${UPGRADE_FROM}"
+  (cd "${FROM}" && setup mariadb 1)
+  check "$?" 0 "its prepare_environment.sh (quadlets)"
+  timeout 900 systemctl --user start firefox-sync-syncstorage.service
+  check "$?" 0 "its units started (quadlets)"
+  check "$(hb) $(admin_up /login)" "200 200" "its Sync server and admin UI (quadlets)"
+  from_env() { grep "^$1=" "${FROM}/.env" | cut -d= -f2; }
+  from_ts_sql() { podman exec -e MYSQL_PWD="$(from_env MARIADB_TOKENSERVER_PASSWORD)" firefox-sync-tokenserver-db \
+    mariadb -u"$(from_env MARIADB_TOKENSERVER_USER)" "$(from_env MARIADB_TOKENSERVER_DATABASE)" -sN -e "$1"; }
+  for _ in $(seq 1 30); do [ "$(from_ts_sql 'SELECT COUNT(*) FROM ffs_events' 2> /dev/null)" -gt 0 ] 2> /dev/null && break; sleep 2; done
+  from_ts_sql "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the Quadlet upgrade by admin (password)')"
+  check "$?" 0 "an audit event in the tokenserver database, as before (quadlets)"
+  # the upgrade: the units stopped, the one-shot ones too, as MIGRATING.md says
+  STOP='systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
+  check "$(grep -cF "\`${STOP}\`" "${CODE}/MIGRATING.md")" 1 "MIGRATING.md says \`${STOP}\`"
+  timeout 300 ${STOP}
+  # (the images of this tree are local: what MIGRATING.md pulls is here already)
+  podman tag localhost/ffs-admin:upgrade-to "${REPOSITORY}:admin-latest" && podman tag localhost/ffs-init:upgrade-to "${INIT_IMAGE}"
+  podman rmi localhost/ffs-admin:upgrade-to localhost/ffs-init:upgrade-to > /dev/null 2>&1
+fi
 setup "${SYNC_DB}" 1
 check "$?" 0 "prepare_environment.sh (quadlets)"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in quadlets"
@@ -178,13 +272,31 @@ check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unr
 check "$(grep -hcxF 'Environment=MAX_USERS=initial:1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container") $(grep -hcxF 'Environment="MAX_USERS=initial:1"' "${QUADLET_DIR}/firefox-sync-admin.container")" "1 1" \
   "MAX_USERS=initial:1 in the init and admin UI quadlets"
 # without the accounts: not their settings, nor those of the sign-up gate and of the unconfirmed accounts
-check "$(env_keys_diff "-f docker-compose.yml" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS')" "|" "admin quadlet passes every setting of the compose service"
+# nor the Sync users' passwords: the Quadlets always have ADMIN_DB_PASSWORD, compose only passes them without it
+check "$(env_keys_diff "-f docker-compose.yml" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS|TOKENSERVER_DB_PASSWORD|STORAGE_DB_PASSWORD')" "|" "admin quadlet passes every setting of the compose service"
+check "$(grep -cE '^Environment="(TOKENSERVER|STORAGE)_DB_PASSWORD=' "${QUADLET_DIR}/firefox-sync-admin.container") $(grep -cE '^Environment="ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}"$' "${QUADLET_DIR}/firefox-sync-admin.container")" \
+  "0 1" "the admin UI quadlet has its own database password, none of the Sync users"
 # the help of the backups on the overview: their time, how many, the Quadlets' commands
 check "$(grep -cxE 'Environment="(BACKUP_TIME=03:00|BACKUP_KEEP=7|ADMIN_DEPLOYMENT=quadlets)"' "${QUADLET_DIR}/firefox-sync-admin.container")" 3 \
   "BACKUP_TIME, BACKUP_KEEP and ADMIN_DEPLOYMENT=quadlets in the admin UI quadlet"
 QUADLET=$(ls /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2> /dev/null | head -1)
 "${QUADLET}" -dryrun -user > quadlet-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files"
+if [ -n "${UPGRADE_FROM:-}" ]; then
+  # MIGRATING.md: the database containers (they create the admin UI's users with the new
+  # ADMIN_DB_PASSWORD), then the Sync users' new passwords, as the old ones
+  timeout 300 systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
+  for db in TOKENSERVER SYNCSTORAGE; do
+    container=firefox-sync-$(tr '[:upper:]' '[:lower:]' <<< "${db}")-db
+    for _ in $(seq 1 30); do
+      podman exec "${container}" mariadb -u"$(from_env "MARIADB_${db}_USER")" -p"$(from_env "MARIADB_${db}_PASSWORD")" \
+        -e "SET PASSWORD = PASSWORD('$(env_of "MARIADB_${db}_PASSWORD")')" > /dev/null 2>&1 && ok=0 && break
+      ok=1
+      sleep 2
+    done
+    check "${ok}" 0 "the new password of the ${db} user (quadlets upgraded)"
+  done
+fi
 # the journal keeps earlier runs
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 timeout 900 systemctl --user start firefox-sync-syncstorage.service
@@ -193,6 +305,8 @@ for u in syncstorage-db tokenserver-db syncstorage-migrate tokenserver-db-init s
   printf '  %-22s %s\n' "${u}" "$(systemctl --user is-active "firefox-sync-${u}.service")"
 done
 check "$(hb)" 200 "/__heartbeat__ (quadlets)"
+check "$(podman inspect -f '{{.EffectiveCaps}}' firefox-sync-syncstorage | grep -c NET_RAW) $(grep -hcxF 'DropCapability=NET_RAW' "${QUADLET_DIR}"/firefox-sync-syncstorage{,-migrate}.container | paste -sd' ')" \
+  "0 1 1" "the Sync server and its migrations without raw sockets (quadlets)"
 journalctl --user -u firefox-sync-syncstorage-migrate.service --no-pager 2> /dev/null | grep -m1 "Migrations completed"
 journalctl --user -u firefox-sync-tokenserver-db-init.service --no-pager 2> /dev/null | grep -m1 "Max users"
 INIT_END=$(systemctl --user show -p ExecMainExitTimestampMonotonic --value firefox-sync-tokenserver-db-init.service)
@@ -220,14 +334,27 @@ check "$(hb)" 200 "/__heartbeat__ after the admin UI restart (quadlets)"
 # the database container's own client (mariadb, or mysql in the MySQL image)
 ts_sql() { podman exec -e MYSQL_PWD="$(grep '^MARIADB_TOKENSERVER_PASSWORD=' .env | cut -d= -f2)" firefox-sync-tokenserver-db \
   sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -u"$(grep '^MARIADB_TOKENSERVER_USER=' .env | cut -d= -f2)" "$(grep '^MARIADB_TOKENSERVER_DATABASE=' .env | cut -d= -f2)" -sN -e "$1"; }
+# the admin UI's own database (the event log, the backup runs), as its user
+admin_db_sql() { podman exec -e MYSQL_PWD="$(env_of ADMIN_DB_PASSWORD)" firefox-sync-tokenserver-db \
+  sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -u"$(env_of ADMIN_DB_USER)" "$(env_of ADMIN_DB_NAME)" -sN -e "$1"; }
+check "$([ "$(admin_db_sql "SELECT COUNT(*) FROM ffs_events")" -gt 0 ] && echo yes) $(ts_sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'ffs\\_%'")" \
+  "yes 0" "the admin UI records its events in its own database, none in the tokenserver's (quadlets)"
+[ -z "${UPGRADE_FROM:-}" ] || check "$(admin_db_sql "SELECT COUNT(*) FROM ffs_events WHERE detail = 'ffs-podman: before the Quadlet upgrade by admin (password)' OR detail LIKE 'Moved the admin UI%'")" 2 \
+  "the audit trail of ${UPGRADE_FROM} moved into the admin UI's database (quadlets upgraded)"
+check "$(ts_sql "SELECT COUNT(*) FROM $(env_of ADMIN_DB_NAME).ffs_events" 2>&1 | grep -c denied)" 1 "the tokenserver user cannot read the event log (quadlets)"
+# the admin UI's reader of the Sync data: the tokenserver database, not the event log
+reader_sql() { podman exec -e MYSQL_PWD="$(env_of ADMIN_DB_PASSWORD)" "$1" sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql \
+  -u"$(env_of ADMIN_DB_SYNC_USER)" -sN -e "$2"; }
+check "$(reader_sql firefox-sync-tokenserver-db "SELECT COUNT(*) > 0 FROM $(env_of MARIADB_TOKENSERVER_DATABASE).nodes") $(reader_sql firefox-sync-tokenserver-db "SELECT COUNT(*) FROM $(env_of ADMIN_DB_NAME).ffs_events" 2>&1 | grep -c denied) $(reader_sql firefox-sync-syncstorage-db "SELECT COUNT(*) >= 0 FROM $(env_of MARIADB_SYNCSTORAGE_DATABASE).bso")" \
+  "1 1 1" "the admin UI's reader reads the Sync databases, not the event log (quadlets)"
 check "$(grep -c '^OnCalendar=\*-\*-\* 03:00:00 UTC$' "${SYSTEMD_USER_DIR}/firefox-sync-backup.timer" 2> /dev/null) $(systemctl --user is-enabled firefox-sync-backup.timer 2> /dev/null)" "1 disabled" \
   "backup timer installed, not enabled (quadlets)"
 check "$(systemctl --user show -p Triggers --value firefox-sync-backup.timer)" firefox-sync-backup.service "the backup timer starts the backup service"
 timeout 300 systemctl --user start firefox-sync-backup.service
 check "$?" 0 "systemctl --user start firefox-sync-backup.service (a backup by hand)"
-check "$(ts_sql "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND ok = 1 AND bytes > 0")" 1 "the backup recorded in ffs_backups (quadlets)"
+check "$(admin_db_sql "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND ok = 1 AND bytes > 0")" 1 "the backup recorded in ffs_backups (quadlets)"
 check "$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" && basename "$f"; done' | sort | paste -sd' ')" \
-  "syncstorage.sql.gz tokenserver.sql.gz" "the dumps in the firefox-sync-backups volume (quadlets)"
+  "ffs_admin.sql.gz syncstorage.sql.gz tokenserver.sql.gz" "the dumps in the firefox-sync-backups volume (quadlets)"
 [ "${FAILED}" = 0 ] || journalctl --user -u firefox-sync-backup.service --no-pager | tail -20
 if [ "${FAILED}" != 0 ]; then
   tail -20 quadlet-dryrun.log
@@ -270,7 +397,7 @@ check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokens
   "docker.io/library/mysql:8.4 docker.io/library/mysql:8.4" "MySQL 8.4 database units"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db*.volume 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
   "firefox-sync-syncstorage-db-mysql.volume firefox-sync-tokenserver-db-mysql.volume" "MySQL's own volumes, not MariaDB's"
-check "$(grep -hcxE 'Exec=mysqld --disable-log-bin|HealthCmd=mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) -p[A-Za-z0-9]+ --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
+check "$(grep -hcxE 'Exec=sh /ffs-db/admin-user\.sh mysqld --disable-log-bin|HealthCmd=mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) -p[A-Za-z0-9]+ --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
   "2 2" "MySQL without binary logging, healthcheck over TCP"
 check "$(grep -cxF 'Environment=MARIADB_TLS_VERIFY=false' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "init container does not check MySQL's self-signed certificate"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in the MySQL quadlets"
@@ -362,7 +489,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   # no pairing server in the quadlets
-  check "$(env_keys_diff "-f docker-compose.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL')" "|" "admin quadlet with the accounts passes every setting of the compose service"
+  check "$(env_keys_diff "-f docker-compose.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL|TOKENSERVER_DB_PASSWORD|STORAGE_DB_PASSWORD')" "|" "admin quadlet with the accounts passes every setting of the compose service"
   # max accounts: not asked here (the last question), unlimited and managed in the admin UI
   check "$(cat "${QUADLET_DIR}/firefox-sync-fxa-policy.container" "${QUADLET_DIR}/firefox-sync-admin.container" | grep -cxF 'Environment="FXA_MAX_ACCOUNTS=initial:unlimited"')" 2 \
     "FXA_MAX_ACCOUNTS=initial:unlimited in the sign-up policy and admin UI quadlets"
@@ -425,7 +552,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   # the backup of the accounts runs with that of Sync, before it (WantedBy=, Before=)
   timeout 600 systemctl --user start firefox-sync-backup.service
   check "$?" 0 "systemctl --user start firefox-sync-backup.service (quadlets with accounts)"
-  check "$(ts_sql "SELECT DISTINCT scope FROM ffs_backups WHERE ok = 1 ORDER BY scope" | paste -sd' ')" "accounts sync" "the backups of the accounts and of Sync recorded (quadlets)"
+  check "$(admin_db_sql "SELECT DISTINCT scope FROM ffs_backups WHERE ok = 1 ORDER BY scope" | paste -sd' ')" "accounts sync" "the backups of the accounts and of Sync recorded (quadlets)"
   [ "${FAILED}" = 0 ] || journalctl --user -u 'firefox-sync-backup*' --no-pager | tail -20
   if [ "${FAILED}" != 0 ]; then
     journalctl --user -u 'firefox-sync-fxa-*' --no-pager | tail -40

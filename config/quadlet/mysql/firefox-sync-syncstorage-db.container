@@ -9,15 +9,22 @@ ContainerName=firefox-sync-syncstorage-db
 Network=firefox-sync-network.network
 # MySQL must not open MariaDB's data files: its own volume
 Volume=firefox-sync-syncstorage-db-mysql.volume:/var/lib/mysql
+Volume=%SCRIPT_DIR%/config/database/admin-user.sh:/ffs-db/admin-user.sh:ro,z
 
 Environment=MYSQL_RANDOM_ROOT_PASSWORD=yes
 Environment=MYSQL_DATABASE=%MARIADB_SYNCSTORAGE_DATABASE%
 Environment=MYSQL_USER=%MARIADB_SYNCSTORAGE_USER%
 Environment=MYSQL_PASSWORD=%MARIADB_SYNCSTORAGE_PASSWORD%
 
+# the admin UI's reader of the Sync data, created by config/database/admin-user.sh:
+# SELECT and DELETE here (sizes, purges, resets)
+Environment=ADMIN_DB_ROLE=storage
+Environment=ADMIN_DB_SYNC_USER=%ADMIN_DB_SYNC_USER%
+Environment=ADMIN_DB_PASSWORD=%ADMIN_DB_PASSWORD%
+
 # no binary logging, like MariaDB: no replica reads it, it would keep 30 days of every
 # change, and the init container's MAX_USERS trigger would need log_bin_trust_function_creators
-Exec=mysqld --disable-log-bin
+Exec=sh /ffs-db/admin-user.sh mysqld --disable-log-bin
 
 # over TCP: during the first start the image runs a temporary server on the socket only
 HealthCmd=mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%MARIADB_SYNCSTORAGE_USER% -p%MARIADB_SYNCSTORAGE_PASSWORD% --silent

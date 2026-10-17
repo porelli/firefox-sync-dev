@@ -7,6 +7,8 @@ Wants=firefox-sync-admin.service
 
 [Container]
 Image=%REPOSITORY%:%SYNCSTORAGE_IMAGE%-%SYNCSTORAGE_IMAGE_TAG%
+# no raw sockets, as compose's cap_drop: [NET_RAW]
+DropCapability=NET_RAW
 ContainerName=firefox-sync-syncstorage
 Network=firefox-sync-network.network
 PublishPort=%CONTAINER_EXPORT_PORT%:8000

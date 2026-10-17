@@ -144,6 +144,7 @@ dst_prepare() {
       -e "s|^SYNC_MASTER_SECRET=.*|SYNC_MASTER_SECRET=$(rnd)|" \
       -e "s|^METRICS_HASH_SECRET=.*|METRICS_HASH_SECRET=$(rnd)|" \
       -e "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$(rnd)|" \
+      -e "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=$(rnd)|" \
       -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=${NEW_DOMAIN}|" \
       -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:${PORT}|" \
       -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:$((PORT + 20))|" \
@@ -160,6 +161,9 @@ dst_prepare() {
       -e "s|<REPLACE_WITH_SOMETHING_SECURE>|$(rnd)|" \
       -e "s|<REPLACE_WITH_[A-Z_]*>|placeholder.invalid|g" \
       "${CODE}/.env-example" > "${DST}/.env"
+  # the PostgreSQL container: the Sync server's own role, as prepare_environment.sh sets it
+  [ "${DST_DB}" = postgres ] && sed -i -e "s|^POSTGRES_SYNC_USER=.*|POSTGRES_SYNC_USER=syncserver_app|" \
+    -e "s|^POSTGRES_SYNC_PASSWORD=.*|POSTGRES_SYNC_PASSWORD=$(rnd)|" "${DST}/.env"
   dst_test_env "${files}"
 }
 
@@ -182,7 +186,9 @@ dst_sql() {
   case ${DST_DB} in
     mariadb) dst exec -T tokenserver_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -sN -e "$0"' "$1" ;;
     mysql) dst exec -T tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -sN -e "$0"' "$1" ;;
-    postgres) dst exec -T postgres_db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -F "	" -c "$0"' "$1" ;;
+    # as the Sync server's role, the owner of the tables (never the superuser, DATABASES.md)
+    postgres) dst exec -T postgres_db sh -c 'PGPASSWORD="$1" psql -h 127.0.0.1 -U "$2" -d "$POSTGRES_DB" -tA -F "	" -c "$0"' "$1" \
+      "$(grep '^POSTGRES_SYNC_PASSWORD=' "${DST}/.env" | cut -d= -f2)" "$(grep '^POSTGRES_SYNC_USER=' "${DST}/.env" | cut -d= -f2)" ;;
   esac < /dev/null 2> /dev/null
 }
 wait_init() { timeout 600 docker wait "$(dst ps -a -q tokenserver_db_init)"; }
@@ -212,13 +218,16 @@ dst_load() {
     postgres)
       guide "docker compose up -d --wait postgres_db" > /dev/null 2>&1
       check "$?" 0 "database container up"
+      # the Sync server's role first: the dumps are loaded as it
+      guide "docker compose run --rm sync_role_init" > "${WORK}/sync-role.log" 2>&1
+      check "$?" 0 "the Sync server's role (sync_role_init)" || tail -5 "${WORK}/sync-role.log"
       echo "  $(dst_sql 'SELECT version()')"
       if [ -z "${PG_FILES:-}" ]; then
-        guide "docker compose exec -T postgres_db sh -c 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"' < syncserver.sql" > "${WORK}/psql.log" 2>&1
+        guide "docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD=\"\$POSTGRES_SYNC_PASSWORD\" psql -h \"\$POSTGRES_SERVER\" -U \"\$POSTGRES_SYNC_USER\" -d \"\$POSTGRES_DATABASE\" -v ON_ERROR_STOP=1' < syncserver.sql" > "${WORK}/psql.log" 2>&1
         check "$?" 0 "syncserver.sql loaded" || tail -5 "${WORK}/psql.log"
       else
         # "with each file in turn", the command of the guide's comment
-        local f line="# docker compose exec -T postgres_db sh -c 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"' < <file>"
+        local f line="# docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD=\"\$POSTGRES_SYNC_PASSWORD\" psql -h \"\$POSTGRES_SERVER\" -U \"\$POSTGRES_SYNC_USER\" -d \"\$POSTGRES_DATABASE\" -v ON_ERROR_STOP=1' < <file>"
         grep -qF -- "${line}" "${GUIDE}" || fail "command not in MIGRATING.md: ${line}"
         for f in ${PG_FILES}; do
           line=${line#\# }
@@ -256,7 +265,7 @@ dst_verify() {
     mysql)
       users=$(guide "docker compose exec tokenserver_db sh -c 'mysql -u\"\$MYSQL_USER\" -p\"\$MYSQL_PASSWORD\" \"\$MYSQL_DATABASE\" -e \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
     postgres)
-      users=$(guide "docker compose exec postgres_db sh -c 'psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -c \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
+      users=$(guide "docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD=\"\$POSTGRES_SYNC_PASSWORD\" psql -h \"\$POSTGRES_SERVER\" -U \"\$POSTGRES_SYNC_USER\" -d \"\$POSTGRES_DATABASE\" -c \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
   esac
   cd - > /dev/null || exit 1
   echo "${users}" | sed 's/^/    /'
@@ -851,6 +860,10 @@ EOF
     grep -q "^${key}=" "${DST}/.env" || { echo "${line}" >> "${DST}/.env"; added=$((added + 1)); }
   done < <(grep -E '^[A-Z_]+=' "${CODE}/.env-example")
   echo "  ${added} lines added from .env-example"
+  # "./prepare_environment.sh --upgrade": the passwords of the admin UI's database users
+  cp "${CODE}/prepare_environment.sh" "${DST}/"
+  (cd "${DST}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
+  check "$? $(grep -cE '^ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}$' "${DST}/.env")" "0 1" "./prepare_environment.sh --upgrade sets ADMIN_DB_PASSWORD" || cat "${WORK}/upgrade.log"
   if [ "${kind}" = first ]; then
     # the first release: one user and password for both databases, no MAX_USERS
     local user pass

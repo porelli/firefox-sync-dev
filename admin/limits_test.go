@@ -19,7 +19,8 @@ func limitsApp(t *testing.T, fake *fakeFxa) (*App, http.Handler, *http.Cookie, *
 	}
 	redis, _ := fakeRedis(t)
 	app := testApp()
-	app.fxa, app.sync, app.alerter = fake.db(redis), &SyncDB{db: sql.OpenDB(fake)}, &Alerter{}
+	// its own database: the setup checks all pass (owndb.go)
+	app.fxa, app.sync, app.alerter = fake.db(redis), &SyncDB{db: sql.OpenDB(fake), own: sql.OpenDB(fake), ownName: "ffs_admin"}, &Alerter{}
 	app.health = newHealth(app)
 	h := app.routes()
 	c, s := passwordSession(t, app, h)
@@ -165,8 +166,8 @@ func TestSetLimitsFromThePage(t *testing.T) {
 		got = append(got, q+" "+fake.args[i][0].(string))
 	}
 	want := []string{
-		"UPDATE config SET config_value = ? WHERE config_key = ? unlimited",
-		"UPDATE config SET config_value = ? WHERE config_key = ? 7",
+		"CALL ffs_set_max_users(?) unlimited",
+		"CALL ffs_set_max_users(?) 7",
 		"INSERT INTO ffs.settings (name, value) VALUES ('max_accounts', ?) ON DUPLICATE KEY UPDATE value = VALUES(value) 50",
 		"INSERT INTO ffs.settings (name, value) VALUES ('max_accounts', ?) ON DUPLICATE KEY UPDATE value = VALUES(value) unlimited",
 	}

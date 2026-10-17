@@ -12,9 +12,12 @@
 # gzip -t; the newest BACKUP_KEEP runs are kept, a failed run leaves nothing behind: it
 # writes into .<UTC time>.partial, renamed when complete (a stopped or killed run's is
 # removed on exit or by the next run).
-# Each run is a row of ffs_backups in the tokenserver database, written by the sync scope
-# as the tokenserver user: the accounts scope leaves its result in BACKUP_DIR/.status
-# (its image has no PostgreSQL client), the sync scope records it on its next round.
+# With ADMIN_DB_PASSWORD the sync scope also dumps the admin UI's database (ADMIN_DB_NAME on
+# the tokenserver's server, the event log and the audit trail) as its user ADMIN_DB_USER.
+# Each run is a row of ffs_backups there, written by the sync scope as that user (without
+# ADMIN_DB_PASSWORD, an install from before it: in the tokenserver database, as the
+# tokenserver user): the accounts scope leaves its result in BACKUP_DIR/.status (its image
+# has no PostgreSQL client), the sync scope records it on its next round.
 set -u
 umask 077
 
@@ -85,19 +88,29 @@ dump_mysql() {
   [ "$(cat "${TMP}/rc")" = 0 ] || { echo "${d_db}: $(clean < "${TMP}/err")"; return 1; }
 }
 
-dump_postgres() { # database out
-  { PGPASSWORD=${TOKENSERVER_DB_PASSWORD} pg_dump --no-password -h "${TOKENSERVER_DB_HOST}" -p "${TOKENSERVER_DB_PORT:-5432}" \
-      -U "${TOKENSERVER_DB_USER}" -d "$1" 2> "${TMP}/err"; echo $? > "${TMP}/rc"; } | gzip > "$2"
+# without owners and grants: they name roles (the Sync server's, the admin UI's) that a new
+# server has only once the init container ran, and it gives them again at every start.
+# The admin UI's database with DROP ... IF EXISTS: restored over the tables it has
+dump_postgres() { # database out [user password [options]]
+  # shellcheck disable=SC2086 # (options: words)
+  { PGPASSWORD=${4:-${TOKENSERVER_DB_PASSWORD}} pg_dump --no-password -h "${TOKENSERVER_DB_HOST}" -p "${TOKENSERVER_DB_PORT:-5432}" \
+      -U "${3:-${TOKENSERVER_DB_USER}}" --no-owner --no-privileges ${5:-} -d "$1" 2> "${TMP}/err"; echo $? > "${TMP}/rc"; } | gzip > "$2"
   [ "$(cat "${TMP}/rc")" = 0 ] || { echo "$1: $(clean < "${TMP}/err")"; return 1; }
 }
 
-# SQL as the tokenserver user (sync scope only)
+# where the runs are recorded (sync scope only): the admin UI's database as its user, or
+# without ADMIN_DB_PASSWORD the tokenserver database as the tokenserver user
+if [ -n "${ADMIN_DB_PASSWORD:-}" ]; then
+  STATUS_USER=${ADMIN_DB_USER:-ffs_admin_ui} STATUS_PASSWORD=${ADMIN_DB_PASSWORD} STATUS_DB=${ADMIN_DB_NAME:-ffs_admin}
+else
+  STATUS_USER=${TOKENSERVER_DB_USER:-} STATUS_PASSWORD=${TOKENSERVER_DB_PASSWORD:-} STATUS_DB=${TOKENSERVER_DB_NAME:-}
+fi
 ts_sql() {
   if [ "${TOKENSERVER_DB_TYPE:-mysql}" = postgres ]; then
-    PGPASSWORD=${TOKENSERVER_DB_PASSWORD} psql --no-password -q -v ON_ERROR_STOP=1 -h "${TOKENSERVER_DB_HOST}" -p "${TOKENSERVER_DB_PORT:-5432}" \
-      -U "${TOKENSERVER_DB_USER}" -d "${TOKENSERVER_DB_NAME}" -c "$1" > /dev/null
+    PGPASSWORD=${STATUS_PASSWORD} psql --no-password -q -v ON_ERROR_STOP=1 -h "${TOKENSERVER_DB_HOST}" -p "${TOKENSERVER_DB_PORT:-5432}" \
+      -U "${STATUS_USER}" -d "${STATUS_DB}" -c "$1" > /dev/null
   else
-    "${MYSQL}" --defaults-extra-file="${TMP}/tokenserver.cnf" "${TOKENSERVER_DB_NAME}" -e "$1"
+    "${MYSQL}" --defaults-extra-file="${TMP}/status.cnf" "${STATUS_DB}" -e "$1"
   fi
 }
 
@@ -149,6 +162,9 @@ run() {
   if [ "${SCOPE}" = sync ] && [ "${TOKENSERVER_DB_TYPE:-mysql}" = postgres ]; then
     # tokenserver and storage share the database
     dump_postgres "${TOKENSERVER_DB_NAME}" "${PARTIAL}/${TOKENSERVER_DB_NAME}.sql.gz" > "${TMP}/msg" || errors="${errors}$(cat "${TMP}/msg"); "
+    if [ -n "${ADMIN_DB_PASSWORD:-}" ]; then
+      dump_postgres "${STATUS_DB}" "${PARTIAL}/${STATUS_DB}.sql.gz" "${STATUS_USER}" "${STATUS_PASSWORD}" "--clean --if-exists" > "${TMP}/msg" || errors="${errors}$(cat "${TMP}/msg"); "
+    fi
   elif [ "${SCOPE}" = sync ]; then
     parts="tokenserver storage"
     [ -z "${STORAGE_DB_HOST:-}" ] && parts=tokenserver
@@ -158,6 +174,10 @@ run() {
       eval "db=\${$(echo "${part}" | tr a-z A-Z)_DB_NAME}"
       dump_mysql "${TMP}/${part}.cnf" "${db}" "${PARTIAL}/${db}.sql.gz" > "${TMP}/msg" || errors="${errors}$(cat "${TMP}/msg"); "
     done
+    # the event log and the audit trail, as the admin UI's user (status.cnf)
+    if [ -n "${ADMIN_DB_PASSWORD:-}" ]; then
+      dump_mysql "${TMP}/status.cnf" "${STATUS_DB}" "${PARTIAL}/${STATUS_DB}.sql.gz" > "${TMP}/msg" || errors="${errors}$(cat "${TMP}/msg"); "
+    fi
   elif cnf "${TMP}/accounts.cnf" "${FXA_DB_HOST:-fxa-db}" "${FXA_DB_PORT:-3306}" "${FXA_DB_USER:-root}" "${FXA_DB_PASSWORD:-}" > "${TMP}/msg"; then
     # ffs last: its views read the others
     for db in ${FXA_DATABASES:-fxa fxa_oauth fxa_profile pushbox ffs}; do
@@ -191,9 +211,11 @@ run() {
   record "${SCOPE}" "${started}" "$(now_ms)" 1 "${bytes}" "${out}" ""
 }
 
-# (without it nothing can be recorded)
+# (without them nothing can be recorded)
 if [ "${SCOPE}" = sync ] && [ "${TOKENSERVER_DB_TYPE:-mysql}" != postgres ]; then
   cnf "${TMP}/tokenserver.cnf" "${TOKENSERVER_DB_HOST:-}" "${TOKENSERVER_DB_PORT:-3306}" "${TOKENSERVER_DB_USER:-}" "${TOKENSERVER_DB_PASSWORD:-}" > "${TMP}/msg" ||
+    fail "$(cat "${TMP}/msg")"
+  cnf "${TMP}/status.cnf" "${TOKENSERVER_DB_HOST:-}" "${TOKENSERVER_DB_PORT:-3306}" "${STATUS_USER}" "${STATUS_PASSWORD}" > "${TMP}/msg" ||
     fail "$(cat "${TMP}/msg")"
 fi
 
