@@ -1,0 +1,2 @@
+# Default CI values for helm lint
+syncDomain: https://sync.example.test

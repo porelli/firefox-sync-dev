@@ -1,0 +1,127 @@
+# Default values for firefox-sync
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Image configuration
+image:
+  repository: ghcr.io/porelli/firefox-sync
+  pullPolicy: IfNotPresent
+  # Tags for different components
+  syncstorageTag: latest
+  initTag: latest
+  adminTag: latest
+
+# Public domain for the Firefox Sync service (required)
+# Example: https://sync.example.com
+syncDomain: ""
+
+# Maximum users allowed to use this server
+# Formats: "N", "fixed:N", "initial:N", "unlimited", "initial:unlimited"
+# - N or fixed:N: set on every start, read-only in admin UI
+# - initial:N: set once on first start, then managed in admin UI
+maxUsers: "1"
+
+# Firefox Accounts configuration
+fxa:
+  # OAuth server URL for Firefox Accounts
+  oauthServerUrl: https://oauth.accounts.firefox.com/v1
+  # Email domain for Firefox Accounts
+  emailDomain: api.accounts.firefox.com
+
+# Database configuration
+database:
+  # Backend type: mariadb, mysql, or postgres
+  backend: mariadb
+
+  # Whether to deploy bundled database containers
+  bundled: true
+
+  # External database configuration (used when bundled: false)
+  external:
+    # Database host
+    host: ""
+    # Database port
+    port: 3306
+    # Tokenserver database name
+    tokenserverDatabase: tokenserver
+    # Storage database name (ignored for postgres backend)
+    storageDatabase: syncstorage
+    # Tokenserver database user
+    tokenserverUser: tokenserver
+    # Storage database user (ignored for postgres backend)
+    storageUser: syncstorage
+    # TLS certificate verification
+    tlsVerify: true
+
+  # Persistence configuration for bundled databases
+  persistence:
+    # Size of persistent volume
+    size: 8Gi
+    # Storage class (empty for default)
+    storageClass: ""
+
+# Name of existing secret containing database passwords and secrets
+# If not set, a secret will be generated with name: {{ include "firefox-sync.fullname" . }}
+existingSecret: ""
+
+# Syncstorage service configuration
+syncstorage:
+  # Number of replicas
+  replicas: 1
+
+  # Resource limits and requests
+  resources: {}
+    # limits:
+    #   cpu: 1000m
+    #   memory: 512Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
+
+  # Service configuration
+  service:
+    # Service port
+    port: 8000
+
+# Admin UI configuration (Task 3 will implement templates)
+admin:
+  enabled: false
+  # Additional admin configuration will be added in Task 3
+
+# Backup configuration (Task 4 will implement templates)
+backup:
+  enabled: false
+  # Backup schedule (cron format)
+  schedule: "0 3 * * *"
+  # Number of backups to keep
+  keep: 7
+  # Backup persistence configuration
+  persistence:
+    size: 10Gi
+    storageClass: ""
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  # Hostname for the sync service
+  host: ""
+  # TLS configuration
+  tls:
+    enabled: false
+    secretName: ""
+  # Additional annotations
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+# Admin ingress configuration
+# (used when admin.enabled: true)
+adminIngress:
+  enabled: false
+  className: ""
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+  annotations: {}

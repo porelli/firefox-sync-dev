@@ -1,0 +1,4 @@
+# PostgreSQL backend CI values
+syncDomain: https://sync.example.test
+database:
+  backend: postgres

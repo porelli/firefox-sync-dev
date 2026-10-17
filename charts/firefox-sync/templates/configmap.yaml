@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "firefox-sync.fullname" . }}-config
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "config") | nindent 4 }}
+data:
+  # Test configuration to validate template rendering
+  # This ConfigMap is used for testing and will be replaced by actual component templates in later tasks
+  test-env.yaml: |
+    env:
+      - name: MAX_USERS
+        value: {{ .Values.maxUsers | quote }}
+      - name: SYNCSTORAGE_DOMAIN
+        value: {{ .Values.syncDomain | quote }}
+      - name: FXA_OAUTH_SERVER_URL
+        value: {{ .Values.fxa.oauthServerUrl | quote }}
+      - name: FXA_EMAIL_DOMAIN
+        value: {{ .Values.fxa.emailDomain | quote }}
+      - name: DATABASE_BACKEND
+        value: {{ .Values.database.backend | quote }}

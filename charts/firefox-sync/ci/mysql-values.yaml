@@ -1,0 +1,4 @@
+# MySQL backend CI values
+syncDomain: https://sync.example.test
+database:
+  backend: mysql
