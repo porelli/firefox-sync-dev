@@ -19,6 +19,7 @@ syncDomain: ""
 # Formats: "N", "fixed:N", "initial:N", "unlimited", "initial:unlimited"
 # - N or fixed:N: set on every start, read-only in admin UI
 # - initial:N: set once on first start, then managed in admin UI
+# (a number like 5 is taken as "5")
 maxUsers: "1"
 
 # Firefox Accounts configuration
@@ -64,7 +65,11 @@ database:
 # SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD and TOKENSERVER_DB_PASSWORD +
 # STORAGE_DB_PASSWORD (mariadb, mysql) or POSTGRES_PASSWORD (postgres)
 # If not set, a secret named like the release (<release>-firefox-sync) is generated on the
-# first install and kept as it is on upgrades (and on uninstall, like the database volumes)
+# first install and kept as it is on upgrades (and on uninstall, like the database volumes).
+# REQUIRED when the chart is rendered with `helm template` or a GitOps tool that renders it
+# (Argo CD...): there the chart cannot read the Secret back from the cluster, and
+# would generate a new SYNC_MASTER_SECRET, METRICS_HASH_SECRET and database passwords on
+# every render (every Firefox signed out, the databases refusing the new passwords)
 existingSecret: ""
 
 # Syncstorage service configuration

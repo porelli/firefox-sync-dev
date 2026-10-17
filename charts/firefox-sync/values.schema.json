@@ -30,8 +30,16 @@
       "minLength": 1
     },
     "maxUsers": {
-      "type": "string",
-      "pattern": "^(fixed:|initial:)?([0-9]+|unlimited)$"
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^(fixed:|initial:)?([0-9]+|unlimited)$"
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        }
+      ]
     },
     "fxa": {
       "type": "object",
