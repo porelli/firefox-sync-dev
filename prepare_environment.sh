@@ -339,6 +339,14 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     [ "${ADMIN_UI}" = "yes" ] && FXA_MAX_ACCOUNTS=initial:${FXA_MAX_ACCOUNTS}
 fi
 
+# the security history of the accounts (FXA.md), asked last for the same reason
+FXA_ACCOUNT_EVENTS=false
+if [ "${SELF_HOST_FXA}" = "yes" ]; then
+    echo "Security history: every sign-in, password and 2-step change is kept with its IP address, for the owner and the admin UI to see (FXA.md)."
+    read -r -e -p "Record the security history of the accounts? (y/N): " FXA_ACCOUNT_EVENTS
+    case "${FXA_ACCOUNT_EVENTS}" in y|Y|yes) FXA_ACCOUNT_EVENTS=true ;; *) FXA_ACCOUNT_EVENTS=false ;; esac
+fi
+
 # SYNC_DB=mysql: the Sync databases in MySQL containers; with your own server there are none,
 # SYNC_DB then only says what it is
 [ "${SYNC_DB}" = "mysql" ] && [ "${EXTERNAL_DB}" != "yes" ] && SYNC_COMPOSE_MYSQL=yes || SYNC_COMPOSE_MYSQL=no
@@ -419,6 +427,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=${FXA_SIGNUPS}|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_MAX_ACCOUNTS=.*|FXA_MAX_ACCOUNTS=${FXA_MAX_ACCOUNTS}|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_ACCOUNT_EVENTS=.*|FXA_ACCOUNT_EVENTS=${FXA_ACCOUNT_EVENTS}|"
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB_CONTAINERS=.*|FXA_DB_CONTAINERS=0|"
         for name in FXA_MYSQL_HOST FXA_MYSQL_PORT FXA_MYSQL_USER FXA_MYSQL_POLICY_USER; do

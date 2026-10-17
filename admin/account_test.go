@@ -325,7 +325,7 @@ func TestBlockAlerts(t *testing.T) {
 }
 
 func TestSecretsStayInTheDatabase(t *testing.T) {
-	for _, view := range []string{"ffs.account_security", "ffs.emails", "ffs.sessions", "ffs.devices"} {
+	for _, view := range []string{"ffs.account_security", "ffs.emails", "ffs.sessions", "ffs.devices", "ffs.security_events"} {
 		body := ""
 		for _, stmt := range fxaPolicySQL {
 			if strings.Contains(stmt, "VIEW "+view+" AS") {
@@ -335,7 +335,9 @@ func TestSecretsStayInTheDatabase(t *testing.T) {
 		if body == "" {
 			t.Fatalf("no view %s", view)
 		}
-		for _, secret := range []string{"sharedSecret", "codeHash", "recoveryData", "phoneNumber", "publicKey", "emailCode", "tokenData", "authSalt", "verifyHash", "wrapWrapKb"} {
+		for _, secret := range []string{"sharedSecret", "codeHash", "recoveryData", "phoneNumber", "publicKey", "emailCode", "tokenData", "authSalt", "verifyHash", "wrapWrapKb",
+			// the security history: its JSON may hold the recovery phone's number
+			"additionalInfo", "ipAddrHmac", "tokenVerificationId"} {
 			if strings.Contains(body, secret) {
 				t.Errorf("%s reads %s", view, secret)
 			}

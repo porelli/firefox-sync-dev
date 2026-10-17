@@ -83,7 +83,10 @@ Environment="AUTH_GLEAN_ENABLED=false"
 Environment="CUSTOMS_SERVER_URL=none"
 Environment="RECOVERY_PHONE__ENABLED=false"
 Environment="RECOVERY_PHONE__TWILIO__CREDENTIAL_MODE="
-Environment="ACCOUNT_EVENTS_ENABLED=false"
+# the security history with IP addresses, see FXA_ACCOUNT_EVENTS in .env-example
+Environment="ACCOUNT_EVENTS_ENABLED=%FXA_ACCOUNT_EVENTS%"
+# never skip the sign-in code for a known IP address (Mozilla: 7 days), see FXA.md
+Environment="IP_PROFILING_RECENCY=0"
 Environment="LOG_LEVEL=INFO"
 Volume=firefox-sync-fxa-keys.volume:/fxa-keys
 Volume=%SCRIPT_DIR%/config/fxa:/fxa-config:ro,z

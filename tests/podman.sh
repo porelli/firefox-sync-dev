@@ -563,6 +563,10 @@ if [ -z "${SKIP_FXA:-}" ]; then
   # max accounts: not asked here (the last question), unlimited and managed in the admin UI
   check "$(cat "${QUADLET_DIR}/firefox-sync-fxa-policy.container" "${QUADLET_DIR}/firefox-sync-admin.container" | grep -cxF 'Environment="FXA_MAX_ACCOUNTS=initial:unlimited"')" 2 \
     "FXA_MAX_ACCOUNTS=initial:unlimited in the sign-up policy and admin UI quadlets"
+  # the security history: not asked here either (EOF), off in the auth server and the admin UI;
+  # never the sign-in code skipped for a known IP address
+  check "$(cat "${QUADLET_DIR}/firefox-sync-fxa-auth.container" "${QUADLET_DIR}/firefox-sync-admin.container" | grep -cxE 'Environment="(ACCOUNT_EVENTS_ENABLED|FXA_ACCOUNT_EVENTS)=false"|Environment="IP_PROFILING_RECENCY=0"')" 3 \
+    "no security history by default in the accounts and admin UI quadlets"
   check "$(grep -lE '%[A-Z][A-Z0-9_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders"
   check "$(grep -c 'SMTP_PASS=p%%ss|w&rd"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "values escaped for systemd"
   # the admin UI signs in with these accounts: its OAuth client always asks the sign-in code

@@ -121,6 +121,9 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 		_, silent := a.metrics()
 		gauge("ffs_statsd_silent", "1 when the Sync server is up and Sync data changed more than 10 minutes after its last metrics", flag(silent))
 		backupMetrics(&b, a.health.Backups(), time.Now())
+		if a.accountEvents {
+			securityMetrics(&b, a.health.SecurityCounts())
+		}
 	}
 	if a.health != nil {
 		thresholdMetrics(&b, a.health)

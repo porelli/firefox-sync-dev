@@ -100,6 +100,15 @@ var fxaPolicySQL = []string{
 	// every address of an account, the primary one too (not their codes)
 	`CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.emails AS
 		SELECT uid, email, isVerified, isPrimary, createdAt FROM fxa.emails`,
+	// the security history of the account settings (Recent activity), written by the auth
+	// server with ACCOUNT_EVENTS_ENABLED (FXA_ACCOUNT_EVENTS) only: the name of the event,
+	// when, from which IP address, and verified (the sign-in of the event was confirmed,
+	// then or later). Not the HMAC of the address, the token or additionalInfo. One collation
+	// for the name, whatever the client's (the name of an unknown id: #id)
+	`CREATE OR REPLACE SQL SECURITY DEFINER VIEW ffs.security_events AS
+		SELECT e.uid, CONVERT(COALESCE(n.name, CONCAT('#', e.nameId)) USING utf8mb4) COLLATE utf8mb4_bin AS name,
+			e.createdAt, e.verified, e.ipAddr
+		FROM fxa.securityEvents e LEFT JOIN fxa.securityEventNames n ON n.id = e.nameId`,
 	// signing out reads the token ids too: MySQL needs SELECT on the columns of a
 	// DELETE ... WHERE, so these run with the privileges of their definer
 	"DROP PROCEDURE IF EXISTS ffs.sign_out_session",
@@ -372,6 +381,7 @@ var fxaAdminGrants = []string{
 	"GRANT SELECT ON ffs.devices TO 'ffs_admin'@'%'",
 	"GRANT SELECT ON ffs.account_security TO 'ffs_admin'@'%'",
 	"GRANT SELECT ON ffs.emails TO 'ffs_admin'@'%'",
+	"GRANT SELECT ON ffs.security_events TO 'ffs_admin'@'%'",
 	"GRANT SELECT ON ffs.schema_levels TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON FUNCTION ffs.signup_allowed TO 'ffs_admin'@'%'",
 	"GRANT EXECUTE ON FUNCTION ffs.signup_refusal TO 'ffs_admin'@'%'",

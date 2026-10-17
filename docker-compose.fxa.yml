@@ -210,7 +210,12 @@ services:
       CUSTOMS_SERVER_URL: none
       RECOVERY_PHONE__ENABLED: "false"
       RECOVERY_PHONE__TWILIO__CREDENTIAL_MODE: ""
-      ACCOUNT_EVENTS_ENABLED: "false"
+      # the security history (fxa.securityEvents: sign-ins, password and 2-step changes, with
+      # IP addresses), shown in the account settings and the admin UI: FXA_ACCOUNT_EVENTS
+      ACCOUNT_EVENTS_ENABLED: ${FXA_ACCOUNT_EVENTS:-false}
+      # with it Mozilla skips the sign-in code for 7 days after a confirmed sign-in from the
+      # same IP address: never here, a password alone does not sign in (FXA.md)
+      IP_PROFILING_RECENCY: 0
       LOG_LEVEL: ${FXA_LOG_LEVEL:-INFO}
     volumes:
       - fxa-keys:/fxa-keys
@@ -352,6 +357,8 @@ services:
       FXA_AUTH_UPSTREAM: http://fxa-auth:9000
       # health check of the optional pairing server
       FXA_PAIRING_URL: ${FXA_PAIRING_URL:-}
+      # the security history of the accounts, as fxa-auth records it
+      FXA_ACCOUNT_EVENTS: ${FXA_ACCOUNT_EVENTS:-false}
       # the accounts pages, allowed to read the refusals (CORS)
       FXA_CONTENT_URL: ${FXA_CONTENT_URL}
       # the public checks (ADMIN_PUBLIC_CHECK), the sign-up gate through FXA_AUTH_URL

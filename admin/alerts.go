@@ -27,8 +27,9 @@ import (
 // blocked: an account of the accounts service locked out by the rate limits
 // sign-up burst: more new accounts in an hour than ADMIN_SIGNUP_BURST
 // backup: a backup failed or is too old, attention: the thresholds of the overview
+// security: a password or a way to sign in of an account changed (securityevents.go)
 var alertKinds = map[string]bool{"sign-up refused": true, "health": true, "update": true, "sign-in": true, "admin": true, "blocked": true, "sign-up burst": true,
-	"backup": true, "attention": true}
+	"backup": true, "attention": true, "security": true}
 
 const (
 	maxAlerts = 200

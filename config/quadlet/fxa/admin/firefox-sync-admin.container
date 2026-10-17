@@ -83,6 +83,8 @@ Environment="FXA_CONTENT_URL=%FXA_CONTENT_URL%"
 # the public checks, the sign-up gate through FXA_AUTH_URL
 Environment="FXA_AUTH_URL=%FXA_AUTH_URL%"
 Environment="FXA_PROFILE_URL=%FXA_PROFILE_URL%"
+# the security history of the accounts, as firefox-sync-fxa-auth records it
+Environment="FXA_ACCOUNT_EVENTS=%FXA_ACCOUNT_EVENTS%"
 PublishPort=%ADMIN_EXPORT_PORT%:8080
 # the sign-up gate: POST /v1/account/create of FXA_AUTH_URL (see config/nginx/fxa-example.conf)
 PublishPort=%ADMIN_GATE_EXPORT_PORT%:8081

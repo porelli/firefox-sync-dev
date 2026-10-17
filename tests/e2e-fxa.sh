@@ -17,6 +17,8 @@
 #   ONLY             with RERUN: flow,admin,browser (default: all three)
 #   PYTEST_ARGS      with RERUN: passed to pytest, e.g. "-k sign_out"
 #   SKIP_BROWSER     set to 1 to skip the real Firefox test
+#   FXA_ACCOUNT_EVENTS true (default here, off for users) records the security history of the
+#                    accounts: every test then also runs with it on, test_fxa_admin.py checks it
 #   SKIP_PULL        set to 1 to use the local images (e.g. an init image built from this tree)
 #   FXA_DB           mysql (default, MySQL 8.4) or mariadb (MariaDB 11.8, docker-compose.fxa-mariadb.yml)
 #                    for the accounts database
@@ -71,6 +73,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^ADMIN_OIDC_REDIRECT_URL=.*|ADMIN_OIDC_REDIRECT_URL=https://admin.fxa.test/auth/callback|" \
     -e "s|^ADMIN_ALLOWED_USERS=.*|ADMIN_ALLOWED_USERS=@example.com|" \
     -e "s|^ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=.*|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true|" \
+    -e "s|^FXA_ACCOUNT_EVENTS=.*|FXA_ACCOUNT_EVENTS=${FXA_ACCOUNT_EVENTS:-true}|" \
     -e "/^COMPOSE_FILE=/d" > "${ENV_FILE}"
 # by default the accounts images of the registry under test, for this machine
 case "$(uname -m)" in aarch64|arm64) default_arch=arm64 ;; *) default_arch=amd64 ;; esac
@@ -175,13 +178,18 @@ check "$(grep -c '^COMPOSE_PROFILES=admin$' "${SETUP}/.env")" 1 "admin UI enable
 check "$(grep -c '^MAX_USERS=initial:2$' "${SETUP}/.env")" 1 "max users managed in the admin UI (MAX_USERS=initial:2)"
 check "$(grep -c '^FXA_SIGNUPS=allowlist$' "${SETUP}/.env") $(grep -c '^FXA_SIGNUP_ALLOWLIST=alice@example.org,@example.net$' "${SETUP}/.env")" "1 1" "sign-up allowlist"
 check "$(grep -c '^FXA_MAX_ACCOUNTS=initial:5$' "${SETUP}/.env")" 1 "max accounts managed in the admin UI (FXA_MAX_ACCOUNTS=initial:5)"
+# the security history, the last question: not answered, off
+check "$(grep -c '^FXA_ACCOUNT_EVENTS=false$' "${SETUP}/.env") $(grep -c 'kept with its IP address' "${WORK}/setup.log")" "1 1" "no security history by default, the question says why"
 check "$(cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} docker compose config 2> /dev/null | sed -n '/^  fxa-policy:/,/^  [a-z]/p' | grep -cE '^ +FXA_MAX_ACCOUNTS: "?initial:5"?$')" 1 \
   "fxa-policy gets FXA_MAX_ACCOUNTS"
 # not a number: refused before anything is written
 rm -f "${SETUP}/.env"
 printf '%s\n' "${answers[@]}" "" "" "" lots | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-bad-max.log" 2>&1
 check "$? $(grep -c "max accounts must be a number or unlimited, got 'lots'" "${WORK}/setup-bad-max.log")" "1 1" "prepare_environment.sh refuses max accounts lots"
-printf '%s\n' "${answers[@]}" "" "" "" 5 | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
+printf '%s\n' "${answers[@]}" "" "" "" 5 y | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
+check "$(grep -c '^FXA_ACCOUNT_EVENTS=true$' "${SETUP}/.env")" 1 "security history turned on (y)"
+check "$(cd "${SETUP}" && env -u FXA_ACCOUNT_EVENTS docker compose config 2> /dev/null | sed -n '/^  fxa-auth:/,/^  [a-z]/p' | grep -cE '^ +(ACCOUNT_EVENTS_ENABLED: "?true"?|IP_PROFILING_RECENCY: "?0"?)$') $(cd "${SETUP}" && env -u FXA_ACCOUNT_EVENTS docker compose config 2> /dev/null | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +FXA_ACCOUNT_EVENTS: "?true"?$')" \
+  "2 1" "the accounts record the security history, never skip the sign-in code for a known IP address, the admin UI shows it"
 check "$(grep -c 'server_name accounts.example.org;' "${SETUP}/config/nginx/fxa.conf")" 1 "nginx example for the accounts"
 check "$(grep -c 'proxy_pass http://127.0.0.1:8091;' "${SETUP}/config/nginx/fxa.conf")" 1 "nginx sends sign-ups to the gate"
 env_value() { grep "^$1=" "${SETUP}/.env" | cut -d= -f2-; }
@@ -412,18 +420,22 @@ dc run --rm -T --no-deps --user root \
 check "$?" 0 "self-hosted FxA flow tests"
 fi
 
-if runs admin; then
-echo "== sign-up policy, admin UI, rate limits"
+# test_fxa_admin.py, with the arguments of pytest
+admin_tests() {
 dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
   -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
   -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_DIRECT_URL=http://fxa-auth:9000 -e ADMIN_FXA_CLIENT_ID \
-  -e FXA_DB_SERVER="${FXA_DB_SERVER}" -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
+  -e FXA_DB_SERVER="${FXA_DB_SERVER}" -e FXA_ACCOUNT_EVENTS -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
   -e FXA_TEST_DB_URL="mysql://${FXA_MYSQL_USER}:${FXA_MYSQL_PASSWORD}@${FXA_MYSQL_HOST}:${FXA_MYSQL_PORT}/fxa" \
   -e ADMIN_DB_URL="mysql://${ADMIN_DB_USER}:${ADMIN_DB_PASSWORD}@${MARIADB_TOKENSERVER_SERVER}:${MARIADB_TOKENSERVER_SERVER_PORT}/${ADMIN_DB_NAME}" \
   --entrypoint /bin/sh syncstorage \
-  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
+  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py $1 > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
+}
+if runs admin; then
+echo "== sign-up policy, admin UI, rate limits"
+admin_tests "${PYTEST_ARGS}"
 check "$?" 0 "sign-up policy and admin UI tests"
 fi
 
@@ -476,6 +488,13 @@ as_ffs_admin "CALL ffs.prune(9000000000000000, 9000000000000000)" > /dev/null
 check "$(recent_events) $(fxa_sql "SELECT CAST(value AS SIGNED) <= UNIX_TIMESTAMP() * 1000 FROM fxa.dbMetadata WHERE name = 'prune-last-ran'")" "${events_before} 1" "ffs.prune keeps the security events of the last day and records the database's time"
 # how accounts sign in, through the views: never the secrets behind them
 check "$(as_ffs_admin 'SELECT COUNT(*) > 0 FROM ffs.account_security') $(as_ffs_admin 'SELECT COUNT(*) > 0 FROM ffs.emails')" "1 1" "ffs_admin reads the sign-in security and the emails through the views"
+# the security history: through the view, not the table (its JSON can hold a phone number)
+if [ "${FXA_ACCOUNT_EVENTS}" = true ]; then
+  check "$(as_ffs_admin "SELECT COUNT(*) > 0 FROM ffs.security_events WHERE name = 'account.login' AND ipAddr <> ''")" 1 "ffs_admin reads the security history through the view"
+else
+  check "$(fxa_sql "SELECT COUNT(*) FROM fxa.securityEvents")" 0 "no security history with FXA_ACCOUNT_EVENTS=false"
+fi
+check "$(as_ffs_admin 'SELECT additionalInfo FROM fxa.securityEvents LIMIT 1' | grep -c 'command denied')" 1 "ffs_admin cannot read fxa.securityEvents itself"
 for secret in 'sharedSecret FROM fxa.totp' 'codeHash FROM fxa.recoveryCodes' 'recoveryData FROM fxa.recoveryKeys' 'phoneNumber FROM fxa.recoveryPhones' 'emailCode FROM fxa.accounts'; do
   check "$(as_ffs_admin "SELECT ${secret} LIMIT 1" | grep -cE 'command denied|denied for column')" 1 "ffs_admin cannot read ${secret}"
 done
@@ -513,6 +532,19 @@ fxa_sql "UPDATE ffs.settings SET value = '0' WHERE name = 'max_accounts'" > /dev
 check "$(fxa_sql "SELECT ffs.signup_refusal('nobody@example.com'), ffs.signup_allowed('nobody@example.com')" | tr '\t' ' ')" "full 0" "max accounts 0: ffs.signup_refusal says full"
 fxa_sql "UPDATE ffs.settings SET value = 'unlimited' WHERE name = 'max_accounts'" > /dev/null
 check "$(fxa_sql "SELECT COALESCE(ffs.signup_refusal('nobody@example.com'), 'allowed')")" allowed "max accounts unlimited: allowed (@example.com on the list)"
+if [ "${FXA_ACCOUNT_EVENTS}" = true ]; then
+  echo "== the security history turned off again (the default): nothing more recorded"
+  set_env FXA_ACCOUNT_EVENTS false
+  dc up -d --no-deps fxa-auth ffs-admin > "${WORK}/events-off.log" 2>&1
+  for _ in $(seq 1 60); do [ "$(state fxa-auth Health.Status)" = healthy ] && [ "$(state ffs-admin Health.Status)" = healthy ] && break; sleep 5; done
+  check "$(state fxa-auth Health.Status) $(state ffs-admin Health.Status)" "healthy healthy" "accounts service and admin UI restarted with FXA_ACCOUNT_EVENTS=false"
+  off_since=$(fxa_sql "SELECT UNIX_TIMESTAMP() * 1000")
+  # a sign-up and a sign-in, and the account page says how to turn it on
+  admin_tests "-k test_security_history_off"
+  check "$?" 0 "the account page without the security history"
+  check "$(fxa_sql "SELECT COUNT(*) FROM fxa.securityEvents WHERE createdAt >= ${off_since%.*}") $(fxa_sql "SELECT COUNT(*) > 0 FROM fxa.securityEvents")" "0 1" \
+    "no security event recorded with FXA_ACCOUNT_EVENTS=false, those of before kept"
+fi
 fi
 
 if [ -z "${RERUN:-}" ] && [ "${FXA_DB_CONTAINERS:-1}" = 1 ] && [ "${DB_CONTAINERS:-1}" = 1 ]; then

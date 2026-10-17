@@ -61,13 +61,27 @@ Anybody who can reach your accounts pages can create an account, and with it use
 
 `FXA_MAX_ACCOUNTS` caps how many accounts can be created at all, whoever signs up: a number (`0`: nobody new) or `unlimited` (the default, `initial:unlimited`). Like `MAX_USERS`, `N` or `fixed:N` is set on every start, `initial:N` once and then in the admin UI; `prepare_environment.sh` asks for it last. Every row of `fxa.accounts` counts (confirmed or not, disabled too); when full, the sign-up page says the server is full and the database refuses the account itself, see [ADMIN.md](ADMIN.md#max-accounts-self-hosted-accounts).
 
+## Security history
+
+Off by default. With `FXA_ACCOUNT_EVENTS=true` in `.env` (`prepare_environment.sh` asks, default no; then `docker compose up -d`) the accounts service keeps a security history of every account in `fxa.securityEvents`: each sign-in and wrong password, password change and reset, two-step authentication turned on or off, recovery key created or removed, backup codes, secondary emails, passkeys and sign-outs, with its time, **the IP address it came from** and the browser's user agent. The owner sees it in Recent activity of the account settings, the [admin UI](ADMIN.md#security-history) on the account page, with an event and an alert when the password, the primary email or a way to sign in or to recover the account changes ([the list](ADMIN.md#security-history)).
+
+What the setting changes, read in Mozilla's code (fxa-mono v1.347.x, the same in every v1.347 release): it is `ACCOUNT_EVENTS_ENABLED` of the auth server (on in Mozilla's defaults). Off, the auth server replaces its `AccountEventsManager` with one that does nothing (`bin/key_server.js`): no security event is written, and Recent activity stays empty. On, every event is written to the accounts database (the other part of it, email events in Google's Firestore, stays off with `FIRESTORE_ENABLED=false`). The auth server also reads the history at sign-in: after a confirmed sign-in from an IP address, Mozilla lets later sign-ins from the same address skip the code sent by email for 7 days (`IP_PROFILING_RECENCY`), the sign-ins of Firefox for Sync too, so a password alone would be enough from a shared network. The stack sets that window to 0 (`IP_PROFILING_RECENCY=0` in `docker-compose.fxa.yml` and the Quadlets): the sign-in code is asked exactly as with the history off. The other skips do not use the setting: the one for a known browser (`SIGNIN_CONFIRMATION_DEVICE_FINGERPRINTING_ENABLED`) is off in Mozilla's defaults, the one for accounts created less than 48 hours ago applies either way.
+
+Privacy, plainly:
+
+- The IP address is stored as is, next to a keyed hash of it (`IP_HMAC_KEY`, which therefore hides nothing). IP addresses are personal data in many countries: say so to the people who use your server.
+- Mozilla never prunes the history: its procedures delete it only with the account. The admin UI's daily pruning removes events older than `ADMIN_RETENTION_DAYS` (30), see [ADMIN.md](ADMIN.md#maintenance-and-retention). Without the admin UI nothing does: run `DELETE FROM fxa.securityEvents WHERE createdAt < (UNIX_TIMESTAMP() - 30 * 86400) * 1000;` regularly yourself.
+- Turning it off again stops new entries; those recorded stay until they are pruned or the account is deleted.
+- The IP addresses are in other places too: the events of kind `security` of the admin UI's event log (`ffs_events` in the admin UI's own database `ffs_admin`, `ADMIN_DB_NAME`, not the accounts' user of that name; `ADMIN_RETENTION_DAYS`) and its alert emails (in the admins' mailboxes), and the accounts backups (`COMPOSE_PROFILES=backup`: `fxa.securityEvents` is in every dump, the newest `BACKUP_KEEP` runs). Deleting the rows of `fxa.securityEvents` leaves those; `DELETE FROM ffs_events WHERE kind = 'security';` in that database, as `ADMIN_DB_USER` (`ffs_admin_ui`, [how](ADMIN.md#metrics-and-the-event-log)), removes the first.
+- The admin UI reads the name, time, IP address and whether the sign-in was confirmed, not the rest (the JSON of an event can hold the recovery phone's number).
+
 ## What works and what doesn't
 
 - Works and is tested: sign-up, email confirmation, sign-in, OAuth for Sync, syncing, a second device. Tested with Firefox 157 desktop: two profiles signed up and in through the accounts pages and synced bookmarks between them.
 - Send tab to device uses Mozilla's public push service, as Firefox does with Mozilla accounts.
 - Pairing a phone with a QR code uses Mozilla's channel server, unless you run your own: uncomment `COMPOSE_PROFILES=pairing` and `FXA_PAIRING_URL=wss://pairing.example.com` in `.env` and proxy that host name (websocket) to `FXA_PAIRING_EXPORT_PORT`, see the example in `config/nginx/fxa-example.conf`.
 - Sign-in attempts are rate limited by the accounts service itself (Redis, upstream's `rate-limit-rules.txt`), e.g. 5 failed sign-ins per IP address and email in 15 minutes. The old separate customs server does not exist anymore. The client IP address comes from `X-Forwarded-For`: with another proxy in front of yours, raise `FXA_CLIENT_ADDRESS_DEPTH`, see [ADMIN.md](ADMIN.md#rate-limits-and-the-client-ip-address).
-- Not available: payments and subscriptions, recovery phone (SMS), sign in with Google or Apple, deferred account clean-up tasks and account event notifications (they need Google Cloud).
+- Not available: payments and subscriptions, recovery phone (SMS), sign in with Google or Apple, deferred account clean-up tasks and account event notifications to other services (they need Google Cloud; the [security history](#security-history) does not).
 
 ## Upgrades
 

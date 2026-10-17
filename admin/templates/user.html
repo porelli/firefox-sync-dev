@@ -160,6 +160,25 @@
   </div>
   <p class="hint">Turning off two-step authentication or removing the recovery key tells the owner by email: check who is asking first. Secrets are never read here.</p>
 </section>
+
+<section class="card" id="history-card" aria-labelledby="history-title">
+  <h2 id="history-title">Security history</h2>
+  {{if not .AccountEvents}}
+  <div class="box" id="events-off">
+    <p>The accounts service does not record security events (sign-ins, password changes, two-step authentication, recovery keys), so there is no history to show{{if .SecurityEvents}} newer than the entries below{{end}}.</p>
+    <p>To record them, set <code>FXA_ACCOUNT_EVENTS=true</code> in <code>.env</code>, then {{if .Quadlets}}<code>ACCOUNT_EVENTS_ENABLED=true</code> in <code>firefox-sync-fxa-auth.container</code> and <code>FXA_ACCOUNT_EVENTS=true</code> in <code>firefox-sync-admin.container</code> (<code>~/.config/containers/systemd</code>), <code>systemctl --user daemon-reload</code> and restart both{{else}}<code>docker compose up -d</code>{{end}}. They keep the IP address of every sign-in, see FXA.md.</p>
+  </div>
+  {{end}}
+  {{if .SecurityEvents}}
+  <div class="scroll"><table id="security-events" aria-label="Security history">
+    <thead><tr><th>Event</th><th>When</th><th>IP address</th><th>Confirmed</th></tr></thead>
+    <tbody>{{range .SecurityEvents}}<tr><td>{{.Label}}</td><td><time datetime="{{stamp .At}}">{{when .At}}</time></td><td>{{.IP}}</td><td>{{if .Verified}}yes{{else}}<span class="t-warn"><span class="badge">not confirmed</span></span>{{end}}</td></tr>{{end}}</tbody>
+  </table></div>
+  <p class="hint">The newest {{.SecurityHistoryRows}}, as the owner sees them in Recent activity of the account settings. Not confirmed: the sign-in of the event never entered its code (or second step). Kept for <code>ADMIN_RETENTION_DAYS</code>.</p>
+  {{else if .AccountEvents}}
+  <p class="hint" id="no-security-events">Nothing recorded yet.</p>
+  {{end}}
+</section>
 {{end}}{{end}}
 
 {{if or .Rows .Account}}

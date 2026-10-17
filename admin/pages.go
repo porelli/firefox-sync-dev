@@ -80,6 +80,12 @@ func (a *App) userPage(w http.ResponseWriter, r *http.Request, s *session) {
 				errs = append(errs, tooManyBlocks())
 			}
 			data["Blocks"] = blocks
+			// recorded only with FXA_ACCOUNT_EVENTS, those of before (or kept since) too
+			data["AccountEvents"] = a.accountEvents
+			if data["SecurityEvents"], err = a.fxa.SecurityEvents(ctx, uid, securityHistoryRows); err != nil {
+				errs = append(errs, "Security history: "+err.Error())
+			}
+			data["SecurityHistoryRows"], data["Quadlets"] = securityHistoryRows, a.quadlets
 		}
 	}
 	if data["Account"] == nil && user == nil && len(errs) == 0 {
@@ -183,7 +189,7 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 // adminSignIn: how the event of an admin's sign-in starts, routine in the log
 const adminSignIn = "signed in"
 
-var eventKinds = []string{"admin", "sign-in", "sign-up refused", "health", "update", "blocked", "maintenance", "sign-up burst", "backup", "attention", "sign-up", "new device"}
+var eventKinds = []string{"admin", "sign-in", "sign-up refused", "health", "update", "blocked", "maintenance", "sign-up burst", "backup", "attention", "security", "sign-up", "new device"}
 
 const eventsPerPage = 100
 

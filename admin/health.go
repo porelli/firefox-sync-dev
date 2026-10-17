@@ -111,6 +111,20 @@ type Health struct {
 	growth         growthConfig
 	dbGrowth       []DBGrowth
 	growthMeasured bool
+	// the security history of the accounts (securityevents.go): where the next read starts
+	// (the overlap included), the events it can read again, and those seen since the start
+	// by name
+	lastSecurity   time.Time
+	securitySeen   map[string]time.Time
+	securityCounts map[string]int64
+	// where the admin UI left off before this start (ffs_meta): events older than this are
+	// not alerted (zero: the start); whether it was read; the alerted events it can read
+	// again kept there, and those to keep or to forget there at the next save
+	securityFloor   time.Time
+	securityResumed bool
+	securityKept    map[string]bool
+	securityAdd     map[string]time.Time
+	securityForget  []string
 }
 
 // GitHub's API, for the release check (the tests use their own)
@@ -236,6 +250,7 @@ func (h *Health) run(ctx context.Context) {
 		h.watchAccounts(ctx)
 		h.watchSignupBurst(ctx, time.Now())
 		h.watchBlocks(ctx)
+		h.watchSecurityEvents(ctx)
 		h.watchSchema(ctx)
 		h.watchBackups(ctx, time.Now())
 		h.watchThresholds(ctx)

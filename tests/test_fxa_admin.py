@@ -835,6 +835,130 @@ def test_unconfirmed_sign_in_and_last_used(admin):
     assert used_after > used and used_after > signed_after, (signed_after, used, used_after)
 
 
+EVENTS = os.environ.get("FXA_ACCOUNT_EVENTS", "") == "true"
+
+
+def new_code(address, seen):
+    """The sign-in code of the first email to address not in seen"""
+    from test_fxa_flow import MAILPIT
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        for m in mails(address):
+            if m["ID"] not in seen:
+                headers = requests.get(f"{MAILPIT}/api/v1/message/{m['ID']}/headers", timeout=10).json()
+                if headers.get("X-Signin-Verify-Code"):
+                    return headers["X-Signin-Verify-Code"][0]
+        time.sleep(1)
+    raise AssertionError(f"no new sign-in code for {address}")
+
+
+def security_history(admin, uid):
+    """The security history of the account page: (event, when, IP address, confirmed)"""
+    page = admin.get(f"/users/{uid}")
+    if '<table id="security-events"' not in page:
+        return []
+    table = page.split('<table id="security-events"')[1].split("</table>")[0]
+    return [tuple(html.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in re.findall(r"<td>(.*?)</td>", row, re.S))
+            for row in re.findall(r"<tr>(.*?)</tr>", table, re.S) if "<td>" in row]
+
+
+@pytest.mark.skipif(not EVENTS, reason="FXA_ACCOUNT_EVENTS is not true: no security history")
+def test_security_history(admin, fxa_db):
+    from fxa.crypto import derive_key, quick_stretch_password
+    client, session, address, password = member()
+    uid = session.uid
+    # older than the 48 hours in which Mozilla skips the sign-in code of a new account
+    sql(fxa_db, "UPDATE fxa.accounts SET createdAt = createdAt - 3 * 86400000 WHERE normalizedEmail = :e", e=address)
+
+    def confirmed_sign_in(pw):
+        seen = {m["ID"] for m in mails(address)}
+        # a code to type, as Firefox asks (not the link of the default)
+        signed = client.login(address, pw, keys=True, verification_method="email-otp")
+        assert not signed.verified, "no sign-in code asked"
+        res = requests.post(f"{AUTH}/v1/session/verify_code", json={"code": new_code(address, seen)},
+                            auth=HawkTokenAuth(signed.token, "sessionToken"), timeout=30)
+        assert res.status_code == 200, res.text
+        return signed
+
+    confirmed_sign_in(password)
+    # a confirmed sign-in from this address: Mozilla would let the next ones skip the code
+    # for 7 days, the stack never (IP_PROFILING_RECENCY=0)
+    second = client.login(address, password, keys=True, verification_method="email-otp")
+    assert not second.verified, "the sign-in code skipped for a known IP address"
+    # the password changed in the account settings (a new wrapped key: this account has no data)
+    auth_pw = lambda pw: derive_key(quick_stretch_password(address, pw), "authPW").hex()
+    new_password = uuid.uuid4().hex
+    res = requests.post(f"{AUTH}/v1/mfa/password/change", headers=mfa(session, address, "password"), timeout=30,
+                        json={"email": address, "oldAuthPW": auth_pw(password), "authPW": auth_pw(new_password), "wrapKb": os.urandom(32).hex()})
+    assert res.status_code == 200, res.text
+    again = confirmed_sign_in(new_password)
+    res = requests.post(f"{AUTH}/v1/recoveryKey", json={"recoveryKeyId": uuid.uuid4().hex, "recoveryData": "eyJhbGciOiJkaXIifQ..ffs.test.data"},
+                        headers=bearer(again), timeout=30)
+    assert res.status_code == 200, res.text
+    # two-step authentication: on (with its backup codes), the authenticator app replaced,
+    # new backup codes, off; all by the owner
+    enable_totp(again, address)
+    jwt = mfa(again, address, "2fa")
+    res = requests.post(f"{AUTH}/v1/mfa/totp/replace/start", json={}, headers=jwt, timeout=30)
+    assert res.status_code == 200, res.text
+    res = requests.post(f"{AUTH}/v1/mfa/totp/replace/confirm", json={"code": totp_code(res.json()["secret"])}, headers=jwt, timeout=30)
+    assert res.status_code == 200, res.text
+    res = requests.put(f"{AUTH}/v1/mfa/recoveryCodes", json={"recoveryCodes": [uuid.uuid4().hex[:10] for _ in range(8)]}, headers=jwt, timeout=30)
+    assert res.status_code == 200, res.text
+    res = requests.post(f"{AUTH}/v1/mfa/totp/destroy", json={}, headers=jwt, timeout=30)
+    assert res.status_code == 200, res.text
+    res = requests.delete(f"{AUTH}/v1/recoveryKey", headers=bearer(again), timeout=30)
+    assert res.status_code == 200, res.text
+    # the password forgotten: reset with the code of the email
+    res = use_reset_code(*reset_code(address))
+    assert res.status_code == 200, res.text
+    res = requests.post(f"{AUTH}/v1/account/reset", json={"authPW": auth_pw(uuid.uuid4().hex)},
+                        auth=HawkTokenAuth(res.json()["accountResetToken"], "accountResetToken"), timeout=30)
+    assert res.status_code == 200, res.text
+
+    history = security_history(admin, uid)
+    events = [row[0] for row in history]
+    changes = ["password changed", "recovery key created", "two-step authentication turned on", "authenticator app replaced",
+               "backup codes created", "two-step authentication turned off", "recovery key removed", "password reset (forgotten password)"]
+    for event in ["signed in", "new password saved", "backup codes set (turning on two-step authentication)"] + changes:
+        assert event in events, (event, history)
+    logins = [row for row in history if row[0] == "signed in"]
+    ip = logins[0][2]
+    assert re.fullmatch(r"[0-9a-f.:]+", ip) and all(row[2] == ip for row in logins), history
+    # the second sign-in never entered its code
+    assert [row[3] for row in logins].count("not confirmed") >= 1 and "yes" in [row[3] for row in logins], history
+    assert "account.password_changed" not in admin.get(f"/users/{uid}"), "Mozilla's name instead of the label"
+    # the changes: events of kind security, alerts, Prometheus
+    want = [f"{address} (uid {uid[:8]}): {change}, from {ip}" for change in changes]
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        logged = [detail for _, detail in admin.events(kind="security", q=address)]
+        alerts = alert_text()
+        if all(w in logged for w in want) and all(f"security: {w}" in alerts for w in want):
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError(f"security events {logged}, alerts {alert_text()[:3000]}")
+    # each once; not the sign-ins, nor what comes with a change already alerted (a password
+    # change records a "new password saved" too, turning on 2-step its backup codes)
+    assert sorted(logged) == sorted(want), logged
+    assert alerts.count(f"security: {address} (uid {uid[:8]}): password changed") == 1, alerts[:3000]
+    for quiet in ("new password saved", "backup codes set", "signed in"):
+        assert f"{address} (uid {uid[:8]}): {quiet}" not in alerts, (quiet, alerts[:3000])
+    res = requests.get(f"{ADMIN}/metrics", headers={"Authorization": "Bearer ffs-test-metrics-token"}, timeout=30)
+    for name in ("account.login", "account.password_changed", "account.password_reset_success", "account.recovery_key_added",
+                 "account.two_factor_replace_success", "account.reset"):
+        assert re.search(r'^ffs_security_events_total\{event="' + re.escape(name) + r'"\} [1-9]', res.text, re.M), (name, res.text[-2000:])
+
+
+@pytest.mark.skipif(EVENTS, reason="FXA_ACCOUNT_EVENTS is true")
+def test_security_history_off(admin):
+    client, session, address, password = member()
+    signed_in(client, address, password)
+    page = admin.get(f"/users/{session.uid}")
+    assert 'id="events-off"' in page and "<code>FXA_ACCOUNT_EVENTS=true</code>" in page and not security_history(admin, session.uid), page[-4000:]
+
+
 def alert_text():
     from test_fxa_flow import MAILPIT
     found = mails("admin@fxa.test")

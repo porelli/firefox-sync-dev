@@ -127,6 +127,8 @@ type App struct {
 	// ADMIN_PURGE=1, ADMIN_DELETE_UNCONFIRMED_DAYS (0: off), ADMIN_SIGNUP_BURST (0: off)
 	autoPurge                    bool
 	unconfirmedDays, signupBurst int
+	// FXA_ACCOUNT_EVENTS: the accounts service records the security history (securityevents.go)
+	accountEvents bool
 	// second passes on the storage of deleted accounts (lifecycle.go)
 	passes passes
 
@@ -156,6 +158,7 @@ func serve(ctx context.Context) error {
 		}
 	}
 	autoPurge := env("ADMIN_PURGE", "") == "1"
+	eventsSetting, eventsSet := os.LookupEnv("FXA_ACCOUNT_EVENTS")
 	adminZone = loadZone()
 	syncDB, err := openSyncDB()
 	if err != nil {
@@ -201,7 +204,8 @@ func serve(ctx context.Context) error {
 		backupTime:          env("BACKUP_TIME", "03:00"), backupKeep: envInt("BACKUP_KEEP", 7), quadlets: env("ADMIN_DEPLOYMENT", "") == "quadlets",
 		gateProbe: randomToken(), syncDomain: strings.TrimSuffix(env("SYNCSTORAGE_DOMAIN", ""), "/"),
 		emailDomain: strings.ToLower(env("FXA_EMAIL_DOMAIN", "")), pairingURL: env("FXA_PAIRING_URL", ""),
-		autoPurge: autoPurge, unconfirmedDays: unconfirmedDays, signupBurst: signupBurst}
+		autoPurge: autoPurge, unconfirmedDays: unconfirmedDays, signupBurst: signupBurst,
+		accountEvents: fxaDB != nil && accountEventsOn(eventsSetting, eventsSet)}
 	app.alerter = newAlerter()
 	fallbackSender := ""
 	if to := env("ALERT_EMAIL", ""); to != "" {
