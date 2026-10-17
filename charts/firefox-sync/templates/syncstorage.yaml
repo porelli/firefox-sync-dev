@@ -45,39 +45,32 @@ spec:
         {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "syncstorage") | nindent 8 }}
     spec:
       initContainers:
-        # the databases accept the stack's users (up to 5 minutes; a refused password
-        # stops here at once)
+        # the database servers answer (up to 5 minutes), without credentials: no password
+        # leaves the pod here; a refused password stops the migrate step after it
         - name: wait-db
           image: {{ include "firefox-sync.dbImage" . }}
           imagePullPolicy: IfNotPresent
-          env:
-            {{- include "firefox-sync.dbPasswordEnv" . | nindent 12 }}
           command: [/bin/sh, -c]
           args:
             - |
               deadline=$(( $(date +%s) + 300 ))
               wait_db() {
-                until out=$(
-                  {{- if eq $backend "postgres" }}
-                  PGPASSWORD="$5" PGCONNECT_TIMEOUT=5 psql -h "$1" -p "$2" -U "$3" -d "$4" -c 'SELECT 1' 2>&1
-                  {{- else }}
-                  {{ ternary "mysql" "mariadb" (eq $backend "mysql") }} --connect-timeout=5 -h "$1" -P "$2" -u "$3" -p"$5" {{ if and (eq $backend "mariadb") (eq (include "firefox-sync.tlsVerify" .) "false") }}--skip-ssl-verify-server-cert {{ end }}"$4" -e 'SELECT 1' 2>&1
-                  {{- end }}
-                ); do
-                  case "$out" in
-                    *"Access denied"*|*"password authentication failed"*)
-                      echo "$1:$2 refuses $3: $out"; exit 1 ;;
-                  esac
+                {{- if eq $backend "postgres" }}
+                until out=$(pg_isready -h "$1" -p "$2" -t 5 2>&1); do
+                {{- else }}
+                # ping is alive also when the (empty) login is refused
+                until out=$({{ ternary "mysqladmin" "mariadb-admin" (eq $backend "mysql") }} --connect-timeout=5 -h "$1" -P "$2" ping 2>&1); do
+                {{- end }}
                   if [ "$(date +%s)" -ge "$deadline" ]; then
                     echo "Timeout waiting for $1:$2: $out"; exit 1
                   fi
                   sleep 2
                 done
-                echo "$1:$2 accepts $3"
+                echo "$1:$2 answers"
               }
               {{- range $dbs }}
               {{- $d := dict "root" $ "db" . }}
-              wait_db {{ include "firefox-sync.dbHost" $d | quote }} {{ $port | quote }} {{ include "firefox-sync.dbUser" $d | quote }} {{ include "firefox-sync.dbName" $d | quote }} "${{ include "firefox-sync.dbPasswordKey" $d }}"
+              wait_db {{ include "firefox-sync.dbHost" $d | quote }} {{ $port | quote }}
               {{- end }}
         # compose's syncstorage_migrate: the migrations (and the Sync node) without serving
         - name: migrate
@@ -127,7 +120,7 @@ spec:
               value: {{ include "firefox-sync.tlsVerify" . | quote }}
             {{- end }}
             - name: MAX_USERS
-              value: {{ .Values.maxUsers | quote }}
+              value: {{ include "firefox-sync.maxUsers" . | quote }}
             - name: DOMAIN
               value: {{ .Values.syncDomain | quote }}
       containers:

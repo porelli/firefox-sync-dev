@@ -222,6 +222,18 @@ Return the name of the secret containing database passwords
 {{- end }}
 
 {{/*
+maxUsers as compose's MAX_USERS: a string, also when given as a number (maxUsers: 5,
+--set maxUsers=5); int64 first, so that a large number is not printed as a float (1e+06)
+*/}}
+{{- define "firefox-sync.maxUsers" -}}
+{{- if kindIs "string" .Values.maxUsers }}
+{{- .Values.maxUsers }}
+{{- else }}
+{{- .Values.maxUsers | int64 | toString }}
+{{- end }}
+{{- end }}
+
+{{/*
 The Secret key holding the password of the tokenserver or storage database user
 Accepts a dict with "root" and "db" (tokenserver|storage)
 */}}

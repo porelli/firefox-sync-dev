@@ -112,7 +112,15 @@ spec:
               containerPort: {{ $port }}
           volumeMounts:
             - name: data
-              mountPath: {{ ternary "/var/lib/postgresql" "/var/lib/mysql" (eq $backend "postgres") }}
+              {{- if eq $backend "postgres" }}
+              # postgres:18 keeps its data in a subdirectory (PGDATA /var/lib/postgresql/18/docker)
+              mountPath: /var/lib/postgresql
+              {{- else }}
+              # a subdirectory: MariaDB and MySQL refuse to initialise next to the lost+found
+              # of a fresh ext4 volume
+              mountPath: /var/lib/mysql
+              subPath: data
+              {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

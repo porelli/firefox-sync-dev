@@ -34,14 +34,46 @@ lint() {
     check "Helm lint passed with $(basename "${values_file}")"
   done
 
-  # Test maxUsers value propagation
-  echo "Testing maxUsers value propagation..."
-  output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set-string maxUsers=5)
-  count=$(echo "${output}" | grep -c 'value: "5"' || true)
-  if [[ ${count} -lt 1 ]]; then
-    fail "maxUsers=5 not found in template output (expected at least 1 occurrence, found ${count})"
-  fi
-  check "maxUsers value propagation works (found ${count} occurrences)"
+  # maxUsers: a string, or a number rendered as a string, in the db-init container's MAX_USERS
+  echo "Testing maxUsers..."
+  max_users() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" "$@" \
+      --show-only templates/syncstorage.yaml | grep -A1 'name: MAX_USERS$' | grep 'value:' | sed 's/^ *//'
+  }
+  [[ "$(max_users --set maxUsers=5)" == 'value: "5"' ]] || fail "--set maxUsers=5: $(max_users --set maxUsers=5)"
+  [[ "$(max_users --set-string maxUsers=initial:5)" == 'value: "initial:5"' ]] || fail "maxUsers=initial:5 not rendered as is"
+  values=$(mktemp)
+  printf 'maxUsers: 5\n' > "${values}"
+  [[ "$(max_users -f "${values}")" == 'value: "5"' ]] || fail "unquoted maxUsers: 5 in a values file: $(max_users -f "${values}")"
+  printf 'maxUsers: 1000000\n' > "${values}"
+  [[ "$(max_users -f "${values}")" == 'value: "1000000"' ]] || fail "maxUsers: 1000000: $(max_users -f "${values}")"
+  rm -f "${values}"
+  check "maxUsers 5 (--set and unquoted in a values file), initial:5 and 1000000 render as strings"
+  for bad in bogus -1 fixed:-1 initial:; do
+    if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set maxUsers="${bad}" > /dev/null 2>&1; then
+      fail "maxUsers=${bad} not refused by the schema"
+    fi
+  done
+  check "maxUsers bogus, -1, fixed:-1, initial: refused by the schema"
+
+  # wait-db logs in to nothing: no password in that init container
+  for backend in mariadb mysql postgres; do
+    waitdb=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
+      --show-only templates/syncstorage.yaml | sed -n '/- name: wait-db$/,/- name: migrate$/p')
+    [[ -n "${waitdb}" ]] || fail "${backend}: no wait-db init container"
+    if echo "${waitdb}" | grep -qiE 'secretKeyRef|PASSWORD|-p"'; then
+      fail "${backend}: wait-db uses a password: ${waitdb}"
+    fi
+  done
+  check "wait-db has no credentials (mariadb, mysql, postgres)"
+
+  # MariaDB and MySQL data in a subdirectory of the volume (lost+found)
+  for backend in mariadb mysql; do
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
+      --show-only templates/databases.yaml | grep -A1 'mountPath: /var/lib/mysql$' | grep -q 'subPath: data$' \
+      || fail "${backend}: /var/lib/mysql not mounted with subPath: data"
+  done
+  check "MariaDB and MySQL data mounted with subPath: data"
 
   # Test schema validation - invalid backend should fail
   echo "Testing schema validation with invalid backend..."
@@ -120,7 +152,7 @@ e2e() {
   check "mock FxA is up"
 
   helm install "${REL}" "${CHART_DIR}" \
-    --set syncDomain="${SYNCSTORAGE_DOMAIN}" --set-string maxUsers=1 \
+    --set syncDomain="${SYNCSTORAGE_DOMAIN}" --set maxUsers=1 \
     --set fxa.oauthServerUrl=http://mock-fxa:6000 \
     --set fxa.emailDomain=api-accounts.stage.mozaws.net \
     --set database.backend="${backend}" --set image.repository="${repository}" \
@@ -139,15 +171,23 @@ e2e() {
   echo "${out}" | grep -q maxUsers || fail "maxUsers=bogus refused, but not by the schema: ${out}"
   check "maxUsers=bogus refused by the schema"
 
-  # fail closed: a wrong database password keeps the pod in its init containers, out of the Service
+  # fail closed: a wrong database password stops the pod at migrate (wait-db has no
+  # credentials), never Ready, out of the Service
   good=$(kubectl get secret "${FULL}" -o jsonpath="{.data.${password_key}}")
   kubectl patch secret "${FULL}" --type merge -p "{\"data\":{\"${password_key}\":\"$(printf wrong | base64)\"}}"
   kubectl delete pod -l "${POD_SELECTOR}" --wait=true
   wait_pod_status 'Init:Error|Init:CrashLoopBackOff' 420 || fail "pod did not stop in its init containers"
   check "wrong ${password_key}: pod is in ${MATCHED_STATUS}"
-  addresses=$(kubectl get endpoints "${FULL}-syncstorage" -o jsonpath='{.subsets[*].addresses[*].ip}')
-  [[ -z "${addresses}" ]] || fail "the Service has endpoints while the init fails: ${addresses}"
-  check "the syncstorage Service has no endpoints"
+  inits=$(kubectl get pods -l "${POD_SELECTOR}" -o json | jq -r '.items[0].status.initContainerStatuses[]
+    | "\(.name)=\(.state.terminated.exitCode // .lastState.terminated.exitCode // "none")"' | paste -sd' ' -)
+  [[ "${inits}" =~ wait-db=0\ migrate=[1-9] ]] || fail "expected wait-db to pass and migrate to fail: ${inits}"
+  check "wait-db passed, migrate failed (${inits})"
+  ready=$(kubectl get endpointslices -l "kubernetes.io/service-name=${FULL}-syncstorage" -o json \
+    | jq '[.items[].endpoints[]? | select(.conditions.ready == true)] | length')
+  [[ "${ready}" == 0 ]] || fail "the Service has ${ready} ready endpoints while the init fails"
+  [[ "$(kubectl get pods -l "${POD_SELECTOR}" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}')" != True ]] \
+    || fail "the syncstorage pod is Ready while the init fails"
+  check "the syncstorage Service has no ready endpoints, the pod is not Ready"
   kubectl patch secret "${FULL}" --type merge -p "{\"data\":{\"${password_key}\":\"${good}\"}}"
   kubectl delete pod -l "${POD_SELECTOR}" --wait=true
   kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=10m || fail "pod not Ready after restoring the password"
