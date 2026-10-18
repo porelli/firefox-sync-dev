@@ -93,9 +93,9 @@ func adminEnvironments(t *testing.T) (map[string][]string, []string) {
 }
 
 // secretName: a name that says it is a secret (TOKENSERVER_DB_HOST is not: TOKENSERVER;
-// the lifetime of the access tokens is a duration)
+// the lifetime of the access tokens is a duration, ADMIN_K8S_SECRET the name of the chart's Secret)
 func secretName(name string) bool {
-	if name == "FXA_ACCESS_TOKEN_LIFETIME" {
+	if name == "FXA_ACCESS_TOKEN_LIFETIME" || name == "ADMIN_K8S_SECRET" {
 		return false
 	}
 	for _, part := range strings.Split(name, "_") {

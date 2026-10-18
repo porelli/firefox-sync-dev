@@ -232,10 +232,18 @@ maxUsers as compose's MAX_USERS: a string, also when given as a number (maxUsers
 --set maxUsers=5); int64 first, so that a large number is not printed as a float (1e+06)
 */}}
 {{- define "firefox-sync.maxUsers" -}}
-{{- if kindIs "string" .Values.maxUsers }}
-{{- .Values.maxUsers }}
-{{- else }}
-{{- .Values.maxUsers | int64 | toString }}
+{{- include "firefox-sync.number" .Values.maxUsers }}
+{{- end }}
+
+{{/*
+A value as compose's string: a string as it is, a number of a values file (a float64 there)
+as an integer, never 2e+06; empty for nil
+*/}}
+{{- define "firefox-sync.number" -}}
+{{- if kindIs "string" . }}
+{{- . }}
+{{- else if not (kindIs "invalid" .) }}
+{{- . | int64 | toString }}
 {{- end }}
 {{- end }}
 

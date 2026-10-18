@@ -68,6 +68,9 @@ database:
 # optional, for the admin UI (missing or empty: that feature off): FXA_SMTP_PASS,
 # ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN. The admin.password, admin.smtp.password,
 # admin.oidc.clientSecret and admin.metricsToken values are ignored then.
+# Without existingSecret those three are managed by the values alone: written into the
+# chart's Secret on every install and upgrade, an empty value is an empty key (the feature
+# off), whatever was set in the Secret by hand. Manage them out of band with existingSecret.
 # If not set, a secret named like the release (<release>-firefox-sync) is generated on the
 # first install and kept as it is on upgrades (and on uninstall, like the database volumes).
 # REQUIRED when the chart is rendered with `helm template` or a GitOps tool that renders it
@@ -109,7 +112,7 @@ admin:
   # sign-ins), sent with the SMTP server below
   alertEmail: ""
   # FXA_SMTP_*: the SMTP server of the alerts and invitations (empty host: no emails);
-  # the password (FXA_SMTP_PASS) goes into the Secret
+  # the password (FXA_SMTP_PASS) goes into the Secret, as the values say (see existingSecret)
   smtp:
     host: ""
     port: 587
@@ -119,7 +122,7 @@ admin:
     secure: false
     sender: ""
   # ADMIN_OIDC_*: sign-in with OpenID Connect (ADMIN.md#signing-in); the client secret
-  # (ADMIN_OIDC_CLIENT_SECRET, empty: a public client) goes into the Secret
+  # (ADMIN_OIDC_CLIENT_SECRET, empty: a public client) goes into the Secret, as the values say
   oidc:
     issuer: ""
     clientId: ""
@@ -146,7 +149,7 @@ admin:
     users: ""
     groups: ""
   # ADMIN_METRICS_TOKEN: Prometheus metrics at /metrics with this bearer token (empty:
-  # off), kept in the Secret
+  # off), into the Secret as the values say
   metricsToken: ""
   # ADMIN_TZ: time zone of the pages and the alerts, e.g. Europe/Rome (empty: UTC)
   tz: ""

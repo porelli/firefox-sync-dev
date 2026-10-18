@@ -711,6 +711,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	data["Attention"] = needsAttention(in)
 	data["Errors"] = errs
+	data["Kubernetes"] = a.deployment.Kubernetes()
 	a.render(w, "dashboard.html", data)
 }
 
@@ -882,10 +883,21 @@ func (a *App) account(r *http.Request, uid string) *FxaAccount {
 
 var errMaxUsersReadOnly = errors.New("max users is managed by MAX_USERS in .env: set MAX_USERS=initial:N there to manage it here")
 
+// the same with the Helm chart
+var errMaxUsersReadOnlyChart = errors.New("max users is managed by maxUsers in the chart's values: set maxUsers: initial:N there and helm upgrade to manage it here")
+
+// maxUsersReadOnly: why max users cannot be changed here, as this deployment sets it
+func (a *App) maxUsersReadOnly() error {
+	if a.deployment.Kubernetes() != nil {
+		return errMaxUsersReadOnlyChart
+	}
+	return errMaxUsersReadOnly
+}
+
 func (a *App) setMaxUsers(w http.ResponseWriter, r *http.Request, s *session) {
 	if !a.maxUsersEditable {
 		// the init container sets MAX_USERS again on its next start
-		a.done(w, r, s, "", errMaxUsersReadOnly)
+		a.done(w, r, s, "", a.maxUsersReadOnly())
 		return
 	}
 	n, unlimited, err := limitForm(r.PostFormValue("max_users"), r.PostFormValue("unlimited"))

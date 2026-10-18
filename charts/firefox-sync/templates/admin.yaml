@@ -48,6 +48,10 @@ spec:
     metadata:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "admin") | nindent 8 }}
+      annotations:
+        # its env reads the Secret at the start: a new pod when the secrets of the values change
+        # (those generated into the Secret never change; existingSecret: restart it yourself)
+        checksum/admin-secrets: {{ list .Values.existingSecret $a.password $a.smtp.password $a.oidc.clientSecret $a.metricsToken | toJson | sha256sum }}
     spec:
       # the image's user nonroot, by number: Kubernetes checks runAsNonRoot on a uid
       securityContext:
@@ -133,7 +137,7 @@ spec:
             - name: SMTP_HOST
               value: {{ $a.smtp.host | quote }}
             - name: SMTP_PORT
-              value: {{ $a.smtp.port | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.smtp.port | quote }}
             - name: SMTP_USER
               value: {{ $a.smtp.user | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "SMTP_PASS" "key" "FXA_SMTP_PASS" "optional" true) | nindent 12 }}
@@ -145,37 +149,41 @@ spec:
             - name: ADMIN_UPDATE_CHECK
               value: {{ $a.updateCheck | toString | quote }}
             - name: ADMIN_STALE_DAYS
-              value: {{ $a.staleDays | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.staleDays | quote }}
             - name: ADMIN_RETENTION_DAYS
-              value: {{ $a.retentionDays | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.retentionDays | quote }}
             - name: ADMIN_AUDIT_RETENTION_DAYS
-              value: {{ $a.auditRetentionDays | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.auditRetentionDays | quote }}
             # the alerts on a spike of Sync errors and on the growth of the databases (ADMIN.md)
             - name: ADMIN_ERROR_RATE_PERCENT
-              value: {{ $a.errorRatePercent | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.errorRatePercent | quote }}
             - name: ADMIN_ERROR_RATE_MIN_ERRORS
-              value: {{ $a.errorRateMinErrors | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.errorRateMinErrors | quote }}
             - name: ADMIN_DB_GROWTH_MB
-              value: {{ $a.dbGrowthMb | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.dbGrowthMb | quote }}
             - name: ADMIN_DB_GROWTH_FACTOR
-              value: {{ $a.dbGrowthFactor | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.dbGrowthFactor | quote }}
             # the daily purge of the Sync storage, the old unconfirmed accounts, sign-up bursts
             - name: ADMIN_PURGE
-              value: {{ $a.purge | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.purge | quote }}
             - name: ADMIN_DELETE_UNCONFIRMED_DAYS
-              value: {{ $a.deleteUnconfirmedDays | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.deleteUnconfirmedDays | quote }}
             - name: ADMIN_SIGNUP_BURST
-              value: {{ $a.signupBurst | toString | quote }}
+              value: {{ include "firefox-sync.number" $a.signupBurst | quote }}
             - name: ADMIN_TZ
               value: {{ $a.tz | quote }}
-            # the commands it shows: kubectl and helm, for this release (the admin UI names
-            # the chart's objects from it as firefox-sync.fullname does)
+            # the commands it shows: kubectl and helm, for this release
             - name: ADMIN_DEPLOYMENT
               value: kubernetes
             - name: ADMIN_K8S_RELEASE
               value: {{ .Release.Name | quote }}
             - name: ADMIN_K8S_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+            # the names of the chart's objects, also under fullnameOverride and existingSecret
+            - name: ADMIN_K8S_FULLNAME
+              value: {{ $fullname | quote }}
+            - name: ADMIN_K8S_SECRET
+              value: {{ include "firefox-sync.secretName" . | quote }}
             {{- if ne $backend "postgres" }}
             # the configuration page: the Sync databases (compose: SYNC_DB of .env)
             - name: SYNC_DB
