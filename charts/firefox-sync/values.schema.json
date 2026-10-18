@@ -62,6 +62,24 @@
         "bundled": {
           "type": "boolean"
         },
+        "image": {
+          "type": "object",
+          "required": ["mariadb", "mysql", "postgres"],
+          "properties": {
+            "mariadb": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mysql": {
+              "type": "string",
+              "minLength": 1
+            },
+            "postgres": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "external": {
           "type": "object",
           "properties": {

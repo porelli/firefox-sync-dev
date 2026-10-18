@@ -348,17 +348,11 @@ docker-compose.sync-postgres.yml), for the migrate init container and the server
 {{- end }}
 
 {{/*
-The image of the bundled database, also the client of wait-db: as compose
+The image of the bundled database, also the client of wait-db and of the backups: as compose
+(database.image.<backend>, compose's POSTGRES_IMAGE for PostgreSQL)
 */}}
 {{- define "firefox-sync.dbImage" -}}
-{{- $backend := .Values.database.backend }}
-{{- if eq $backend "postgres" }}
-{{- print "postgres:18" }}
-{{- else if eq $backend "mysql" }}
-{{- print "mysql:8.4" }}
-{{- else }}
-{{- print "mariadb:lts" }}
-{{- end }}
+{{- index .Values.database.image .Values.database.backend }}
 {{- end }}
 
 {{/*

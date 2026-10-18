@@ -37,6 +37,18 @@ database:
   # Whether to deploy bundled database containers
   bundled: true
 
+  # The image of each backend's database server, also the client of the backups (and of the
+  # wait for the server): compose's images, POSTGRES_IMAGE for PostgreSQL. It pins the
+  # major of the install: the official PostgreSQL image keeps its data at
+  # /var/lib/postgresql/<major>/docker and refuses to start on an older major's data, so
+  # moving to a newer one needs a dump and restore (ADMIN.md#restoring) or pg_upgrade
+  # (DATABASES.md#another-postgresql-major). With your own server (bundled: false) it is only
+  # the client: pg_dump must be at least the server's major
+  image:
+    mariadb: mariadb:lts
+    mysql: mysql:8.4
+    postgres: postgres:18
+
   # External database configuration (used when bundled: false)
   external:
     # Database host
