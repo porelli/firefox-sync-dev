@@ -851,8 +851,8 @@ EOF
   echo "== upgrade in place (MIGRATING.md, older firefox-sync releases)"
   # "Get the new files": this tree over the old one, the .env kept
   local f
-  # (docker-compose.postgres.yml: the symlink to docker-compose.sync-postgres.yml, as git
-  # checks it out; syncstorage-rs-init*: the init folders of the old release, now db/)
+  # (docker-compose.postgres.yml: old releases need the symlink copied too;
+  # syncstorage-rs-init*: the init folders of the old release, now db/)
   for f in docker-compose.yml docker-compose.sync-postgres.yml docker-compose.postgres.yml docker-compose.sync-mysql.yml docker-compose.podman.yml docker-compose.fxa.yml docker-compose.fxa-mariadb.yml .env-example; do
     rm -f "${DST}/${f}" && cp -P "${CODE}/${f}" "${DST}/${f}"
   done

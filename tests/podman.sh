@@ -189,7 +189,7 @@ compose_test() {
   compose_sql "${backend}" "${sync_user}" "${sync_password}" "${sync_db}" \
     "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the upgrade by admin (password)')" > /dev/null
   check "$?" 0 "an audit event in the tokenserver database, as before (${backend})"
-  # an install from before docker-compose.sync-postgres.yml has the old name in COMPOSE_FILE
+  # an install from before docker-compose.sync-postgres.yml had the old name in COMPOSE_FILE
   [ "${backend}" = postgres ] && sed -i 's|^COMPOSE_FILE=docker-compose.sync-postgres.yml$|COMPOSE_FILE=docker-compose.postgres.yml|' .env
   # the upgrade, as MIGRATING.md says: prepare_environment.sh --upgrade fills in what is missing
   ./prepare_environment.sh --upgrade > "upgrade-${backend}.log" 2>&1

@@ -154,7 +154,7 @@ ROOT=${CODE}
   for s in syncstorage ffs-admin backup $([ "${BACKEND}" = postgres ] && echo postgres_db || echo tokenserver_db syncstorage_db); do
     printf '  %s:\n    healthcheck:\n      start_period: 5m\n      start_interval: 1s\n' "${s}"
   done; } > "${WORK}/health-test.yml"
-# (releases before docker-compose.sync-postgres.yml: docker-compose.postgres.yml)
+# (old releases: docker-compose.postgres.yml, the symlink of then)
 dc() {
   local compose health=()
   compose=${ROOT}/$(basename "${COMPOSE}")
@@ -471,10 +471,9 @@ sql "INSERT INTO ffs_account_notes (uid, note, updated_at, updated_by) VALUES ('
 sql "INSERT INTO ffs_backups (scope, started, finished, ok, bytes, location) VALUES ('sync', $(date +%s)000, $(date +%s)000, 1, 1, 'ffs-e2e: before the upgrade');" > /dev/null
 OLD_EVENTS=$(sql "SELECT COUNT(*) FROM ffs_events;")
 if [ -n "${UPGRADE_FROM:-}" ]; then
-  # this tree from here on; with PostgreSQL through docker-compose.postgres.yml, the name
-  # of then: the symlink to docker-compose.sync-postgres.yml
+  # this tree from here on; with PostgreSQL through the upgraded stack
   ROOT=${CODE}
-  [ "${BACKEND}" = postgres ] && COMPOSE=${CODE}/docker-compose.postgres.yml
+  [ "${BACKEND}" = postgres ] && COMPOSE=${CODE}/docker-compose.sync-postgres.yml
   export ADMIN_IMAGE=${ADMIN_NOW}
   set_env SYNC_INIT_IMAGE_TAG "${INIT_NOW}"
 fi
