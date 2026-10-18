@@ -3,14 +3,31 @@ once the migrations and the MAX_USERS init ({{ include "firefox-sync.maxUsers" .
 
   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
 
+{{ if .Values.ingress.enabled -}}
+The Ingress {{ include "firefox-sync.fullname" . }}-syncstorage publishes it at {{ include "firefox-sync.ingressHost" . }}{{ if .Values.ingress.className }} (class {{ .Values.ingress.className }}){{ end }}:
+syncDomain {{ .Values.syncDomain }} must reach it there. Then point Firefox to the token server
+{{- else -}}
 Publish {{ include "firefox-sync.fullname" . }}-syncstorage:{{ .Values.syncstorage.service.port }} at {{ .Values.syncDomain }}
-(your Ingress or reverse proxy), then point Firefox to the token server
+(your reverse proxy, or ingress.enabled), then point Firefox to the token server
+{{- end }}
 
   {{ trimSuffix "/" .Values.syncDomain }}/1.0/sync/1.5
 
 as identity.sync.tokenserver.uri in about:config, see
 https://github.com/porelli/firefox-sync/blob/main/SYNC.md#firefox-setup
-{{- if .Values.admin.enabled }}
+{{- if not .Values.database.bundled }}
+
+Your own database server {{ .Values.database.external.host }}: the databases and users of DATABASES.md's SQL
+must be there, with the passwords of the Secret {{ include "firefox-sync.secretName" . }}; the pods wait for it, and
+stop in their init containers while a login is refused.
+{{- end }}
+{{- if and .Values.admin.enabled .Values.admin.ingress.enabled }}
+
+The admin UI is published by the Ingress {{ include "firefox-sync.adminService" . }} at {{ .Values.admin.ingress.host }}: keep it
+behind your own sign-in (ADMIN.md#signing-in). Its password, ADMIN_PASSWORD of the Secret {{ include "firefox-sync.secretName" . }}:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "firefox-sync.secretName" . }} -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
+{{- else if .Values.admin.enabled }}
 
 The admin UI is not published: open it through
 

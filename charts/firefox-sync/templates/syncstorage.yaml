@@ -3,10 +3,11 @@ The Sync server. Compose's one-shot containers are its init containers, in compo
 order, so that it never serves before the migrations and the MAX_USERS init succeeded:
 a failing init keeps the pod in Init:Error (and out of the Service), without fallback.
 */ -}}
+{{- include "firefox-sync.checkValues" . }}
 {{- include "firefox-sync.checkNames" . }}
 {{- $fullname := include "firefox-sync.fullname" . }}
 {{- $backend := .Values.database.backend }}
-{{- $port := include "firefox-sync.dbPort" (dict "root" .) }}
+{{- $port := include "firefox-sync.dbPort" (dict "root" . "db" "tokenserver") }}
 {{- $dbs := list "tokenserver" }}
 {{- if ne $backend "postgres" }}
 {{- $dbs = append $dbs "storage" }}
@@ -71,7 +72,7 @@ spec:
               }
               {{- range $dbs }}
               {{- $d := dict "root" $ "db" . }}
-              wait_db {{ include "firefox-sync.dbHost" $d | quote }} {{ $port | quote }}
+              wait_db {{ include "firefox-sync.dbHost" $d | quote }} {{ include "firefox-sync.dbPort" $d | quote }}
               {{- end }}
         {{- if eq $backend "postgres" }}
         # compose's sync_role_init: the Sync server's own role (no superuser), before the

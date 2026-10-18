@@ -49,21 +49,46 @@ database:
     mysql: mysql:8.4
     postgres: postgres:18
 
-  # External database configuration (used when bundled: false)
+  # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),
+  # no superuser, the owner of the Sync tables (DATABASES.md). Not used with your own server,
+  # where POSTGRES_USER (external.postgresUser) is the owner
+  postgresSyncUser: syncserver_app
+
+  # The admin UI's own database and its two users, both with ADMIN_DB_PASSWORD (compose's
+  # ADMIN_DB_NAME, ADMIN_DB_USER, ADMIN_DB_SYNC_USER, DATABASES.md#the-admin-uis-own-database),
+  # on the tokenserver's server: created by the bundled servers, by your database-setup.sql
+  # on your own. Names: a-z, 0-9 and _
+  admin:
+    name: ffs_admin
+    user: ffs_admin_ui
+    syncUser: ffs_admin_sync
+
+  # Your own database server (bundled: false), as DATABASES.md: create the databases and
+  # users first with its SQL (db/mysql/sync.sql, db/postgres/sync.sql), the names below and
+  # those of database.admin in it, and put their passwords in existingSecret (required then):
+  # TOKENSERVER_DB_PASSWORD and STORAGE_DB_PASSWORD (mariadb, mysql) or POSTGRES_PASSWORD
+  # (postgres: the password of postgresUser), ADMIN_DB_PASSWORD (the admin UI's users)
   external:
-    # Database host
+    # compose's MARIADB_TOKENSERVER_SERVER or POSTGRES_SERVER (required): a host name or an
+    # IPv4 address the pods reach (plain connections, DATABASES.md#server-requirements)
     host: ""
-    # Database port
-    port: 3306
-    # Tokenserver database name
+    # its port: empty for 3306 (mariadb, mysql) or 5432 (postgres)
+    port: ""
+    # mariadb, mysql: the storage database on another server (MARIADB_SYNCSTORAGE_SERVER,
+    # _SERVER_PORT); empty: host and port above
+    storageHost: ""
+    storagePort: ""
+    # mariadb, mysql: MARIADB_TOKENSERVER_DATABASE, _USER, MARIADB_SYNCSTORAGE_DATABASE, _USER
     tokenserverDatabase: tokenserver
-    # Storage database name (ignored for postgres backend)
-    storageDatabase: syncstorage
-    # Tokenserver database user
     tokenserverUser: tokenserver
-    # Storage database user (ignored for postgres backend)
+    storageDatabase: syncstorage
     storageUser: syncstorage
-    # TLS certificate verification
+    # postgres: POSTGRES_DATABASE, POSTGRES_USER (the owner of that database, no superuser)
+    postgresDatabase: syncserver
+    postgresUser: syncserver
+    # mariadb, mysql: MARIADB_TLS_VERIFY, whether the init container's client checks the
+    # server's certificate (false for MySQL's own, self-signed; the Sync server itself
+    # connects without TLS)
     tlsVerify: true
 
   # Persistence configuration for bundled databases
@@ -76,7 +101,8 @@ database:
 # Name of existing secret containing database passwords and secrets, with the keys
 # SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_PASSWORD (the admin UI's
 # database users) and TOKENSERVER_DB_PASSWORD + STORAGE_DB_PASSWORD (mariadb, mysql) or
-# POSTGRES_PASSWORD (the superuser) + POSTGRES_SYNC_PASSWORD (the Sync server's role) (postgres);
+# POSTGRES_PASSWORD (the superuser) + POSTGRES_SYNC_PASSWORD (the Sync server's role) (postgres;
+# with your own server POSTGRES_PASSWORD alone, the owner's: required then, see database.external);
 # optional, for the admin UI (missing or empty: that feature off): FXA_SMTP_PASS,
 # ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_NOTIFY. The admin.password,
 # admin.smtp.password, admin.oidc.clientSecret, admin.metricsToken and admin.notify values
@@ -197,7 +223,10 @@ admin:
 
   resources: {}
 
-  # Admin ingress configuration (used when admin.enabled: true)
+  # Its own Ingress, apart from the Sync server's: <release>-firefox-sync-admin:8080 at / of
+  # host (required, not the Sync server's), only while admin.enabled and this are both on.
+  # Put it behind your own sign-in (OpenID Connect, a forward-auth proxy, an allowlist):
+  # the admin UI can delete accounts and change who signs up (ADMIN.md#signing-in)
   ingress:
     enabled: false
     className: ""
@@ -230,13 +259,14 @@ backup:
     size: 10Gi
     storageClass: ""
 
-# Ingress configuration
+# The Sync server's Ingress: <release>-firefox-sync-syncstorage at / of host (never the admin
+# UI, which has admin.ingress)
 ingress:
   enabled: false
   className: ""
-  # Hostname for the sync service
+  # empty: the host of syncDomain, which Firefox is given as the Sync node
   host: ""
-  # TLS configuration
+  # TLS for that host, with the certificate of secretName (empty: the controller's default)
   tls:
     enabled: false
     secretName: ""

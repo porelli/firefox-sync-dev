@@ -80,6 +80,27 @@
             }
           }
         },
+        "postgresSyncUser": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*$"
+        },
+        "admin": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
+            },
+            "user": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
+            },
+            "syncUser": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
+            }
+          }
+        },
         "external": {
           "type": "object",
           "properties": {
@@ -87,19 +108,57 @@
               "type": "string"
             },
             "port": {
-              "type": "integer"
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                }
+              ]
+            },
+            "storageHost": {
+              "type": "string"
+            },
+            "storagePort": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                }
+              ]
             },
             "tokenserverDatabase": {
-              "type": "string"
-            },
-            "storageDatabase": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
             },
             "tokenserverUser": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
+            },
+            "storageDatabase": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
             },
             "storageUser": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
+            },
+            "postgresDatabase": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
+            },
+            "postgresUser": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]*$"
             },
             "tlsVerify": {
               "type": "boolean"
