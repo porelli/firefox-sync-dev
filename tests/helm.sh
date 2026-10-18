@@ -688,6 +688,16 @@ e2e() {
     # migrations are the first to log in)
     [[ ${backend} == postgres ]] && failing_init='wait-db=0 sync-role=0 migrate=[1-9]'
   fi
+  # A host with Ubuntu's mysql-server (the GitHub runners) has an AppArmor profile for
+  # /usr/sbin/mysqld, and kind's pods run unconfined: the profile then takes the mysqld of the
+  # mysql:8.4 image too (docker's containers, in docker-default, are not). It denies /etc/my.cnf,
+  # /usr/share/mysql-8.4 and the init file of admin-user.sh (/run/ffs-admin, errno 13): the
+  # first start aborts half-way and every next one finds no mysql.user (CrashLoopBackOff)
+  if [[ ${backend} == mysql && -e /etc/apparmor.d/usr.sbin.mysqld && ! -e /etc/apparmor.d/disable/usr.sbin.mysqld \
+    && "$(cat /sys/module/apparmor/parameters/enabled 2> /dev/null)" == Y ]]; then
+    fail "the host's AppArmor profile /usr/sbin/mysqld would confine MySQL in kind; disable it first:
+  sudo ln -s /etc/apparmor.d/usr.sbin.mysqld /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld"
+  fi
   # as tests/e2e.sh: REPOSITORY and TAG of the images; the init image is built from this
   # tree (the published one may be older than the chart), unless SKIP_BUILD=1
   local repository=${REPOSITORY:-ghcr.io/porelli/firefox-sync} tag=${TAG:-latest} init_tag=${TAG:-latest}
