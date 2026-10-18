@@ -193,3 +193,27 @@ func TestDeploymentKubernetesNoDotEnv(t *testing.T) {
 		t.Errorf("compose: %v", err)
 	}
 }
+
+// the chart's address in the helm commands: the one the chart passes (ADMIN_K8S_CHART, where
+// it was published), else the public repository's, never another repository's
+func TestDeploymentChartAddress(t *testing.T) {
+	t.Setenv("ADMIN_DEPLOYMENT", "kubernetes")
+	t.Setenv("ADMIN_K8S_RELEASE", "t")
+	t.Setenv("ADMIN_K8S_NAMESPACE", "ffs")
+	t.Setenv("ADMIN_K8S_FULLNAME", "t-firefox-sync")
+	t.Setenv("ADMIN_K8S_SECRET", "t-firefox-sync")
+	for _, c := range []struct{ env, want string }{
+		{"", "helm upgrade t oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync -n ffs --reuse-values --set backup.enabled=true"},
+		{"oci://ghcr.io/porelli/firefox-sync-dev/charts/firefox-sync",
+			"helm upgrade t oci://ghcr.io/porelli/firefox-sync-dev/charts/firefox-sync -n ffs --reuse-values --set backup.enabled=true"},
+	} {
+		t.Setenv("ADMIN_K8S_CHART", c.env)
+		d, err := loadDeployment()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := d.BackupsOn(); got != c.want {
+			t.Errorf("ADMIN_K8S_CHART=%q: %s", c.env, got)
+		}
+	}
+}

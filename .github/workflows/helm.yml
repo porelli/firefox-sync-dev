@@ -5,10 +5,14 @@ name: helm
 # The init and admin images are built from this commit (tests/helm.sh does it, and kind loads
 # them), the syncstorage images are this repository's published ones.
 # Publishing: on a tag chart-v<version> (the version of Chart.yaml), after every test passed,
-# the chart is pushed to oci://ghcr.io/<owner>/charts/firefox-sync (not oci://ghcr.io/<owner>:
-# that would be the firefox-sync image package). A stable version only from a commit of the
-# default branch; a pre-release (x.y.z-<suffix>, e.g. 0.1.0-dev.1) from any branch, to test
-# the publishing (helm install without --version or --devel never picks a pre-release).
+# the chart is pushed to oci://ghcr.io/<owner>/<repository>/charts/firefox-sync, lowercase: a
+# package of this repository's own, which no other repository (the dev one) shares, next to
+# its images (not oci://ghcr.io/<owner>/<repository>: that is the image package). The job
+# version checks the tag first (.github/scripts/chart-version.sh): a stable version only from
+# a commit of the default branch; a pre-release (x.y.z-<suffix>, e.g. 0.1.0-dev.1) from any
+# branch, to test the publishing (helm install without --version or --devel never picks a
+# pre-release). A version is published once: never replaced. Chart.yaml's annotation
+# org.firefox-sync/chart is set to this address (the admin UI's helm commands show it).
 # Branch pushes and the weekly run build and test only.
 
 on:
@@ -32,6 +36,7 @@ on:
       - config/backup/**
       - admin/**
       - .github/workflows/helm.yml
+      - .github/scripts/chart-version.sh
 
 # one run at a time per branch (and tag): a branch never cancels or waits for main's runs
 concurrency:
@@ -51,8 +56,39 @@ env:
   KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
 
 jobs:
+  ## the version of Chart.yaml; on a chart-v tag, a mistyped or misplaced tag fails here, first ##
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # the default branch's history: is the tagged commit on it
+          fetch-depth: ${{ startsWith(github.ref, 'refs/tags/chart-v') && '0' || '1' }}
+
+      - name: The tag is chart-v and Chart.yaml's version, stable ones from the default branch
+        id: version
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/chart-v') && github.ref_name || '' }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ -n "${TAG}" ]]; then
+            .github/scripts/chart-version.sh "${CHART_DIR}" "${TAG}" "origin/${DEFAULT_BRANCH}" > version.txt
+          else
+            .github/scripts/chart-version.sh "${CHART_DIR}" > version.txt
+          fi
+          cat version.txt >> "${GITHUB_OUTPUT}"
+          cat version.txt
+
   ## ct lint, kubeconform, tests/helm.sh lint (its template checks, then parity with compose) ##
   lint:
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -105,6 +141,7 @@ jobs:
 
   ## the chart on kind: mock FxA, a Firefox client's flow, upgrades, backups, the admin UI ##
   e2e:
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -151,61 +188,55 @@ jobs:
         # commit on every run (whatever changed) and kind-loaded by tests/helm.sh; the
         # syncstorage image is REPOSITORY's, pulled here and imported into the cluster
         env:
-          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
           BACKEND: ${{ matrix.backend }}
           EXTERNAL_DB: ${{ matrix.external_db }}
-        run: ./tests/helm.sh e2e "${BACKEND}"
+        # (an image reference is lowercase)
+        run: REPOSITORY="${REPOSITORY_REGISTRY}/${REPOSITORY_FULL_NAME,,}" ./tests/helm.sh e2e "${BACKEND}"
 
-  ## oci://ghcr.io/<owner>/charts/firefox-sync:<version>, on chart-v<version> tags ##
+  ## oci://ghcr.io/<owner>/<repository>/charts/firefox-sync:<version>, on chart-v<version> tags ##
   publish:
-    needs: [lint, e2e]
+    needs: [version, lint, e2e]
     if: startsWith(github.ref, 'refs/tags/chart-v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-          # the default branch's history: is the tagged commit on it
-          fetch-depth: 0
 
       - name: Set up Helm
         uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
 
-      - name: The tag is chart-v and Chart.yaml's version
-        id: version
-        env:
-          TAG: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Where the chart is published
+        # Chart.yaml's annotation (the public repository's in the tree), which the admin UI's
+        # helm upgrade commands show (ADMIN_K8S_CHART): this repository's
         run: |
-          version=$(helm show chart "${CHART_DIR}" | sed -n 's/^version: //p')
-          if [[ "${TAG}" != "chart-v${version}" ]]; then
-            echo "::error::tag ${TAG} is not chart-v${version} (the version of ${CHART_DIR}/Chart.yaml)"
-            exit 1
-          fi
-          # a stable version only from the default branch; a pre-release from anywhere
-          if [[ "${version}" != *-* ]] && ! git merge-base --is-ancestor "${GITHUB_SHA}" "origin/${DEFAULT_BRANCH}"; then
-            echo "::error::${version} is a stable version: tag a commit of ${DEFAULT_BRANCH} (or use a pre-release version, e.g. ${version}-rc.1)"
-            exit 1
-          fi
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          chart="oci://${REPOSITORY_REGISTRY}/${REPOSITORY_FULL_NAME,,}/charts"
+          echo "CHART_REGISTRY=${chart}" >> "${GITHUB_ENV}"
+          sed -i "s|^  org.firefox-sync/chart: .*|  org.firefox-sync/chart: ${chart}/firefox-sync|" "${CHART_DIR}/Chart.yaml"
+          helm show chart "${CHART_DIR}" | grep -Fx "  org.firefox-sync/chart: ${chart}/firefox-sync"
 
       - name: Package
         run: helm package "${CHART_DIR}"
 
       - name: Push
+        # a version once only: a release never changes under the same version
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
         run: |
           helm registry login "${REPOSITORY_REGISTRY}" -u "${ACTOR}" --password-stdin <<< "${TOKEN}"
-          helm push "firefox-sync-${VERSION}.tgz" "oci://${REPOSITORY_REGISTRY}/${OWNER,,}/charts"
-          helm show chart "oci://${REPOSITORY_REGISTRY}/${OWNER,,}/charts/firefox-sync" --version "${VERSION}"
+          if helm show chart "${CHART_REGISTRY}/firefox-sync" --version "${VERSION}" > /dev/null 2>&1; then
+            echo "::error::firefox-sync ${VERSION} is already published in ${CHART_REGISTRY}: bump the version in ${CHART_DIR}/Chart.yaml"
+            exit 1
+          fi
+          helm push "firefox-sync-${VERSION}.tgz" "${CHART_REGISTRY}"
+          helm show chart "${CHART_REGISTRY}/firefox-sync" --version "${VERSION}"

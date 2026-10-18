@@ -42,6 +42,7 @@ ALLOWED_DIFFERENCES = {
     "*:admin/ADMIN_K8S_NAMESPACE": "chart-only: the namespace for the kubectl commands the admin UI shows",
     "*:admin/ADMIN_K8S_FULLNAME": "chart-only: the chart's object names (fullnameOverride), which the admin UI builds from it",
     "*:admin/ADMIN_K8S_SECRET": "chart-only: the Secret's name (existingSecret) for the commands the admin UI shows",
+    "*:admin/ADMIN_K8S_CHART": "chart-only: where the chart was published, for the helm upgrade commands the admin UI shows",
     "*:admin/ADMIN_EXPORT_PORT": "compose-only: the host port compose publishes the admin UI on; the chart has a Service (and an Ingress)",
     # the Sync server
     "*:syncstorage/SYNC_STATSD_HOST": "chart-only as a variable: compose exports it in syncstorage's entrypoint when ffs-admin resolves; "

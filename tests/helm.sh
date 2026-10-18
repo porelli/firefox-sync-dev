@@ -394,11 +394,15 @@ lint() {
       | select(.name | test("^(ADMIN_K8S_|SYNC_STATSD_HOST)")) | {(.name): .value}] | add'
   }
   [[ "$(env_of --set fullnameOverride=x --set existingSecret=mine)" == \
-    '{"ADMIN_K8S_FULLNAME":"x","ADMIN_K8S_NAMESPACE":"default","ADMIN_K8S_RELEASE":"test-release","ADMIN_K8S_SECRET":"mine","SYNC_STATSD_HOST":"x-admin"}' ]] \
+    '{"ADMIN_K8S_CHART":"oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync","ADMIN_K8S_FULLNAME":"x","ADMIN_K8S_NAMESPACE":"default","ADMIN_K8S_RELEASE":"test-release","ADMIN_K8S_SECRET":"mine","SYNC_STATSD_HOST":"x-admin"}' ]] \
     || fail "names with fullnameOverride and existingSecret: $(env_of --set fullnameOverride=x --set existingSecret=mine)"
   [[ "$(env_of | jq -r '.ADMIN_K8S_FULLNAME + " " + .ADMIN_K8S_SECRET')" == "test-release-firefox-sync test-release-firefox-sync" ]] \
     || fail "default names: $(env_of)"
   check "ADMIN_K8S_FULLNAME, ADMIN_K8S_SECRET as the chart names them (fullnameOverride, existingSecret)"
+  # where the chart was published (the annotation the publish job sets), for helm upgrade
+  [[ "$(sed -n 's|^  org.firefox-sync/chart: ||p' "${CHART_DIR}/Chart.yaml")" == oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync ]] \
+    || fail "Chart.yaml: the annotation org.firefox-sync/chart is not the public repository's chart"
+  check "ADMIN_K8S_CHART: the annotation org.firefox-sync/chart of Chart.yaml (the public repository's chart)"
   # numbers of a values file (float64 there) as integers, never 2e+06
   values=$(mktemp)
   printf 'admin:\n  dbGrowthMb: 2000000\n  retentionDays: 1000000\n  smtp:\n    port: 465\n' > "${values}"
@@ -411,11 +415,50 @@ lint() {
 
   external_lint
   ingress_lint
+  publish_lint
   # compose's variables, commands, probes and scripts
   parity
 
   echo ""
   echo "=== All lint checks passed ==="
+}
+
+# the publish job's tag check (.github/scripts/chart-version.sh): the tag is chart-v<the
+# version of Chart.yaml>, a semver; a stable one (no -<pre-release>, +<build> is stable) only
+# from a commit of the default branch
+publish_lint() {
+  echo "Testing the tag check of the publishing..."
+  local script="${REPO_ROOT}/.github/scripts/chart-version.sh" d out
+  d=$(mktemp -d)
+  # a repository: main with a chart, a branch with one more commit
+  git -C "${d}" init -q -b main && mkdir -p "${d}/chart"
+  publish_at() { printf 'apiVersion: v2\nname: firefox-sync\nversion: %s\n' "$1" > "${d}/chart/Chart.yaml"; git -C "${d}" add -A
+    git -C "${d}" -c user.name=t -c user.email=t@example.test commit -qm "$1"; }
+  publish_at 1.0.0
+  [[ "$(cd "${d}" && "${script}" chart)" == $'version=1.0.0\nprerelease=false' ]] || fail "chart-version.sh without a tag: $(cd "${d}" && "${script}" chart)"
+  [[ "$(cd "${d}" && "${script}" chart chart-v1.0.0 main)" == $'version=1.0.0\nprerelease=false' ]] || fail "chart-v1.0.0 on main refused"
+  out=$(cd "${d}" && "${script}" chart chart-v1.0.1 main 2>&1) && fail "chart-v1.0.1 for 1.0.0 accepted"
+  grep -q 'is not chart-v1.0.0' <<< "${out}" || fail "a tag of another version: not the message: ${out}"
+  git -C "${d}" switch -q -c topic
+  for v in 1.0.1 1.0.1+build-1; do
+    publish_at "${v}"
+    out=$(cd "${d}" && "${script}" chart "chart-v${v}" main 2>&1) && fail "stable ${v} accepted off the default branch"
+    grep -q 'a commit of main' <<< "${out}" || fail "stable ${v} off main: not the message: ${out}"
+  done
+  publish_at 1.0.1-dev.1+build-2
+  [[ "$(cd "${d}" && "${script}" chart chart-v1.0.1-dev.1+build-2 main)" == $'version=1.0.1-dev.1+build-2\nprerelease=true' ]] \
+    || fail "pre-release 1.0.1-dev.1+build-2 refused off the default branch"
+  for v in 1.0 v1.0.0 01.0.0 1.0.0-; do
+    publish_at "${v}"
+    out=$(cd "${d}" && "${script}" chart 2>&1) && fail "version ${v} accepted"
+    grep -q 'not a semantic version' <<< "${out}" || fail "version ${v}: not the message: ${out}"
+  done
+  printf 'apiVersion: v2\nname: firefox-sync\nversion: "2.0.0"\n' > "${d}/chart/Chart.yaml"
+  [[ "$(cd "${d}" && "${script}" chart)" == $'version=2.0.0\nprerelease=false' ]] || fail "a quoted version: $(cd "${d}" && "${script}" chart)"
+  rm -rf "${d}"
+  [[ "$("${script}" "${CHART_DIR}" | head -1)" == "version=$(helm show chart "${CHART_DIR}" | sed -n 's/^version: //p')" ]] \
+    || fail "chart-version.sh: not the version helm reads"
+  check "the tag check: chart-v<version>, semver, stable (+build too) from the default branch only, pre-releases from anywhere"
 }
 
 # the chart against compose (docker compose config, no daemon): tests/helm_parity.py

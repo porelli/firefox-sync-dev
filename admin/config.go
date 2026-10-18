@@ -61,7 +61,7 @@ var configVars = map[string]bool{
 	// the admin UI itself
 	"ADMIN_LISTEN": false, "GATE_LISTEN": false, "METRICS_LISTEN": false, "ADMIN_EXPORT_PORT": false, "ADMIN_GATE_EXPORT_PORT": false,
 	"ADMIN_DEPLOYMENT": false, "ADMIN_K8S_RELEASE": false, "ADMIN_K8S_NAMESPACE": false,
-	"ADMIN_K8S_FULLNAME": false, "ADMIN_K8S_SECRET": false, "ADMIN_TZ": false, "TZ": false, "SSL_CERT_FILE": false,
+	"ADMIN_K8S_FULLNAME": false, "ADMIN_K8S_SECRET": false, "ADMIN_K8S_CHART": false, "ADMIN_TZ": false, "TZ": false, "SSL_CERT_FILE": false,
 	// email, alerts, metrics and checks
 	"SMTP_HOST": false, "SMTP_PORT": false, "SMTP_USER": false, "SMTP_SECURE": false, "SMTP_SENDER": false, "SMTP_INSECURE_AUTH": false,
 	"ALERT_EMAIL": false, "ALERT_INTERVAL_SECONDS": false, "HEALTH_CHECK_SECONDS": false, "METRICS_FLUSH_SECONDS": false,
@@ -508,7 +508,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	zone := adminZone.String()
 	deployVars := []string{"ADMIN_DEPLOYMENT"}
 	if a.deployment.Kubernetes() != nil {
-		deployVars = append(deployVars, "ADMIN_K8S_RELEASE", "ADMIN_K8S_NAMESPACE", "ADMIN_K8S_FULLNAME", "ADMIN_K8S_SECRET")
+		deployVars = append(deployVars, "ADMIN_K8S_RELEASE", "ADMIN_K8S_NAMESPACE", "ADMIN_K8S_FULLNAME", "ADMIN_K8S_SECRET", "ADMIN_K8S_CHART")
 	}
 	admin.Rows = append(admin.Rows,
 		fact("Time zone", zone, "of the pages and the alerts", "ADMIN_TZ", "TZ").unset(),

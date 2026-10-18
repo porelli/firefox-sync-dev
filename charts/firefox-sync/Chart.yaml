@@ -14,6 +14,10 @@ keywords:
 home: https://github.com/porelli/firefox-sync
 sources:
   - https://github.com/porelli/firefox-sync
+annotations:
+  # where this chart is published, for the helm upgrade commands the admin UI shows
+  # (ADMIN_K8S_CHART): the publish job of .github/workflows/helm.yml sets it to its repository's
+  org.firefox-sync/chart: oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync
 maintainers:
   - name: Michele Porelli
     url: https://github.com/porelli
