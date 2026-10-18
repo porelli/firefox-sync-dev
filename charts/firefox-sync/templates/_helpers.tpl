@@ -511,3 +511,34 @@ allowPrivilegeEscalation: false
 capabilities:
   drop: ["ALL"]
 {{- end }}
+
+{{/*
+The names of the chart's objects within Kubernetes' limits, or the render fails saying so:
+none is truncated, the admin UI builds them from ADMIN_K8S_FULLNAME (the CronJob, the Sync
+server's Deployment, the databases' hosts). A CronJob at most 52 (its Jobs get 11 more), a
+StatefulSet 52 (its pods' controller-revision-hash label is <name>-<hash of up to 10>), a
+Service 63 (a DNS label)
+*/}}
+{{- define "firefox-sync.checkNames" -}}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $names := list (list "syncstorage" "Service" 63) }}
+{{- if .Values.admin.enabled }}
+{{- $names = append $names (list "admin" "Service" 63) }}
+{{- end }}
+{{- if .Values.backup.enabled }}
+{{- $names = append $names (list "backup" "CronJob" 52) }}
+{{- end }}
+{{- if .Values.database.bundled }}
+{{- if eq .Values.database.backend "postgres" }}
+{{- $names = append $names (list "postgres" "StatefulSet" 52) }}
+{{- else }}
+{{- $names = concat $names (list (list "tokenserver-db" "StatefulSet" 52) (list "storage-db" "StatefulSet" 52)) }}
+{{- end }}
+{{- end }}
+{{- range $names }}
+{{- $name := printf "%s-%s" $fullname (index . 0) }}
+{{- if gt (len $name) (index . 2) }}
+{{- fail (printf "firefox-sync: set a shorter fullnameOverride or a shorter release name: the %s %s name %s is %d characters, at most %d (the fullname %s is %d)" (index . 0) (index . 1) $name (len $name) (index . 2) $fullname (len $fullname)) }}
+{{- end }}
+{{- end }}
+{{- end }}
