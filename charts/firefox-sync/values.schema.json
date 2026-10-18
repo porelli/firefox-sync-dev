@@ -316,7 +316,8 @@
           "type": "boolean"
         },
         "schedule": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "keep": {
           "type": "integer",

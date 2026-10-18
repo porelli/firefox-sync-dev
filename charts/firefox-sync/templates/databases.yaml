@@ -65,6 +65,11 @@ spec:
     metadata:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" $root "component" $component) | nindent 8 }}
+      {{- if ne $backend "postgres" }}
+      annotations:
+        # admin-user.sh runs at the start: a new pod when it changes
+        checksum/db-scripts: {{ $root.Files.Get "files/admin-user.sh" | sha256sum }}
+      {{- end }}
     spec:
       containers:
         {{- $check := list }}

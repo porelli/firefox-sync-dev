@@ -21,6 +21,15 @@ with ADMIN_PASSWORD of the Secret {{ include "firefox-sync.secretName" . }}:
 
   kubectl -n {{ .Release.Namespace }} get secret {{ include "firefox-sync.secretName" . }} -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
 {{- end }}
+{{- if .Values.backup.enabled }}
+
+Backups: the CronJob {{ include "firefox-sync.fullname" . }}-backup ({{ .Values.backup.schedule }}, UTC) into the PVC
+{{ include "firefox-sync.fullname" . }}-backups, the newest {{ include "firefox-sync.number" .Values.backup.keep }} runs kept. One now:
+
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "firefox-sync.fullname" . }}-backup backup-now
+
+Restoring: https://github.com/porelli/firefox-sync/blob/main/ADMIN.md#restoring
+{{- end }}
 {{- if not .Values.existingSecret }}
 
 The secrets were generated into the Secret {{ include "firefox-sync.fullname" . }} and are read back on

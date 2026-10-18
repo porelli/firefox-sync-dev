@@ -195,14 +195,20 @@ admin:
       secretName: ""
     annotations: {}
 
-# Backup configuration (Task 4 will implement templates)
+# The backups, compose's backup service (ADMIN.md#backups): a CronJob <release>-firefox-sync-backup
+# dumps the Sync databases and the admin UI's into the PVC <release>-firefox-sync-backups
+# (kept on helm uninstall), sync/<UTC time>/<database>.sql.gz, as the stack's users (PostgreSQL:
+# the Sync server's role, never the superuser); each run shows on the admin UI's Backups card.
+# One now: kubectl create job --from=cronjob/<release>-firefox-sync-backup backup-now
+# Restoring: ADMIN.md#restoring. For the bundled databases; with your own servers, their backups
 backup:
   enabled: false
-  # Backup schedule (cron format)
+  # cron format, in UTC (the CronJob's timeZone). A daily "M H * * *" is also BACKUP_TIME
+  # (HH:MM) of the admin UI's help; any other schedule runs as given, but the admin UI then
+  # says its default time, 03:00
   schedule: "0 3 * * *"
-  # Number of backups to keep
+  # BACKUP_KEEP: the newest runs kept, older ones deleted (a failed run deletes nothing)
   keep: 7
-  # Backup persistence configuration
   persistence:
     size: 10Gi
     storageClass: ""

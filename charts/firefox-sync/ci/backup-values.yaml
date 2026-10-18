@@ -1,0 +1,6 @@
+# The backups on, with the admin UI (its Backups card)
+syncDomain: https://sync.example.test
+admin:
+  enabled: true
+backup:
+  enabled: true

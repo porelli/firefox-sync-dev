@@ -1,0 +1,160 @@
+{{- /*
+The backups, compose's backup service (COMPOSE_PROFILES=backup, see ADMIN.md#backups) as a
+CronJob: config/backup/backup.sh (a copy in files/, kept identical) runs once a night
+(`backup.sh now`, compose's loop is the schedule here) in the database's image, as the
+stack's users, into the PVC <fullname>-backups. Each run is a row of ffs_backups in the admin
+UI's database, which its Backups card shows. One now:
+  kubectl create job --from=cronjob/<fullname>-backup backup-now
+*/ -}}
+{{- if .Values.backup.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $backend := .Values.database.backend }}
+{{- $port := include "firefox-sync.dbPort" (dict "root" .) }}
+{{- $ts := dict "root" . "db" "tokenserver" }}
+{{- $st := dict "root" . "db" "storage" }}
+{{- $syncUser := include "firefox-sync.postgresSyncUser" . }}
+{{- $persistence := .Values.backup.persistence }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-backup
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "backup") | nindent 4 }}
+data:
+  backup.sh: |
+    {{- .Files.Get "files/backup.sh" | trimSuffix "\n" | nindent 4 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-backups
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "backup") | nindent 4 }}
+  annotations:
+    # kept on helm uninstall, like the databases' volumes
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $persistence.size }}
+{{- /* the PVC used once at install: with a WaitForFirstConsumer storage class (kind, k3s,
+most clouds' default) it would stay Pending until the first night, and helm install --wait
+waits for it to be bound. A Job's pod template cannot change: named after it, a new Job
+(the old one removed) when it does */}}
+{{- $bind := dict "metadata" (dict "labels" (include "firefox-sync.selectorLabels" (dict "root" . "component" "backup-volume") | fromYaml))
+  "spec" (dict "restartPolicy" "Never"
+    "containers" (list (dict "name" "bind" "image" (include "firefox-sync.dbImage" .) "imagePullPolicy" "IfNotPresent"
+      "command" (list "test" "-d" "/backups")
+      "securityContext" (dict "allowPrivilegeEscalation" false)
+      "volumeMounts" (list (dict "name" "backups" "mountPath" "/backups"))))
+    "volumes" (list (dict "name" "backups" "persistentVolumeClaim" (dict "claimName" (printf "%s-backups" $fullname))))) }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-backup-volume-{{ toJson $bind | sha256sum | trunc 8 }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "backup-volume") | nindent 4 }}
+spec:
+  backoffLimit: 3
+  template:
+    {{- toYaml $bind | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}-backup
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "backup") | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  # compose's BACKUP_TIME is UTC: the schedule too, whatever the cluster's time zone
+  timeZone: Etc/UTC
+  # one run at a time (each removes what a stopped one left)
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # a failed run is recorded (and alerted) as such, compose does not retry either
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              # the database's image, its client and dump (as compose)
+              image: {{ include "firefox-sync.dbImage" . }}
+              imagePullPolicy: IfNotPresent
+              command: [sh, /ffs-backup/backup.sh]
+              args: [now]
+              securityContext:
+                allowPrivilegeEscalation: false
+              env:
+                - name: BACKUP_SCOPE
+                  value: sync
+                - name: BACKUP_KEEP
+                  value: {{ include "firefox-sync.number" .Values.backup.keep | quote }}
+                {{- with include "firefox-sync.backupTime" . }}
+                - name: BACKUP_TIME
+                  value: {{ . | quote }}
+                {{- end }}
+                {{- if ne $backend "postgres" }}
+                - name: MARIADB_TLS_VERIFY
+                  value: {{ include "firefox-sync.tlsVerify" . | quote }}
+                {{- end }}
+                - name: TOKENSERVER_DB_TYPE
+                  value: {{ ternary "postgres" "mysql" (eq $backend "postgres") }}
+                - name: TOKENSERVER_DB_HOST
+                  value: {{ include "firefox-sync.dbHost" $ts | quote }}
+                - name: TOKENSERVER_DB_PORT
+                  value: {{ $port | quote }}
+                - name: TOKENSERVER_DB_NAME
+                  value: {{ include "firefox-sync.dbName" $ts | quote }}
+                {{- if eq $backend "postgres" }}
+                # as the Sync server's own role, the owner of every table (ADMIN.md#restoring
+                # loads the dump as it too), never the superuser; without it POSTGRES_USER
+                - name: TOKENSERVER_DB_USER
+                  value: {{ $syncUser | default (include "firefox-sync.dbUser" $ts) | quote }}
+                {{- include "firefox-sync.secretEnv" (dict "root" . "name" "TOKENSERVER_DB_PASSWORD" "key" (ternary "POSTGRES_SYNC_PASSWORD" "POSTGRES_PASSWORD" (ne $syncUser ""))) | nindent 16 }}
+                {{- else }}
+                - name: TOKENSERVER_DB_USER
+                  value: {{ include "firefox-sync.dbUser" $ts | quote }}
+                {{- include "firefox-sync.secretEnv" (dict "root" . "name" "TOKENSERVER_DB_PASSWORD" "key" "TOKENSERVER_DB_PASSWORD") | nindent 16 }}
+                - name: STORAGE_DB_HOST
+                  value: {{ include "firefox-sync.dbHost" $st | quote }}
+                - name: STORAGE_DB_PORT
+                  value: {{ $port | quote }}
+                - name: STORAGE_DB_NAME
+                  value: {{ include "firefox-sync.dbName" $st | quote }}
+                - name: STORAGE_DB_USER
+                  value: {{ include "firefox-sync.dbUser" $st | quote }}
+                {{- include "firefox-sync.secretEnv" (dict "root" . "name" "STORAGE_DB_PASSWORD" "key" "STORAGE_DB_PASSWORD") | nindent 16 }}
+                {{- end }}
+                # the admin UI's database: dumped too, and where the runs are recorded
+                - name: ADMIN_DB_USER
+                  value: {{ include "firefox-sync.adminDbUser" . }}
+                {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_DB_PASSWORD" "key" "ADMIN_DB_PASSWORD") | nindent 16 }}
+                - name: ADMIN_DB_NAME
+                  value: {{ include "firefox-sync.adminDbName" . }}
+              volumeMounts:
+                - name: scripts
+                  mountPath: /ffs-backup
+                  readOnly: true
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: scripts
+              configMap:
+                name: {{ $fullname }}-backup
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ $fullname }}-backups
+{{- end }}
