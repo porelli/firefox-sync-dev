@@ -49,6 +49,8 @@ SCENARIO=${1:?usage: $0 <scenario>, see the top of $0}
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CODE=$(dirname "${TESTS}")
 GUIDE=${CODE}/MIGRATING.md
+# shellcheck source=tests/slot.sh
+source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync-dev}
 TAG=${TAG:-latest}
 ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
@@ -907,7 +909,7 @@ EOF
 
 docker image inspect "${TEST_IMAGE}" > /dev/null 2>&1 || need "${TEST_IMAGE}" || exit 1
 if ! docker image inspect "${ADMIN_IMAGE}" > /dev/null 2>&1; then
-  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q \
+  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q \
     || { fail "admin UI image built from admin/"; exit 1; }
 fi
 echo "== ${SCENARIO} (firefox-sync: ${REPOSITORY} ${TAG})"

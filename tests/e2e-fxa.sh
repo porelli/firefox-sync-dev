@@ -33,6 +33,8 @@ set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CODE=$(dirname "${TESTS}")
+# shellcheck source=tests/slot.sh
+source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
 PROJECT=ffs-e2e-fxa
@@ -409,7 +411,8 @@ check "$? $(grep -c "ERROR: mysql or mariadb" "${WORK}/setup-fxa-db-wrong.log")"
 
 echo "== ${PROJECT}: syncstorage ${REPOSITORY} ${TAG}, mozilla/fxa-mono ${FXA_VERSION}, accounts on ${FXA_DB}"
 if [ -z "${ADMIN_GIVEN}" ]; then
-  COMPOSE_BAKE=false docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
+  # (one build of the tag at a time: the other tests build it too)
+  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
 fi
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
 # left by an earlier run with KEEP=1: a fresh stack, not its volumes or database server

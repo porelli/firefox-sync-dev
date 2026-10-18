@@ -39,6 +39,8 @@ set -u
 BACKEND=${1:?usage: $0 <mysql|postgres>}
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CODE=$(dirname "${TESTS}")
+# shellcheck source=tests/slot.sh
+source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
 PROJECT=ffs-e2e-${BACKEND}
@@ -340,7 +342,8 @@ teardown() {
 trap teardown EXIT
 
 if [ -z "${ADMIN_GIVEN}" ]; then
-  COMPOSE_BAKE=false docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
+  # (one build of the tag at a time: the other tests build it too)
+  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
 fi
 echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
@@ -386,7 +389,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   ROOT=$(cd -- "${UPGRADE_FROM}" && pwd) || exit 1
   ADMIN_NOW=${ADMIN_IMAGE} INIT_TAG=${SYNCSTORAGE_INIT_IMAGE_TAG}
   export ADMIN_IMAGE=ffs-admin:e2e-from
-  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false docker compose -p ffs-admin-build-from -f "${ROOT}/tests/docker-compose.admin-build.yml" build -q ||
+  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build-from -f "${ROOT}/tests/docker-compose.admin-build.yml" build -q ||
     { echo "FAIL: admin UI image built from ${UPGRADE_FROM}/admin"; exit 1; }
   # (releases before db/: syncstorage-rs-init, syncstorage-rs-init-postgres)
   init_dir=${ROOT}/db/${BACKEND}/init

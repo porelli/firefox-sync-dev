@@ -37,6 +37,8 @@ set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CODE=$(dirname "${TESTS}")
+# shellcheck source=tests/slot.sh
+source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
 PROJECT=ffs-fxa-upgrade
@@ -204,7 +206,7 @@ upgrade_tests() {
 
 echo "== ${PROJECT}: accounts ${FXA_FROM} (${from_arch}) -> ${NEW} (${NEW_ARCH}), on ${FXA_DB}${MARIADB_TO:+ ${MARIADB_INSTALLED} -> ${MARIADB_TO}}${FXA_SAME_TAG:+, the older release installed as ${NEW}}"
 if [ -z "${ADMIN_GIVEN}" ]; then
-  COMPOSE_BAKE=false docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
+  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
 fi
 dc down -v --remove-orphans > /dev/null 2>&1
 # both releases first, to know them: the admin UI must show the new one (a tag like
