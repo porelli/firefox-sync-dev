@@ -37,6 +37,7 @@ on:
       - admin/**
       - .github/workflows/helm.yml
       - .github/scripts/chart-version.sh
+      - .github/scripts/chart-unpublished.sh
 
 # one run at a time per branch (and tag): a branch never cancels or waits for main's runs
 concurrency:
@@ -234,9 +235,7 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           helm registry login "${REPOSITORY_REGISTRY}" -u "${ACTOR}" --password-stdin <<< "${TOKEN}"
-          if helm show chart "${CHART_REGISTRY}/firefox-sync" --version "${VERSION}" > /dev/null 2>&1; then
-            echo "::error::firefox-sync ${VERSION} is already published in ${CHART_REGISTRY}: bump the version in ${CHART_DIR}/Chart.yaml"
-            exit 1
-          fi
+          # fails closed: only the registry's clear not found lets it push
+          .github/scripts/chart-unpublished.sh "${CHART_REGISTRY}/firefox-sync" "${VERSION}"
           helm push "firefox-sync-${VERSION}.tgz" "${CHART_REGISTRY}"
           helm show chart "${CHART_REGISTRY}/firefox-sync" --version "${VERSION}"
