@@ -1,8 +1,8 @@
 # firefox-sync
 
-Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history, tabs and the rest are stored on your own server instead of Mozilla's. Optionally, the Mozilla accounts too, so that no Mozilla server is involved at all.
+Self-host Firefox Sync with Docker, Podman or Kubernetes: your bookmarks, passwords, history, tabs and the rest are stored on your own server instead of Mozilla's. Optionally, the Mozilla accounts too, so that no Mozilla server is involved at all.
 
-**🐳 Docker and 🦭 Podman supported**
+**🐳 Docker, 🦭 Podman and ☸️ Kubernetes (Helm) supported**
 
 ## Disclaimer
 
@@ -19,7 +19,8 @@ Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history
 | Stored on your server | the Sync data (encrypted by Firefox) | the Sync data, the accounts and their keys |
 | Who can use it | anybody with a Mozilla account who points Firefox to it, up to `SYNC_MAX_USERS` | who you allow to sign up: everybody, an allowlist of emails and domains, or nobody |
 | Needs | a host name with HTTPS | four host names with HTTPS, 3-4 GB of RAM, an SMTP server (the accounts email their codes) |
-| Guide | [SYNC.md](SYNC.md) | [SYNC.md](SYNC.md), then [FXA.md](FXA.md) |
+| Runs on | docker compose, Podman Quadlets, Kubernetes ([Helm chart](HELM.md)) | docker compose, Podman Quadlets (not in the Helm chart yet) |
+| Guide | [SYNC.md](SYNC.md) ([HELM.md](HELM.md) on Kubernetes) | [SYNC.md](SYNC.md), then [FXA.md](FXA.md) |
 
 Both are set up by `./prepare_environment.sh`, which asks the questions and writes `.env`:
 
@@ -32,15 +33,23 @@ docker compose up -d        # with Podman Quadlets: see PODMAN.md
 
 Then point your reverse proxy to it and set up Firefox: [for the Sync server only](SYNC.md#firefox-setup), or [with self-hosted accounts](FXA.md#firefox-setup).
 
+On Kubernetes, the Sync server only, with the Helm chart and a `my-values.yaml` of your host name and max users ([HELM.md](HELM.md)):
+
+```bash
+helm install ffs oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync --version 0.1.0 \
+  -f my-values.yaml --wait --timeout 10m
+```
+
 ## Documentation
 
 - [SYNC.md](SYNC.md): the Sync server: setup, who can use it (`SYNC_MAX_USERS`), Firefox on desktop, Android and iOS, backups and upgrades
 - [FXA.md](FXA.md): self-hosted Mozilla accounts: setup, who can sign up, Firefox setup, upgrades
 - [ADMIN.md](ADMIN.md): the optional admin UI: max users, sign-ups and accounts, storage, health, alerts (by email, or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or any webhook: no SMTP server needed for them), backups, Prometheus, signing in with OpenID Connect or a trusted header
-- [DATABASES.md](DATABASES.md): MariaDB, MySQL or PostgreSQL, in containers or on a database server you already run
+- [DATABASES.md](DATABASES.md): MariaDB, MySQL or PostgreSQL, in containers (or the chart's pods) or on a database server you already run
 - [PODMAN.md](PODMAN.md): rootless Podman, with Quadlets or `docker compose` on the Podman socket
-- [MIGRATING.md](MIGRATING.md): coming from another self-hosted Sync server, or an older firefox-sync
-- [TESTING.md](TESTING.md): the tests every image build runs, and how to run them locally
+- [HELM.md](HELM.md): Kubernetes with the Helm chart: install, the Secret, Ingress, the admin UI, backups and restoring, upgrades
+- [MIGRATING.md](MIGRATING.md): coming from another self-hosted Sync server, an older firefox-sync, or from docker compose to Kubernetes
+- [TESTING.md](TESTING.md): the tests every image build (and the Helm chart) runs, and how to run them locally
 
 ## Background
 
@@ -49,7 +58,7 @@ Mozilla's server side components are open source and Firefox allows to easily ch
 
 This project provides:
 - GitHub workflows that build images as vanilla as possible from Mozilla's code (below)
-- Docker compose files and Podman Quadlets to run the components, with their databases
+- Docker compose files, Podman Quadlets and a Helm chart to run the components, with their databases
 - examples for the rest of the infrastructure (nginx, systemd)
 - instructions to set up Firefox to use your server
 - optionally, [Mozilla accounts (fxa)](https://github.com/mozilla/fxa) as well, see [FXA.md](FXA.md)
@@ -95,6 +104,11 @@ All the images are updated weekly to the latest tag available from Mozilla's off
         - code changes: only the upstream pull requests listed in [upstream-patches.yml](/upstream-patches.yml), until they are in a release (today [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494), for MariaDB 12, see [FXA.md](FXA.md#mariadb-12)); the image lists them in its label `org.firefox-sync.upstream-patches`
     - used by default with self-hosted accounts (`FXA_VERSION=fxa-mono-latest`); Mozilla's own image works too on amd64
 - [`ghcr.io/porelli/firefox-sync:fxa-channelserver-<release>` and `fxa-channelserver-latest`](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions), amd64 and arm64: the optional QR code pairing server, built the same way from [Mozilla's channelserver](https://github.com/mozilla-services/channelserver)
+
+### Helm chart
+- `oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync`, from [charts/firefox-sync](/charts/firefox-sync), see [HELM.md](HELM.md)
+    - GitHub [workflow](/.github/workflows/helm.yml): lint, the same settings as compose, an install on kind per database backend; published on a `chart-v<version>` tag after those passed, see [TESTING.md](TESTING.md#the-helm-chart)
+    - runs the images above; not the Mozilla accounts images yet
 
 ## Credits
 - [Mozilla](https://www.mozilla.org/) for [Firefox](https://www.mozilla.org/firefox) and opensourcing all their software, including the backend

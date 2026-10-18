@@ -1,13 +1,13 @@
 # Your own database server
 
-By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml), or [MySQL 8.4](#mariadb-or-mysql-containers)), one PostgreSQL container ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`). You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
+By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml), or [MySQL 8.4](#mariadb-or-mysql-containers)), one PostgreSQL container ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`); the [Helm chart](HELM.md) the same servers as StatefulSets. You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
 
 What changes:
-- `SYNC_DB_CONTAINERS=0` (and `FXA_DB_CONTAINERS=0` for the accounts) in `.env`: those containers are not started, everything else is the same.
+- `SYNC_DB_CONTAINERS=0` (and `FXA_DB_CONTAINERS=0` for the accounts) in `.env`: those containers are not started, everything else is the same. With the Helm chart `database.bundled: false`, see [Kubernetes](#kubernetes).
 - You create the databases and users once, with the SQL below. The stack never needs an administrator account on your server.
 - The migrations and the init container still run at every start, as the users below: the tables, the max users trigger and the sign-up policy are created and updated by the stack.
 - The admin UI has a database and two users of its own there too (the database `ffs_admin`, `ADMIN_DB_NAME`; the users `ffs_admin_ui`, `ADMIN_DB_USER`, for it, and `ffs_admin_sync`, `ADMIN_DB_SYNC_USER`, for the Sync data), which the Sync server's users cannot reach: see [The admin UI's own database](#the-admin-uis-own-database). With self-hosted accounts the admin UI also has a user on the accounts' server named `ffs_admin` too (`FXA_ADMIN_DB_PASSWORD`, [below](#databases-and-users)): a user, not that database, and with one server for both they live side by side without a grant on each other.
-- Backups are yours: the stack's volumes are not used, and the backup service (`COMPOSE_PROFILES=backup`) is for the database containers. Your backup job can record its runs for the admin UI, which then shows the last one and alerts when it fails or gets old: see [ADMIN.md](ADMIN.md#your-own-database-servers).
+- Backups are yours: the stack's volumes are not used, and the backup service (`COMPOSE_PROFILES=backup`) is for the database containers (the Helm chart's backups run on your server too, as its users). Your backup job can record its runs for the admin UI, which then shows the last one and alerts when it fails or gets old: see [ADMIN.md](ADMIN.md#your-own-database-servers).
 
 ## MariaDB or MySQL containers
 
@@ -19,10 +19,13 @@ This section is about the database containers of the stack, not your own server.
 - No binary logging (`--disable-log-bin`), the same as the MariaDB containers. No replica reads the log, and MySQL would keep 30 days of every change (`binlog_expire_logs_seconds`). With binary logging on, the init container could only create the max users procedure and trigger with `log_bin_trust_function_creators=ON` (`ERROR 1419`). If you want binary logs (a replica, point-in-time recovery), replace `--disable-log-bin` with `--log-bin-trust-function-creators=ON` in the `command` (Quadlets: `Exec=`). That combination is what the `EXTERNAL_DB=1` tests run.
 - The users use MySQL 8.4's default `caching_sha2_password`, with no `mysql_native_password`. The Sync server and the admin UI connect without TLS, the same as with your own MySQL server. The init container's MariaDB client connects over TLS without checking MySQL's self-signed certificate, on the stack's own network (`SYNC_DB_TLS_VERIFY=false`, which `docker-compose.sync-mysql.yml` sets for compose; without it the init fails with `ERROR 2026`).
 - `mysql:8.4` is the current MySQL LTS release.
+- The Helm chart: `database.backend: mysql`, the same server (`database.image.mysql`), without binary logging, its certificate not checked. On kind or k3s on an Ubuntu host with `mysql-server`, see [HELM.md](HELM.md#troubleshooting) (AppArmor).
 
 ## Another PostgreSQL major
 
 The `postgres_db` and `backup` services use `SYNC_POSTGRES_IMAGE` (`.env`): `postgres:18` for the new installs `prepare_environment.sh` sets up, also when it is not set, as the installs from before it. `./prepare_environment.sh --upgrade`, or running `prepare_environment.sh` again on the install, writes `SYNC_POSTGRES_IMAGE=postgres:18` for them, which pins the PostgreSQL major of each install. The official PostgreSQL image keeps its data at `/var/lib/postgresql/<major>/docker` and refuses to start when an older major's data is there: moving to a newer major needs a dump and restore ([ADMIN.md#restoring](ADMIN.md#restoring)) or `pg_upgrade` (not automated here), and the image fails loudly when neither was done — so no guard is needed, unlike MariaDB where the server silently upgrades the data.
+
+The Helm chart has the same as `database.image.postgres` (and `database.image.mariadb`, `database.image.mysql`), `postgres:18` by default ([HELM.md](HELM.md#upgrades)).
 
 With your own database server (`EXTERNAL_DB=1`): `SYNC_POSTGRES_IMAGE` picks the backup client image (`postgres:18` by default): set it to your server's major, since `pg_dump` must be at least the server's major.
 
@@ -41,6 +44,7 @@ Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here
     - A server on the Docker host: use the address of the Docker bridge (often `172.17.0.1`, see `ip addr show docker0`) and make the server listen there. The containers connect from the stack's own network, whose subnet compose picks from `172.16.0.0/12` or `192.168.0.0/16`: check it with `docker network inspect <project>_default` (the project is the directory name, e.g. `firefox-sync_default`) and allow it in the server's firewall and user hosts.
     - With Podman (Quadlets or the socket): `host.containers.internal`. It is the host's main address (`podman run --rm docker.io/library/busybox cat /etc/hosts` shows it), not `127.0.0.1`: a server that listens on `127.0.0.1` only (the usual default) cannot be reached that way. Make it listen on that address, and allow connections from that address in its users' host part and its firewall: the containers connect from it.
     - A server elsewhere: its host name or address.
+    - Kubernetes (the Helm chart): a host name or IPv4 address the pods resolve and reach (a Service of type `ExternalName` works too). They connect from the pod network, or from the nodes' addresses when the cluster masquerades traffic leaving it: allow those in the firewall and the users' host part.
 - **Plain connections, on a trusted network only.** The Sync server cannot use TLS to its database (its MySQL driver is built without TLS, its PostgreSQL driver connects without it), and neither can the accounts' driver. So the server must accept connections without TLS from these users: `host` lines (not `hostssl`) in PostgreSQL's `pg_hba.conf` (per user, so the other applications can keep `hostssl`), `require_secure_transport=OFF` on MySQL and MariaDB. That one is server-wide: on a server that enforces TLS for other applications, turning it off lets all of them connect without it. Either give those applications' accounts `REQUIRE SSL` (`ALTER USER 'app'@'%' REQUIRE SSL;`, per account) before turning it off, or leave it on and use a server or instance of its own for this stack. Keep the database on the same host, or on a private network or VPN you trust.
 - **MariaDB and MySQL with binary logging** (the default on MySQL 8, `log_bin` on MariaDB): set `log_bin_trust_function_creators=ON`, otherwise the users below cannot create the max users trigger and the sign-up policy's function and trigger (`ERROR 1419`). On MySQL `SET PERSIST log_bin_trust_function_creators = ON;`, on MariaDB `SET GLOBAL log_bin_trust_function_creators = 1;` and the same in `my.cnf`. On managed services (RDS, Cloud SQL...) set it in the parameter group. Granting `SUPER` instead works too, but is not recommended.
 - **MariaDB and MySQL:** `explicit_defaults_for_timestamp=ON`, the default since MySQL 8.0 and MariaDB 10.10.
@@ -160,7 +164,7 @@ ALTER USER 'ffs_admin'@'%' IDENTIFIED BY '@FXA_ADMIN_PASSWORD@';
 
 ## Settings
 
-All in `.env`. `prepare_environment.sh` writes them when you answer `y`.
+All in `.env`. `prepare_environment.sh` writes them when you answer `y`. The Helm chart's values: [Kubernetes](#kubernetes).
 
 | Setting | Default | Your own server |
 |---|---|---|
@@ -231,6 +235,48 @@ If it cannot read them (a grant missing on your own server), it copies nothing, 
 
 `prepare_environment.sh` installs no `firefox-sync-syncstorage-db`, `firefox-sync-tokenserver-db` (with `SYNC_DB_CONTAINERS=0`) or `firefox-sync-fxa-db` (with `FXA_DB_CONTAINERS=0`) units, and removes them from the other units' `After=` and `Requires=`. The migrations retry until your server answers. A server on the same host is `host.containers.internal`, see [Server requirements](#server-requirements). Quadlets support MariaDB and MySQL only, as before.
 
+## Kubernetes
+
+The Helm chart ([HELM.md](HELM.md)), Sync only (the accounts are not in the chart):
+
+1. Create the databases and users with [db/mysql/sync.sql](/db/mysql/sync.sql) or [db/postgres/sync.sql](/db/postgres/sync.sql) ([Databases and users](#databases-and-users)): no `prepare_environment.sh` here, replace each `@NAME@` by hand with the names of the values below and your passwords (`@ADMIN_DATABASE@`, `@ADMIN_USER@`, `@ADMIN_SYNC_USER@` are `database.admin.name`, `.user`, `.syncUser`; `@ADMIN_PASSWORD@` is `ADMIN_DB_PASSWORD`, not the admin UI's sign-in password). Check the [server requirements](#server-requirements).
+1. A Secret with those passwords and the stack's secrets ([HELM.md](HELM.md#existingsecret)): `SYNC_MASTER_SECRET`, `METRICS_HASH_SECRET`, `ADMIN_DB_PASSWORD`, and `TOKENSERVER_DB_PASSWORD` and `STORAGE_DB_PASSWORD` (MariaDB, MySQL) or `POSTGRES_PASSWORD` (PostgreSQL: the owner's, `database.external.postgresUser`); the admin UI's optional ones if you use them. The chart refuses to render without it: it cannot generate passwords your server knows.
+1. The values:
+
+    ```yaml
+    existingSecret: ffs-secrets
+    database:
+      backend: mysql            # mariadb, mysql or postgres: your server's
+      bundled: false
+      external:
+        host: db.example.com
+        port: ""                # empty: 3306, or 5432 for postgres
+        # MariaDB, MySQL: the names of sync.sql (these are the defaults); storageHost and
+        # storagePort for a storage database on another server
+        tokenserverDatabase: tokenserver
+        tokenserverUser: tokenserver
+        storageDatabase: syncstorage
+        storageUser: syncstorage
+        # PostgreSQL: postgresDatabase and postgresUser (syncserver, syncserver)
+        tlsVerify: false
+    ```
+
+| Values | `.env` | Default |
+|---|---|---|
+| `database.bundled` | `SYNC_DB_CONTAINERS` | `true`; `false`: your server |
+| `database.external.host`, `.port` | `SYNC_TOKENSERVER_DB_HOST`, `_PORT` (or `SYNC_POSTGRES_HOST`, `_PORT`) | required; empty: `3306` or `5432` |
+| `database.external.storageHost`, `.storagePort` | `SYNC_STORAGE_DB_HOST`, `_PORT` | empty: those of `host` and `port` |
+| `database.external.tokenserverDatabase`, `.tokenserverUser` | `SYNC_TOKENSERVER_DB_NAME`, `_USER` | `tokenserver`, `tokenserver` |
+| `database.external.storageDatabase`, `.storageUser` | `SYNC_STORAGE_DB_NAME`, `_USER` | `syncstorage`, `syncstorage` |
+| `database.external.postgresDatabase`, `.postgresUser` | `SYNC_POSTGRES_NAME`, `_USER` | `syncserver`, `syncserver` (the owner, no superuser) |
+| `database.external.tlsVerify` | `SYNC_DB_TLS_VERIFY` | `false` |
+| `database.admin.name`, `.user`, `.syncUser` | `ADMIN_DB_NAME`, `ADMIN_DB_USER`, `ADMIN_DB_SYNC_USER` | `ffs_admin`, `ffs_admin_ui`, `ffs_admin_sync` |
+| `database.image.<backend>` | `SYNC_POSTGRES_IMAGE` | the backups' client: `pg_dump` at least the server's major |
+
+`database.external.tlsVerify` (MariaDB, MySQL): whether the init container and the backups check the server's certificate. `false` by default, as `prepare_environment.sh` writes for your own server: MySQL's own certificate is self-signed, and the CA of a managed service is not in the images (`ERROR 2026`). `true` only with a certificate from a CA the images trust (their system CAs), for that host name. The Sync server itself connects without TLS ([Server requirements](#server-requirements)).
+
+The chart then has no database pods, volumes or Secret of its own; the Sync server's pod waits for your server in its `wait-db` init container, and stops in `migrate` while a login is refused (`kubectl logs deploy/<release>-firefox-sync-syncstorage -c migrate`). The backups (`backup.enabled`) dump your server as the users of its SQL, PostgreSQL as `postgresUser`. Moving a chart install with bundled databases to your server: the dumps of [HELM.md](HELM.md#restoring) loaded as in [Moving an existing install](#moving-an-existing-install), with the passwords of the chart's Secret in your SQL and your `existingSecret`.
+
 ## Moving an existing install
 
 Moving from another Sync server instead of from this stack: see [MIGRATING.md](MIGRATING.md).
@@ -260,8 +306,8 @@ With docker compose. Not covered by the tests: check the result before you remov
 ## Troubleshooting
 
 - `ERROR 1419 ... You do not have the SUPER privilege and binary logging is enabled` (init container or `fxa-policy`): set `log_bin_trust_function_creators=ON`.
-- `ERROR 2026 ... self-signed certificate in certificate chain`, then "Timeout waiting for database connection" in the init container: set `SYNC_DB_TLS_VERIFY=false`.
-- "Timeout waiting for database connection", or the migrations never finish: the containers cannot reach the server. Check the host (not `localhost`), the port, the server's listen address, the firewall and the users' host part. Test from the stack's network: `docker compose run --rm --no-deps --entrypoint mariadb tokenserver_db_init --host=... --user=... -p --skip-ssl-verify-server-cert -e 'SELECT 1'`.
+- `ERROR 2026 ... self-signed certificate in certificate chain`, then "Timeout waiting for database connection" in the init container: set `SYNC_DB_TLS_VERIFY=false` (Helm: `database.external.tlsVerify: false`).
+- "Timeout waiting for database connection", or the migrations never finish: the containers cannot reach the server. Check the host (not `localhost`), the port, the server's listen address, the firewall and the users' host part. Test from the stack's network: `docker compose run --rm --no-deps --entrypoint mariadb tokenserver_db_init --host=... --user=... -p --skip-ssl-verify-server-cert -e 'SELECT 1'`. With the Helm chart: `kubectl logs deploy/<release>-firefox-sync-syncstorage -c wait-db` (the server answers) and `-c migrate` (the login).
 - `ER_NOT_SUPPORTED_AUTH_MODE` from the accounts (fxa-migrations, fxa-auth): `FXA_MYSQL_USER` must use `mysql_native_password`, and MySQL 8.4 needs `mysql_native_password=ON`.
 - `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY ..._ibfk_1` from fxa-migrations: the server is MariaDB 12 and the accounts image does not have [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494) (Mozilla's images, or ours from before, [MariaDB 12](FXA.md#mariadb-12)): use our current images, or MariaDB 11.4 to 11.8 on a new database.
 - `Access denied` from PostgreSQL, or `no pg_hba.conf entry`: add a `host` line for the containers' addresses.

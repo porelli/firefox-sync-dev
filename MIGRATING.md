@@ -14,7 +14,7 @@ The Sync server keeps a copy of what your browsers already have, encrypted with 
 
 The data kept only on the old server is lost: for example the data of a device you no longer have. If no device has everything, move the database instead: see the sections below for the setups where that works.
 
-To keep the same address, the path must match too: firefox-sync's tokenserver is at `https://<host>/1.0/sync/1.5` and the storage at `https://<host>/1.5/<uid>`. With `SYNC_PUBLIC_URL` set to the old host name, point the reverse proxy for that host to firefox-sync (`127.0.0.1:${SYNC_EXPORT_PORT}`, see [syncstorage-rs-example.conf](config/nginx/syncstorage-rs-example.conf)).
+To keep the same address, the path must match too: firefox-sync's tokenserver is at `https://<host>/1.0/sync/1.5` and the storage at `https://<host>/1.5/<uid>`. With `SYNC_PUBLIC_URL` set to the old host name, point the reverse proxy for that host to firefox-sync (`127.0.0.1:${SYNC_EXPORT_PORT}`, see [syncstorage-rs-example.conf](config/nginx/syncstorage-rs-example.conf); with the Helm chart, `syncDomain` and its Ingress).
 
 Rollback: stop the old stack (`docker compose stop`, not `down -v`) instead of removing it. Until all devices have synced with firefox-sync, going back is pointing the reverse proxy, or the Firefox setting, back to it and starting it.
 
@@ -25,6 +25,7 @@ Tested: not as a migration. It is what Firefox does with any new server: [`tests
 | You run | Sync data | Accounts | Section |
 |---|---|---|---|
 | an older release of firefox-sync | upgrade in place | - | [Older firefox-sync releases](#older-firefox-sync-releases) |
+| firefox-sync with docker compose or the Quadlets, to Kubernetes | dump and restore | Mozilla's | [From docker compose to Kubernetes](#from-docker-compose-to-kubernetes) |
 | Mozilla's syncstorage-rs compose files | start fresh, or move the database | Mozilla's | [syncstorage-rs](#mozillas-syncstorage-rs-compose-files) |
 | dan-r/syncstorage-rs-docker, MASH | start fresh, or move the database | Mozilla's | [dan-r](#dan-rsyncstorage-rs-docker-and-mash) |
 | jeena/fxsync-docker | start fresh, or move the database | Mozilla's | [jeena](#jeenafxsync-docker) |
@@ -75,6 +76,8 @@ This only works between syncstorage-rs servers (the Rust one) on the same kind o
     With [your own database server](DATABASES.md), load them with `mariadb`/`psql` as in [Moving an existing install](DATABASES.md#moving-an-existing-install) (not tested).
 1. `docker compose up -d`.
 1. Point your reverse proxy, or Firefox, to firefox-sync, as in [Start fresh](#start-fresh-first). Firefox does not need to sign out: on its next token it is sent to the new node and finds its data there.
+
+To Kubernetes: load the dumps into docker compose as above, then [From docker compose to Kubernetes](#from-docker-compose-to-kubernetes) (not tested).
 
 ### Checking the result
 
@@ -135,6 +138,55 @@ Firefox: nothing to change. Rollback: the old files and images, with `.env.befor
 - An older init image with the newer admin UI: on MariaDB and MySQL the admin UI's reader `ffs_admin_sync` changes the tokenserver database only through the init container's procedures (`ffs_set_max_users`, `ffs_delete_user_row`, `ffs_drop_admin_tables`), which an older init image does not create: on the databases of before (the backup) the max users edits, the resets that free a slot and the deleted accounts fail with a missing procedure. Pin the init image back only with the admin UI (`ADMIN_IMAGE`), or keep the init image of this release as long as its admin UI runs.
 
 Tested: docker compose, `tests/migrate.sh firefox-sync-2024-12` (4705bda, images 0.18.2) and `firefox-sync-2024-07` (the first release, 7f52fa0, image 0.17.1): the old release's files and `.env`, an account syncs, then the new files over them, `./prepare_environment.sh --upgrade`, the missing lines of `.env-example` added as above, `docker compose pull && docker compose up -d`: same volumes, same accounts on the same node with their data, `SYNC_MAX_USERS` and the admin UI count them. The Quadlets: `UPGRADE_FROM=<checkout of the release before> tests/podman.sh` (cb8e519, MariaDB containers) runs the steps above but the pull (it has this tree's images already): the admin UI's audit event of before moves into `ffs_admin`. The files moved for `db/`: `tests/podman.sh` has `--upgrade` rename `docker-compose.postgres.yml` in `COMPOSE_FILE`, and `UPGRADE_FROM=<checkout of cb8e519> tests/e2e.sh postgres` runs the upgraded stack through the `docker-compose.postgres.yml` symlink. The old setting names: `tests/podman.sh` starts its compose phase from an `.env` with only the old names and has `--upgrade` rename them, `tests/e2e.sh` starts its install from before with only the old names, and `tests/migrate.sh firefox-sync-2024-12` upgrades a real `.env` of then. Not tested: the Quadlets on your own database server, the backup and the rollback.
+
+## From docker compose to Kubernetes
+
+The same images and databases, moved to the [Helm chart](HELM.md) with a dump and a restore. Sync only: the chart has no self-hosted accounts yet, an install with them stays on compose or the Quadlets.
+
+1. On the compose host, with this release (an older one: [Older firefox-sync releases](#older-firefox-sync-releases) first, so that `.env` has the `SYNC_` names): stop the Sync server and the admin UI, so that nothing changes after the dump, and make one with the backup service ([ADMIN.md](ADMIN.md#backups); turn it on for this if it is off, `COMPOSE_PROFILES=...,backup` and `docker compose up -d backup`):
+
+    ```bash
+    docker compose stop syncstorage admin
+    docker compose exec backup sh /ffs-backup/backup.sh now
+    docker run --rm -v firefox-sync_backups:/backups:ro -v "$PWD":/out busybox tar -C /backups -czf /out/ffs-backups.tar.gz .
+    ```
+
+    The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`, `SYNC_POSTGRES_NAME`, `ADMIN_DB_NAME`): the chart's restore reads `tokenserver`, `syncstorage` (PostgreSQL `syncserver`) and `ffs_admin`. Other names: rename them in the copy. With the Quadlets: `systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service`, `systemctl --user start firefox-sync-backup.service`, `podman volume export firefox-sync-backups > ffs-backups.tar`.
+1. An `existingSecret` with the secrets of `.env` ([HELM.md](HELM.md#existingsecret)), so that the Sync server keeps its `SYNC_MASTER_SECRET` and `SYNC_METRICS_HASH_SECRET` (new ones work too: Firefox gets a new token when the old one is refused). The chart's keys are not all named as in `.env`:
+
+    ```bash
+    v() { grep -m1 "^$1=" .env | cut -d= -f2-; }
+    kubectl create secret generic ffs-secrets \
+      --from-literal=SYNC_MASTER_SECRET="$(v SYNC_MASTER_SECRET)" --from-literal=METRICS_HASH_SECRET="$(v SYNC_METRICS_HASH_SECRET)" \
+      --from-literal=ADMIN_PASSWORD="$(v ADMIN_PASSWORD)" --from-literal=ADMIN_DB_PASSWORD="$(v ADMIN_DB_PASSWORD)" \
+      --from-literal=TOKENSERVER_DB_PASSWORD="$(v SYNC_TOKENSERVER_DB_PASSWORD)" --from-literal=STORAGE_DB_PASSWORD="$(v SYNC_STORAGE_DB_PASSWORD)"
+    # PostgreSQL, instead of the last two: POSTGRES_PASSWORD from SYNC_POSTGRES_PASSWORD,
+    # POSTGRES_SYNC_PASSWORD from SYNC_POSTGRES_APP_PASSWORD
+    ```
+
+    The bundled databases are new: their passwords need not be the old ones, but none may be empty (an `.env` without `ADMIN_DB_PASSWORD` or `SYNC_POSTGRES_APP_PASSWORD`: generate one).
+1. Your values, from `.env`:
+
+    | `.env` | Values |
+    |---|---|
+    | `SYNC_PUBLIC_URL` | `syncDomain` (keep it: Firefox goes on with the same address) |
+    | `SYNC_MAX_USERS` | `maxUsers` |
+    | `SYNC_DB` (`docker-compose.sync-postgres.yml` in `COMPOSE_FILE`: `postgres`) | `database.backend` |
+    | `SYNC_POSTGRES_IMAGE` | `database.image.postgres` (the same major: its dump loads into a newer one too) |
+    | `SYNC_IMAGE_TAG`, `SYNC_INIT_IMAGE_TAG` | `image.syncstorageTag`, `image.initTag` |
+    | `FXA_OAUTH_SERVER_URL`, `FXA_EMAIL_DOMAIN` | `fxa.oauthServerUrl`, `fxa.emailDomain` (Mozilla's accounts: the defaults) |
+    | `COMPOSE_PROFILES` with `admin`, `ADMIN_*`, `FXA_SMTP_*` | `admin.enabled: true`, `admin.*` ([values.yaml](/charts/firefox-sync/values.yaml)) |
+    | `COMPOSE_PROFILES` with `backup`, `BACKUP_KEEP`, `BACKUP_TIME` | `backup.enabled: true` (needed for the restore), `backup.keep`, `backup.schedule` (`"M H * * *"`) |
+
+    and `existingSecret: ffs-secrets`, the Ingress ([HELM.md](HELM.md#install)).
+1. `helm install` with them, put the copy into the backups' PVC and restore it: [HELM.md](HELM.md#restoring), "on a new one", from step 3 (the Secret is your `existingSecret`).
+1. Point the host name to the Ingress (DNS, or your reverse proxy), then check as in [Checking the result](#checking-the-result) (`kubectl logs deploy/ffs-firefox-sync-syncstorage -c db-init` shows `Current users: N`). Firefox needs nothing: the same address, the same accounts on the same node.
+
+With your own database server (`SYNC_DB_CONTAINERS=0`) there is nothing to move: stop the stack (`docker compose down`), put the passwords of `.env` into the `existingSecret` as above, and point the chart to the same server and names ([DATABASES.md](DATABASES.md#kubernetes)).
+
+Rollback: `docker compose start syncstorage admin` (or the Quadlets) and the host name back to it, as long as nothing synced to Kubernetes in the meantime (what did is still on the devices, which upload it again).
+
+Tested: not as a migration. `tests/helm.sh e2e` restores the chart's own backups with the commands of [ADMIN.md#restoring](ADMIN.md#restoring) in pods of the backup's spec, as [HELM.md](HELM.md#restoring) does; HELM.md's steps as written were run once on kind (MariaDB, PostgreSQL), not in CI.
 
 ## Renamed settings
 
