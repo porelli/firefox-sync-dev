@@ -469,6 +469,19 @@ env_values() {
     | jq -r --arg n "${name}" "${ENVS} | map(select(.n == \$n) | .v) | unique | join(\" \")"
 }
 
+# notes <helm args>...: NOTES.txt as helm install shows it (helm template does not render it, and
+# install --dry-run needs a cluster): rendered with tpl in a copy of the chart
+notes() {
+  local d out
+  d=$(mktemp -d)
+  cp -r "${CHART_DIR}" "${d}/chart" && cp "${CHART_DIR}/templates/NOTES.txt" "${d}/chart/files/notes.txt"
+  printf '%s\n' 'apiVersion: v1' 'kind: ConfigMap' 'metadata: {name: notes}' 'data:' '  notes: {{ tpl (.Files.Get "files/notes.txt") . | toJson }}' \
+    > "${d}/chart/templates/zz-notes.yaml"
+  out=$(helm template test-release "${d}/chart" -f "${CHART_DIR}/ci/default-values.yaml" "$@" --show-only templates/zz-notes.yaml 2>&1 | manifests | jq -r '.[0].data.notes') || true
+  rm -rf "${d}"
+  echo "${out}"
+}
+
 # the names of the roles and databases (compose's POSTGRES_SYNC_USER, ADMIN_DB_NAME,
 # ADMIN_DB_USER, ADMIN_DB_SYNC_USER) and your own database server (database.bundled=false)
 external_lint() {
@@ -491,12 +504,15 @@ external_lint() {
   out=$(env_values SYNC_TOKENSERVER__DATABASE_URL --set database.backend=postgres "${names[@]}")
   [[ "${out}" == 'postgres://sync_owner:$(POSTGRES_SYNC_PASSWORD)@test-release-firefox-sync-postgres:5432/syncserver' ]] || fail "the Sync server's URL: ${out}"
   [[ "$(env_values TOKENSERVER_DB_USER --set database.backend=postgres "${names[@]}")" == sync_owner ]] || fail "the backups and the admin UI not as database.postgresSyncUser"
-  for bad in database.postgresSyncUser=Bad-Name database.admin.name= database.admin.user='x;drop' database.admin.syncUser=1abc; do
+  for bad in database.postgresSyncUser=Bad-Name database.admin.name= database.admin.user='x;drop' database.admin.syncUser=1abc \
+    database.admin.name="$(printf 'a%.0s' $(seq 1 33))" database.external.postgresUser="$(printf 'a%.0s' $(seq 1 33))"; do
     if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set "${bad}" > /dev/null 2>&1; then
       fail "${bad} not refused by the schema"
     fi
   done
-  check "database.postgresSyncUser, database.admin.name/user/syncUser everywhere (no default name left), names a-z 0-9 _ only"
+  helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.admin.user="$(printf 'a%.0s' $(seq 1 32))" > /dev/null \
+    || fail "a name of 32 characters refused"
+  check "database.postgresSyncUser, database.admin.name/user/syncUser everywhere (no default name left), names a-z 0-9 _ only, at most 32"
 
   echo "Testing your own database server..."
   local ext=(--set database.bundled=false --set database.external.host=db.example.test --set existingSecret=mine)
@@ -529,6 +545,19 @@ external_lint() {
     | grep -E '^ *wait_db "' | sed 's/^ *//' | paste -sd' ' -)
   [[ "${waits}" == 'wait_db "db.example.test" "3308" wait_db "st.example.test" "3307"' ]] || fail "wait-db does not wait for both servers: ${waits}"
   check "mysql, your own servers: host/port/database/user of each, the storage on another server, tlsVerify, wait-db for both"
+  # MARIADB_TLS_VERIFY: false for your own server unless tlsVerify (prepare_environment.sh's),
+  # the bundled ones unchanged (MariaDB checked, MySQL's self-signed not)
+  for backend in mariadb mysql; do
+    [[ "$(env_values MARIADB_TLS_VERIFY --set database.backend="${backend}" "${ext[@]}" --set backup.enabled=true)" == false ]] \
+      || fail "${backend}, your own server: MARIADB_TLS_VERIFY not false by default"
+    [[ "$(env_values MARIADB_TLS_VERIFY --set database.backend="${backend}" "${ext[@]}" --set backup.enabled=true --set database.external.tlsVerify=true)" == true ]] \
+      || fail "${backend}, your own server: tlsVerify=true not MARIADB_TLS_VERIFY=true"
+  done
+  [[ "$(env_values MARIADB_TLS_VERIFY --set backup.enabled=true) $(env_values MARIADB_TLS_VERIFY --set database.backend=mysql --set backup.enabled=true)" == "true false" ]] \
+    || fail "the bundled servers' MARIADB_TLS_VERIFY changed"
+  notes --set database.backend=mysql "${ext[@]}" | grep -q 'do not check the server.s certificate (tlsVerify false' || fail "NOTES: nothing on tlsVerify false"
+  notes --set database.backend=mysql "${ext[@]}" --set database.external.tlsVerify=true | grep -q 'from a CA the images trust' || fail "NOTES: nothing on tlsVerify true"
+  check "your own MariaDB/MySQL: MARIADB_TLS_VERIFY false unless tlsVerify (NOTES says which), the bundled ones unchanged"
   # PostgreSQL: compose's POSTGRES_* of your own server, POSTGRES_USER the owner (no Sync role)
   out=$(env_values SYNC_TOKENSERVER__DATABASE_URL --set database.backend=postgres "${ext[@]}")
   [[ "${out}" == 'postgres://syncserver:$(POSTGRES_PASSWORD)@db.example.test:5432/syncserver' ]] || fail "postgres, bundled=false: the URL: ${out}"
@@ -550,12 +579,17 @@ external_lint() {
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.bundled=false --set database.external.host=db.example.test 2>&1) \
     && fail "bundled=false without existingSecret renders"
   grep -q 'existingSecret' <<< "${out}" || fail "bundled=false without existingSecret: not the message: ${out}"
+  [[ "$(env_values SYNC_TOKENSERVER__DATABASE_URL --set database.backend=postgres "${ext[@]}" --set-string database.external.port=6432)" == *@db.example.test:6432/* ]] \
+    || fail "a quoted database.external.port not taken"
+  out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" "${ext[@]}" --set-string database.external.port=70000 2>&1) \
+    && fail "a quoted database.external.port 70000 renders"
+  grep -q 'database.external.port 70000 is no port' <<< "${out}" || fail "a quoted port 70000: not the message: ${out}"
   for bad in database.external.port=-1 database.external.port=70000 database.external.port=abc database.external.storagePort=0; do
     if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" "${ext[@]}" --set "${bad}" > /dev/null 2>&1; then
       fail "${bad} not refused by the schema"
     fi
   done
-  check "bundled=false refused without database.external.host or existingSecret; ports 1-65535 only"
+  check "bundled=false refused without database.external.host or existingSecret; ports 1-65535 only (quoted too, with a message)"
 }
 
 # the Ingress of the Sync server (ingress.*) and, apart, of the admin UI (admin.ingress.*):
@@ -594,9 +628,16 @@ ingress_lint() {
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set ingress.enabled=true --set admin.enabled=true \
     --set admin.ingress.enabled=true --set admin.ingress.host=sync.example.test 2>&1) && fail "the admin UI's Ingress on the Sync server's host renders"
   grep -q 'admin.ingress.host' <<< "${out}" || fail "the admin UI's Ingress on the Sync host: not the message: ${out}"
+  # (syncDomain's host also without the Sync server's Ingress: your own in front of it)
+  out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true \
+    --set admin.ingress.enabled=true --set admin.ingress.host=sync.example.test 2>&1) && fail "the admin UI's Ingress on syncDomain's host renders"
+  grep -q 'is the Sync server.s host' <<< "${out}" || fail "the admin UI's Ingress on syncDomain's host: not the message: ${out}"
+  local admin_on=(--set admin.enabled=true --set admin.ingress.enabled=true --set admin.ingress.host=admin.example.test)
+  notes "${admin_on[@]}" | grep -q '^WARNING: admin.ingress.tls.enabled is false' || fail "NOTES: no warning on the admin Ingress without TLS"
+  ! notes "${admin_on[@]}" --set admin.ingress.tls.enabled=true | grep -q WARNING || fail "NOTES: a warning on the admin Ingress with TLS"
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set ingress.enabled=true --set syncDomain=https:// 2>&1) \
     && fail "ingress without a host (none in syncDomain either) renders"
-  check "admin.ingress: <fullname>-admin:8080 only with admin.enabled and admin.ingress.enabled, a host of its own (required, not the Sync server's)"
+  check "admin.ingress: <fullname>-admin:8080 only with admin.enabled and admin.ingress.enabled, a host of its own (required, not the Sync server's nor syncDomain's), NOTES warns without TLS"
   # valid Kubernetes objects, everything on (kubeconform -strict)
   if command -v kubeconform > /dev/null; then
     helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/backup-values.yaml" --set ingress.enabled=true --set ingress.host=sync.example.test \
@@ -696,15 +737,15 @@ e2e() {
   local db_args=(--set backup.enabled=true)
   if [[ -n "${EXTERNAL}" ]]; then
     start_extdb
-    # your own server: its names (not the defaults), the passwords in your Secret, no
-    # backups (yours, DATABASES.md); the Ingress on, of a class no controller serves
+    # your own server: its names (not the defaults), the passwords in your Secret, the
+    # backups; the Ingress on, of a class no controller serves
     SECRET=ffs-own
     db_args=(--set database.bundled=false --set database.external.host=extdb --set existingSecret="${SECRET}"
       --set database.admin.name="${EXT_ADMIN_DB}" --set database.admin.user="${EXT_ADMIN_USER}" --set database.admin.syncUser="${EXT_ADMIN_SYNC}"
-      --set ingress.enabled=true --set ingress.className=none)
+      --set ingress.enabled=true --set ingress.className=none --set backup.enabled=true)
     if [[ ${backend} == mysql ]]; then
-      # MySQL's own certificate is self-signed (DATABASES.md: MARIADB_TLS_VERIFY=false)
-      db_args+=(--set database.external.tlsVerify=false --set database.external.tokenserverDatabase="${EXT_TS_DB}"
+      # (MySQL's own certificate is self-signed: database.external.tlsVerify false, its default)
+      db_args+=(--set database.external.tokenserverDatabase="${EXT_TS_DB}"
         --set database.external.tokenserverUser="${EXT_TS_USER}" --set database.external.storageDatabase="${EXT_ST_DB}"
         --set database.external.storageUser="${EXT_ST_USER}")
     else
@@ -720,9 +761,10 @@ e2e() {
     || fail "helm install did not get Ready"
   check "helm install (${backend}${EXTERNAL:+, your own server}) Ready"
   if [[ -n "${EXTERNAL}" ]]; then
-    [[ -z "$(kubectl get sts,pvc,secret -l "app.kubernetes.io/instance=${REL}" -o name)" ]] \
+    # (the backups' PVC only)
+    [[ "$(kubectl get sts,pvc,secret -l "app.kubernetes.io/instance=${REL}" -o name | paste -sd' ' -)" == "persistentvolumeclaim/${FULL}-backups" ]] \
       || fail "bundled=false: the chart made $(kubectl get sts,pvc,secret -l "app.kubernetes.io/instance=${REL}" -o name | paste -sd' ' -)"
-    check "no database server, volume or Secret of the chart"
+    check "no database server, database volume or Secret of the chart (the backups' PVC)"
     ingress_is "${FULL}-syncstorage" none sync.example.test "${FULL}-syncstorage" 8000
     check "Ingress ${FULL}-syncstorage (class none): sync.example.test/ to ${FULL}-syncstorage:8000"
   fi
@@ -827,8 +869,7 @@ admin_toggle() {
   fi
   check "signed in to the admin UI with the Secret's ADMIN_PASSWORD"
   # a backup now, the command of the overview's help; restored as ADMIN.md#restoring says
-  # (your own server: the backups are yours)
-  [[ -n "${EXTERNAL}" ]] || backup_restore
+  backup_restore
   # the first health check runs at the start, the version once the Sync server answered
   deadline=$(( $(date +%s) + 180 ))
   while :; do
@@ -853,17 +894,15 @@ admin_toggle() {
   # the run of backup-now on the Backups card (the admin UI reads ffs_backups, backup.sh
   # writes it), within a minute
   deadline=$(( $(date +%s) + 120 ))
-  until [[ -n "${EXTERNAL}" ]] || grep -qE '<p class="hint" data-scope="sync">Last backup of the Sync databases: [^<]+, [0-9.]+ [KMG]?B, <span class="ok">ok</span>' <<< "${page}"; do
+  until grep -qE '<p class="hint" data-scope="sync">Last backup of the Sync databases: [^<]+, [0-9.]+ [KMG]?B, <span class="ok">ok</span>' <<< "${page}"; do
     if [[ $(date +%s) -ge ${deadline} ]]; then
       kill "${pf}"; fail "the Backups card does not show the run: $(grep -oE 'id="backups">.{0,300}' <<< "${page}")"
     fi
     sleep 5
     page=$(curl -s -b "${jar}" http://localhost:18090/)
   done
-  if [[ -z "${EXTERNAL}" ]]; then
-    grep -q 'id="backup-what">Every night at 03:00 UTC' <<< "${page}" || { kill "${pf}"; fail "the Backups card without BACKUP_TIME 03:00"; }
-    check "overview: the Backups card shows the run of backup-now, every night at 03:00 UTC"
-  fi
+  grep -q 'id="backup-what">Every night at 03:00 UTC' <<< "${page}" || { kill "${pf}"; fail "the Backups card without BACKUP_TIME 03:00"; }
+  check "overview: the Backups card shows the run of backup-now, every night at 03:00 UTC"
   [[ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer e2e-token' http://localhost:18090/metrics)" == 200 ]] \
     || { kill "${pf}"; fail "/metrics refuses admin.metricsToken"; }
   check "/metrics with admin.metricsToken"
@@ -917,9 +956,20 @@ backup_restore() {
   [[ "${run}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "no run in the backups volume: ${run}"
   check "a run in the backups volume: ${run}"
 
-  # 1. empty database servers, as on a new host (the chart's spec, empty volumes)
+  # 1. empty database servers, as on a new host (the chart's spec, empty volumes; your own:
+  # one more like it, with DATABASES.md's SQL)
   local servers ts st ts_ip st_ip
-  if [[ "${BACKEND}" == postgres ]]; then
+  if [[ -n "${EXTERNAL}" ]]; then
+    servers=
+    extdb_server scratchdb
+    if [[ "${BACKEND}" == mysql ]]; then
+      # the dumps of MySQL lock each table while they load it (LOCK TABLES), which
+      # db/mysql/sync.sql does not grant the Sync users (the stack's MySQL containers grant
+      # them everything on their databases): given here, as the administrator of the new server
+      EXTDB_POD=scratchdb-0 extdb_admin -e "GRANT LOCK TABLES ON \`${EXT_TS_DB}\`.* TO '${EXT_TS_USER}'@'%';
+        GRANT LOCK TABLES ON \`${EXT_ST_DB}\`.* TO '${EXT_ST_USER}'@'%';" < /dev/null || fail "LOCK TABLES not granted on scratchdb"
+    fi
+  elif [[ "${BACKEND}" == postgres ]]; then
     servers="${FULL}-postgres"
   else
     servers="${FULL}-tokenserver-db ${FULL}-storage-db"
@@ -929,22 +979,26 @@ backup_restore() {
       metadata: {name: $n, labels: {"ffs-e2e": "scratch"}}, spec: ($s + {volumes: (($s.volumes // []) + [{name: "data", emptyDir: {}}])})}' \
       | kubectl apply -f - > /dev/null || fail "scratch server of ${s} not created"
   done
-  kubectl wait --for=condition=Ready pod -l ffs-e2e=scratch --timeout=5m > /dev/null || fail "the scratch database servers not Ready"
-  if [[ "${BACKEND}" == postgres ]]; then
+  [[ -z "${servers}" ]] || kubectl wait --for=condition=Ready pod -l ffs-e2e=scratch --timeout=5m > /dev/null || fail "the scratch database servers not Ready"
+  if [[ -n "${EXTERNAL}" ]]; then
+    ts=scratchdb-0 st=scratchdb-0
+  elif [[ "${BACKEND}" == postgres ]]; then
     ts=scratch-postgres st=scratch-postgres
   else
     ts=scratch-tokenserver-db st=scratch-storage-db
   fi
   ts_ip=$(kubectl get pod "${ts}" -o jsonpath='{.status.podIP}')
   st_ip=$(kubectl get pod "${st}" -o jsonpath='{.status.podIP}')
-  check "empty database servers like the chart's: ${ts} ${st}"
+  local like="the chart's"
+  [[ -z "${EXTERNAL}" ]] || like="your own, with its SQL"
+  check "empty database servers like ${like}: ${ts} ${st}"
 
   # 4. the tokenserver (PostgreSQL: the one database), with ADMIN.md's commands
   local restore
   restore=$(admin_md_restore "$([[ "${BACKEND}" == postgres ]] && echo 2 || echo 1)")
   [[ -n "${restore}" ]] || fail "no restore command of step 4 in ADMIN.md#restoring"
   [[ "${BACKEND}" == mysql ]] && restore=$(sed 's/^\( *\)mariadb /\1mysql /' <<< "${restore}")
-  if [[ "${BACKEND}" == postgres ]]; then
+  if [[ "${BACKEND}" == postgres && -z "${EXTERNAL}" ]]; then
     # into the empty database as the Sync server's role, which sync_role_init creates first:
     # here the sync-role init container of the Sync server's pod, on the new server
     one_shot restore-sync-role "$(kubectl get deploy "${FULL}-syncstorage" -o json | jq --arg ip "${ts_ip}" '{containers: [.spec.template.spec.initContainers[]
@@ -971,7 +1025,9 @@ backup_restore() {
 
   local bso=bso users_now items_now
   [[ "${BACKEND}" == postgres ]] && bso=bsos
-  if [[ "${BACKEND}" == postgres ]]; then
+  if [[ -n "${EXTERNAL}" ]]; then
+    users_now=$(count extdb-0 users) items_now=$(count extdb-0 "${bso}")
+  elif [[ "${BACKEND}" == postgres ]]; then
     users_now=$(count "${FULL}-postgres-0" users) items_now=$(count "${FULL}-postgres-0" "${bso}")
   else
     users_now=$(count "${FULL}-tokenserver-db-0" users) items_now=$(count "${FULL}-storage-db-0" "${bso}")
@@ -981,6 +1037,7 @@ backup_restore() {
   [[ "$(count "${st}" "${bso}")" == "${items_now}" ]] || fail "${bso}: $(count "${st}" "${bso}") restored, ${items_now} in the chart's database"
   check "the same rows of users (${users_now}) and ${bso} (${items_now}) restored"
   kubectl delete pod -l ffs-e2e --wait=false > /dev/null
+  [[ -z "${EXTERNAL}" ]] || kubectl delete sts,svc scratchdb --wait=false > /dev/null
 }
 
 # admin_md_restore <n>: the n-th command of ADMIN.md#restoring run in the backup container that
@@ -1024,6 +1081,19 @@ one_shot() {
 
 # count <pod> <table>: its rows, in the pod's database server, as the stack's user
 count() {
+  if [[ -n "${EXTERNAL}" ]]; then
+    case "${BACKEND}" in
+      mysql)
+        if [[ $2 == users ]]; then
+          kubectl exec "$1" -- env MYSQL_PWD="$(secret TOKENSERVER_DB_PASSWORD)" mysql -h 127.0.0.1 --protocol=tcp -N -u "${EXT_TS_USER}" "${EXT_TS_DB}" -e "SELECT COUNT(*) FROM $2"
+        else
+          kubectl exec "$1" -- env MYSQL_PWD="$(secret STORAGE_DB_PASSWORD)" mysql -h 127.0.0.1 --protocol=tcp -N -u "${EXT_ST_USER}" "${EXT_ST_DB}" -e "SELECT COUNT(*) FROM $2"
+        fi ;;
+      postgres) kubectl exec "$1" -- env PGPASSWORD="$(secret POSTGRES_PASSWORD)" \
+        psql -X -tA -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "${EXT_PG_USER}" -d "${EXT_PG_DB}" -c "SELECT COUNT(*) FROM $2" ;;
+    esac
+    return
+  fi
   case "${BACKEND}" in
     mariadb) kubectl exec "$1" -c db -- sh -c 'mariadb -N -u"${MARIADB_USER}" -p"${MARIADB_PASSWORD}" "${MARIADB_DATABASE}" -e "SELECT COUNT(*) FROM $1"' sh "$2" ;;
     mysql) kubectl exec "$1" -c db -- sh -c 'mysql -N -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e "SELECT COUNT(*) FROM $1" 2> /dev/null' sh "$2" ;;
@@ -1159,12 +1229,14 @@ external_users() {
 }
 
 # EXTERNAL_DB=1: SQL as the administrator of your own server (MySQL: root; PostgreSQL: the
-# image's superuser, only to create the administrator of start_extdb), on stdin
+# image's superuser, only to create the administrator of extdb_server), on stdin; in the pod
+# EXTDB_POD (extdb-0)
 extdb_admin() {
+  local pod=${EXTDB_POD:-extdb-0}
   if [[ "${BACKEND}" == mysql ]]; then
-    kubectl exec -i extdb-0 -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" exec mysql -h 127.0.0.1 --protocol=tcp -uroot -sN "$@"' sh "$@"
+    kubectl exec -i "${pod}" -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" exec mysql -h 127.0.0.1 --protocol=tcp -uroot -sN "$@"' sh "$@"
   else
-    kubectl exec -i extdb-0 -- sh -c 'PGPASSWORD="${POSTGRES_PASSWORD}" exec psql -X -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA "$@"' sh "$@"
+    kubectl exec -i "${pod}" -- sh -c 'PGPASSWORD="${POSTGRES_PASSWORD}" exec psql -X -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA "$@"' sh "$@"
   fi
 }
 
@@ -1174,61 +1246,25 @@ extdb_admin() {
 # users of DATABASES.md (db/<engine>/sync.sql with its placeholders filled in) under names
 # other than the defaults, and the Secret of existingSecret with the same passwords
 start_extdb() {
-  local image port data env args probe
   EXT_ADMIN_DB=own_admin EXT_ADMIN_USER=own_admin_ui EXT_ADMIN_SYNC=own_admin_sync
   EXT_TS_DB=own_tokenserver EXT_TS_USER=own_ts EXT_ST_DB=own_storage EXT_ST_USER=own_st
   EXT_PG_DB=own_sync EXT_PG_USER=own_sync_owner
-  local root ts st pg admin
-  root=$(rnd) ts=$(rnd) st=$(rnd) pg=$(rnd) admin=$(rnd)
-  if [[ "${BACKEND}" == mysql ]]; then
-    # binary logging on (MySQL 8's default): the trigger needs log_bin_trust_function_creators
-    image=mysql:8.4 port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
-    probe='mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent'
-  else
-    image=postgres:18 port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'
-    probe='pg_isready -h 127.0.0.1 -U postgres'
-  fi
-  # (over TCP in the probe: while the image initializes, a temporary server on the socket only)
-  jq -n --arg image "${image}" --argjson port "${port}" --arg data "${data}" --arg env "${env}" --arg root "${root}" \
-    --argjson args "${args}" --arg probe "${probe}" '
-    {apiVersion: "v1", kind: "List", items: [
-      {apiVersion: "v1", kind: "Service", metadata: {name: "extdb"},
-       spec: {selector: {app: "extdb"}, ports: [{port: $port, targetPort: $port}]}},
-      {apiVersion: "apps/v1", kind: "StatefulSet", metadata: {name: "extdb"},
-       spec: {serviceName: "extdb", replicas: 1, selector: {matchLabels: {app: "extdb"}},
-         template: {metadata: {labels: {app: "extdb"}}, spec: {
-           containers: [{name: "db", image: $image, args: $args, env: [{name: $env, value: $root}],
-             ports: [{containerPort: $port}],
-             readinessProbe: {exec: {command: ["sh", "-c", $probe]}, periodSeconds: 5, timeoutSeconds: 5},
-             volumeMounts: [{name: "data", mountPath: $data}]}],
-           volumes: [{name: "data", emptyDir: {}}]}}}}]}' | kubectl apply -f - > /dev/null || fail "your own database server not created"
-  kubectl rollout status sts/extdb --timeout=5m > /dev/null || fail "your own database server (${image}) not Ready"
-  check "your own database server: ${image}, not the chart's"
-  local sql_file
-  sql_file=$(mktemp)
+  local ts st pg admin
+  ts=$(rnd) st=$(rnd) pg=$(rnd) admin=$(rnd)
+  EXT_SQL=$(mktemp)
   if [[ "${BACKEND}" == mysql ]]; then
     sed -e "s|@TOKENSERVER_DATABASE@|${EXT_TS_DB}|g" -e "s|@TOKENSERVER_USER@|${EXT_TS_USER}|g" -e "s|@TOKENSERVER_PASSWORD@|${ts}|g" \
       -e "s|@SYNCSTORAGE_DATABASE@|${EXT_ST_DB}|g" -e "s|@SYNCSTORAGE_USER@|${EXT_ST_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${st}|g" \
       -e "s|@ADMIN_DATABASE@|${EXT_ADMIN_DB}|g" -e "s|@ADMIN_USER@|${EXT_ADMIN_USER}|g" -e "s|@ADMIN_SYNC_USER@|${EXT_ADMIN_SYNC}|g" \
-      -e "s|@ADMIN_PASSWORD@|${admin}|g" "${REPO_ROOT}/db/mysql/sync.sql" > "${sql_file}"
+      -e "s|@ADMIN_PASSWORD@|${admin}|g" "${REPO_ROOT}/db/mysql/sync.sql" > "${EXT_SQL}"
   else
     sed -e "s|@POSTGRES_DATABASE@|${EXT_PG_DB}|g" -e "s|@POSTGRES_USER@|${EXT_PG_USER}|g" -e "s|@POSTGRES_PASSWORD@|${pg}|g" \
       -e "s|@ADMIN_DATABASE@|${EXT_ADMIN_DB}|g" -e "s|@ADMIN_USER@|${EXT_ADMIN_USER}|g" -e "s|@ADMIN_SYNC_USER@|${EXT_ADMIN_SYNC}|g" \
-      -e "s|@ADMIN_PASSWORD@|${admin}|g" "${REPO_ROOT}/db/postgres/sync.sql" > "${sql_file}"
+      -e "s|@ADMIN_PASSWORD@|${admin}|g" "${REPO_ROOT}/db/postgres/sync.sql" > "${EXT_SQL}"
   fi
-  ! grep -q '@[A-Z_]*@' "${sql_file}" || fail "placeholders left in db/${BACKEND}/sync.sql: $(grep -o '@[A-Z_]*@' "${sql_file}" | sort -u | paste -sd' ' -)"
-  if [[ "${BACKEND}" == mysql ]]; then
-    extdb_admin < "${sql_file}" > /dev/null || fail "db/mysql/sync.sql refused by your own server"
-  else
-    # as a role with CREATEROLE and CREATEDB, no superuser: what managed services give
-    local dbadmin
-    dbadmin=$(rnd)
-    extdb_admin -c "CREATE ROLE dbadmin LOGIN CREATEROLE CREATEDB PASSWORD '${dbadmin}'" < /dev/null > /dev/null || fail "no administrator role"
-    kubectl exec -i extdb-0 -- env PGPASSWORD="${dbadmin}" psql -X -h 127.0.0.1 -U dbadmin -d postgres -v ON_ERROR_STOP=1 -q < "${sql_file}" > /dev/null \
-      || fail "db/postgres/sync.sql refused by your own server (as dbadmin)"
-  fi
-  rm -f "${sql_file}"
-  check "DATABASES.md's SQL (db/${BACKEND}/sync.sql) run as the administrator$([[ ${BACKEND} == postgres ]] && echo ' (CREATEROLE, CREATEDB, no superuser)')"
+  ! grep -q '@[A-Z_]*@' "${EXT_SQL}" || fail "placeholders left in db/${BACKEND}/sync.sql: $(grep -o '@[A-Z_]*@' "${EXT_SQL}" | sort -u | paste -sd' ' -)"
+  extdb_server extdb
+  check "your own database server (${EXTDB_IMAGE}, not the chart's) with DATABASES.md's SQL (db/${BACKEND}/sync.sql) run as the administrator$([[ ${BACKEND} == postgres ]] && echo ' (CREATEROLE, CREATEDB, no superuser)')"
   # your Secret: the stack's secrets and the passwords of that SQL
   local keys=(--from-literal=SYNC_MASTER_SECRET="$(rnd)" --from-literal=METRICS_HASH_SECRET="$(rnd)" --from-literal=ADMIN_PASSWORD="$(rnd)"
     --from-literal=ADMIN_DB_PASSWORD="${admin}" --from-literal=ADMIN_METRICS_TOKEN=e2e-token)
@@ -1239,6 +1275,46 @@ start_extdb() {
   fi
   kubectl create secret generic ffs-own "${keys[@]}" > /dev/null || fail "Secret ffs-own not created"
   check "Secret ffs-own with the passwords of that SQL"
+}
+
+# extdb_server <name>: a server like that (StatefulSet and Service <name>, empty), with EXT_SQL
+# run there as its administrator (the restore check makes a second one, as on a new host)
+extdb_server() {
+  local name=$1 image port data env args probe
+  if [[ "${BACKEND}" == mysql ]]; then
+    # binary logging on (MySQL 8's default): the trigger needs log_bin_trust_function_creators
+    image=mysql:8.4 port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
+    probe='mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent'
+  else
+    image=postgres:18 port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'
+    probe='pg_isready -h 127.0.0.1 -U postgres'
+  fi
+  EXTDB_IMAGE=${image}
+  # (over TCP in the probe: while the image initializes, a temporary server on the socket only)
+  jq -n --arg name "${name}" --arg image "${image}" --argjson port "${port}" --arg data "${data}" --arg env "${env}" --arg root "$(rnd)" \
+    --argjson args "${args}" --arg probe "${probe}" '
+    {apiVersion: "v1", kind: "List", items: [
+      {apiVersion: "v1", kind: "Service", metadata: {name: $name},
+       spec: {selector: {app: $name}, ports: [{port: $port, targetPort: $port}]}},
+      {apiVersion: "apps/v1", kind: "StatefulSet", metadata: {name: $name},
+       spec: {serviceName: $name, replicas: 1, selector: {matchLabels: {app: $name}},
+         template: {metadata: {labels: {app: $name}}, spec: {
+           containers: [{name: "db", image: $image, args: $args, env: [{name: $env, value: $root}],
+             ports: [{containerPort: $port}],
+             readinessProbe: {exec: {command: ["sh", "-c", $probe]}, periodSeconds: 5, timeoutSeconds: 5},
+             volumeMounts: [{name: "data", mountPath: $data}]}],
+           volumes: [{name: "data", emptyDir: {}}]}}}}]}' | kubectl apply -f - > /dev/null || fail "database server ${name} not created"
+  kubectl rollout status "sts/${name}" --timeout=5m > /dev/null || fail "database server ${name} (${image}) not Ready"
+  if [[ "${BACKEND}" == mysql ]]; then
+    EXTDB_POD=${name}-0 extdb_admin < "${EXT_SQL}" > /dev/null || fail "db/mysql/sync.sql refused by ${name}"
+  else
+    # as a role with CREATEROLE and CREATEDB, no superuser: what managed services give
+    local dbadmin
+    dbadmin=$(rnd)
+    EXTDB_POD=${name}-0 extdb_admin -c "CREATE ROLE dbadmin LOGIN CREATEROLE CREATEDB PASSWORD '${dbadmin}'" < /dev/null > /dev/null || fail "no administrator role on ${name}"
+    kubectl exec -i "${name}-0" -- env PGPASSWORD="${dbadmin}" psql -X -h 127.0.0.1 -U dbadmin -d postgres -v ON_ERROR_STOP=1 -q < "${EXT_SQL}" > /dev/null \
+      || fail "db/postgres/sync.sql refused by ${name} (as dbadmin)"
+  fi
 }
 
 rnd() { tr -dc A-Za-z0-9 < /dev/urandom | head -c 32 || true; }

@@ -20,11 +20,22 @@ https://github.com/porelli/firefox-sync/blob/main/SYNC.md#firefox-setup
 Your own database server {{ .Values.database.external.host }}: the databases and users of DATABASES.md's SQL
 must be there, with the passwords of the Secret {{ include "firefox-sync.secretName" . }}; the pods wait for it, and
 stop in their init containers while a login is refused.
+{{- if ne .Values.database.backend "postgres" }} The init container{{ if .Values.backup.enabled }} and the backups{{ end }}
+{{- if .Values.database.external.tlsVerify }} check the server's certificate (tlsVerify): it must come
+from a CA the images trust, for {{ .Values.database.external.host }}.
+{{- else }} do not check the server's certificate (tlsVerify false:
+MySQL's own is self-signed); true needs one from a CA the images trust.
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and .Values.admin.enabled .Values.admin.ingress.enabled }}
 
 The admin UI is published by the Ingress {{ include "firefox-sync.adminService" . }} at {{ .Values.admin.ingress.host }}: keep it
-behind your own sign-in (ADMIN.md#signing-in). Its password, ADMIN_PASSWORD of the Secret {{ include "firefox-sync.secretName" . }}:
+behind your own sign-in (ADMIN.md#signing-in).
+{{- if not .Values.admin.ingress.tls.enabled }}
+WARNING: admin.ingress.tls.enabled is false: unless your controller adds TLS, the admin
+password and session cookie cross the network in plain HTTP.
+{{- end }} Its password, ADMIN_PASSWORD of the Secret {{ include "firefox-sync.secretName" . }}:
 
   kubectl -n {{ .Release.Namespace }} get secret {{ include "firefox-sync.secretName" . }} -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
 {{- else if .Values.admin.enabled }}

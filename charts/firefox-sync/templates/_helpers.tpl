@@ -383,6 +383,12 @@ UI's Ingress a host of its own
 {{- fail "firefox-sync: database.bundled=false needs existingSecret, a Secret with the passwords of the users that DATABASES.md's SQL created on your server (and the stack's secrets): the chart cannot generate passwords your server knows" }}
 {{- end }}
 {{- end }}
+{{- range $key := list "port" "storagePort" }}
+{{- $port := include "firefox-sync.number" (index $.Values.database.external $key) }}
+{{- if and $port (or (lt (atoi $port) 1) (gt (atoi $port) 65535)) }}
+{{- fail (printf "firefox-sync: database.external.%s %s is no port: 1 to 65535, or empty for the backend's default" $key $port) }}
+{{- end }}
+{{- end }}
 {{- if and .Values.ingress.enabled (not (include "firefox-sync.ingressHost" .)) }}
 {{- fail "firefox-sync: ingress.enabled needs ingress.host, or a syncDomain with a host" }}
 {{- end }}
@@ -390,7 +396,9 @@ UI's Ingress a host of its own
 {{- if not .Values.admin.ingress.host }}
 {{- fail "firefox-sync: admin.ingress.enabled needs admin.ingress.host, a host of its own for the admin UI" }}
 {{- end }}
-{{- if and .Values.ingress.enabled (eq .Values.admin.ingress.host (include "firefox-sync.ingressHost" .)) }}
+{{- /* the Sync server's host, with or without its Ingress (yours, a reverse proxy) */ -}}
+{{- $syncHosts := list (regexReplaceAll ":[0-9]+$" (urlParse .Values.syncDomain).host "") (include "firefox-sync.ingressHost" .) }}
+{{- if has .Values.admin.ingress.host $syncHosts }}
 {{- fail (printf "firefox-sync: admin.ingress.host %s is the Sync server's host: give the admin UI a host of its own" .Values.admin.ingress.host) }}
 {{- end }}
 {{- end }}

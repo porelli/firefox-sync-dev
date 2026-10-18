@@ -82,22 +82,26 @@
         },
         "postgresSyncUser": {
           "type": "string",
-          "pattern": "^[a-z_][a-z0-9_]*$"
+          "pattern": "^[a-z_][a-z0-9_]*$",
+          "maxLength": 32
         },
         "admin": {
           "type": "object",
           "properties": {
             "name": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "user": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "syncUser": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             }
           }
         },
@@ -108,6 +112,7 @@
               "type": "string"
             },
             "port": {
+              "$comment": "a number, or the same quoted (checked for 1-65535 at render time), or empty for the backend's default port",
               "oneOf": [
                 {
                   "type": "integer",
@@ -116,7 +121,7 @@
                 },
                 {
                   "type": "string",
-                  "maxLength": 0
+                  "pattern": "^([0-9]{1,5})?$"
                 }
               ]
             },
@@ -124,6 +129,7 @@
               "type": "string"
             },
             "storagePort": {
+              "$comment": "a number, or the same quoted (checked for 1-65535 at render time), or empty for the backend's default port",
               "oneOf": [
                 {
                   "type": "integer",
@@ -132,33 +138,39 @@
                 },
                 {
                   "type": "string",
-                  "maxLength": 0
+                  "pattern": "^([0-9]{1,5})?$"
                 }
               ]
             },
             "tokenserverDatabase": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "tokenserverUser": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "storageDatabase": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "storageUser": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "postgresDatabase": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "postgresUser": {
               "type": "string",
-              "pattern": "^[a-z_][a-z0-9_]*$"
+              "pattern": "^[a-z_][a-z0-9_]*$",
+              "maxLength": 32
             },
             "tlsVerify": {
               "type": "boolean"
