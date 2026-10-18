@@ -143,7 +143,9 @@ jobs:
   # The builds run upstream's code (its scripts, its Dockerfile) with a read-only token and
   # write an OCI archive; the push jobs, which can write packages, only copy that archive to
   # the registry under a tag of this run (<tag>-run<id>) and run nothing of upstream's. The
-  # tests and publish use the digests the push jobs record (artifacts *-digest-<arch>).
+  # tests and publish use the digests the push jobs record (artifacts fxa-<name>-digest-<arch>,
+  # one file of that name holding the digest; downloaded with merge-multiple, which puts every
+  # file directly in the path whether one artifact matches or several).
   build-pairing:
     needs: prepare
     if: needs.prepare.outputs.build_pairing == 'true'
@@ -225,7 +227,7 @@ jobs:
           skopeo copy --digestfile "${RUNNER_TEMP}/digestfile" "oci-archive:${RUNNER_TEMP}/image/image.tar" "docker://${TARGET}"
           digest=$(cat "${RUNNER_TEMP}/digestfile")
           echo "${TARGET} is ${digest}"
-          touch "${RUNNER_TEMP}/digest/${digest#sha256:}"
+          echo "${digest}" > "${RUNNER_TEMP}/digest/fxa-channelserver-digest-${{ matrix.arch }}"
 
       - name: Upload the digest
         uses: actions/upload-artifact@v7
@@ -350,7 +352,7 @@ jobs:
           skopeo copy --digestfile "${RUNNER_TEMP}/digestfile" "oci-archive:${RUNNER_TEMP}/image/image.tar" "docker://${TARGET}"
           digest=$(cat "${RUNNER_TEMP}/digestfile")
           echo "${TARGET} is ${digest}"
-          touch "${RUNNER_TEMP}/digest/${digest#sha256:}"
+          echo "${digest}" > "${RUNNER_TEMP}/digest/fxa-mono-digest-${{ matrix.arch }}"
 
       - name: Upload the digest
         uses: actions/upload-artifact@v7
@@ -394,6 +396,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/digests
           pattern: fxa-*-digest-${{ matrix.arch }}
+          merge-multiple: true
 
       # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
       # pull reads), else the published release (the run built only the other image)
@@ -409,7 +412,7 @@ jobs:
         run: |
           d="${RUNNER_TEMP}/digests"
           if [ "${BUILT}" = true ]; then
-            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            digest="$(cat "${d}/fxa-mono-digest-${ARCH}")"
             tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
             if [ -n "${PULL}" ]; then
               docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
@@ -422,7 +425,7 @@ jobs:
           fi
           echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
           if [ "${PAIRING_BUILT}" = true ]; then
-            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@$(cat "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
           else
             echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
           fi
@@ -483,6 +486,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/digests
           pattern: fxa-*-digest-amd64
+          merge-multiple: true
 
       # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
       # pull reads), else the published release (the run built only the other image)
@@ -498,7 +502,7 @@ jobs:
         run: |
           d="${RUNNER_TEMP}/digests"
           if [ "${BUILT}" = true ]; then
-            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            digest="$(cat "${d}/fxa-mono-digest-${ARCH}")"
             tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
             if [ -n "${PULL}" ]; then
               docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
@@ -511,7 +515,7 @@ jobs:
           fi
           echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
           if [ "${PAIRING_BUILT}" = true ]; then
-            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@$(cat "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
           else
             echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
           fi
@@ -571,6 +575,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/digests
           pattern: fxa-*-digest-amd64
+          merge-multiple: true
 
       # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
       # pull reads), else the published release (the run built only the other image)
@@ -586,7 +591,7 @@ jobs:
         run: |
           d="${RUNNER_TEMP}/digests"
           if [ "${BUILT}" = true ]; then
-            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            digest="$(cat "${d}/fxa-mono-digest-${ARCH}")"
             tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
             if [ -n "${PULL}" ]; then
               docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
@@ -599,7 +604,7 @@ jobs:
           fi
           echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
           if [ "${PAIRING_BUILT}" = true ]; then
-            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@$(cat "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
           else
             echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
           fi
@@ -696,6 +701,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/digests
           pattern: fxa-*-digest-${{ matrix.arch }}
+          merge-multiple: true
 
       # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
       # pull reads), else the published release (the run built only the other image)
@@ -711,7 +717,7 @@ jobs:
         run: |
           d="${RUNNER_TEMP}/digests"
           if [ "${BUILT}" = true ]; then
-            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            digest="$(cat "${d}/fxa-mono-digest-${ARCH}")"
             tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
             if [ -n "${PULL}" ]; then
               docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
@@ -724,7 +730,7 @@ jobs:
           fi
           echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
           if [ "${PAIRING_BUILT}" = true ]; then
-            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@$(cat "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
           else
             echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
           fi
@@ -759,6 +765,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/digests
           pattern: fxa-*-digest-*
+          merge-multiple: true
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
@@ -782,7 +789,7 @@ jobs:
           publish() {
             local digests=() arch
             for arch in amd64 arm64; do
-              digests+=("${image}@sha256:$(ls "${RUNNER_TEMP}/digests/fxa-$1-digest-${arch}")")
+              digests+=("${image}@$(cat "${RUNNER_TEMP}/digests/fxa-$1-digest-${arch}")")
             done
             docker buildx imagetools create -t "${image}:fxa-$1-$2" -t "${image}:fxa-$1-latest" "${digests[@]}"
             docker buildx imagetools inspect "${image}:fxa-$1-$2"
