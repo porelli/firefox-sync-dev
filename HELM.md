@@ -265,7 +265,7 @@ Then, as [ADMIN.md#restoring](ADMIN.md#restoring) says for compose (what to rest
         PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'
     ```
 
-1. The admin UI again, `kubectl scale deploy/$F-admin --replicas=1`, and remove what the restore left: `kubectl delete job restore-tokenserver restore-admin restore-storage restore-sync --ignore-not-found`, The migrations bring an older schema up to date. A later `helm upgrade` keeps the replicas of the chart (one each).
+1. The admin UI again, `kubectl scale deploy/$F-admin --replicas=1`, and remove what the restore left: `kubectl delete job restore-tokenserver restore-admin restore-storage restore-sync --ignore-not-found`. The migrations bring an older schema up to date. A later `helm upgrade` keeps the replicas of the chart (one each).
 
 ## Upgrades
 
