@@ -198,6 +198,9 @@ spec:
               value: {{ $fullname | quote }}
             - name: ADMIN_K8S_SECRET
               value: {{ include "firefox-sync.secretName" . | quote }}
+            # where the chart is published (Chart.yaml's annotation), for helm upgrade
+            - name: ADMIN_K8S_CHART
+              value: {{ index .Chart.Annotations "org.firefox-sync/chart" | default "oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync" | quote }}
             {{- if ne $backend "postgres" }}
             # the configuration page: the Sync databases (compose: SYNC_DB of .env)
             - name: SYNC_DB

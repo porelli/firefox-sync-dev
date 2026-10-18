@@ -9,8 +9,9 @@ import (
 // deployment: how the stack runs (ADMIN_DEPLOYMENT), for the commands the pages show:
 // compose (the default), quadlets, or kubernetes, the Helm chart, which also passes its
 // release (ADMIN_K8S_RELEASE) and namespace (ADMIN_K8S_NAMESPACE) for the helm commands,
-// the prefix of its objects (ADMIN_K8S_FULLNAME, firefox-sync.fullname) and its Secret
-// (ADMIN_K8S_SECRET, the chart's or the existingSecret)
+// the prefix of its objects (ADMIN_K8S_FULLNAME, firefox-sync.fullname), its Secret
+// (ADMIN_K8S_SECRET, the chart's or the existingSecret) and where the chart was published
+// (ADMIN_K8S_CHART, its Chart.yaml annotation org.firefox-sync/chart)
 type deployment struct {
 	// compose, quadlets or kubernetes ("": compose)
 	kind string
@@ -18,7 +19,13 @@ type deployment struct {
 	release, namespace string
 	// kubernetes: the prefix of the chart's objects, its Secret
 	prefix, secret string
+	// kubernetes: the chart's OCI address for helm upgrade
+	chart string
 }
+
+// publicChart: the chart of the public repository, when the chart does not say where it
+// was published
+const publicChart = "oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync"
 
 // loadDeployment reads ADMIN_DEPLOYMENT: an unknown one stops the start, rather than
 // showing the commands of another stack
@@ -29,6 +36,7 @@ func loadDeployment() (deployment, error) {
 	case "kubernetes":
 		d.release, d.namespace = env("ADMIN_K8S_RELEASE", ""), env("ADMIN_K8S_NAMESPACE", "")
 		d.prefix, d.secret = env("ADMIN_K8S_FULLNAME", ""), env("ADMIN_K8S_SECRET", "")
+		d.chart = env("ADMIN_K8S_CHART", publicChart)
 		if d.release == "" || d.prefix == "" || d.secret == "" {
 			return d, errors.New("ADMIN_DEPLOYMENT=kubernetes needs ADMIN_K8S_RELEASE, ADMIN_K8S_FULLNAME and ADMIN_K8S_SECRET (the chart sets them)")
 		}
@@ -70,7 +78,11 @@ func (d deployment) helmUpgrade(set string) string {
 	if d.namespace != "" {
 		ns = " -n " + d.namespace
 	}
-	return strings.TrimSpace("helm upgrade " + d.release + " oci://ghcr.io/porelli/charts/firefox-sync" + ns + " --reuse-values " + set)
+	chart := d.chart
+	if chart == "" {
+		chart = publicChart
+	}
+	return strings.TrimSpace("helm upgrade " + d.release + " " + chart + ns + " --reuse-values " + set)
 }
 
 // the chart's objects
