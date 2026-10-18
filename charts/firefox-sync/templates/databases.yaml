@@ -1,6 +1,6 @@
 {{- /*
 The bundled databases, as compose's tokenserver_db and syncstorage_db (MariaDB, or MySQL
-with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.postgres.yml)
+with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.sync-postgres.yml)
 */ -}}
 {{- if .Values.database.bundled }}
 {{- $root := . }}
@@ -12,8 +12,23 @@ with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.postgres.yml)
 {{- else }}
 {{- $dbs = list (dict "component" "tokenserver-db" "db" "tokenserver") (dict "component" "storage-db" "db" "storage") }}
 {{- end }}
+{{- if ne $backend "postgres" }}
+---
+# db/mysql/admin-user.sh (a copy in files/, kept identical): the admin UI's users, run by the
+# MariaDB and MySQL containers before the image's entrypoint, as in compose
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "firefox-sync.fullname" $root }}-db-scripts
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" $root "component" "db-scripts") | nindent 4 }}
+data:
+  admin-user.sh: |
+    {{- $root.Files.Get "files/admin-user.sh" | trimSuffix "\n" | nindent 4 }}
+{{- end }}
 {{- range $dbs }}
 {{- $component := .component }}
+{{- $role := .db }}
 {{- $name := include "firefox-sync.dbHost" (dict "root" $root "db" .db) }}
 {{- $dbName := include "firefox-sync.dbName" (dict "root" $root "db" .db) }}
 {{- $dbUser := include "firefox-sync.dbUser" (dict "root" $root "db" .db) }}
@@ -55,7 +70,7 @@ spec:
         - name: db
           image: {{ include "firefox-sync.dbImage" $root }}
           {{- if eq $backend "mariadb" }}
-          args: [mariadbd, --explicit_defaults_for_timestamp]
+          args: [sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
           env:
             - name: MARIADB_RANDOM_ROOT_PASSWORD
               value: "true"
@@ -66,6 +81,7 @@ spec:
             {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "MARIADB_PASSWORD" "key" $passwordKey) | nindent 12 }}
             - name: MARIADB_AUTO_UPGRADE
               value: "true"
+            {{- include "firefox-sync.adminUserEnv" (dict "root" $root "role" $role) | nindent 12 }}
           readinessProbe:
             exec:
               command: [healthcheck.sh, --connect, --innodb_initialized]
@@ -76,7 +92,7 @@ spec:
           {{- else if eq $backend "mysql" }}
           # no binary logging, as docker-compose.sync-mysql.yml: the init container's MAX_USERS
           # procedure and trigger would otherwise need log_bin_trust_function_creators
-          args: [mysqld, --disable-log-bin]
+          args: [sh, /ffs-db/admin-user.sh, mysqld, --disable-log-bin]
           env:
             - name: MYSQL_RANDOM_ROOT_PASSWORD
               value: "yes"
@@ -85,6 +101,7 @@ spec:
             - name: MYSQL_USER
               value: {{ $dbUser | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "MYSQL_PASSWORD" "key" $passwordKey) | nindent 12 }}
+            {{- include "firefox-sync.adminUserEnv" (dict "root" $root "role" $role) | nindent 12 }}
           readinessProbe:
             exec:
               command: [sh, -c, 'mysqladmin ping -h 127.0.0.1 --protocol=tcp -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" --silent']
@@ -120,7 +137,16 @@ spec:
               # of a fresh ext4 volume
               mountPath: /var/lib/mysql
               subPath: data
+            - name: db-scripts
+              mountPath: /ffs-db
+              readOnly: true
               {{- end }}
+      {{- if ne $backend "postgres" }}
+      volumes:
+        - name: db-scripts
+          configMap:
+            name: {{ include "firefox-sync.fullname" $root }}-db-scripts
+      {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

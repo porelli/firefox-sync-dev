@@ -62,8 +62,9 @@ database:
     storageClass: ""
 
 # Name of existing secret containing database passwords and secrets, with the keys
-# SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD and TOKENSERVER_DB_PASSWORD +
-# STORAGE_DB_PASSWORD (mariadb, mysql) or POSTGRES_PASSWORD (postgres)
+# SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_PASSWORD (the admin UI's
+# database users) and TOKENSERVER_DB_PASSWORD + STORAGE_DB_PASSWORD (mariadb, mysql) or
+# POSTGRES_PASSWORD (the superuser) + POSTGRES_SYNC_PASSWORD (the Sync server's role) (postgres)
 # If not set, a secret named like the release (<release>-firefox-sync) is generated on the
 # first install and kept as it is on upgrades (and on uninstall, like the database volumes).
 # REQUIRED when the chart is rendered with `helm template` or a GitOps tool that renders it

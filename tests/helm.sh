@@ -59,7 +59,7 @@ lint() {
   # wait-db logs in to nothing: no password in that init container
   for backend in mariadb mysql postgres; do
     waitdb=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
-      --show-only templates/syncstorage.yaml | sed -n '/- name: wait-db$/,/- name: migrate$/p')
+      --show-only templates/syncstorage.yaml | sed -En '/- name: wait-db$/,/- name: (sync-role|migrate)$/p')
     [[ -n "${waitdb}" ]] || fail "${backend}: no wait-db init container"
     if echo "${waitdb}" | grep -qiE 'secretKeyRef|PASSWORD|-p"'; then
       fail "${backend}: wait-db uses a password: ${waitdb}"
@@ -89,7 +89,8 @@ lint() {
     urls=$(echo "${output}" | grep -A1 -E 'name: SYNC_(TOKENSERVER|SYNCSTORAGE)__DATABASE_URL$' | grep 'value:')
     [[ $(echo "${urls}" | wc -l) -eq 4 ]] || fail "${backend}: expected 4 database URLs (migrate and syncstorage), got: ${urls}"
     if [[ ${backend} == postgres ]]; then
-      bad=$(echo "${urls}" | grep -v '$(POSTGRES_PASSWORD)@' || true)
+      # the Sync server's own role, never POSTGRES_USER (the superuser)
+      bad=$(echo "${urls}" | grep -v 'postgres://syncserver_app:$(POSTGRES_SYNC_PASSWORD)@' || true)
     else
       bad=$(echo "${output}" | grep -A1 -E 'name: SYNC_TOKENSERVER__DATABASE_URL$' | grep 'value:' | grep -v '$(TOKENSERVER_DB_PASSWORD)@' || true)
       bad+=$(echo "${output}" | grep -A1 -E 'name: SYNC_SYNCSTORAGE__DATABASE_URL$' | grep 'value:' | grep -v '$(STORAGE_DB_PASSWORD)@' || true)
@@ -97,6 +98,34 @@ lint() {
     [[ -z "${bad}" ]] || fail "${backend}: database URLs with the wrong password variable: ${bad}"
     check "${backend}: database URLs use the backend's password variables"
   done
+
+  # the Sync server and its migrations: never POSTGRES_PASSWORD (the superuser's), no NET_RAW
+  output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/postgres-values.yaml" --show-only templates/syncstorage.yaml)
+  for c in migrate syncstorage; do
+    block=$(echo "${output}" | awk -v c="${c}" '$0 ~ "^        - name: "c"$" {on=1; print; next} on && /^        - name: / {on=0} on')
+    [[ -n "${block}" ]] || fail "postgres: no ${c} container"
+    if echo "${block}" | grep -qE 'name: POSTGRES_PASSWORD$|key: POSTGRES_PASSWORD$'; then
+      fail "postgres: ${c} gets POSTGRES_PASSWORD"
+    fi
+    echo "${block}" | grep -A2 'capabilities:' | grep -q 'drop: \["NET_RAW"\]' || fail "postgres: ${c} keeps NET_RAW"
+  done
+  echo "${output}" | grep -q '^        - name: sync-role$' || fail "postgres: no sync-role init container"
+  [[ "$(echo "${output}" | grep -E '^        - name: (wait-db|sync-role|migrate|db-init)$' | awk '{print $3}' | paste -sd' ' -)" == "wait-db sync-role migrate db-init" ]] \
+    || fail "postgres: init containers not in compose's order"
+  check "postgres: sync-role before migrate; migrate and syncstorage without POSTGRES_PASSWORD and NET_RAW"
+  output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --show-only templates/syncstorage.yaml)
+  [[ $(echo "${output}" | grep -c 'drop: \["NET_RAW"\]') -eq 2 ]] || fail "mariadb: NET_RAW not dropped on migrate and syncstorage"
+  check "mariadb: migrate and syncstorage without NET_RAW"
+
+  # db/mysql/admin-user.sh: the chart's copy identical, run by the MariaDB and MySQL containers
+  cmp -s "${CHART_DIR}/files/admin-user.sh" "${REPO_ROOT}/db/mysql/admin-user.sh" \
+    || fail "charts/firefox-sync/files/admin-user.sh differs from db/mysql/admin-user.sh"
+  for backend in mariadb mysql; do
+    output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --show-only templates/databases.yaml)
+    [[ $(echo "${output}" | grep -c 'args: \[sh, /ffs-db/admin-user.sh, ') -eq 2 ]] || fail "${backend}: admin-user.sh not the command of both databases"
+    [[ $(echo "${output}" | grep -c 'name: ADMIN_DB_ROLE$') -eq 2 ]] || fail "${backend}: ADMIN_DB_ROLE missing"
+  done
+  check "admin-user.sh identical to db/mysql/admin-user.sh, run by both MariaDB/MySQL databases"
 
   # existingSecret: no Secret rendered, every secretKeyRef reads that one
   echo "Testing existingSecret..."
@@ -118,8 +147,8 @@ e2e() {
   local backend=${1:-}
   local flavor password_key init_dir
   case "${backend}" in
-    mariadb|mysql) flavor=mysql; password_key=TOKENSERVER_DB_PASSWORD; init_dir=syncstorage-rs-init ;;
-    postgres) flavor=postgres; password_key=POSTGRES_PASSWORD; init_dir=syncstorage-rs-init-postgres ;;
+    mariadb|mysql) failing_init='wait-db=0 migrate=[1-9]'; flavor=mysql; password_key=TOKENSERVER_DB_PASSWORD; init_dir=db/mysql/init ;;
+    postgres) failing_init='wait-db=0 sync-role=[1-9]'; flavor=postgres; password_key=POSTGRES_PASSWORD; init_dir=db/postgres/init ;;
     *) echo "Usage: $0 e2e <mariadb|mysql|postgres>"; exit 1 ;;
   esac
   # as tests/e2e.sh: REPOSITORY and TAG of the images; the init image is built from this
@@ -163,6 +192,7 @@ e2e() {
   kubectl create configmap ffs-tests --from-file="${SCRIPT_DIR}/test_client_flow.py"
   client_flow flow-1 || fail "client flow failed"
   check "client flow passed"
+  database_users
 
   # fail closed: an invalid MAX_USERS never reaches the cluster
   if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set maxUsers=bogus --no-hooks 2>&1); then
@@ -180,8 +210,10 @@ e2e() {
   check "wrong ${password_key}: pod is in ${MATCHED_STATUS}"
   inits=$(kubectl get pods -l "${POD_SELECTOR}" -o json | jq -r '.items[0].status.initContainerStatuses[]
     | "\(.name)=\(.state.terminated.exitCode // .lastState.terminated.exitCode // "none")"' | paste -sd' ' -)
-  [[ "${inits}" =~ wait-db=0\ migrate=[1-9] ]] || fail "expected wait-db to pass and migrate to fail: ${inits}"
-  check "wait-db passed, migrate failed (${inits})"
+  # (PostgreSQL: the superuser's password, the first login is sync-role's; the Sync role's
+  # own password is set again by sync-role at every start)
+  [[ "${inits}" =~ ${failing_init} ]] || fail "expected wait-db to pass and the next init to fail: ${inits}"
+  check "wait-db passed, the next init failed (${inits})"
   ready=$(kubectl get endpointslices -l "kubernetes.io/service-name=${FULL}-syncstorage" -o json \
     | jq '[.items[].endpoints[]? | select(.conditions.ready == true)] | length')
   [[ "${ready}" == 0 ]] || fail "the Service has ${ready} ready endpoints while the init fails"
@@ -217,8 +249,53 @@ sql() {
   case "${BACKEND}" in
     mariadb) kubectl exec "${FULL}-tokenserver-db-0" -- sh -c 'mariadb -u"${MARIADB_USER}" -p"${MARIADB_PASSWORD}" "${MARIADB_DATABASE}" -e "$1"' sh "$1" ;;
     mysql) kubectl exec "${FULL}-tokenserver-db-0" -- sh -c 'mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e "$1"' sh "$1" ;;
-    postgres) kubectl exec "${FULL}-postgres-0" -- sh -c 'psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "$1"' sh "$1" ;;
+    # as the Sync server's own role: no superuser session on the tables it owns
+    postgres) kubectl exec "${FULL}-postgres-0" -- env PGPASSWORD="$(secret POSTGRES_SYNC_PASSWORD)" \
+      psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U syncserver_app -d syncserver -c "$1" "${@:2}" ;;
   esac
+}
+
+secret() { kubectl get secret "${FULL}" -o jsonpath="{.data.$1}" | base64 -d; }
+
+# who the Sync server is on its databases, and the admin UI's users that the databases and
+# the init container create (db/mysql/admin-user.sh, db/postgres/init)
+database_users() {
+  local pod_ip env
+  pod_ip=$(kubectl get pods -l "${POD_SELECTOR}" -o jsonpath='{.items[0].status.podIP}')
+  env=$(kubectl get deploy "${FULL}-syncstorage" -o json)
+  if [[ "${BACKEND}" == postgres ]]; then
+    for c in migrate syncstorage; do
+      names=$(echo "${env}" | jq -r --arg c "${c}" '[.spec.template.spec.initContainers[], .spec.template.spec.containers[]]
+        | map(select(.name == $c))[0].env[] | .name, (.valueFrom.secretKeyRef.key // empty)')
+      ! echo "${names}" | grep -qx POSTGRES_PASSWORD || fail "${c} gets POSTGRES_PASSWORD"
+      urls=$(echo "${env}" | jq -r --arg c "${c}" '[.spec.template.spec.initContainers[], .spec.template.spec.containers[]]
+        | map(select(.name == $c))[0].env[] | select(.name | endswith("__DATABASE_URL")) | .value')
+      ! echo "${urls}" | grep -qv '^postgres://syncserver_app:' || fail "${c} does not connect as syncserver_app: ${urls}"
+    done
+    check "migrate and syncstorage: no POSTGRES_PASSWORD, URLs as syncserver_app"
+    users=$(kubectl exec "${FULL}-postgres-0" -- sh -c 'psql -X -tA -U "${POSTGRES_USER}" -d postgres -c "$1"' sh \
+      "SELECT string_agg(DISTINCT usename, ',') FROM pg_stat_activity WHERE client_addr = '${pod_ip}'")
+    [[ "${users}" == syncserver_app ]] || fail "the Sync server connects as '${users}', not syncserver_app"
+    super=$(kubectl exec "${FULL}-postgres-0" -- sh -c 'psql -X -tA -U "${POSTGRES_USER}" -d postgres -c "$1"' sh \
+      "SELECT rolsuper FROM pg_roles WHERE rolname = 'syncserver_app'")
+    [[ "${super}" == f ]] || fail "syncserver_app is a superuser (${super})"
+    owners=$(sql "SELECT string_agg(DISTINCT tableowner, ',') FROM pg_tables WHERE schemaname = 'public'" -tA)
+    [[ "${owners}" == syncserver_app ]] || fail "the Sync tables are owned by '${owners}'"
+    check "the Sync server connects as syncserver_app (no superuser), which owns the Sync tables"
+    kubectl exec "${FULL}-postgres-0" -- env PGPASSWORD="$(secret ADMIN_DB_PASSWORD)" \
+      psql -X -tA -h 127.0.0.1 -U ffs_admin_ui -d ffs_admin -c 'SELECT 1' > /dev/null || fail "ffs_admin_ui cannot reach ffs_admin"
+    check "the admin UI's user ffs_admin_ui reaches ffs_admin"
+  else
+    local client=mariadb
+    [[ "${BACKEND}" == mysql ]] && client=mysql
+    for db in tokenserver storage; do
+      kubectl exec "${FULL}-${db}-db-0" -- "${client}" -h 127.0.0.1 -u ffs_admin_sync -p"$(secret ADMIN_DB_PASSWORD)" \
+        -e 'SELECT 1' > /dev/null || fail "ffs_admin_sync cannot log in to ${db}-db"
+    done
+    kubectl exec "${FULL}-tokenserver-db-0" -- "${client}" -h 127.0.0.1 -u ffs_admin_ui -p"$(secret ADMIN_DB_PASSWORD)" \
+      ffs_admin -e 'SELECT 1' > /dev/null || fail "ffs_admin_ui cannot reach ffs_admin"
+    check "admin-user.sh created ffs_admin_ui (ffs_admin) and ffs_admin_sync (both databases)"
+  fi
 }
 
 pod_status() {
