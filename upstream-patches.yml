@@ -81,3 +81,5 @@
   when_released: >-
     In tests/e2e.sh drop the --deselect of test_node_assignment.py::test_user_creation (the
     LOG(0) comment) and its check of the image label: every image tested then has the fix.
+    Moving sha past c670cf0 (the pull request's update giving the test's extra nodes ids after
+    800): drop the PostgreSQL --deselect of the same test there, for #2638@3a5abd9..c670cf0.

@@ -934,6 +934,15 @@ if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ] && [[ " ${UPSTR
   T=test_node_assignment.py::test_user_creation
   UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
 fi
+if [ "${BACKEND}" = postgres ] && [[ " ${UPSTREAM_PATCHES} " == *" mozilla-services/syncstorage-rs#2638@3a5abd9..c670cf0 "* ]]; then
+  # #2638 at c670cf0 breaks the ties by id, and on PostgreSQL the test's three extra nodes
+  # get ids from the identity sequence (an explicit id does not advance it), below the
+  # default node's 800: the user lands on one of them (assert 33 == 800). The test, not the
+  # tokenserver: the update of the pull request gives them ids after 800
+  # (firefox-sync-drafts/syncstorage-rs-2638-postgres-fix.md); deselected only for this sha
+  T=test_node_assignment.py::test_user_creation
+  UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
+fi
 # test_misc.py::test_user_updates_with_new_client_state creates its old row at the current
 # millisecond, and the tokenserver replaces only the rows created strictly before the new
 # one (created_at < its timestamp): when both fall in the same millisecond (about 1 in 100
