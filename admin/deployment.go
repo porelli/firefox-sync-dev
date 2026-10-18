@@ -79,9 +79,9 @@ func (d deployment) BackupVolume() string   { return d.fullname() + "-backups" }
 func (d deployment) AdminService() string   { return d.fullname() + "-admin" }
 func (d deployment) syncDeployment() string { return "deployment/" + d.fullname() + "-syncstorage" }
 
-// BackupNow: a run of the backup CronJob now
+// BackupNow: a run of the backup CronJob now, under a new Job name each time
 func (d deployment) BackupNow() string {
-	return d.Kubectl() + " create job --from=cronjob/" + d.fullname() + "-backup backup-now"
+	return d.Kubectl() + " create job --from=cronjob/" + d.fullname() + "-backup backup-now-$(date +%s)"
 }
 
 // BackupsOn: the chart's backup CronJob turned on

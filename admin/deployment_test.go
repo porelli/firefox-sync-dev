@@ -40,7 +40,11 @@ func TestDeploymentKubernetesCommands(t *testing.T) {
 	page := b.String()
 	card := page[strings.Index(page, `id="backups-card"`):]
 	card = card[:strings.Index(card, "</section>")]
-	for _, want := range []string{"<code>kubectl -n ffs create job --from=cronjob/sync-backup backup-now</code>",
+	// (a new Job name for every run; html/template writes + as &#43;)
+	if got := d.BackupNow(); got != "kubectl -n ffs create job --from=cronjob/sync-backup backup-now-$(date +%s)" {
+		t.Errorf("BackupNow: %s", got)
+	}
+	for _, want := range []string{"<code>kubectl -n ffs create job --from=cronjob/sync-backup backup-now-$(date &#43;%s)</code>",
 		"--set backup.enabled=true", "<code>sync-backups</code>", "the Secret <code>my-secret</code>"} {
 		if !strings.Contains(card, want) {
 			t.Errorf("backups card: no %q", want)
