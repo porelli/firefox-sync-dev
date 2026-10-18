@@ -70,7 +70,12 @@ services:
             pid=$$!
           fi
           if curl -sf http://localhost:8000/__heartbeat__ > /dev/null; then
-            kill $$pid; wait $$pid
+            # it answers once the migrations ran. Its graceful shutdown can hang for good
+            # (workers that never stop): killed 30 s after SIGTERM
+            kill $$pid
+            (sleep 30; kill -0 $$pid 2> /dev/null && echo "syncstorage-rs still running 30 s after SIGTERM, killed" && kill -9 $$pid) &
+            wait $$pid
+            kill $$! 2> /dev/null
             echo "Migrations completed"
             exit 0
           fi

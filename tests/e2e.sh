@@ -445,6 +445,18 @@ check "$(hb)" 200 "/__heartbeat__ after the upgrade"
 check "$(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -q syncstorage)") $(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -a -q syncstorage_migrate)")" \
   "[CAP_NET_RAW] [CAP_NET_RAW]" "the Sync server and its migrations without raw sockets (cap_drop)"
 
+echo "== the migrations step ends when syncstorage-rs does not stop on SIGTERM"
+# its graceful shutdown can hang for good: the step kills it 30 s after SIGTERM, and still
+# succeeds (it answered its heartbeat: the migrations ran)
+T0=$(date +%s)
+# (timeout: without the kill it never ends)
+OUT=$(timeout 120 docker compose -p "${PROJECT}" -f "${COMPOSE}" -f "${TESTS}/docker-compose.test.yml" "${COMPOSE_EXTRA[@]}" --env-file "${ENV_FILE}" \
+  run --rm --no-deps -v "${TESTS}/hung_syncserver.sh:/app/bin/syncserver:ro" syncstorage_migrate 2>&1)
+RC=$? SECS=$(($(date +%s) - T0))
+check "${RC} $(grep -c 'still running 30 s after SIGTERM, killed' <<< "${OUT}") $(grep -c 'Migrations completed' <<< "${OUT}")" "0 1 1" \
+  "a syncstorage-rs that ignores SIGTERM is killed, the migrations step exits 0"
+check "$([ "${SECS}" -lt 60 ] && echo yes)" yes "within a minute (${SECS} s)"
+
 echo "== the Sync server's users cannot read or change the event log"
 denied() { if grep -qiE 'denied|permission' <<< "$1"; then echo denied; else echo "allowed: $1"; fi; }
 init_again() { dc up -d --no-deps --force-recreate tokenserver_db_init > /dev/null 2>&1; wait_init; }
