@@ -1,8 +1,8 @@
-# Self-hosted Mozilla accounts (experimental)
+# Self-hosted Mozilla accounts
 
 By default Firefox signs in with Mozilla accounts (`accounts.firefox.com`) and only the sync data is stored on your server. [docker-compose.fxa.yml](/docker-compose.fxa.yml) adds the accounts service as well, so that signing in, the account keys and the sync data all stay on your server.
 
-⚠️ This is experimental. Mozilla does not support self-hosting its accounts service and changes it every couple of weeks.
+⚠️ Mozilla does not support self-hosting its accounts service and changes it every couple of weeks. Each release is published here only after the tests passed with it; pin `FXA_VERSION` to choose when to take a new one, see [Upgrades](#upgrades).
 
 ## What you need
 

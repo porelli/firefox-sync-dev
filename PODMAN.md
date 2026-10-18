@@ -119,7 +119,7 @@ Quadlets are systemd unit files that Podman converts into container configuratio
 
 #### Self-hosted Mozilla accounts
 
-If you also chose to self-host Mozilla accounts (experimental, see [FXA.md](FXA.md)), `prepare_environment.sh` installs their units as well (`firefox-sync-fxa-*`). Start them with:
+If you also chose to self-host Mozilla accounts (see [FXA.md](FXA.md)), `prepare_environment.sh` installs their units as well (`firefox-sync-fxa-*`). Start them with:
 ```bash
 systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \
   firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service

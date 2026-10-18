@@ -16,7 +16,7 @@
 1. run `./prepare_environment.sh` to prepare your `.env` file and the config examples with your values
     - you can choose between MariaDB (default, [docker-compose.yml](/docker-compose.yml)), MySQL 8.4 (`mysql`: the same file with [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml), what upstream syncstorage-rs is developed and tested on, see [DATABASES.md](DATABASES.md#mariadb-or-mysql-containers)) and PostgreSQL ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)) as database backend. For MySQL and PostgreSQL, the script sets `COMPOSE_FILE` in `.env` so that `docker compose` picks the right files automatically
     - you can pin the syncstorage image to a specific tag (default: `latest`)
-    - you can also self-host Mozilla accounts (experimental, see [FXA.md](FXA.md)): the script asks for the host names and your SMTP server and sets everything up. Their database is MySQL 8.4 by default, or MariaDB 12 ([MySQL or MariaDB](FXA.md#mysql-or-mariadb))
+    - you can also self-host Mozilla accounts (see [FXA.md](FXA.md)): the script asks for the host names and your SMTP server and sets everything up. Their database is MySQL 8.4 by default, or MariaDB 12 ([MySQL or MariaDB](FXA.md#mysql-or-mariadb))
     - you can use a MariaDB, MySQL or PostgreSQL server you already run instead of the database containers: the script writes the SQL for the databases and users, see [DATABASES.md](DATABASES.md)
     - coming from another self-hosted Sync server (Mozilla's compose files, other images, NixOS, YunoHost, the Python syncserver, fxa-selfhosting): see [MIGRATING.md](MIGRATING.md)
 1. set up your reverse proxy

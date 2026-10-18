@@ -1,6 +1,6 @@
 # firefox-sync
 
-Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history, tabs and the rest are stored on your own server instead of Mozilla's. Optionally, and experimental, the Mozilla accounts too, so that no Mozilla server is involved at all.
+Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history, tabs and the rest are stored on your own server instead of Mozilla's. Optionally, the Mozilla accounts too, so that no Mozilla server is involved at all.
 
 **🐳 Docker and 🦭 Podman supported**
 
@@ -13,7 +13,7 @@ Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history
 
 ## Choose your setup
 
-| | Sync server only | Sync server and accounts (experimental) |
+| | Sync server only | Sync server and accounts |
 |---|---|---|
 | Signing in | your Mozilla account, at `accounts.firefox.com` | accounts created on your server |
 | Stored on your server | the Sync data (encrypted by Firefox) | the Sync data, the accounts and their keys |
@@ -35,7 +35,7 @@ Then point your reverse proxy to it and set up Firefox: [for the Sync server onl
 ## Documentation
 
 - [SYNC.md](SYNC.md): the Sync server: setup, who can use it (`MAX_USERS`), Firefox on desktop, Android and iOS, backups and upgrades
-- [FXA.md](FXA.md): self-hosted Mozilla accounts (experimental): setup, who can sign up, Firefox setup, upgrades
+- [FXA.md](FXA.md): self-hosted Mozilla accounts: setup, who can sign up, Firefox setup, upgrades
 - [ADMIN.md](ADMIN.md): the optional admin UI: max users, sign-ups and accounts, storage, health, alerts (by email, or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or any webhook: no SMTP server needed for them), backups, Prometheus, signing in with OpenID Connect or a trusted header
 - [DATABASES.md](DATABASES.md): MariaDB, MySQL or PostgreSQL, in containers or on a database server you already run
 - [PODMAN.md](PODMAN.md): rootless Podman, with Quadlets or `docker compose` on the Podman socket
@@ -52,7 +52,7 @@ This project provides:
 - Docker compose files and Podman Quadlets to run the components, with their databases
 - examples for the rest of the infrastructure (nginx, systemd)
 - instructions to set up Firefox to use your server
-- optionally, and experimental, [Mozilla accounts (fxa)](https://github.com/mozilla/fxa) as well, see [FXA.md](FXA.md)
+- optionally, [Mozilla accounts (fxa)](https://github.com/mozilla/fxa) as well, see [FXA.md](FXA.md)
 - an optional [admin UI](ADMIN.md)
 
 ## Images
@@ -75,7 +75,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - same as `syncstorage-rs-mysql` but built with `SYNCSTORAGE_DATABASE_BACKEND=postgres` and `TOKENSERVER_DATABASE_BACKEND=postgres` to use PostgreSQL
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
-    - Base image: [PostgreSQL's](https://github.com/docker-library/postgres) container
+    - Base image: [PostgreSQL's](https://github.com/docker-library/postgres/blob/master/18/trixie/Dockerfile) container (`postgres:18`)
     - Purpose: Post-migration database initialization and handling of MAX_USERS
     - Base image differences: [added](/db/postgres/init/Dockerfile) [`db_init.sh`](/db/postgres/init/db_init.sh) and [`db_init.sql`](/db/postgres/init/db_init.sql) scripts
     - source code: https://github.com/postgres/postgres
@@ -86,7 +86,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - Purpose: the optional [admin UI](ADMIN.md), and the sign-up policy of the self-hosted accounts
     - source code: [admin/](/admin), a Go program in a distroless image
 
-### Mozilla accounts images (experimental)
+### Mozilla accounts images
 - `ghcr.io/porelli/firefox-sync:fxa-mono-<release>` and `fxa-mono-latest`, amd64 and arm64
     - GitHub [workflow](/.github/workflows/fxa.yml): Mozilla only publishes [`mozilla/fxa-mono`](https://hub.docker.com/r/mozilla/fxa-mono) for amd64, this builds the same releases for amd64 and arm64 and tests them on both before publishing
     - Base image: [Mozilla's](https://github.com/mozilla/fxa/blob/main/_dev/docker/mono/Dockerfile) container

@@ -451,7 +451,7 @@ jobs:
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
         run: ./tests/podman.sh
 
-  ## Test the self-hosted Mozilla accounts (experimental, does not block publishing) ##
+  ## Test the self-hosted Mozilla accounts (does not block publishing) ##
   test-fxa:
     needs:
       - prepare-env

@@ -11,7 +11,7 @@ name: fxa-mono
 # access; the images are pushed under tags of their run (<tag>-run<id>), tested by digest, and
 # the multi-arch tags published from those digests on the default branch only (other branches
 # build and test). One run at a time per branch.
-# Experimental, see FXA.md.
+# See FXA.md.
 
 on:
   workflow_dispatch:

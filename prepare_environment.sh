@@ -304,8 +304,8 @@ case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
 ADMIN_ALLOWED_USERS=""
 ADMIN_HOST=""
 
-# self-hosted Mozilla accounts (experimental, docker compose only for now)
-read -r -e -p "Also self-host Mozilla accounts? Experimental, see FXA.md (y/N): " SELF_HOST_FXA
+# self-hosted Mozilla accounts (FXA.md)
+read -r -e -p "Also self-host Mozilla accounts? See FXA.md (y/N): " SELF_HOST_FXA
 case "${SELF_HOST_FXA}" in y|Y|yes) SELF_HOST_FXA=yes ;; *) SELF_HOST_FXA=no ;; esac
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     DEFAULT_FXA_DOMAIN=${SYNCSTORAGE_DOMAIN#*.}
