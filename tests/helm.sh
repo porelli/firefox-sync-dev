@@ -421,7 +421,10 @@ lint() {
 # the chart against compose (docker compose config, no daemon): tests/helm_parity.py
 parity() {
   echo "=== Comparing the chart with compose ==="
-  python3 "${SCRIPT_DIR}/helm_parity.py" "$@" || fail "the chart differs from compose"
+  python3 -I -c 'import yaml' 2> /dev/null || fail "parity needs PyYAML for python3 (apt install python3-yaml, pip install pyyaml)"
+  docker compose version > /dev/null 2>&1 || fail "parity needs docker compose (config only, no daemon)"
+  command -v helm > /dev/null || fail "parity needs helm"
+  python3 -I "${SCRIPT_DIR}/helm_parity.py" "$@" || fail "the chart differs from compose"
 }
 
 # every env entry of every container (init containers too) of the rendered manifests (a JSON

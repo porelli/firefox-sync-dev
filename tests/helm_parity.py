@@ -29,59 +29,94 @@ FULLNAME = f"{RELEASE}-firefox-sync"
 DOMAIN = "example.test"
 EXTDB = "extdb.example.test"
 
-# chart-only, compose-only or different, by design: "<chart container>/<VAR>" (or /command,
-# /<probe>) -> why. Every entry must be used by some case (a stale one fails)
+MYSQL_SERVERS = "mariadb,mysql,external-mariadb,external-mysql"
+BUNDLED = "mariadb,mysql,postgres"
+
+# chart-only, compose-only or different, by design: "<cases>:<chart container>/<VAR>" -> why.
+# <cases>: * or the cases (comma-separated) the reason holds for; every case of an entry must
+# use it (with the admin UI and the backups on or off), else it is stale and fails
 ALLOWED_DIFFERENCES = {
     # admin UI
-    "admin/ADMIN_DEPLOYMENT": "the commands the admin UI shows: kubectl and helm (kubernetes), not docker compose (compose)",
-    "admin/ADMIN_K8S_RELEASE": "chart-only: the release name for the helm commands the admin UI shows",
-    "admin/ADMIN_K8S_NAMESPACE": "chart-only: the namespace for the kubectl commands the admin UI shows",
-    "admin/ADMIN_K8S_FULLNAME": "chart-only: the chart's object names (fullnameOverride), which the admin UI builds from it",
-    "admin/ADMIN_K8S_SECRET": "chart-only: the Secret's name (existingSecret) for the commands the admin UI shows",
-    "admin/ADMIN_EXPORT_PORT": "compose-only: the host port compose publishes the admin UI on; the chart has a Service (and an Ingress)",
+    "*:admin/ADMIN_DEPLOYMENT": "the commands the admin UI shows: kubectl and helm (kubernetes), not docker compose (compose)",
+    "*:admin/ADMIN_K8S_RELEASE": "chart-only: the release name for the helm commands the admin UI shows",
+    "*:admin/ADMIN_K8S_NAMESPACE": "chart-only: the namespace for the kubectl commands the admin UI shows",
+    "*:admin/ADMIN_K8S_FULLNAME": "chart-only: the chart's object names (fullnameOverride), which the admin UI builds from it",
+    "*:admin/ADMIN_K8S_SECRET": "chart-only: the Secret's name (existingSecret) for the commands the admin UI shows",
+    "*:admin/ADMIN_EXPORT_PORT": "compose-only: the host port compose publishes the admin UI on; the chart has a Service (and an Ingress)",
     # the Sync server
-    "syncstorage/SYNC_STATSD_HOST": "chart-only as a variable: compose exports it in syncstorage's entrypoint when ffs-admin resolves; "
+    "*:syncstorage/SYNC_STATSD_HOST": "chart-only as a variable: compose exports it in syncstorage's entrypoint when ffs-admin resolves; "
     "the chart sets it while the admin UI is on (its value is still compared with the export)",
-    "syncstorage/SYNC_STATSD_PORT": "as SYNC_STATSD_HOST",
-    "syncstorage/command": "compose's entrypoint script only adds SYNC_STATSD_* (env here) before exec /app/bin/syncserver",
-    "syncstorage/readinessProbe": "compose's healthcheck is the livenessProbe; ready sooner (every 10 s, 3 failures) "
-    "so that the Service gets it at once",
+    "*:syncstorage/SYNC_STATSD_PORT": "as SYNC_STATSD_HOST",
     # the chart passes the passwords as their own variables (from the Secret) and builds the
-    # database URLs with $(VAR): compose interpolates them into the URLs
-    "migrate/STORAGE_DB_PASSWORD": "chart-only: the password of SYNC_SYNCSTORAGE__DATABASE_URL, $(STORAGE_DB_PASSWORD) there",
-    "migrate/TOKENSERVER_DB_PASSWORD": "chart-only: the password of SYNC_TOKENSERVER__DATABASE_URL, $(TOKENSERVER_DB_PASSWORD) there",
-    "migrate/POSTGRES_SYNC_PASSWORD": "chart-only: the password of the database URLs, $(POSTGRES_SYNC_PASSWORD) there",
-    "migrate/POSTGRES_PASSWORD": "chart-only: the password of the database URLs with your own server (no Sync role), $(POSTGRES_PASSWORD) there",
-    "syncstorage/STORAGE_DB_PASSWORD": "as migrate's",
-    "syncstorage/TOKENSERVER_DB_PASSWORD": "as migrate's",
-    "syncstorage/POSTGRES_SYNC_PASSWORD": "as migrate's",
-    "syncstorage/POSTGRES_PASSWORD": "as migrate's",
-    # the backups: a CronJob, not compose's loop
-    "backup/command": "a CronJob runs backup.sh now at backup.schedule; compose's container runs backup.sh loop",
-    "backup/MARIADB_TLS_VERIFY": "bundled MySQL: false (the chart's one value, the init container's) where compose's backup "
+    # database URLs with $(VAR): compose interpolates them into the URLs (and a $(VAR) must use them)
+    f"{MYSQL_SERVERS}:migrate/STORAGE_DB_PASSWORD": "chart-only: the password of SYNC_SYNCSTORAGE__DATABASE_URL, $(STORAGE_DB_PASSWORD) there",
+    f"{MYSQL_SERVERS}:migrate/TOKENSERVER_DB_PASSWORD": "chart-only: the password of SYNC_TOKENSERVER__DATABASE_URL, $(TOKENSERVER_DB_PASSWORD) there",
+    "postgres:migrate/POSTGRES_SYNC_PASSWORD": "chart-only: the password of the database URLs (the Sync role), $(POSTGRES_SYNC_PASSWORD) there",
+    "external-postgres:migrate/POSTGRES_PASSWORD": "chart-only: the password of the database URLs with your own server (no Sync role), "
+    "$(POSTGRES_PASSWORD) there",
+    f"{MYSQL_SERVERS}:syncstorage/STORAGE_DB_PASSWORD": "as migrate's",
+    f"{MYSQL_SERVERS}:syncstorage/TOKENSERVER_DB_PASSWORD": "as migrate's",
+    "postgres:syncstorage/POSTGRES_SYNC_PASSWORD": "as migrate's",
+    "external-postgres:syncstorage/POSTGRES_PASSWORD": "as migrate's",
+    # the backups
+    "mysql:backup/MARIADB_TLS_VERIFY": "bundled MySQL: false (the chart's one value, the init container's) where compose's backup "
     "inherits true; no effect: the backup image is mysql:8.4, backup.sh reads it with the MariaDB client only",
     # the databases
-    "db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
+    "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
     "the MySQL image ignores them",
-    "db/MARIADB_DATABASE": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    "db/MARIADB_USER": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    "db/MARIADB_PASSWORD": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    "db/MARIADB_AUTO_UPGRADE": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    "db/startupProbe": "the first start (a new database, a long recovery) gets up to 30 minutes; compose's start_period "
-    "only delays counting the failures",
-    "db/livenessProbe": "restarted only after 5 minutes without an answer (every 30 s, 10 failures): compose never restarts "
-    "an unhealthy database, and a restart in the middle of a recovery starts it over; readiness is compose's healthcheck",
-    "admin/startupProbe": "the first start moves the tables of an older install: up to 10 minutes",
-    "admin/readinessProbe": "compose's healthcheck is the livenessProbe; ready sooner (every 10 s) for the Service",
+    "mysql:db/MARIADB_DATABASE": "as MARIADB_RANDOM_ROOT_PASSWORD",
+    "mysql:db/MARIADB_USER": "as MARIADB_RANDOM_ROOT_PASSWORD",
+    "mysql:db/MARIADB_PASSWORD": "as MARIADB_RANDOM_ROOT_PASSWORD",
+    "mysql:db/MARIADB_AUTO_UPGRADE": "as MARIADB_RANDOM_ROOT_PASSWORD",
 }
 
-# containers of the chart that compose has no service for
-CHART_ONLY_CONTAINERS = {
-    "wait-db": "compose's depends_on service_healthy: waits for the database servers to answer, no credentials, no env",
-    "bind": "binds the backups PVC at install (WaitForFirstConsumer storage classes), compose's volume needs nothing",
-    "wait-sync": "compose's ffs-admin depends_on tokenserver_db_init: the admin UI starts once the Sync server serves "
-    "(its init containers succeeded), no env",
+# commands other than compose's, the chart's exactly: "<cases>:<container>" -> ([command, args], why)
+ALLOWED_COMMANDS = {
+    "*:syncstorage": ([["/app/bin/syncserver"], None],
+                      "compose's entrypoint script only adds SYNC_STATSD_* (env here) before exec /app/bin/syncserver"),
+    "*:backup": ([["sh", "/ffs-backup/backup.sh"], ["now"]],
+                 "a CronJob runs backup.sh now at backup.schedule; compose's container runs backup.sh loop"),
 }
+
+# probes with other timings than compose's healthcheck, the chart's exactly:
+# "<cases>:<container>/<probe>" -> ((periodSeconds, timeoutSeconds, failureThreshold), why)
+ALLOWED_PROBE_TIMINGS = {
+    "*:syncstorage/readinessProbe": ((10, 10, 3), "compose's healthcheck is the livenessProbe; ready sooner (every 10 s, 3 failures) "
+                                     "so that the Service gets it at once"),
+    "*:admin/startupProbe": ((5, 5, 120), "the first start moves the tables of an older install: up to 10 minutes"),
+    "*:admin/readinessProbe": ((10, 5, 3), "compose's healthcheck is the livenessProbe; ready sooner (every 10 s) for the Service"),
+    f"{BUNDLED}:db/startupProbe": ((10, 5, 180), "the first start (a new database, a long recovery) gets up to 30 minutes; "
+                                  "compose's start_period only delays counting the failures"),
+    f"{BUNDLED}:db/livenessProbe": ((30, 10, 10), "restarted only after 5 minutes without an answer: compose never restarts an "
+                                    "unhealthy database, and a restart in the middle of a recovery starts it over; readiness "
+                                    "is compose's healthcheck"),
+}
+
+# containers of the chart that compose has no service for, without env (no credentials):
+# "<cases>:<kind>/<workload name, a regex>/<container>" -> why
+CHART_ONLY_CONTAINERS = {
+    f"*:Deployment/{FULLNAME}-syncstorage/wait-db": "compose's depends_on service_healthy: waits for the database servers to answer",
+    f"*:Deployment/{FULLNAME}-admin/wait-sync": "compose's ffs-admin depends_on tokenserver_db_init: the admin UI starts once the "
+    "Sync server serves (its init containers succeeded)",
+    f"*:Job/{FULLNAME}-backup-volume-[0-9a-f]{{8}}/bind": "binds the backups PVC at install (WaitForFirstConsumer storage "
+    "classes), compose's volume needs nothing",
+}
+
+
+def in_scope(key, case):
+    """the entry's cases hold the case: (True, the rest of the key) or (False, None)"""
+    scope, rest = key.split(":", 1)
+    return (scope == "*" or case in scope.split(",")), rest
+
+
+def entry(table, case, rest):
+    """the key of the table for the case and the rest of a key, or None"""
+    for key in table:
+        ok, r = in_scope(key, case)
+        if ok and r == rest:
+            return key
+    return None
+
 
 # compose healthchecks the chart does as HTTP probes: the image has no shell
 EQUIVALENT_CHECKS = {
@@ -97,7 +132,8 @@ IDENTICAL_FILES = {
     "charts/firefox-sync/files/admin-user.sh": "db/mysql/admin-user.sh",
 }
 
-# compose service -> chart (workload kind, workload name, container, key prefix, init or one-shot)
+# compose service -> chart (workload kind, workload name, container, key prefix, init or one-shot);
+# a compose service of the case missing here fails
 PAIRS = [
     ("sync_role_init", "Deployment", f"{FULLNAME}-syncstorage", "sync-role", "sync-role", True),
     ("syncstorage_migrate", "Deployment", f"{FULLNAME}-syncstorage", "migrate", "migrate", True),
@@ -165,10 +201,11 @@ def set_line(lines, name, value):
     """NAME=value, also under the SYNC_ prefix compose's .env names may get"""
     pattern = re.compile(rf"^(?:SYNC_)?{re.escape(name)}=")
     hits = [i for i, line in enumerate(lines) if pattern.match(line)]
+    if not hits:
+        # appended, an old name compose may no longer read: the case would test nothing
+        sys.exit(f".env-example has no {name} (or SYNC_{name}): update helm_parity.py's CASES")
     for i in hits:
         lines[i] = lines[i].split("=", 1)[0] + "=" + value
-    if not hits:
-        lines.append(f"{name}={value}")
 
 
 def env_file(overrides, profiles):
@@ -351,26 +388,29 @@ def workloads(docs):
     return out
 
 
-def compare(case, services, docs, used, failures):
+def compare(case, label, services, docs, used, failures):
+    """case: the key of CASES, label: it with the admin UI and backups on or off"""
     containers = workloads(docs)
     secrets = Secrets()
     paired = set()
+    paired_services = set()
 
-    def allowed(prefix, what):
-        key = f"{prefix}/{what}"
-        if key in ALLOWED_DIFFERENCES:
-            used.add(key)
-            return True
-        return False
+    def allowed(prefix, what, table=ALLOWED_DIFFERENCES):
+        key = entry(table, case, f"{prefix}/{what}" if what else prefix)
+        if key:
+            used.add((key, case))
+        return key
 
     for service_name, kind, workload, cname, prefix, one_shot in PAIRS:
         service = services.get(service_name)
         if service is not None and (service.get("deploy") or {}).get("replicas") == 0:
             service = None
         found = containers.get((kind, workload, cname))
-        where = f"{case}: {service_name} -> {kind} {workload}/{cname}"
+        where = f"{label}: {service_name} -> {kind} {workload}/{cname}"
         if service is None and found is None:
             continue
+        if service is not None:
+            paired_services.add(service_name)
         if service is None or found is None:
             failures.add(where, "in compose only" if found is None else "in the chart only")
             continue
@@ -418,8 +458,12 @@ def compare(case, services, docs, used, failures):
         # the command: compose's entrypoint and command, the chart's command and args
         want = [service.get("entrypoint"), service.get("command")]
         got = [container.get("command"), container.get("args")]
-        if want != got and not allowed(prefix, "command"):
-            failures.add(where, f"command: compose {json.dumps(want)}, chart {json.dumps(got)}")
+        if want != got:
+            key = allowed(prefix, None, ALLOWED_COMMANDS)
+            if not key:
+                failures.add(where, f"command: compose {json.dumps(want)}, chart {json.dumps(got)}")
+            elif got != ALLOWED_COMMANDS[key][0]:
+                failures.add(where, f"command: {json.dumps(got)}, not {json.dumps(ALLOWED_COMMANDS[key][0])} ({key})")
 
         # the probes: compose's check in every one of them; its timings in each, but those
         # allowed to differ (and in one at least)
@@ -443,9 +487,14 @@ def compare(case, services, docs, used, failures):
             if not secrets.same(want_s, got_s, where, failures):
                 failures.add(where, f"{kind_} checks {got_check}, compose's healthcheck {want_check}")
             got_t = (probe.get("periodSeconds", 10), probe.get("timeoutSeconds", 1), probe.get("failureThreshold", 3))
-            if got_t == timings:
+            key = allowed(prefix, kind_, ALLOWED_PROBE_TIMINGS)
+            if key:
+                if got_t != ALLOWED_PROBE_TIMINGS[key][0]:
+                    failures.add(where, f"{kind_} every {got_t[0]} s, timeout {got_t[1]} s, {got_t[2]} failures; "
+                                        f"not {ALLOWED_PROBE_TIMINGS[key][0]} ({key})")
+            elif got_t == timings:
                 matching.append(kind_)
-            elif not allowed(prefix, kind_):
+            else:
                 failures.add(where, f"{kind_} every {got_t[0]} s, timeout {got_t[1]} s, {got_t[2]} failures; "
                                     f"compose's healthcheck every {timings[0]:g} s, timeout {timings[1]:g} s, {timings[2]} retries")
         if not matching:
@@ -463,10 +512,24 @@ def compare(case, services, docs, used, failures):
     for key, (container, init) in containers.items():
         if key in paired:
             continue
-        if key[2] in CHART_ONLY_CONTAINERS:
-            used.add("container:" + key[2])
-        else:
-            failures.add(f"{case}: {key[0]} {key[1]}/{key[2]}", "no compose service for this container")
+        where = f"{label}: {key[0]} {key[1]}/{key[2]}"
+        match = None
+        for k in CHART_ONLY_CONTAINERS:
+            ok, rest = in_scope(k, case)
+            kind, workload, cname = rest.split("/")
+            if ok and kind == key[0] and cname == key[2] and re.fullmatch(workload, key[1]):
+                match = k
+        if not match:
+            failures.add(where, "no compose service for this container")
+            continue
+        used.add((match, case))
+        if container.get("env") or container.get("envFrom"):
+            failures.add(where, f"env in a chart-only container ({match}): {[e['name'] for e in container.get('env') or []]}")
+
+    # every compose service is a chart container (but the database containers of your own server)
+    for name, service in services.items():
+        if name not in paired_services and (service.get("deploy") or {}).get("replicas") != 0:
+            failures.add(f"{label}: {name}", "a compose service the chart has no container for")
 
 
 def main(argv):
@@ -490,13 +553,14 @@ def main(argv):
                 services = compose_config(files, overrides, profiles)
                 docs = helm_template(helm_args + ["--set", f"admin.enabled={str(admin).lower()}", "--set", f"backup.enabled={str(backup).lower()}"])
                 before = len(failures)
-                compare(name, services, docs, used, failures)
+                compare(case, name, services, docs, used, failures)
                 print(("✓ " if len(failures) == before else "✗ ") + name)
-    if not argv:
-        stale = sorted(set(ALLOWED_DIFFERENCES) - used) + sorted(
-            c for c in CHART_ONLY_CONTAINERS if "container:" + c not in used)
-        for key in stale:
-            failures.add("ALLOWED_DIFFERENCES", f"{key} is used by no case: drop it")
+    # each entry used by every case it is for
+    for table in ("ALLOWED_DIFFERENCES", "ALLOWED_COMMANDS", "ALLOWED_PROBE_TIMINGS", "CHART_ONLY_CONTAINERS"):
+        for key in globals()[table]:
+            unused = [c for c in cases if in_scope(key, c)[0] and (key, c) not in used]
+            if unused:
+                failures.add(table, f"{key} is used by no render of {', '.join(unused)}: narrow it or drop it")
     for f in failures:
         print("✗ " + f)
     if failures:
