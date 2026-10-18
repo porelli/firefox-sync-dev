@@ -2,7 +2,7 @@ apiVersion: v2
 name: firefox-sync
 description: Self-hosted Firefox Sync server with syncstorage-rs, tokenserver, and optional admin UI
 type: application
-version: 0.1.0
+version: 0.1.0-dev.1
 appVersion: "latest"
 # CronJob timeZone (GA in 1.27): the backups run in UTC
 kubeVersion: ">=1.27.0-0"
