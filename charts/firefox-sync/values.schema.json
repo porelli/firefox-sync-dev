@@ -130,6 +130,142 @@
         "enabled": {
           "type": "boolean"
         },
+        "password": {
+          "type": "string"
+        },
+        "alertEmail": {
+          "type": "string"
+        },
+        "smtp": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": ["integer", "string"]
+            },
+            "user": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "secure": {
+              "type": ["string", "boolean"]
+            },
+            "sender": {
+              "type": "string"
+            }
+          }
+        },
+        "oidc": {
+          "type": "object",
+          "properties": {
+            "issuer": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "clientSecret": {
+              "type": "string"
+            },
+            "redirectUrl": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "groupsClaim": {
+              "type": "string"
+            },
+            "trustUnverifiedEmail": {
+              "type": ["string", "boolean"]
+            }
+          }
+        },
+        "trustedHeader": {
+          "type": "object",
+          "properties": {
+            "header": {
+              "type": "string"
+            },
+            "groupsHeader": {
+              "type": "string"
+            },
+            "trustedProxies": {
+              "type": "string"
+            }
+          }
+        },
+        "allowed": {
+          "type": "object",
+          "properties": {
+            "users": {
+              "type": "string"
+            },
+            "groups": {
+              "type": "string"
+            }
+          }
+        },
+        "metricsToken": {
+          "type": "string"
+        },
+        "tz": {
+          "type": "string"
+        },
+        "publicCheck": {
+          "type": ["string", "boolean"]
+        },
+        "updateCheck": {
+          "type": ["string", "boolean"]
+        },
+        "staleDays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "auditRetentionDays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "purge": {
+          "type": ["string", "integer"]
+        },
+        "errorRatePercent": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "errorRateMinErrors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dbGrowthMb": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dbGrowthFactor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deleteUnconfirmedDays": {
+          "type": ["string", "integer"]
+        },
+        "signupBurst": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "type": "object"
+        },
         "ingress": {
           "type": "object",
           "properties": {

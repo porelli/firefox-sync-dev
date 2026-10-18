@@ -392,9 +392,13 @@ func (s *SyncDB) superuserOwner(ctx context.Context) string {
 
 // upgradeSteps: how an install from before ADMIN_DB_PASSWORD gets it, as MIGRATING.md says
 // for compose, or for the Quadlets (ADMIN_DEPLOYMENT=quadlets), where --upgrade writes no
-// unit
-func upgradeSteps(quadlets bool) string {
-	if quadlets {
+// unit; with the Helm chart, whose Secret has it (an existingSecret may not)
+func upgradeSteps(d deployment) string {
+	if k := d.Kubernetes(); k != nil {
+		return "Add ADMIN_DB_PASSWORD to your existingSecret (the chart's own Secret " + k.Secret() + " has it; your own database server: run the new " +
+			"database-setup.sql there first), then " + k.helmUpgrade("") + ": the databases and the init container create the admin UI's users when they start"
+	}
+	if d.Quadlets() {
 		return "Stop the units (the one-shot ones and the databases too), run ./prepare_environment.sh again with the same answers (it writes ADMIN_DB_PASSWORD " +
 			"into .env and the units; --upgrade is for compose only), give the Sync database users their new passwords (your own database server: run the new " +
 			"database-setup.sql there) and systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service, as MIGRATING.md says for the Quadlets"
@@ -403,21 +407,24 @@ func upgradeSteps(quadlets bool) string {
 }
 
 // ownDBHint: the same, short, for the log
-func ownDBHint(quadlets bool) string {
-	if quadlets {
+func ownDBHint(d deployment) string {
+	if d.Kubernetes() != nil {
+		return "ADMIN_DB_PASSWORD in the chart's Secret, then helm upgrade"
+	}
+	if d.Quadlets() {
 		return "./prepare_environment.sh run again and the steps of MIGRATING.md for the Quadlets"
 	}
 	return "./prepare_environment.sh --upgrade, MIGRATING.md"
 }
 
-// ownDBCheck: the setup check of where the event log is (quadlets: ADMIN_DEPLOYMENT, the
-// steps to get there)
-func ownDBCheck(s *SyncDB, st moveState, quadlets bool) setupCheck {
+// ownDBCheck: the setup check of where the event log is (d: ADMIN_DEPLOYMENT, the steps to
+// get there)
+func ownDBCheck(s *SyncDB, st moveState, d deployment) setupCheck {
 	c := setupCheck{Name: "Event log (ADMIN_DB_PASSWORD)"}
 	switch {
 	case s.own == nil:
 		c.Text = "The event log, the audit trail and the notes are in the tokenserver database, which the Sync server's database user can read and change. " +
-			upgradeSteps(quadlets) + ": they move into a database of their own (MIGRATING.md, DATABASES.md)."
+			upgradeSteps(d) + ": they move into a database of their own (MIGRATING.md, DATABASES.md)."
 	case st.ForeignErr != "":
 		c.Text = fmt.Sprintf("Could not check that everything in the admin UI's database %s is its role's: %s.", s.ownName, st.ForeignErr)
 	case len(st.Foreign) > 0:
@@ -432,8 +439,13 @@ func ownDBCheck(s *SyncDB, st moveState, quadlets bool) setupCheck {
 		c.Text = fmt.Sprintf("The event log is in %s, out of the Sync server's reach, and the tokenserver database has admin UI tables again (%s), from a backup of before or from the Sync server's user: they were not copied. "+
 			"Look at them, then drop them as the tokenserver user.", s.ownName, strings.Join(st.Left, ", "))
 	case st.Superuser != "":
+		fix := "Run ./prepare_environment.sh --upgrade (it sets SYNC_POSTGRES_APP_USER and SYNC_POSTGRES_APP_PASSWORD) and docker compose up -d: the Sync server gets a role of its own, no superuser (DATABASES.md)."
+		if d.Kubernetes() != nil {
+			// the chart's bundled PostgreSQL has the Sync server's own role: your own server
+			fix = "Give the Sync server a role of its own on your database server, no superuser, owner of the Sync tables, as DATABASES.md says, and the chart its name and password."
+		}
 		c.Text = fmt.Sprintf("The event log is in its own database %s, but the Sync tables belong to %s, a superuser of the PostgreSQL server (the stack's database container makes SYNC_POSTGRES_USER one): the Sync server connects as it and can still read and change the event log. "+
-			"Run ./prepare_environment.sh --upgrade (it sets SYNC_POSTGRES_APP_USER and SYNC_POSTGRES_APP_PASSWORD) and docker compose up -d: the Sync server gets a role of its own, no superuser (DATABASES.md).", s.ownName, st.Superuser)
+			"%s", s.ownName, st.Superuser, fix)
 	default:
 		c.OK = true
 		c.Text = fmt.Sprintf("The event log, the audit trail and the notes are in %s, which only the admin UI's database user reaches: the Sync server's users cannot read or change them.", s.ownName)

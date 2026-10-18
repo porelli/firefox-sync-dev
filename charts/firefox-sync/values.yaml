@@ -64,7 +64,10 @@ database:
 # Name of existing secret containing database passwords and secrets, with the keys
 # SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_PASSWORD (the admin UI's
 # database users) and TOKENSERVER_DB_PASSWORD + STORAGE_DB_PASSWORD (mariadb, mysql) or
-# POSTGRES_PASSWORD (the superuser) + POSTGRES_SYNC_PASSWORD (the Sync server's role) (postgres)
+# POSTGRES_PASSWORD (the superuser) + POSTGRES_SYNC_PASSWORD (the Sync server's role) (postgres);
+# optional, for the admin UI (missing or empty: that feature off): FXA_SMTP_PASS,
+# ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN. The admin.password, admin.smtp.password,
+# admin.oidc.clientSecret and admin.metricsToken values are ignored then.
 # If not set, a secret named like the release (<release>-firefox-sync) is generated on the
 # first install and kept as it is on upgrades (and on uninstall, like the database volumes).
 # REQUIRED when the chart is rendered with `helm template` or a GitOps tool that renders it
@@ -93,10 +96,84 @@ syncstorage:
     # Service port
     port: 8000
 
-# Admin UI configuration (Task 3 will implement templates)
+# The admin UI (compose's ffs-admin, see ADMIN.md): max users, accounts, health, metrics,
+# alerts. Not published: kubectl port-forward svc/<release>-firefox-sync-admin 8090:8080,
+# or admin.ingress below behind your own sign-in. The Sync server sends it its metrics
+# (statsd, SYNC_STATSD_HOST) only while it is on. As in .env-example, with the names of .env
 admin:
   enabled: false
-  # Additional admin configuration will be added in Task 3
+  # ADMIN_PASSWORD: empty generates one into the Secret (kept on upgrades); read it with
+  # kubectl get secret <release>-firefox-sync -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
+  password: ""
+  # ADMIN_ALERT_EMAIL: email alerts (refused sign-ups, components down, new releases, admin
+  # sign-ins), sent with the SMTP server below
+  alertEmail: ""
+  # FXA_SMTP_*: the SMTP server of the alerts and invitations (empty host: no emails);
+  # the password (FXA_SMTP_PASS) goes into the Secret
+  smtp:
+    host: ""
+    port: 587
+    user: ""
+    password: ""
+    # true: TLS from the start (port 465); false: STARTTLS
+    secure: false
+    sender: ""
+  # ADMIN_OIDC_*: sign-in with OpenID Connect (ADMIN.md#signing-in); the client secret
+  # (ADMIN_OIDC_CLIENT_SECRET, empty: a public client) goes into the Secret
+  oidc:
+    issuer: ""
+    clientId: ""
+    clientSecret: ""
+    # the exact public callback URL, https://<admin host>/auth/callback
+    redirectUrl: ""
+    # default "openid email profile"
+    scopes: ""
+    # the button label, default "single sign-on"
+    name: ""
+    # the claim with the groups, default "groups"
+    groupsClaim: ""
+    # true: accept emails without email_verified=true (risky, see ADMIN.md)
+    trustUnverifiedEmail: ""
+  # ADMIN_AUTH_HEADER, ADMIN_AUTH_GROUPS_HEADER, ADMIN_TRUSTED_PROXIES: sign-in with the
+  # header of a forward-auth proxy, only from these CIDRs (the proxy as the pod sees it)
+  trustedHeader:
+    header: ""
+    groupsHeader: ""
+    trustedProxies: ""
+  # ADMIN_ALLOWED_USERS, ADMIN_ALLOWED_GROUPS: with OpenID Connect or the header, who is an
+  # admin (emails and @domains, groups; comma-separated)
+  allowed:
+    users: ""
+    groups: ""
+  # ADMIN_METRICS_TOKEN: Prometheus metrics at /metrics with this bearer token (empty:
+  # off), kept in the Secret
+  metricsToken: ""
+  # ADMIN_TZ: time zone of the pages and the alerts, e.g. Europe/Rome (empty: UTC)
+  tz: ""
+  # ADMIN_PUBLIC_CHECK: every hour the public https URLs and their certificates (false: never)
+  publicCheck: true
+  # ADMIN_UPDATE_CHECK: compare the running versions with the newest releases on GitHub
+  updateCheck: true
+  # ADMIN_STALE_DAYS: accounts not synced for this many days are marked inactive
+  staleDays: 90
+  # ADMIN_RETENTION_DAYS, ADMIN_AUDIT_RETENTION_DAYS: days of metrics and events, and of the
+  # events of the admins, kept
+  retentionDays: 30
+  auditRetentionDays: 365
+  # ADMIN_PURGE: "1" deletes the Sync data nobody reads any more every day (ADMIN.md#storage)
+  purge: ""
+  # ADMIN_ERROR_RATE_PERCENT, ADMIN_ERROR_RATE_MIN_ERRORS: an alert on a spike of Sync errors
+  errorRatePercent: 10
+  errorRateMinErrors: 20
+  # ADMIN_DB_GROWTH_MB, ADMIN_DB_GROWTH_FACTOR: an alert on a database growing fast
+  dbGrowthMb: 1024
+  dbGrowthFactor: 5
+  # the self-hosted accounts only (not in this chart yet), passed as compose does:
+  # ADMIN_DELETE_UNCONFIRMED_DAYS, ADMIN_SIGNUP_BURST
+  deleteUnconfirmedDays: ""
+  signupBurst: 10
+
+  resources: {}
 
   # Admin ingress configuration (used when admin.enabled: true)
   ingress:

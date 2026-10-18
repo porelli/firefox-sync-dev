@@ -173,6 +173,15 @@ spec:
           {{- include "firefox-sync.syncstorageSecurityContext" . | nindent 10 }}
           env:
             {{- include "firefox-sync.syncstorageEnv" . | nindent 12 }}
+            {{- if .Values.admin.enabled }}
+            # compose's entrypoint: the metrics to the admin UI only while it runs, syncstorage-rs
+            # does not start when the statsd host does not resolve (the Service's name does,
+            # from before this pod: Helm creates Services first)
+            - name: SYNC_STATSD_HOST
+              value: {{ include "firefox-sync.adminService" . }}
+            - name: SYNC_STATSD_PORT
+              value: "8125"
+            {{- end }}
           ports:
             - name: http
               containerPort: 8000

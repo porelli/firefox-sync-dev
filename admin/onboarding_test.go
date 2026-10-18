@@ -25,14 +25,14 @@ func TestDomainMismatch(t *testing.T) {
 
 func TestNodeMismatch(t *testing.T) {
 	nodes := []SyncNode{{Node: "https://old.example.com", Downed: true}, {Node: "https://sync.example.com/"}}
-	if c := nodeCheck("https://sync.example.com", nodes); !c.OK {
+	if c := nodeCheck(deployment{}, "https://sync.example.com", nodes); !c.OK {
 		t.Errorf("same node: %+v", c)
 	}
-	c := nodeCheck("https://new.example.com", nodes)
+	c := nodeCheck(deployment{}, "https://new.example.com", nodes)
 	if c.OK || !strings.Contains(c.Text, "hands out https://sync.example.com, but SYNC_PUBLIC_URL is https://new.example.com") {
 		t.Errorf("mismatch: %+v", c)
 	}
-	if c := nodeCheck("https://sync.example.com", nodes[:1]); c.OK || !strings.Contains(c.Text, "no Sync node in use") {
+	if c := nodeCheck(deployment{}, "https://sync.example.com", nodes[:1]); c.OK || !strings.Contains(c.Text, "no Sync node in use") {
 		t.Errorf("none: %+v", c)
 	}
 }

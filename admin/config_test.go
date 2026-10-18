@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// the environment of ffs-admin in the compose files and the Quadlets of the repository:
+// the environment of ffs-admin in the compose files, the Quadlets and the Helm chart of the repository:
 // its variables, each with the variables of .env its value takes (${X}, %X%). Empty
 // when the tests run without the repository (the image's build has admin/ only)
 func adminEnvironments(t *testing.T) (map[string][]string, []string) {
@@ -67,6 +67,25 @@ func adminEnvironments(t *testing.T) (map[string][]string, []string) {
 		for _, line := range strings.Split(string(b), "\n") {
 			if m := env.FindStringSubmatch(line); m != nil {
 				add(m[1], m[2])
+			}
+		}
+	}
+	// and the Helm chart's admin container
+	if b, err := os.ReadFile("../charts/firefox-sync/templates/admin.yaml"); err == nil {
+		files = append(files, "../charts/firefox-sync/templates/admin.yaml")
+		// the variables of its container, a secretKeyRef as the .env name of its key
+		name := regexp.MustCompile(`^ {12}- name: ([A-Z][A-Z0-9_]*)$`)
+		key := regexp.MustCompile(`^ +key: ([A-Z][A-Z0-9_]*)$`)
+		include := regexp.MustCompile(`"name" "([A-Z][A-Z0-9_]*)" "key" "([A-Z][A-Z0-9_]*)"`)
+		last := ""
+		for _, line := range strings.Split(string(b), "\n") {
+			if m := include.FindStringSubmatch(line); m != nil {
+				add(m[1], "${"+m[2]+"}")
+			} else if m := name.FindStringSubmatch(line); m != nil {
+				last = m[1]
+				add(last, "")
+			} else if m := key.FindStringSubmatch(line); m != nil && last != "" {
+				add(last, "${"+m[1]+"}")
 			}
 		}
 	}
@@ -124,7 +143,7 @@ func TestConfigVarsClassified(t *testing.T) {
 	if len(used) < 50 {
 		t.Fatalf("only %d variables found in the code", len(used))
 	}
-	// what compose and the Quadlets give it
+	// what compose, the Quadlets and the chart give it
 	given, files := adminEnvironments(t)
 	if len(files) == 0 {
 		t.Log("not in the repository: the compose files and the Quadlets are not checked")
@@ -132,7 +151,7 @@ func TestConfigVarsClassified(t *testing.T) {
 		t.Fatalf("only %d variables in %v", len(given), files)
 	}
 	for name := range given {
-		used[name] = "compose or the Quadlets"
+		used[name] = "compose, the Quadlets or the chart"
 	}
 	for name, where := range used {
 		secret, known := configVars[name]
@@ -329,7 +348,7 @@ func TestConfigPage(t *testing.T) {
 		t.Errorf("before ADMIN_DB_PASSWORD, compose: %q", got)
 	}
 	// with the Quadlets their steps, --upgrade writes no unit
-	page = configPage(t, false, func(app *App, _ *fakeFxa) { app.sync.own, app.quadlets = nil, true })
+	page = configPage(t, false, func(app *App, _ *fakeFxa) { app.sync.own, app.deployment = nil, deployment{kind: "quadlets"} })
 	if got := configRowOf(page, "Admin UI database"); !strings.Contains(got, "the steps of MIGRATING.md for the Quadlets") || strings.Contains(got, "--upgrade") {
 		t.Errorf("before ADMIN_DB_PASSWORD, Quadlets: %q", got)
 	}

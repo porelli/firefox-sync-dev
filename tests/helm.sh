@@ -9,6 +9,11 @@ check() {
   echo "✓ $1"
 }
 
+# rendered manifests (stdin) as a JSON array, for jq
+manifests() {
+  python3 -c 'import json, sys, yaml; print(json.dumps([d for d in yaml.safe_load_all(sys.stdin) if d]))'
+}
+
 fail() {
   echo "✗ $1"
   exit 1
@@ -137,6 +142,56 @@ lint() {
   [[ "${refs}" =~ ^[[:space:]]*name:\ my-secret$ ]] || fail "secretKeyRefs not all to my-secret: ${refs}"
   check "existingSecret: no Secret rendered, all secretKeyRefs read it"
 
+  # the admin UI: off by default, then a Service (http, statsd) and the Sync server's statsd
+  # host only while it is on; compose's variables, its secrets from the Secret
+  echo "Testing the admin UI..."
+  output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml")
+  if echo "${output}" | grep -qE 'name: test-release-firefox-sync-admin$|SYNC_STATSD_(HOST|PORT)'; then
+    fail "admin.enabled=false: an admin UI or SYNC_STATSD_* rendered"
+  fi
+  check "admin UI off by default, no SYNC_STATSD_* on the Sync server"
+  for backend in mariadb mysql postgres; do
+    compose=docker-compose.yml
+    [[ ${backend} == postgres ]] && compose=docker-compose.sync-postgres.yml
+    output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" \
+      --set database.backend="${backend}" --set admin.enabled=true)
+    docs=$(echo "${output}" | manifests)
+    svc=$(echo "${docs}" | jq '.[] | select(.kind == "Service" and .metadata.name == "test-release-firefox-sync-admin")')
+    [[ "$(echo "${svc}" | jq -c '[.spec.ports[] | [.name, .port, .protocol]] | sort')" == '[["http",8080,"TCP"],["statsd",8125,"UDP"]]' ]] \
+      || fail "${backend}: the admin Service's ports: ${svc}"
+    sync=$(echo "${docs}" | jq '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-syncstorage")
+      | .spec.template.spec.containers[] | select(.name == "syncstorage") | .env')
+    [[ "$(echo "${sync}" | jq -c 'map(select(.name | startswith("SYNC_STATSD_"))) | map({(.name): .value}) | add')" \
+      == '{"SYNC_STATSD_HOST":"test-release-firefox-sync-admin","SYNC_STATSD_PORT":"8125"}' ]] || fail "${backend}: SYNC_STATSD_* of the Sync server"
+    admin=$(echo "${docs}" | jq '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
+      | .spec.template.spec.containers[] | select(.name == "admin") | .env')
+    [[ "$(echo "${admin}" | jq -r 'map(select(.name == "ADMIN_DEPLOYMENT" or .name == "ADMIN_K8S_RELEASE"))[].value' | paste -sd' ' -)" == "kubernetes test-release" ]] \
+      || fail "${backend}: ADMIN_DEPLOYMENT, ADMIN_K8S_RELEASE"
+    # no secret as a plain value
+    plain=$(echo "${admin}" | jq -r '.[] | select(.value != null) | .name' | grep -E '(^|_)(PASS|PASSWORD|SECRET|TOKEN)$' || true)
+    [[ -z "${plain}" ]] || fail "${backend}: secrets of the admin UI as plain values: ${plain}"
+    # compose's ffs-admin variables, but ADMIN_EXPORT_PORT (a port of the host: the Service
+    # here) and BACKUP_TIME, BACKUP_KEEP (with the backups); and the chart's own
+    want=$(sed -n '/^  ffs-admin:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    environment:$/,/^    [a-z_]*:$/p' \
+      | grep -oE '^      [A-Z][A-Z0-9_]*' | tr -d ' ' | grep -vxE 'ADMIN_EXPORT_PORT|BACKUP_TIME|BACKUP_KEEP' | sort)
+    got=$(echo "${admin}" | jq -r '.[].name' | grep -vxE 'ADMIN_K8S_RELEASE|ADMIN_K8S_NAMESPACE' | sort)
+    [[ "${want}" == "${got}" ]] || fail "${backend}: the admin UI's variables differ from ${compose}'s ffs-admin: $(diff <(echo "${want}") <(echo "${got}") | grep '^[<>]' | paste -sd' ' -)"
+    check "${backend}: admin Service http 8080/TCP + statsd 8125/UDP, SYNC_STATSD_HOST, compose's variables, secrets from the Secret"
+  done
+  # its optional secrets: from the values into the Secret, optional in an existingSecret
+  output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true \
+    --set admin.metricsToken=tok --set admin.smtp.password=pw --set admin.password=adm)
+  data=$(echo "${output}" | manifests | jq '.[] | select(.kind == "Secret") | .data')
+  [[ "$(echo "${data}" | jq -r '[.ADMIN_METRICS_TOKEN, .FXA_SMTP_PASS, .ADMIN_PASSWORD, .ADMIN_OIDC_CLIENT_SECRET] | map(@base64d) | join(" ")')" == "tok pw adm " ]] \
+    || fail "admin secrets in the Secret: ${data}"
+  output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true --set existingSecret=my-secret)
+  optional=$(echo "${output}" | manifests | jq -r '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
+    | .spec.template.spec.containers[0].env[] | select(.valueFrom.secretKeyRef.optional == true) | .valueFrom.secretKeyRef.key' | sort | paste -sd' ' -)
+  [[ "${optional}" == "ADMIN_METRICS_TOKEN ADMIN_OIDC_CLIENT_SECRET ADMIN_PASSWORD FXA_SMTP_PASS" ]] || fail "optional keys of an existingSecret: ${optional}"
+  refs=$(echo "${output}" | grep -A1 'secretKeyRef:' | grep 'name:' | sort -u)
+  [[ "${refs}" =~ ^[[:space:]]*name:\ my-secret$ ]] || fail "admin UI on, secretKeyRefs not all to my-secret: ${refs}"
+  check "admin secrets: values into the Secret; FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_PASSWORD optional in an existingSecret"
+
   echo ""
   echo "=== All lint checks passed ==="
 }
@@ -154,6 +209,8 @@ e2e() {
   # as tests/e2e.sh: REPOSITORY and TAG of the images; the init image is built from this
   # tree (the published one may be older than the chart), unless SKIP_BUILD=1
   local repository=${REPOSITORY:-ghcr.io/porelli/firefox-sync} tag=${TAG:-latest} init_tag=${TAG:-latest}
+  # the admin UI too (ADMIN_DEPLOYMENT=kubernetes is in this tree)
+  ADMIN_TAG=${TAG:-latest}
   BACKEND=${backend}
   CLUSTER="ffs-helm-${backend}"
   REL=t
@@ -173,8 +230,22 @@ e2e() {
       || fail "init image not built"
     kind load docker-image --name "${CLUSTER}" "${repository}:syncstorage-rs-${flavor}-init-${init_tag}"
     check "init image built from ${init_dir}"
+    ADMIN_TAG=helm-e2e
+    # with BuildKit (the Dockerfile's BUILDPLATFORM), as tests/e2e.sh builds it
+    ADMIN_IMAGE="${repository}:admin-${ADMIN_TAG}" COMPOSE_BAKE=false docker compose -p ffs-helm-admin-build \
+      -f "${SCRIPT_DIR}/docker-compose.admin-build.yml" build -q || fail "admin image not built"
+    kind load docker-image --name "${CLUSTER}" "${repository}:admin-${ADMIN_TAG}"
+    check "admin image built from admin/"
   fi
 
+  # a syncstorage image of the host's docker (of a private repository, or built there): into
+  # the cluster, which would pull it otherwise
+  # (not kind load: it imports --all-platforms, which a pulled image's export lacks)
+  if docker image inspect "${SYNC_IMAGE}" > /dev/null 2>&1; then
+    docker save "${SYNC_IMAGE}" | docker exec -i "${CLUSTER}-control-plane" \
+      ctr --namespace=k8s.io images import --digests --snapshotter=overlayfs - > /dev/null || fail "${SYNC_IMAGE} not loaded"
+    check "${SYNC_IMAGE} loaded from the host's docker"
+  fi
   sed "s|ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-latest|${SYNC_IMAGE}|" \
     "${SCRIPT_DIR}/helm/mock-fxa.yaml" | kubectl apply -f -
   kubectl rollout status deploy/mock-fxa --timeout=5m
@@ -240,8 +311,75 @@ e2e() {
   client_flow flow-2 "-k first_sign_in" || fail "client flow after the upgrade failed"
   check "client flow after the upgrade passed"
 
+  admin_toggle
+
   echo ""
   echo "=== e2e (${backend}) passed ==="
+}
+
+# the admin UI on (signed in with the Secret's ADMIN_PASSWORD, the overview shows the Sync
+# server and alice of the client flow), then off: the Sync server Ready both ways, with
+# SYNC_STATSD_HOST only while the admin UI's Service exists
+admin_toggle() {
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=true \
+    --set image.adminTag="${ADMIN_TAG}" --wait --timeout 10m || fail "helm upgrade with the admin UI did not get Ready"
+  check "admin UI on: Ready"
+  sync_ready "${FULL}-admin"
+  check "syncstorage Ready with SYNC_STATSD_HOST=${FULL}-admin"
+
+  kubectl port-forward "svc/${FULL}-admin" 18090:8080 > /dev/null 2>&1 &
+  local pf=$! jar page deadline
+  jar=$(mktemp)
+  deadline=$(( $(date +%s) + 60 ))
+  until curl -sf -o /dev/null http://localhost:18090/healthz; do
+    [[ $(date +%s) -lt ${deadline} ]] || { kill "${pf}"; fail "port-forward to the admin UI does not answer"; }
+    sleep 2
+  done
+  # a session cookie (Secure: curl keeps it for http://localhost), as test_admin_sync.py signs in
+  page=$(curl -s -L -c "${jar}" -b "${jar}" --data-urlencode "password=$(secret ADMIN_PASSWORD)" http://localhost:18090/login)
+  if ! grep -q 'Sign out' <<< "${page}"; then
+    kill "${pf}"; fail "sign-in with the Secret's ADMIN_PASSWORD refused: $(head -c 500 <<< "${page}")"
+  fi
+  check "signed in to the admin UI with the Secret's ADMIN_PASSWORD"
+  # the first health check runs at the start, the version once the Sync server answered
+  deadline=$(( $(date +%s) + 180 ))
+  while :; do
+    page=$(curl -s -b "${jar}" http://localhost:18090/)
+    if grep -qE '<td>Sync server</td><td><span class="ok">up</span>.*?</td><td>[0-9]+\.[0-9]+\.[0-9]+' <<< "${page}" \
+      && grep -q 'href="/users/alice"' <<< "${page}" && grep -q 'id="sync-users">1<' <<< "${page}"; then
+      break
+    fi
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      kill "${pf}"
+      # (the published images before APP_BUILD_REVISION 2 say TBD: REPOSITORY=ghcr.io/porelli/firefox-sync-dev)
+      fail "overview without the Sync server's version or alice: $(grep -oE '<td>Sync server</td>.{0,200}' <<< "${page}")"
+    fi
+    sleep 5
+  done
+  check "overview: the Sync server up with its version, alice's account"
+  # the commands of the Helm chart there
+  grep -q "create job --from=cronjob/${FULL}-backup backup-now" <<< "${page}" || { kill "${pf}"; fail "overview: no kubectl backup command"; }
+  ! grep -q 'docker compose' <<< "${page}" || { kill "${pf}"; fail "overview: docker compose commands"; }
+  check "overview: kubectl commands, no docker compose"
+  kill "${pf}" 2> /dev/null || true
+  rm -f "${jar}"
+
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=false --wait --timeout 10m \
+    || fail "helm upgrade without the admin UI did not get Ready"
+  ! kubectl get svc "${FULL}-admin" > /dev/null 2>&1 || fail "the admin Service is still there"
+  sync_ready ""
+  check "admin UI off: syncstorage Ready again, no SYNC_STATSD_HOST"
+}
+
+# sync_ready <statsd host, "" for none>: the one syncstorage pod Ready, SYNC_STATSD_HOST as given
+sync_ready() {
+  kubectl rollout status "deploy/${FULL}-syncstorage" --timeout=10m || fail "syncstorage not rolled out"
+  wait_pod_status Running 300 || fail "syncstorage not a single Running pod"
+  kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=5m || fail "syncstorage not Ready"
+  local host
+  host=$(kubectl get pods -l "${POD_SELECTOR}" -o json | jq -r '.items[0].spec.containers[]
+    | select(.name == "syncstorage") | .env[] | select(.name == "SYNC_STATSD_HOST") | .value')
+  [[ "${host}" == "$1" ]] || fail "syncstorage's SYNC_STATSD_HOST is '${host}', expected '$1'"
 }
 
 # sql <statement>: on the tokenserver database, as the stack's user, in the database pod

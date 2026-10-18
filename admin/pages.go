@@ -85,7 +85,7 @@ func (a *App) userPage(w http.ResponseWriter, r *http.Request, s *session) {
 			if data["SecurityEvents"], err = a.fxa.SecurityEvents(ctx, uid, securityHistoryRows); err != nil {
 				errs = append(errs, "Security history: "+err.Error())
 			}
-			data["SecurityHistoryRows"], data["Quadlets"] = securityHistoryRows, a.quadlets
+			data["SecurityHistoryRows"], data["Quadlets"] = securityHistoryRows, a.deployment.Quadlets()
 		}
 	}
 	if data["Account"] == nil && user == nil && len(errs) == 0 {
@@ -181,7 +181,7 @@ func (a *App) activityPage(w http.ResponseWriter, r *http.Request, s *session) {
 	} else {
 		data["Jobs"] = jobList(a.enabledJobs(), jobs)
 	}
-	data["Errors"] = errs
+	data["Errors"], data["Kubernetes"] = errs, a.deployment.Kubernetes()
 	a.render(w, "activity.html", data)
 }
 

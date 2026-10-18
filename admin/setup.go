@@ -20,7 +20,7 @@ type setupCheck struct {
 
 // nodeCheck: the tokenserver hands out its nodes in use, Firefox syncs there; the init
 // container sets the node from SYNC_PUBLIC_URL (SYNCSTORAGE_DOMAIN in its environment) on every start
-func nodeCheck(domain string, nodes []SyncNode) setupCheck {
+func nodeCheck(d deployment, domain string, nodes []SyncNode) setupCheck {
 	c := setupCheck{Name: "Sync node"}
 	var inUse []string
 	for _, n := range nodes {
@@ -35,12 +35,12 @@ func nodeCheck(domain string, nodes []SyncNode) setupCheck {
 	}
 	switch {
 	case c.OK:
-		c.Text = "The tokenserver hands out " + domain + ", the public Sync URL (SYNC_PUBLIC_URL)."
+		c.Text = "The tokenserver hands out " + domain + ", the public Sync URL (" + d.setting("SYNC_PUBLIC_URL", "syncDomain") + ")."
 	case len(inUse) == 0:
-		c.Text = "The tokenserver has no Sync node in use, SYNC_PUBLIC_URL is " + domain + ": nobody can sync. The init container adds it when it starts: docker compose up -d (or restart the Quadlets)."
+		c.Text = "The tokenserver has no Sync node in use, " + d.setting("SYNC_PUBLIC_URL", "syncDomain") + " is " + domain + ": nobody can sync. The init container adds it when it starts: " + d.startInit() + "."
 	default:
-		c.Text = fmt.Sprintf("The tokenserver hands out %s, but SYNC_PUBLIC_URL is %s: Firefox syncs with %s. The init container sets the node from SYNC_PUBLIC_URL when it starts: docker compose up -d (or restart the Quadlets).",
-			strings.Join(inUse, ", "), domain, inUse[0])
+		c.Text = fmt.Sprintf("The tokenserver hands out %s, but %s is %s: Firefox syncs with %s. The init container sets the node from it when it starts: %s.",
+			strings.Join(inUse, ", "), d.setting("SYNC_PUBLIC_URL", "syncDomain"), domain, inUse[0], d.startInit())
 	}
 	return c
 }
@@ -94,12 +94,13 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 		} else {
 			st.Foreign = found
 		}
-		checks = append(checks, ownDBCheck(a.sync, st, a.quadlets))
+		checks = append(checks, ownDBCheck(a.sync, st, a.deployment))
 	}
 	if a.syncDomain != "" && status != nil {
-		checks = append(checks, nodeCheck(a.syncDomain, status.Nodes))
+		checks = append(checks, nodeCheck(a.deployment, a.syncDomain, status.Nodes))
 	}
-	if c, ok := oldNamesCheck(os.Getenv("FFS_OLD_ENV_NAMES")); ok {
+	// the old names of .env: none with the Helm chart, which has no .env
+	if c, ok := oldNamesCheck(os.Getenv("FFS_OLD_ENV_NAMES")); ok && a.deployment.Kubernetes() == nil {
 		checks = append(checks, c)
 	}
 	for _, comp := range components {

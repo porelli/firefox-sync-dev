@@ -1,0 +1,15 @@
+# The admin UI on, with its optional secrets and sign-in settings
+syncDomain: https://sync.example.test
+admin:
+  enabled: true
+  metricsToken: ci-token
+  smtp:
+    host: smtp.example.test
+    password: ci-smtp
+  oidc:
+    issuer: https://id.example.test
+    clientId: ffs
+    clientSecret: ci-oidc
+    redirectUrl: https://admin.example.test/auth/callback
+    trustUnverifiedEmail: false
+  purge: 1

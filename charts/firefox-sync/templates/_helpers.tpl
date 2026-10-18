@@ -275,7 +275,8 @@ Accepts a dict with "root" and "db" (tokenserver|storage)
 
 {{/*
 An env entry read from the chart's Secret
-Accepts a dict with "root", "name" (the env var) and "key" (the Secret key)
+Accepts a dict with "root", "name" (the env var), "key" (the Secret key) and optional
+"optional" (true: the key may be missing from an existingSecret, the variable is then unset)
 */}}
 {{- define "firefox-sync.secretEnv" -}}
 - name: {{ .name }}
@@ -283,6 +284,9 @@ Accepts a dict with "root", "name" (the env var) and "key" (the Secret key)
     secretKeyRef:
       name: {{ include "firefox-sync.secretName" .root }}
       key: {{ .key }}
+      {{- if .optional }}
+      optional: true
+      {{- end }}
 {{- end }}
 
 {{/*
@@ -407,4 +411,11 @@ compose's cap_drop: [NET_RAW] of the Sync server and its migrations: no raw sock
 securityContext:
   capabilities:
     drop: ["NET_RAW"]
+{{- end }}
+
+{{/*
+The admin UI's Service: its http port and the statsd port the Sync server sends to
+*/}}
+{{- define "firefox-sync.adminService" -}}
+{{- printf "%s-admin" (include "firefox-sync.fullname" .) }}
 {{- end }}
