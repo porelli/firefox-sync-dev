@@ -22,6 +22,11 @@
 # has no PostgreSQL client), the sync scope records it on its next round.
 # For the healthcheck the loop writes BACKUP_DIR/.loop-<scope> (when it started, its last
 # round, every minute) and each run BACKUP_DIR/.result-<scope> (1 or 0, when it finished).
+# One run at a time per scope (the nightly one, one made by hand, the Quadlet timer's): a run
+# holds BACKUP_DIR/.lock-<scope>, a directory (mkdir is atomic, mysql:8.4 has no flock) with
+# its owner, and a second one waits for it, at most BACKUP_LOCK_WAIT seconds (3600), then
+# fails, recorded. A lock whose run is gone (killed) is taken over: at once in the same
+# container (its process is no longer there), otherwise after MAX_RUN (a day).
 set -u
 umask 077
 
@@ -29,9 +34,14 @@ DIR=${BACKUP_DIR:-/backups}
 KEEP=${BACKUP_KEEP:-7}
 AT=${BACKUP_TIME:-03:00}
 SCOPE=${BACKUP_SCOPE:-}
+WAIT=${BACKUP_LOCK_WAIT:-3600}
+# no run takes longer (also the healthcheck's limit)
+MAX_RUN=86400
 TMP=$(mktemp -d)
 PARTIAL=
-trap 'rm -rf "${TMP}" ${PARTIAL:+"${PARTIAL}"}' EXIT
+LOCK=${DIR}/.lock-${SCOPE}
+LOCKED=
+trap 'rm -rf "${TMP}" ${PARTIAL:+"${PARTIAL}"}; [ -z "${LOCKED}" ] || rm -rf "${LOCK}"' EXIT
 # (sh runs it once the current dump ends, then the EXIT trap)
 trap 'exit 0' TERM INT
 
@@ -41,6 +51,7 @@ fail() { log "$*" >&2; exit 2; }
 case "${SCOPE}" in sync|accounts) ;; *) fail "BACKUP_SCOPE must be sync or accounts" ;; esac
 case "${KEEP}" in ''|*[!0-9]*|0) fail "BACKUP_KEEP must be a number of 1 or more, not '${KEEP}'" ;; esac
 case "${AT}" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) fail "BACKUP_TIME must be HH:MM (UTC), not '${AT}'" ;; esac
+case "${WAIT}" in ''|*[!0-9]*) fail "BACKUP_LOCK_WAIT must be a number of seconds, not '${WAIT}'" ;; esac
 
 # the state of the loop and of the last run, for the healthcheck (written then renamed: the
 # check never reads half a line; a run that cannot write to DIR fails its check anyway)
@@ -54,10 +65,10 @@ state() { # file values...
 health() {
   h_now=$(date +%s)
   { [ -f "${DIR}/.loop-${SCOPE}" ] && read -r h_since h_beat < "${DIR}/.loop-${SCOPE}"; } || { echo "the backup loop has not started"; return 1; }
-  # a run going on: its .partial directory, the loop only goes round again after it
-  h_run=$(stat -c %Y "${DIR}/${SCOPE}"/.*.partial 2> /dev/null | sort -n | head -1)
+  # a run going on: its lock or its .partial directory, the loop only goes round again after it
+  h_run=$(stat -c %Y "${LOCK}" "${DIR}/${SCOPE}"/.*.partial 2> /dev/null | sort -n | head -1)
   if [ -n "${h_run}" ]; then
-    [ $((h_now - h_run)) -le 86400 ] || { echo "a run has been going on for over a day"; return 1; }
+    [ $((h_now - h_run)) -le "${MAX_RUN}" ] || { echo "a run has been going on for over a day"; return 1; }
   elif [ $((h_now - h_beat)) -gt 300 ]; then
     echo "the backup loop stopped going round $(((h_now - h_beat) / 60)) minutes ago"
     return 1
@@ -189,11 +200,87 @@ import() {
   done
 }
 
+# the lock: who holds it, host (the container), pid and its start time (a pid used again
+# after a restart has another), when
+owner() { echo "$(cat /proc/sys/kernel/hostname) $$ $(cut -d' ' -f22 /proc/$$/stat) $(date +%s)"; }
+
+# whether the run of a lock is gone: its process no longer there (same container), or
+# older than MAX_RUN; a lock without its owner yet only after a minute (it is written right
+# after the mkdir)
+gone() { # owner
+  # shellcheck disable=SC2086 # (its four words)
+  set -- $1
+  if [ $# -ne 4 ]; then
+    [ $(($(date +%s) - $(stat -c %Y "${LOCK}" 2> /dev/null || date +%s))) -gt 60 ]
+    return
+  fi
+  [ $(($(date +%s) - $4)) -gt "${MAX_RUN}" ] && return 0
+  # (a zombie is gone too)
+  [ "$1" = "$(cat /proc/sys/kernel/hostname)" ] && ! cut -d' ' -f3,22 "/proc/$2/stat" 2> /dev/null | grep -qx "[^Z] $3"
+}
+
+# lock: 0 with the lock, or when DIR cannot be written to (the run says so, recorded); 1
+# after BACKUP_LOCK_WAIT, LOCK_ERROR says why
+lock() {
+  l_waited=0
+  mkdir -p "${DIR}" 2> /dev/null
+  while ! mkdir "${LOCK}" 2> /dev/null; do
+    # (gone, or just released: again)
+    { [ -d "${DIR}" ] && [ -w "${DIR}" ]; } || return 0
+    [ -e "${LOCK}" ] || continue
+    l_owner=$(cat "${LOCK}/owner" 2> /dev/null)
+    if gone "${l_owner}"; then
+      # one at a time takes it over (.break), and only the lock it found gone
+      if mkdir "${LOCK}.break" 2> /dev/null; then
+        [ "$(cat "${LOCK}/owner" 2> /dev/null)" = "${l_owner}" ] && rm -rf "${LOCK}" && log "took over the lock of a run that is gone (${l_owner:-no owner})"
+        rmdir "${LOCK}.break"
+      elif [ $(($(date +%s) - $(stat -c %Y "${LOCK}.break" 2> /dev/null || date +%s))) -gt 60 ]; then
+        rmdir "${LOCK}.break" 2> /dev/null
+      fi
+      continue
+    fi
+    if [ "${l_waited}" -ge "${WAIT}" ]; then
+      LOCK_ERROR="another backup run of the ${SCOPE} databases was still going on after ${WAIT} s (BACKUP_LOCK_WAIT)"
+      return 1
+    fi
+    [ "${l_waited}" = 0 ] && log "waiting for the backup run going on (at most ${WAIT} s)"
+    sleep 1
+    l_waited=$((l_waited + 1))
+  done
+  LOCKED=1
+  owner > "${LOCK}/owner"
+}
+
+unlock() {
+  [ -z "${LOCKED}" ] || rm -rf "${LOCK}"
+  LOCKED=
+}
+
+# one run, alone (lock): its result recorded, also when it could not start
 run() {
   started=$(now_ms)
+  if ! lock; then
+    log "FAILED: ${LOCK_ERROR}" >&2
+    state "${DIR}/.result-${SCOPE}" 0 "$(date +%s)"
+    record "${SCOPE}" "${started}" "$(now_ms)" 0 0 "" "$(printf '%s' "${LOCK_ERROR}" | clean)"
+    return 1
+  fi
+  run_alone
+  r_rc=$?
+  unlock
+  return ${r_rc}
+}
+
+run_alone() {
+  started=$(now_ms)
+  # a run of the same second before (the names are by the second): the next one
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  while [ -e "${DIR}/${SCOPE}/${stamp}" ]; do
+    sleep 1
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  done
   out=${DIR}/${SCOPE}/${stamp}
-  # what a stopped (SIGKILL) run left
+  # what a stopped (SIGKILL) run left (with the lock, no other run is going on)
   rm -rf "${DIR}/${SCOPE}"/.*.partial 2> /dev/null
   PARTIAL=${DIR}/${SCOPE}/.${stamp}.partial
   mkdir -p "${PARTIAL}" || { PARTIAL=; state "${DIR}/.result-${SCOPE}" 0 "$(date +%s)"; record "${SCOPE}" "${started}" "$(now_ms)" 0 0 "" "cannot write to ${DIR}"; return 1; }

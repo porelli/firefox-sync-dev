@@ -769,6 +769,51 @@ if [ -z "${EXTDB}" ]; then
     tail -5 "${WORK}/backup.log"
     dc logs --tail 20 ffs-admin backup
   fi
+
+  echo "== one backup run at a time (the lock in the backups volume)"
+  # a run holding the lock, as backup.sh writes it: host, pid and its start time, when
+  hold_lock() { dc exec -T -d backup sh -c "mkdir /backups/.lock-sync && echo \"\$(cat /proc/sys/kernel/hostname) \$\$ \$(cut -d' ' -f22 /proc/\$\$/stat) \$(date +%s)\" > /backups/.lock-sync/owner && exec sleep $1"; }
+  lock_owner() { dc exec -T backup sh -c 'cat /backups/.lock-sync/owner 2> /dev/null'; }
+  wait_lock() { for _ in $(seq 1 20); do [ -n "$(lock_owner)" ] && return; sleep 0.5; done; }
+  run_log() { dc exec -T "$@" backup sh /ffs-backup/backup.sh now 2>&1; }
+  hold_lock 60; wait_lock
+  OUT=$(run_log -e BACKUP_LOCK_WAIT=2)
+  check "$? $(grep -c 'FAILED: another backup run of the sync databases was still going on after 2 s' <<< "${OUT}")" "1 1" \
+    "a run while another one holds the lock waits BACKUP_LOCK_WAIT, then fails"
+  check "$(backups_of "ok = 0 AND error = 'another backup run of the sync databases was still going on after 2 s (BACKUP_LOCK_WAIT)'")" 1 "and is recorded"
+  # the run holding it killed (SIGKILL: no EXIT trap), its lock left: taken over
+  # shellcheck disable=SC2016 # (in the container)
+  dc exec -T backup sh -c 'kill -9 $(cut -d" " -f2 /backups/.lock-sync/owner)'
+  OUT=$(run_log)
+  check "$? $(grep -c 'took over the lock of a run that is gone' <<< "${OUT}") $(lock_owner | wc -c)" "0 1 0" \
+    "the lock of a killed run is taken over, the run works and leaves no lock"
+  # runs are named by the second: one of the same second as a folder there takes the next
+  NOW=$(date -u +%s) TAKEN=""
+  for i in 0 1 2; do TAKEN="${TAKEN} $(date -u -d "@$((NOW + i))" +%Y%m%dT%H%M%SZ)"; done
+  dc exec -T backup sh -c "cd /backups/sync && mkdir -p ${TAKEN}"
+  OUT=$(run_log -e BACKUP_KEEP=10)
+  WHERE=$(sed -n 's|.*ok: /backups/sync/\([0-9TZ]*\),.*|\1|p' <<< "${OUT}")
+  check "$? $([ -n "${WHERE}" ] && ! grep -qw "${WHERE}" <<< "${TAKEN}" && echo another)" "0 another" "a run in the second of an existing folder writes into its own (${WHERE})"
+  # (not the run before, when it was in the same second)
+  dc exec -T backup sh -c "cd /backups/sync && rmdir ${TAKEN} 2> /dev/null"
+  # two at once, while a third holds the lock: they wait, then run one after the other,
+  # both recorded, each dump whole
+  BEFORE_OK=$(backups_of "ok = 1")
+  hold_lock 3; wait_lock
+  run_log -e BACKUP_KEEP=3 -e BACKUP_LOCK_WAIT=60 > "${WORK}/run-a.log" & A=$!
+  run_log -e BACKUP_KEEP=3 -e BACKUP_LOCK_WAIT=60 > "${WORK}/run-b.log" & B=$!
+  wait ${A}; RA=$?
+  wait ${B}; RB=$?
+  RUNS=$(sed -n 's|.*ok: /backups/sync/\([0-9TZ]*\),.*|\1|p' "${WORK}/run-a.log" "${WORK}/run-b.log" | sort -u)
+  check "${RA} ${RB} $(wc -w <<< "${RUNS}") $(($(backups_of "ok = 1") - BEFORE_OK))" "0 0 2 2" "two runs at once: both work, in two folders, both recorded"
+  [ "${BACKEND}" = mysql ] && expected="${ADMIN_DB_NAME}.sql.gz ${MARIADB_SYNCSTORAGE_DATABASE}.sql.gz ${MARIADB_TOKENSERVER_DATABASE}.sql.gz" || expected="${ADMIN_DB_NAME}.sql.gz ${POSTGRES_DATABASE}.sql.gz"
+  for r in ${RUNS}; do
+    check "$(dc exec -T backup sh -c "for f in /backups/sync/${r}/*.sql.gz; do gzip -t \"\$f\" && basename \"\$f\"; done" | LC_ALL=C sort | paste -sd' ')" "${expected}" "every dump of ${r} there and passing gzip -t"
+  done
+  check "$(lock_owner | wc -c) $(dc exec -T backup sh -c 'ls -a /backups/sync | grep -c partial')" "0 0" "no lock and no partial run left"
+  # BACKUP_KEEP=1 again: the restore below takes the one run left
+  backup_run
+  check "$? $(dc exec -T backup sh -c 'ls /backups/sync | wc -l')" "0 1" "a run with BACKUP_KEEP=1 keeps only itself"
   echo "== restoring the dumps as ADMIN.md#restoring says"
   dump() { dc exec -T backup sh -c "gunzip -c /backups/sync/*/$1.sql.gz"; }
   if [ "${BACKEND}" = postgres ]; then

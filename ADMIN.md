@@ -700,7 +700,7 @@ Every night at `BACKUP_TIME` (`03:00`, UTC) it dumps each database, with `mariad
 
 The Backups card of the overview says all of this with the values of this server: the admin UI gets `BACKUP_TIME` and `BACKUP_KEEP` (and with Quadlets `ADMIN_DEPLOYMENT=quadlets`, for their commands), and describes the volume, which it cannot read, without listing it.
 
-One now: `docker compose exec backup sh /ffs-backup/backup.sh now` (and `backup-fxa` for the accounts); with Quadlets `systemctl --user start firefox-sync-backup.service`, which runs that of the accounts first.
+One now: `docker compose exec backup sh /ffs-backup/backup.sh now` (and `backup-fxa` for the accounts); with Quadlets `systemctl --user start firefox-sync-backup.service`, which runs that of the accounts first. One run at a time: a run started while another is going on (the nightly one, say) waits for it, at most an hour (`BACKUP_LOCK_WAIT`, in seconds), then fails, recorded like any failed run. The lock is `.lock-<scope>` in the volume; the lock of a run that was killed is taken over by the next run (after a day when that run was in another container).
 
 Each run is a row of `ffs_backups` in the admin UI's database (when it started and finished, whether it worked, its size, where, the error), written as the admin UI's user (without `ADMIN_DB_PASSWORD`: in the tokenserver database, as the tokenserver user). The accounts' run is recorded by the Sync backup service (its image has no client for PostgreSQL): within a minute with compose, right after it with Quadlets. The admin UI reads that table, it never sees the volume:
 
