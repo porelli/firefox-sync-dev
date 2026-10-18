@@ -210,20 +210,28 @@ lint() {
     | [.ADMIN_METRICS_TOKEN, .FXA_SMTP_PASS, .ADMIN_OIDC_CLIENT_SECRET]')
   [[ "${data}" == '["","",""]' ]] || fail "empty admin secrets of the values not empty in the Secret: ${data}"
   for key in FXA_SMTP_PASS ADMIN_OIDC_CLIENT_SECRET ADMIN_METRICS_TOKEN; do
-    grep -qE '^\{\{- \$_ := set \$data "'"${key}"'" \(\.Values\.admin\.' "${CHART_DIR}/templates/secret.yaml" \
-      || fail "${key} not set from the values alone in secret.yaml"
+    grep -qE '^\{\{- \$_ := set \$data "'"${key}"'" \(\.Values\.admin\.' "${CHART_DIR}/templates/_helpers.tpl" \
+      || fail "${key} not set from the values alone in firefox-sync.secretData"
   done
   check "FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN from the values alone (empty: empty)"
-  # a new admin pod when a secret of the values changes
-  sum() {
-    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests | jq -r '.[]
-      | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
+  # a new admin pod when the chart's Secret changes: the checksum is over all of its data,
+  # the generated secrets with it (helm template generates new ones on every render), not
+  # over the secrets of the values alone, which the pod spec would give away
+  render() { helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests; }
+  checksum() {
+    jq -r '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
       | .spec.template.metadata.annotations["checksum/admin-secrets"] // empty'
   }
-  a=$(sum --set admin.password=one) b=$(sum --set admin.password=two) c=$(sum --set admin.password=one --set admin.metricsToken=other)
-  [[ -n "${a}" && "${a}" != "${b}" && "${a}" != "${c}" && "${a}" == "$(sum --set admin.password=one)" ]] \
-    || fail "checksum/admin-secrets does not follow admin.password and admin.metricsToken: ${a} ${b} ${c}"
-  check "checksum/admin-secrets changes with admin.password and admin.metricsToken"
+  docs=$(render --set admin.password=one)
+  sum=$(echo "${docs}" | checksum)
+  data_sum=$(echo "${docs}" | jq -cS '.[] | select(.kind == "Secret") | .data' | tr -d '\n' | sha256sum | cut -d' ' -f1)
+  [[ -n "${sum}" && "${sum}" == "${data_sum}" ]] || fail "checksum/admin-secrets is not the sha256 of the Secret's data: ${sum} ${data_sum}"
+  for plain in '[null,"one","ci-smtp","ci-oidc","ci-token"]' '["","one","ci-smtp","ci-oidc","ci-token"]' '["one","ci-smtp","ci-oidc","ci-token"]'; do
+    [[ "${sum}" != "$(printf '%s' "${plain}" | sha256sum | cut -d' ' -f1)" ]] || fail "checksum/admin-secrets is the sha256 of the values' secrets alone"
+  done
+  [[ "$(render --set admin.password=two | checksum)" != "${sum}" ]] || fail "checksum/admin-secrets does not change with admin.password"
+  [[ -z "$(render --set admin.password=one --set existingSecret=mine | checksum)" ]] || fail "existingSecret: a checksum of secrets in the pod spec"
+  check "checksum/admin-secrets: sha256 of the Secret's whole data (not of the values' secrets alone), none with existingSecret"
   # the names the admin UI shows, as the chart has them
   env_of() {
     helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests | jq -cS '[.[]
@@ -421,9 +429,14 @@ admin_toggle() {
   kill "${pf}" 2> /dev/null || true
   rm -f "${jar}"
 
-  # the token taken out of the values: out of the Secret (no lookup keeps it), a new admin pod
+  # an upgrade that changes nothing keeps the admin pod (the Secret read back, the same checksum)
   local before
   before=$(kubectl get pods -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=admin" -o jsonpath='{.items[0].metadata.name}')
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --wait --timeout 10m || fail "helm upgrade without changes failed"
+  [[ "$(kubectl get pods -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=admin" -o jsonpath='{.items[*].metadata.name}')" == "${before}" ]] \
+    || fail "an upgrade without changes replaced the admin pod"
+  check "an upgrade without changes keeps the admin pod"
+  # the token taken out of the values: out of the Secret (no lookup keeps it), a new admin pod
   helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.metricsToken= --wait --timeout 10m \
     || fail "helm upgrade without admin.metricsToken did not get Ready"
   [[ -z "$(secret ADMIN_METRICS_TOKEN)" ]] || fail "admin.metricsToken emptied, still in the Secret"

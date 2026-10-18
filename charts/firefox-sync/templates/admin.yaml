@@ -48,10 +48,13 @@ spec:
     metadata:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "admin") | nindent 8 }}
+      {{- if not .Values.existingSecret }}
       annotations:
-        # its env reads the Secret at the start: a new pod when the secrets of the values change
-        # (those generated into the Secret never change; existingSecret: restart it yourself)
-        checksum/admin-secrets: {{ list .Values.existingSecret $a.password $a.smtp.password $a.oidc.clientSecret $a.metricsToken | toJson | sha256sum }}
+        # its env reads the Secret at the start: a new pod when the chart's Secret changes.
+        # Over all of its data, the generated secrets with it: no guessing a weak password
+        # from the pod spec (existingSecret: nothing of it here, restart it yourself)
+        checksum/admin-secrets: {{ include "firefox-sync.secretData" . | sha256sum }}
+      {{- end }}
     spec:
       # the image's user nonroot, by number: Kubernetes checks runAsNonRoot on a uid
       securityContext:

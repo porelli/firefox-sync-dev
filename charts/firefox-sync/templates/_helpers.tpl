@@ -427,3 +427,46 @@ The admin UI's Service: its http port and the statsd port the Sync server sends 
 {{- define "firefox-sync.adminService" -}}
 {{- printf "%s-admin" (include "firefox-sync.fullname" .) }}
 {{- end }}
+
+{{/*
+The data of the chart's Secret (see secret.yaml) as JSON: read back from the cluster, the
+missing secrets generated, the admin UI's of the values. Computed once per render and kept
+on the root context, so that secret.yaml and the checksum of admin.yaml see the same
+generated values
+*/}}
+{{- define "firefox-sync.secretData" -}}
+{{- if not (hasKey $ "ffsSecretData") }}
+{{- $name := include "firefox-sync.fullname" . }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+{{- $data := dict }}
+{{- if $existing }}
+{{- $data = deepCopy ($existing.data | default dict) }}
+{{- end }}
+{{- /* ADMIN_DB_PASSWORD: the admin UI's own database users, also created by the bundled
+databases and the init container (compose's ADMIN_DB_PASSWORD, prepare_environment.sh
+generates it); POSTGRES_SYNC_PASSWORD: the Sync server's own role, POSTGRES_PASSWORD
+the superuser's */ -}}
+{{- $keys := list "SYNC_MASTER_SECRET" "METRICS_HASH_SECRET" "ADMIN_PASSWORD" "ADMIN_DB_PASSWORD" }}
+{{- if eq .Values.database.backend "postgres" }}
+{{- $keys = concat $keys (list "POSTGRES_PASSWORD" "POSTGRES_SYNC_PASSWORD") }}
+{{- else }}
+{{- $keys = concat $keys (list "TOKENSERVER_DB_PASSWORD" "STORAGE_DB_PASSWORD") }}
+{{- end }}
+{{- range $keys }}
+{{- if not (hasKey $data .) }}
+{{- $_ := set $data . (randAlphaNum 32 | b64enc) }}
+{{- end }}
+{{- end }}
+{{- /* the admin UI's password when given (otherwise the generated one, kept) */ -}}
+{{- with .Values.admin.password }}
+{{- $_ := set $data "ADMIN_PASSWORD" (. | toString | b64enc) }}
+{{- end }}
+{{- /* its optional secrets (.env's names) are the values', never the cluster's: empty
+there is empty here, the feature off (existingSecret to manage them out of band) */ -}}
+{{- $_ := set $data "FXA_SMTP_PASS" (.Values.admin.smtp.password | toString | b64enc) }}
+{{- $_ := set $data "ADMIN_OIDC_CLIENT_SECRET" (.Values.admin.oidc.clientSecret | toString | b64enc) }}
+{{- $_ := set $data "ADMIN_METRICS_TOKEN" (.Values.admin.metricsToken | toString | b64enc) }}
+{{- $_ := set $ "ffsSecretData" $data }}
+{{- end }}
+{{- toJson (get $ "ffsSecretData") }}
+{{- end }}
