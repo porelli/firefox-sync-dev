@@ -736,6 +736,9 @@ backup_event() {
 }
 if [ -z "${EXTDB}" ]; then
   backup_run() { dc exec -T "$@" backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1; }
+  # the run of the loop at the start met the upgrade, which moves the admin UI's tables out
+  # of the tokenserver database: a dump then fails with error 1412, done again once
+  check "$(backups_of "ok = 0")" 0 "no backup failed so far (the loop's run at the start, during the upgrade)"
   good=$(backups_of "ok = 1 AND bytes > 0 AND location LIKE '/backups/sync/%'")
   backup_run
   check "$?" 0 "a backup run (COMPOSE_PROFILES=backup)"
@@ -827,6 +830,23 @@ if [ -z "${EXTDB}" ]; then
     check "$(dc exec -T backup sh -c "for f in /backups/sync/${r}/*.sql.gz; do gzip -t \"\$f\" && basename \"\$f\"; done" | LC_ALL=C sort | paste -sd' ')" "${expected}" "every dump of ${r} there and passing gzip -t"
   done
   check "$(lock_owner | wc -c) $(dc exec -T backup sh -c 'ls -a /backups/sync | grep -c partial')" "0 0" "no lock and no partial run left"
+  if [ "${BACKEND}" = mysql ]; then
+    echo "== a dump that meets a table changing (error 1412) is done again, once"
+    dc exec -T backup sh -c 'mkdir -p /tmp/ffs-1412 && cat > /tmp/ffs-1412/fake && for n in mariadb-dump mysqldump; do [ ! -x /usr/bin/$n ] || install -m 755 /tmp/ffs-1412/fake /tmp/ffs-1412/$n; done' < "${TESTS}/fake_dump_1412.sh"
+    fake_run() { # times it fails
+      dc exec -T backup rm -f /tmp/ffs-1412/count
+      dc exec -T -e PATH=/tmp/ffs-1412:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin -e BACKUP_RETRY_PAUSE=1 -e FAKE_1412="$1" \
+        backup sh /ffs-backup/backup.sh now 2>&1
+    }
+    calls() { dc exec -T backup cat /tmp/ffs-1412/count; }
+    OUT=$(fake_run 1)
+    check "$? $(grep -c 'Table definition has changed.*once more in 1 s' <<< "${OUT}") $(calls)" "0 1 4" \
+      "a dump failing once with error 1412 is done again and the run works (3 dumps, 4 calls)"
+    check "$(admin_sql "SELECT ok FROM ffs_backups WHERE scope = 'sync' ORDER BY id DESC LIMIT 1;")" 1 "recorded as a good run"
+    OUT=$(fake_run 2)
+    check "$? $(calls)" "1 4" "failing again, the run fails (one retry only)"
+    check "$(admin_sql "SELECT ok FROM ffs_backups WHERE scope = 'sync' AND error LIKE '%Error 1412: Table definition has changed%' ORDER BY id DESC LIMIT 1;")" 0 "recorded with the error"
+  fi
   # BACKUP_KEEP=1 again: the restore below takes the one run left
   backup_run
   check "$? $(dc exec -T backup sh -c 'ls /backups/sync | wc -l')" "0 1" "a run with BACKUP_KEEP=1 keeps only itself"

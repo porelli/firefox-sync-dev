@@ -35,6 +35,7 @@ KEEP=${BACKUP_KEEP:-7}
 AT=${BACKUP_TIME:-03:00}
 SCOPE=${BACKUP_SCOPE:-}
 WAIT=${BACKUP_LOCK_WAIT:-3600}
+PAUSE=${BACKUP_RETRY_PAUSE:-10}
 # no run takes longer (also the healthcheck's limit)
 MAX_RUN=86400
 TMP=$(mktemp -d)
@@ -52,6 +53,7 @@ case "${SCOPE}" in sync|accounts) ;; *) fail "BACKUP_SCOPE must be sync or accou
 case "${KEEP}" in ''|*[!0-9]*|0) fail "BACKUP_KEEP must be a number of 1 or more, not '${KEEP}'" ;; esac
 case "${AT}" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) fail "BACKUP_TIME must be HH:MM (UTC), not '${AT}'" ;; esac
 case "${WAIT}" in ''|*[!0-9]*) fail "BACKUP_LOCK_WAIT must be a number of seconds, not '${WAIT}'" ;; esac
+case "${PAUSE}" in ''|*[!0-9]*) fail "BACKUP_RETRY_PAUSE must be a number of seconds, not '${PAUSE}'" ;; esac
 
 # the state of the loop and of the last run, for the healthcheck (written then renamed: the
 # check never reads half a line; a run that cannot write to DIR fails its check anyway)
@@ -135,6 +137,13 @@ dump_mysql() {
   d_cnf=$1 d_db=$2 d_out=$3
   shift 3
   { "${DUMP}" --defaults-extra-file="${d_cnf}" "$@" "${d_db}" 2> "${TMP}/err"; echo $? > "${TMP}/rc"; } | gzip > "${d_out}"
+  # a table created, dropped or altered while it dumps (error 1412, e.g. the admin UI moving
+  # its tables at an upgrade, once): again, once, after BACKUP_RETRY_PAUSE seconds
+  if [ "$(cat "${TMP}/rc")" != 0 ] && grep -q 'Table definition has changed' "${TMP}/err"; then
+    log "${d_db}: $(clean < "${TMP}/err"), once more in ${PAUSE} s" >&2
+    sleep "${PAUSE}"
+    { "${DUMP}" --defaults-extra-file="${d_cnf}" "$@" "${d_db}" 2> "${TMP}/err"; echo $? > "${TMP}/rc"; } | gzip > "${d_out}"
+  fi
   [ "$(cat "${TMP}/rc")" = 0 ] || { echo "${d_db}: $(clean < "${TMP}/err")"; return 1; }
 }
 
