@@ -72,7 +72,7 @@ database:
     # compose's MARIADB_TOKENSERVER_SERVER or POSTGRES_SERVER (required): a host name or an
     # IPv4 address the pods reach (plain connections, DATABASES.md#server-requirements)
     host: ""
-    # its port: empty for 3306 (mariadb, mysql) or 5432 (postgres)
+    # its port (1-65535, a number or quoted); empty for 3306 (mariadb, mysql) or 5432 (postgres)
     port: ""
     # mariadb, mysql: the storage database on another server (MARIADB_SYNCSTORAGE_SERVER,
     # _SERVER_PORT); empty: host and port above
@@ -86,10 +86,12 @@ database:
     # postgres: POSTGRES_DATABASE, POSTGRES_USER (the owner of that database, no superuser)
     postgresDatabase: syncserver
     postgresUser: syncserver
-    # mariadb, mysql: MARIADB_TLS_VERIFY, whether the init container's client checks the
-    # server's certificate (false for MySQL's own, self-signed; the Sync server itself
-    # connects without TLS)
-    tlsVerify: true
+    # mariadb, mysql: MARIADB_TLS_VERIFY of the init container and the backups, whether their
+    # client checks the server's certificate: false, as prepare_environment.sh writes for your
+    # own server (MySQL's own certificate is self-signed, and the CA of a managed service is
+    # not in the images: ERROR 2026). true only with a certificate from a CA the images
+    # trust (their system CAs) for this host name. The Sync server itself connects without TLS
+    tlsVerify: false
 
   # Persistence configuration for bundled databases
   persistence:
@@ -242,7 +244,9 @@ admin:
 # the Sync server's role, never the superuser); each run shows on the admin UI's Backups card.
 # One now (a new Job name each time):
 #   kubectl create job --from=cronjob/<release>-firefox-sync-backup backup-now-$(date +%s)
-# Restoring: ADMIN.md#restoring. For the bundled databases; with your own servers, their backups
+# Restoring: ADMIN.md#restoring. With your own server too (database.bundled=false: as the users
+# of its SQL, PostgreSQL as postgresUser, with database.image.<backend> as the client, at least
+# the server's major), next to the server's own backups
 backup:
   enabled: false
   # cron format, in UTC (the CronJob's timeZone). A daily "M H * * *" is also BACKUP_TIME
