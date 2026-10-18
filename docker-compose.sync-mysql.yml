@@ -1,12 +1,12 @@
-# The Sync databases (syncstorage_db, tokenserver_db) on MySQL 8.4 instead of MariaDB (SYNC_DB=mysql,
-# see DATABASES.md), on top of docker-compose.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
+# The Sync databases (syncstorage_db, tokenserver_db) on MySQL 8 (8.4 today) instead of MariaDB
+# (SYNC_DB=mysql, see DATABASES.md), on top of docker-compose.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
 # (with Podman: -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml).
 # Same images for the Sync server (syncstorage-rs-mysql) and the init container: upstream
 # syncstorage-rs is developed and tested on MySQL 8.
 # The MARIADB_* variables of docker-compose.yml stay in these containers, the MySQL image ignores them.
 
 x-sync-mysql: &sync-mysql
-  image: mysql:8.4
+  image: mysql:8
   # no binary logging, like the MariaDB containers: no replica reads it, and it would keep
   # 30 days of every change (binlog_expire_logs_seconds). With it on, the init container's
   # max users procedure and trigger would also need log_bin_trust_function_creators (ERROR 1419)
@@ -53,7 +53,7 @@ services:
   # the backups (COMPOSE_PROFILES=backup) with MySQL's own client and mysqldump: the MariaDB
   # client refuses MySQL's self-signed certificate
   backup:
-    image: mysql:8.4
+    image: mysql:8
 
 volumes:
   syncstorage-db-mysql:

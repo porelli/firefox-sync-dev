@@ -19,11 +19,11 @@
 #                    fxa-mono-latest, this machine), as in tests/e2e-fxa.sh
 #   REPOSITORY, TAG  syncstorage images (default: ghcr.io/porelli/firefox-sync, latest)
 #   ADMIN_IMAGE      admin UI and sign-up policy image, used as is (default: built from admin/)
-#   FXA_DB           mysql (default, MySQL 8.4) or mariadb (FXA_MARIADB_IMAGE) for the accounts
-#   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:11.8, as the installs from before
-#                    MariaDB 12 have it; mariadb:12.3 needs FXA_FROM with mozilla/fxa#21494)
-#   FXA_MARIADB_FROM with FXA_DB=mariadb: the install starts on this MariaDB (e.g. mariadb:11.8)
-#                    and the upgrade also moves it to FXA_MARIADB_IMAGE (default: mariadb:12.3) as
+#   FXA_DB           mysql (default, MySQL 8) or mariadb (FXA_MARIADB_IMAGE) for the accounts
+#   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:11, as the installs from before
+#                    MariaDB 12 have it; mariadb:lts (12) needs FXA_FROM with mozilla/fxa#21494)
+#   FXA_MARIADB_FROM with FXA_DB=mariadb: the install starts on this MariaDB (e.g. mariadb:11)
+#                    and the upgrade also moves it to FXA_MARIADB_IMAGE (default: mariadb:lts) as
 #                    FXA.md#moving-to-a-newer-mariadb says: then the data must have been
 #                    upgraded (server version, mariadb-upgrade by MARIADB_AUTO_UPGRADE). The new
 #                    accounts image needs mozilla/fxa#21494 for MariaDB 12
@@ -56,10 +56,10 @@ case "${FXA_DB}" in mysql|mariadb) ;; *) echo "FXA_DB: mysql or mariadb"; exit 2
 MARIADB_TO=""
 if [ -n "${FXA_MARIADB_FROM:-}" ]; then
   [ "${FXA_DB}" = mariadb ] || { echo "FXA_MARIADB_FROM is for FXA_DB=mariadb"; exit 2; }
-  MARIADB_TO=${FXA_MARIADB_IMAGE:-mariadb:12.3}
+  MARIADB_TO=${FXA_MARIADB_IMAGE:-mariadb:lts}
   [ "${MARIADB_TO}" != "${FXA_MARIADB_FROM}" ] || { echo "FXA_MARIADB_FROM: the same as FXA_MARIADB_IMAGE"; exit 2; }
 fi
-MARIADB_INSTALLED=${FXA_MARIADB_FROM:-${FXA_MARIADB_IMAGE:-mariadb:11.8}}
+MARIADB_INSTALLED=${FXA_MARIADB_FROM:-${FXA_MARIADB_IMAGE:-mariadb:11}}
 case "$(uname -m)" in aarch64|arm64) native=arm64 ;; *) native=amd64 ;; esac
 case "${FXA_FROM}" in
   docker.io/mozilla/*|mozilla/*) from_arch=${FXA_FROM_ARCH:-amd64} ;;

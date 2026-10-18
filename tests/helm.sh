@@ -150,7 +150,7 @@ lint() {
     fi
   done
   [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:18 ]] || fail "database.image.postgres is not docker.io/library/postgres:18 by default"
-  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:8.4, postgres:18), empty refused"
+  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:8, postgres:18), empty refused"
 
   # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
@@ -179,7 +179,7 @@ lint() {
   names=""
   for backend in mariadb mysql postgres; do
     image=docker.io/library/mariadb:lts
-    [[ ${backend} == mysql ]] && image=docker.io/library/mysql:8.4
+    [[ ${backend} == mysql ]] && image=docker.io/library/mysql:8
     [[ ${backend} == postgres ]] && image=docker.io/library/postgres:18
     docs=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
       --set backup.enabled=true | manifests)
@@ -781,14 +781,14 @@ e2e() {
     *) echo "Usage: $0 e2e <mariadb|mysql|postgres>"; exit 1 ;;
   esac
   if [[ -n "${EXTERNAL}" ]]; then
-    [[ ${backend} != mariadb ]] || { echo "EXTERNAL_DB=1: mysql (MySQL 8.4 with binary logging) or postgres (PostgreSQL 18), as tests/e2e.sh"; exit 1; }
+    [[ ${backend} != mariadb ]] || { echo "EXTERNAL_DB=1: mysql (MySQL 8 with binary logging) or postgres (PostgreSQL 18), as tests/e2e.sh"; exit 1; }
     # (PostgreSQL: POSTGRES_USER is the owner, no Sync role: sync-role does nothing, the
     # migrations are the first to log in)
     [[ ${backend} == postgres ]] && failing_init='wait-db=0 sync-role=0 migrate=[1-9]'
   fi
   # A host with Ubuntu's mysql-server (the GitHub runners) has an AppArmor profile for
   # /usr/sbin/mysqld, and kind's pods run unconfined: the profile then takes the mysqld of the
-  # mysql:8.4 image too (docker's containers, in docker-default, are not). It denies /etc/my.cnf,
+  # mysql:8 image too (docker's containers, in docker-default, are not). It denies /etc/my.cnf,
   # /usr/share/mysql-8.4 and the init file of admin-user.sh (/run/ffs-admin, errno 13): the
   # first start aborts half-way and every next one finds no mysql.user (CrashLoopBackOff)
   if [[ ${backend} == mysql && -e /etc/apparmor.d/usr.sbin.mysqld && ! -e /etc/apparmor.d/disable/usr.sbin.mysqld \
@@ -1397,7 +1397,7 @@ extdb_admin() {
 }
 
 # EXTERNAL_DB=1: a database server the chart does not manage, mirroring tests/e2e.sh's
-# start_extdb (a plain StatefulSet and Service extdb, a test fixture: MySQL 8.4 with binary
+# start_extdb (a plain StatefulSet and Service extdb, a test fixture: MySQL 8 with binary
 # logging, or PostgreSQL 18 administered by a role that is no superuser), the databases and
 # users of DATABASES.md (db/<engine>/sync.sql with its placeholders filled in) under names
 # other than the defaults, and the Secret of existingSecret with the same passwords
@@ -1439,7 +1439,7 @@ extdb_server() {
   local name=$1 image port data env args probe
   if [[ "${BACKEND}" == mysql ]]; then
     # binary logging on (MySQL 8's default): the trigger needs log_bin_trust_function_creators
-    image=mysql:8.4 port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
+    image=mysql:8 port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
     probe='mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent'
   else
     image=postgres:18 port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'

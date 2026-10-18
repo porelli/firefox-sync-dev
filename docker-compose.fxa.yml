@@ -18,7 +18,7 @@ x-fxa: &fxa
   platform: linux/${FXA_ARCH:-amd64}
   restart: unless-stopped
 
-# the accounts database: fxa-db (MySQL 8.4, MariaDB with docker-compose.fxa-mariadb.yml), or
+# the accounts database: fxa-db (MySQL 8, MariaDB with docker-compose.fxa-mariadb.yml), or
 # your own MySQL 8 or MariaDB 11.4+ server (12 with our images; FXA_DB_CONTAINERS=0, DATABASES.md)
 x-fxa-mysql: &fxa-mysql
   MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
@@ -28,7 +28,7 @@ x-fxa-mysql: &fxa-mysql
 
 services:
   fxa-db:
-    image: mysql:8.4
+    image: mysql:8
     # 0: your own server (DATABASES.md); compose then skips the dependency on it
     deploy:
       replicas: ${FXA_DB_CONTAINERS:-1}
@@ -419,7 +419,7 @@ services:
   # docker compose exec backup-fxa sh /ffs-backup/backup.sh now
   backup-fxa:
     # the client of fxa-db (mysqldump; mariadb-dump with docker-compose.fxa-mariadb.yml)
-    image: mysql:8.4
+    image: mysql:8
     profiles: [backup]
     entrypoint: [sh, /ffs-backup/backup.sh]
     command: [loop]

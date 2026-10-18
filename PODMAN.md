@@ -198,7 +198,7 @@ export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
 # MariaDB, with longer healthcheck timings for rootless
 docker compose -f docker-compose.yml -f docker-compose.podman.yml up -d
 
-# MySQL 8.4 (SYNC_DB=mysql, see DATABASES.md)
+# MySQL 8 (SYNC_DB=mysql, see DATABASES.md)
 docker compose -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml up -d
 
 # PostgreSQL

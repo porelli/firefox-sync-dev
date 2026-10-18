@@ -387,7 +387,7 @@ jobs:
         database_backend: [mysql, postgres]
         # 1: on a database server outside the stack, with only the grants of DATABASES.md
         external_db: ["", "1"]
-        # the database containers: mariadb, or mysql (MySQL 8.4, SYNC_DB=mysql) for the mysql backend
+        # the database containers: mariadb, or mysql (MySQL 8, SYNC_DB=mysql) for the mysql backend
         sync_db: [mariadb]
         include:
           - database_backend: mysql
@@ -407,7 +407,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: End-to-end tests${{ matrix.external_db && ' (your own database server)' || '' }}${{ matrix.sync_db == 'mysql' && ' (MySQL 8.4)' || '' }}
+      - name: End-to-end tests${{ matrix.external_db && ' (your own database server)' || '' }}${{ matrix.sync_db == 'mysql' && ' (MySQL 8)' || '' }}
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64

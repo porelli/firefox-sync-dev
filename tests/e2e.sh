@@ -2,7 +2,7 @@
 # End-to-end test of the firefox-sync stack (docker compose), isolated from anything
 # else running on the host: own compose project, loopback-only port, own volumes.
 #
-# Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL 8.4
+# Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL 8
 # Runs with the admin UI and the backups (COMPOSE_PROFILES=admin,backup, BACKUP_KEEP=1; with
 # EXTERNAL_DB=1 the admin UI only, your own backups record their runs), with Mozilla's accounts
 # (mock): Sync part only. At the end a backup is restored as ADMIN.md#restoring says, into
@@ -25,10 +25,10 @@
 #                   10.231.4.0/24 SYNC_DB=mysql);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
 #                   gateway (the host) at .1 is not
-#   SYNC_DB         mysql: the mysql backend on MySQL 8.4 containers (docker-compose.sync-mysql.yml)
+#   SYNC_DB         mysql: the mysql backend on MySQL 8 containers (docker-compose.sync-mysql.yml)
 #                   instead of MariaDB (default mariadb); own project, PORT 28654 and TEST_SUBNET 10.231.4.0/24
 #   EXTERNAL_DB     set to 1 for a database server outside the stack (SYNC_DB_CONTAINERS=0, DATABASES.md),
-#                   created with only the grants of db/<engine>/sync.sql: MySQL 8.4 with binary logging
+#                   created with only the grants of db/<engine>/sync.sql: MySQL 8 with binary logging
 #                   for mysql, a PostgreSQL 18 owner that is no superuser for postgres; on its own
 #                   network (EXTDB_SUBNET, default: 10.232.1.0/24 mysql, 10.232.2.0/24 postgres)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
@@ -66,7 +66,7 @@ case ${BACKEND}:${SYNC_DB} in
 esac
 PROJECT=${PROJECT}${SLOT_SUFFIX}
 if [ "${SYNC_DB}" = mysql ] && [ -n "${EXTERNAL_DB:-}" ]; then
-  echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL 8.4"; exit 2
+  echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL 8"; exit 2
 fi
 # the admin UI trusts the X-Test-Email header of the containers (tests/docker-compose.test.yml),
 # not of the gateway: what comes from the host
@@ -317,7 +317,7 @@ start_extdb() {
   if [ "${BACKEND}" = mysql ]; then
     # binary logging is on by default: the trigger needs log_bin_trust_function_creators
     docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/mysql \
-      -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" mysql:8.4 --log-bin-trust-function-creators=ON > /dev/null || return 1
+      -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" mysql:8 --log-bin-trust-function-creators=ON > /dev/null || return 1
   else
     docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/postgresql \
       -e POSTGRES_PASSWORD="${EXTDB_ROOT}" postgres:18 > /dev/null || return 1
@@ -378,7 +378,7 @@ teardown() {
     docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${INIT_TAG}" > /dev/null 2>&1
     [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
     [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
-    [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mysql:8.4' && docker rmi mysql:8.4 > /dev/null 2>&1
+    [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mysql:8' && docker rmi mysql:8 > /dev/null 2>&1
     docker rmi busybox > /dev/null 2>&1
   fi
   rm -rf "${WORK}"
@@ -393,7 +393,7 @@ echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
 
 if [ -n "${EXTDB}" ]; then
-  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo mysql:8.4 || echo postgres:18))"
+  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo mysql:8 || echo postgres:18))"
   start_extdb
   check "$?" 0 "external database server with the databases and users of db/${BACKEND}/sync.sql"
 fi
@@ -712,9 +712,9 @@ if [ -n "${EXTDB}" ]; then
 fi
 
 if [ "${SYNC_DB}" = mysql ]; then
-  echo "== database containers on MySQL 8.4 (SYNC_DB=mysql)"
+  echo "== database containers on MySQL 8 (SYNC_DB=mysql)"
   for db in syncstorage_db tokenserver_db; do
-    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "${db}")")" mysql:8.4 "${db} runs mysql:8.4"
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "${db}")")" mysql:8 "${db} runs mysql:8"
     check "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Name}}{{end}}{{end}}' "$(dc ps -a -q "${db}")")" \
       "${PROJECT}_${db//_/-}-mysql" "${db} in its own volume, not MariaDB's"
   done
@@ -998,7 +998,7 @@ else
   # test that the dumps restore with only the documented grants
   echo "== backup and restore with EXTERNAL_DB (only documented grants)"
   if [ "${BACKEND}" = mysql ]; then
-    BACKUP_IMAGE="mysql:8.4"
+    BACKUP_IMAGE="mysql:8"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   else
     BACKUP_IMAGE="${SYNC_POSTGRES_IMAGE:-postgres:18}"
@@ -1353,6 +1353,6 @@ echo "== every container that keeps running healthy, the one-shot ones exited 0"
 [ -z "${EXTDB}" ] || dc up -d > /dev/null 2>&1
 check "$(compose_healthy 300 dc)" "all healthy" "every long-running container healthy (docker compose ps), the one-shot ones exited 0"
 
-RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL 8.4)")
+RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL 8)")
 [ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"
 exit ${FAILED}

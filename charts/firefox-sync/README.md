@@ -1,6 +1,6 @@
 # firefox-sync
 
-Self-hosted Firefox Sync: Mozilla's [syncstorage-rs](https://github.com/mozilla-services/syncstorage-rs) with its tokenserver, its databases (MariaDB, MySQL 8.4 or PostgreSQL, or your own server), and optionally an admin UI and nightly backups. Firefox signs in with Mozilla's accounts and stores its Sync data, encrypted by Firefox, on your cluster. The images are those of [porelli/firefox-sync](https://github.com/porelli/firefox-sync), which also runs with docker compose and Podman.
+Self-hosted Firefox Sync: Mozilla's [syncstorage-rs](https://github.com/mozilla-services/syncstorage-rs) with its tokenserver, its databases (MariaDB, MySQL 8 or PostgreSQL, or your own server), and optionally an admin UI and nightly backups. Firefox signs in with Mozilla's accounts and stores its Sync data, encrypted by Firefox, on your cluster. The images are those of [porelli/firefox-sync](https://github.com/porelli/firefox-sync), which also runs with docker compose and Podman.
 
 The full guide: [HELM.md](https://github.com/porelli/firefox-sync/blob/main/HELM.md).
 

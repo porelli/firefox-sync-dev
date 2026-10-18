@@ -53,7 +53,7 @@ database:
   # official images), for the nodes whose runtime has no default registry or another one
   image:
     mariadb: docker.io/library/mariadb:lts
-    mysql: docker.io/library/mysql:8.4
+    mysql: docker.io/library/mysql:8
     postgres: docker.io/library/postgres:18
 
   # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),

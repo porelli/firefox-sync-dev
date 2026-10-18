@@ -15,7 +15,7 @@
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
 #   SYNC_DB     mariadb (default) or mysql: the Sync databases of the compose and quadlet phases
-#               (MySQL 8.4, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/); the MySQL
+#               (MySQL 8, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/); the MySQL
 #               quadlets are rendered and checked in any case
 #   ADMIN_IMAGE     admin UI image to test, used as is, pulled when not here (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
@@ -517,7 +517,7 @@ check "$?" 0 "prepare_environment.sh (quadlets, MySQL)"
 check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup -f docker-compose.yml -f docker-compose.sync-mysql.yml)" same "the MySQL Quadlets' healthchecks are compose's"
 check "$(grep -c '^SYNC_DB=mysql$' .env) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml$' .env)" "1 1" "SYNC_DB=mysql in .env, with the compose overlay"
 check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
-  "docker.io/library/mysql:8.4 docker.io/library/mysql:8.4" "MySQL 8.4 database units"
+  "docker.io/library/mysql:8 docker.io/library/mysql:8" "MySQL 8 database units"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db*.volume 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
   "firefox-sync-syncstorage-db-mysql.volume firefox-sync-tokenserver-db-mysql.volume" "MySQL's own volumes, not MariaDB's"
 check "$(grep -hcxE 'Exec=sh /ffs-db/admin-user\.sh mysqld --disable-log-bin|HealthCmd=mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) -p[A-Za-z0-9]+ --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
@@ -593,8 +593,8 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing -f docker-compose.yml -f docker-compose.fxa.yml -f docker-compose.fxa-mariadb.yml)" same \
     "the Quadlets' healthchecks with the accounts on MariaDB are compose's"
   check "$(fxa_db_image) $(ls "${QUADLET_DIR}"/firefox-sync-fxa-db* 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
-    "docker.io/library/mariadb:12.3 firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB 12 unit and its own volume, not MySQL's"
-  check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" docker.io/library/mariadb:12.3 "the backups of the accounts with the same MariaDB"
+    "docker.io/library/mariadb:lts firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB lts unit and its own volume, not MySQL's"
+  check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" docker.io/library/mariadb:lts "the backups of the accounts with the same MariaDB"
   "${QUADLET}" -dryrun -user > quadlet-fxa-mariadb-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the MariaDB accounts database"
   stop_quadlets
@@ -615,7 +615,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
     "every long-running service has a healthcheck, the Quadlets with the accounts compose's (${FXA_DB})"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
-  [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:12.3 || expected_image=docker.io/library/mysql:8.4
+  [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:lts || expected_image=docker.io/library/mysql:8
   check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   # no pairing server in the quadlets

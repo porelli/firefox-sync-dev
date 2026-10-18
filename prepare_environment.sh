@@ -141,7 +141,7 @@ render_sync_sql() {
     fi
 }
 
-# MariaDB 12 and later (FXA_MARIADB_IMAGE=mariadb:12.3) need accounts images with
+# MariaDB 12 and later (FXA_MARIADB_IMAGE=mariadb:lts, the default) need accounts images with
 # mozilla/fxa#21494 (upstream-patches.yml): ours list it in their label
 # org.firefox-sync.upstream-patches, Mozilla's (docker.io/mozilla/fxa-mono) and ours built
 # before don't have it. The local image first (what starts), then the registry (docker buildx
@@ -166,10 +166,10 @@ fxa_mariadb_image_check() {
     local db_image image patches remote
     [ "$(env_value FXA_DB)" = mariadb ] || return 0
     db_image=$(env_value FXA_MARIADB_IMAGE)
-    db_image=${db_image:-mariadb:11.8}
+    db_image=${db_image:-mariadb:lts}
     # your own server: its version is not known here
     if [ "$(env_value FXA_DB_CONTAINERS)" != 0 ]; then
-        case "${db_image##*:}" in 10.*|11.*) return 0 ;; esac
+        case "${db_image##*:}" in 10|10.*|11|11.*) return 0 ;; esac
     fi
     image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
     case "${image}" in
@@ -199,7 +199,7 @@ fxa_mariadb_image_check() {
     fi
     echo "  which ${image} does not have (Mozilla's images, or ours built before it): on a new"
     echo "  database Mozilla's migrations stop. Use our images (FXA_IMAGE=ghcr.io/porelli/firefox-sync,"
-    echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11.8 (FXA_MARIADB_IMAGE=mariadb:11.8), see FXA.md#mysql-or-mariadb"
+    echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11 (FXA_MARIADB_IMAGE=mariadb:11), see FXA.md#mysql-or-mariadb"
     echo ""
 }
 
@@ -209,8 +209,8 @@ fxa_mariadb_image_check() {
 # Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
 # container (SYNC_POSTGRES_APP_USER, SYNC_POSTGRES_APP_PASSWORD), and in COMPOSE_FILE the new name of
 # docker-compose.postgres.yml (docker-compose.sync-postgres.yml), and with the accounts on
-# MariaDB FXA_MARIADB_IMAGE=mariadb:11.8, the version they run (also the compose default:
-# written out, it stays so; new installs get mariadb:12.3, a move to it is up to the admin, FXA.md). A value already set is kept; the
+# MariaDB FXA_MARIADB_IMAGE=mariadb:11, the major they run (the compose default is now
+# mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, FXA.md). A value already set is kept; the
 # old file is kept as .env.before-upgrade. With your own database server database-setup.sql
 # is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
 # First the settings of RENAMED_SETTINGS get their new names, their values as they are.
@@ -329,11 +329,12 @@ upgrade_env() {
         echo "SYNC_POSTGRES_IMAGE=postgres:18: the Sync database stays on PostgreSQL 18. To move it to"
         echo "  a newer major: a dump and restore (ADMIN.md#restoring) or pg_upgrade (DATABASES.md#another-postgresql-major)"
     fi
-    # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11.8, they stay there
+    # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11, they stay there (unset
+    # it is now mariadb:lts, which would upgrade their data to 12 at the next start)
     if [ "$(env_value FXA_DB)" = mariadb ] && ! grep -q '^FXA_MARIADB_IMAGE=' "${env_file}"; then
-        set_value FXA_MARIADB_IMAGE mariadb:11.8
-        echo "FXA_MARIADB_IMAGE=mariadb:11.8: the accounts database stays on MariaDB 11.8. To move it to"
-        echo "  MariaDB 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
+        set_value FXA_MARIADB_IMAGE mariadb:11
+        echo "FXA_MARIADB_IMAGE=mariadb:11: the accounts database stays on MariaDB 11. To move it to"
+        echo "  MariaDB lts, 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
     fi
     old_names_in_environment
     if [ "${#changed[@]}" = 0 ]; then
@@ -389,7 +390,7 @@ read -e -p "Database backend [mariadb/mysql/postgres] [${DEFAULT_DATABASE_BACKEN
 DATABASE_BACKEND=${DATABASE_BACKEND:-${DEFAULT_DATABASE_BACKEND}}
 case "${DATABASE_BACKEND}" in
     mariadb|postgres) SYNC_DB=mariadb ;;
-    # MySQL 8.4 containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
+    # MySQL 8 containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
     mysql|MySQL) DATABASE_BACKEND=mysql; SYNC_DB=mysql ;;
     *)
         echo "ERROR: unknown database backend '${DATABASE_BACKEND}'"
@@ -556,7 +557,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Is that server MySQL or MariaDB? (mysql/mariadb) [mysql]: " FXA_DB
     else
-        read -r -e -p "Accounts database: mysql (MySQL 8.4, what Mozilla supports) or mariadb (MariaDB 12, see FXA.md) [mysql]: " FXA_DB
+        read -r -e -p "Accounts database: mysql (MySQL 8, what Mozilla supports) or mariadb (MariaDB lts, see FXA.md) [mysql]: " FXA_DB
     fi
     case "${FXA_DB}" in
         ""|mysql|MySQL) FXA_DB=mysql ;;
@@ -754,16 +755,16 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=$(generate_random_string 32)|"
     fi
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|"
-    # MariaDB 12 for new installs, the major the patched migrations are tested on, written
-    # out (unset it is 11.8; not lts: no install moves to a new major by itself). One that ran
-    # MariaDB before FXA_MARIADB_IMAGE, or whose MariaDB volume is still there, runs 11.8
+    # MariaDB lts for new installs (12 today, with the patched migrations), written out (also
+    # the default when unset). One that ran MariaDB before FXA_MARIADB_IMAGE, or whose MariaDB
+    # volume is still there, runs 11: pinned, so that its data does not move to 12 by itself
     if [ "${FXA_DB}" = "mariadb" ]; then
-        FXA_MARIADB_IMAGE=mariadb:12.3
+        FXA_MARIADB_IMAGE=mariadb:lts
         if [ "${PREVIOUS_FXA_DB}" = "mariadb" ]; then
-            FXA_MARIADB_IMAGE=${PREVIOUS_FXA_MARIADB_IMAGE:-mariadb:11.8}
+            FXA_MARIADB_IMAGE=${PREVIOUS_FXA_MARIADB_IMAGE:-mariadb:11}
             [ -n "${PREVIOUS_FXA_MARIADB_IMAGE}" ] || PINNED_FXA_MARIADB=yes
         elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MARIADB_VOLUME=$(fxa_mariadb_volume); then
-            FXA_MARIADB_IMAGE=mariadb:11.8
+            FXA_MARIADB_IMAGE=mariadb:11
         fi
         apply_sed ${SCRIPT_DIR}/.env "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=$(sed_escape "${FXA_MARIADB_IMAGE}")|"
     fi
@@ -877,11 +878,11 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         export "${key}=${value}"
     done < ${SCRIPT_DIR}/.env
     mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
-    # from .env only (not this shell's environment); unset: 11.8, as docker-compose.fxa-mariadb.yml.
-    # podman needs the registry in the image name (compose is fine with mariadb:12.3): a first
+    # from .env only (not this shell's environment); unset: lts, as docker-compose.fxa-mariadb.yml.
+    # podman needs the registry in the image name (compose is fine with mariadb:lts): a first
     # part with a dot or a port, or localhost, is one
     FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
-    FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:11.8}
+    FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:lts}
     first=${FXA_MARIADB_IMAGE%%/*}
     if [ "${first}" != "${FXA_MARIADB_IMAGE}" ] && { [[ "${first}" == *[.:]* ]] || [ "${first}" = localhost ]; }; then
         :
@@ -1026,13 +1027,13 @@ fi
 [ "${EXTERNAL_DB}" = "yes" ] || [ "${EXTERNAL_FXA_DB}" = "yes" ] && echo ""
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${PINNED_FXA_MARIADB:-}" = "yes" ]; then
-        echo "FXA_MARIADB_IMAGE=mariadb:11.8: the accounts database of this install stays on MariaDB 11.8."
-        echo "  To move it to MariaDB 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
+        echo "FXA_MARIADB_IMAGE=mariadb:11: the accounts database of this install stays on MariaDB 11."
+        echo "  To move it to MariaDB lts, 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
     fi
     if [ -n "${FXA_MARIADB_VOLUME:-}" ]; then
-        echo "FXA_MARIADB_IMAGE=mariadb:11.8: found the accounts database of an earlier install (${FXA_MARIADB_VOLUME}),"
-        echo "  its data stays on MariaDB 11.8. Already on 12: set FXA_MARIADB_IMAGE=mariadb:12. A new install: remove the volume"
-        echo "  (its accounts are lost) and run this again. Moving it to 12: FXA.md#moving-to-a-newer-mariadb"
+        echo "FXA_MARIADB_IMAGE=mariadb:11: found the accounts database of an earlier install (${FXA_MARIADB_VOLUME}),"
+        echo "  its data stays on MariaDB 11. Already on 12: set FXA_MARIADB_IMAGE=mariadb:lts. A new install: remove the volume"
+        echo "  (its accounts are lost) and run this again. Moving it to lts: FXA.md#moving-to-a-newer-mariadb"
     fi
     fxa_mariadb_image_check
 fi

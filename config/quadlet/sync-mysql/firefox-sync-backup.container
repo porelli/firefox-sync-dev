@@ -9,7 +9,7 @@ After=firefox-sync-network.service firefox-sync-tokenserver-db.service firefox-s
 [Container]
 # SYNC_DB=mysql: MySQL's own client and mysqldump (the MariaDB client refuses MySQL's
 # self-signed certificate)
-Image=docker.io/library/mysql:8.4
+Image=docker.io/library/mysql:8
 ContainerName=firefox-sync-backup
 Network=firefox-sync-network.network
 Volume=firefox-sync-backups.volume:/backups

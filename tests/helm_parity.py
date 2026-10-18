@@ -70,7 +70,7 @@ ALLOWED_DIFFERENCES = {
     "external-postgres:syncstorage/POSTGRES_PASSWORD": "as migrate's",
     # the backups
     "mysql:backup/MARIADB_TLS_VERIFY": "bundled MySQL: false (the chart's one value, the init container's) where compose's backup "
-    "inherits true; no effect: the backup image is mysql:8.4, backup.sh reads it with the MariaDB client only",
+    "inherits true; no effect: the backup image is mysql:8, backup.sh reads it with the MariaDB client only",
     # the databases
     "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
     "the MySQL image ignores them",

@@ -6,7 +6,7 @@
 # Usage: tests/migrate.sh <scenario>
 #   upstream-mysql           Mozilla's docker-compose.one-shot.mysql.yaml (MySQL 8.0,
 #                            syncserver-mysql 0.23.3) -> firefox-sync on MariaDB
-#   upstream-mysql-to-mysql  the same -> firefox-sync on MySQL 8.4 (SYNC_DB=mysql)
+#   upstream-mysql-to-mysql  the same -> firefox-sync on MySQL 8 (SYNC_DB=mysql)
 #   upstream-mysql-testsetup Mozilla's docker-compose.mysql.yaml (its end-to-end test setup) -> MariaDB
 #   upstream-postgres        Mozilla's docker-compose.one-shot.postgres.yaml (PostgreSQL 18,
 #                            one database) -> firefox-sync on PostgreSQL
@@ -58,7 +58,7 @@ TAG=${TAG:-latest}
 ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
 PORT=${PORT:-$((28661 + SLOT_PORTS))}
 TEST_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-${TAG}
-KEEP_IMAGES=${KEEP_IMAGES:-mariadb:lts mysql:8.4 postgres:18}
+KEEP_IMAGES=${KEEP_IMAGES:-mariadb:lts mysql:8 postgres:18}
 OLD_DOMAIN=https://sync-old.ffs-e2e.invalid
 NEW_DOMAIN=https://sync-new.ffs-e2e.invalid
 # Mozilla's syncstorage-rs, docker/ at a commit of master (the one-shot files are not in 0.23.3)

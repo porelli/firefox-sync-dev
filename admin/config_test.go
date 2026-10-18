@@ -299,7 +299,7 @@ func TestConfigPage(t *testing.T) {
 	})
 	for setting, want := range map[string]string{
 		"Max users":                  "5 (1 used) SYNC_MAX_USERS SYNC_MAX_USERS=initial:3: set to 3 on a new database only, then on the overview",
-		"Databases":                  "MySQL 8.4 SYNC_DB the tokenserver and the storage databases, on a container of the stack",
+		"Databases":                  "MySQL 8 SYNC_DB the tokenserver and the storage databases, on a container of the stack",
 		"Tokenserver database":       "ffs_admin_sync on tokenserver_db:3306, database tokenserver",
 		"Tokenserver password":       "set ADMIN_DB_PASSWORD of ffs_admin_sync",
 		"Admin UI database":          "ffs_admin_ui on tokenserver_db:3306, database ffs_admin ADMIN_DB_USER , ADMIN_DB_NAME the event log",

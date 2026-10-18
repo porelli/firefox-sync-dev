@@ -1,6 +1,6 @@
 # Your own database server
 
-By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml), or [MySQL 8.4](#mariadb-or-mysql-containers)), one PostgreSQL container ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`); the [Helm chart](HELM.md) the same servers as StatefulSets. You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
+By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml), or [MySQL 8](#mariadb-or-mysql-containers)), one PostgreSQL container ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`); the [Helm chart](HELM.md) the same servers as StatefulSets. You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
 
 What changes:
 - `SYNC_DB_CONTAINERS=0` (and `FXA_DB_CONTAINERS=0` for the accounts) in `.env`: those containers are not started, everything else is the same. With the Helm chart `database.bundled: false`, see [Kubernetes](#kubernetes).
@@ -11,14 +11,14 @@ What changes:
 
 ## MariaDB or MySQL containers
 
-This section is about the database containers of the stack, not your own server. The two Sync databases (`syncstorage_db`, `tokenserver_db`) run on MariaDB (`mariadb:lts`) by default. With `SYNC_DB=mysql` they run on MySQL 8.4 instead, which is what upstream syncstorage-rs is developed and tested on. On MariaDB upstream's tokenserver test `test_user_creation` failed because MariaDB orders the nodes differently: our images have the fix proposed upstream ([mozilla-services/syncstorage-rs#2638](https://github.com/mozilla-services/syncstorage-rs/pull/2638), see [upstream-patches.yml](/upstream-patches.yml)), and `tests/e2e.sh` skips that test only for images without it (their label `org.firefox-sync.upstream-patches` does not list it). The images (`syncstorage-rs-mysql`, `syncstorage-rs-mysql-init`) and the `MARIADB_*` settings of `.env` stay the same.
+This section is about the database containers of the stack, not your own server. The two Sync databases (`syncstorage_db`, `tokenserver_db`) run on MariaDB (`mariadb:lts`) by default. With `SYNC_DB=mysql` they run on MySQL 8 (`mysql:8`, 8.4 today) instead, which is what upstream syncstorage-rs is developed and tested on. On MariaDB upstream's tokenserver test `test_user_creation` failed because MariaDB orders the nodes differently: our images have the fix proposed upstream ([mozilla-services/syncstorage-rs#2638](https://github.com/mozilla-services/syncstorage-rs/pull/2638), see [upstream-patches.yml](/upstream-patches.yml)), and `tests/e2e.sh` skips that test only for images without it (their label `org.firefox-sync.upstream-patches` does not list it). The images (`syncstorage-rs-mysql`, `syncstorage-rs-mysql-init`) and the `MARIADB_*` settings of `.env` stay the same.
 
 - `prepare_environment.sh`: answer `mysql` to the database backend question. It writes `SYNC_DB=mysql` and `SYNC_DB_TLS_VERIFY=false`, and adds [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml) to `COMPOSE_FILE`. With Quadlets the units of [config/quadlet/sync-mysql/](/config/quadlet/sync-mysql) replace the two MariaDB units.
 - By hand: `SYNC_DB=mysql` in `.env` and `COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml` (with the accounts `docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml`; with the Podman socket `-f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml`).
 - Choose it before the first start. MySQL gets its own volumes (`syncstorage-db-mysql` and `tokenserver-db-mysql`, Quadlets: `firefox-sync-syncstorage-db-mysql` and `firefox-sync-tokenserver-db-mysql`), so it never opens MariaDB's data files. If you switch an existing install, MariaDB's data stays in its volumes and Sync starts with empty databases. Moving the data takes a dump and a reload, which is not tested here. Also, MariaDB's dumps use its `uca1400` collations, which MySQL rejects (see [Moving an existing install](#moving-an-existing-install)). Going back to MariaDB finds MariaDB's volumes as you left them.
 - No binary logging (`--disable-log-bin`), the same as the MariaDB containers. No replica reads the log, and MySQL would keep 30 days of every change (`binlog_expire_logs_seconds`). With binary logging on, the init container could only create the max users procedure and trigger with `log_bin_trust_function_creators=ON` (`ERROR 1419`). If you want binary logs (a replica, point-in-time recovery), replace `--disable-log-bin` with `--log-bin-trust-function-creators=ON` in the `command` (Quadlets: `Exec=`). That combination is what the `EXTERNAL_DB=1` tests run.
 - The users use MySQL 8.4's default `caching_sha2_password`, with no `mysql_native_password`. The Sync server and the admin UI connect without TLS, the same as with your own MySQL server. The init container's MariaDB client connects over TLS without checking MySQL's self-signed certificate, on the stack's own network (`SYNC_DB_TLS_VERIFY=false`, which `docker-compose.sync-mysql.yml` sets for compose; without it the init fails with `ERROR 2026`).
-- `mysql:8.4` is the current MySQL LTS release.
+- `mysql:8` follows MySQL 8, 8.4 today, its last long-term release; not `mysql:lts`, which is MySQL 9 (the self-hosted accounts do not support it, see below).
 - The Helm chart: `database.backend: mysql`, the same server (`database.image.mysql`), without binary logging, its certificate not checked. On kind or k3s on an Ubuntu host with `mysql-server`, see [HELM.md](HELM.md#troubleshooting) (AppArmor).
 
 ## Another PostgreSQL major
@@ -33,10 +33,10 @@ With your own database server (`EXTERNAL_DB=1`): `SYNC_POSTGRES_IMAGE` picks the
 
 | Component | Supported | Tested |
 |---|---|---|
-| Sync server | MariaDB 10.10+, MySQL 8.0 and 8.4, PostgreSQL 11+ | MariaDB 12.3, MySQL 8.4, PostgreSQL 18 |
-| Accounts | MySQL 8.0 and 8.4, MariaDB 11.4 and later (12: with our accounts images) | MySQL 8.4, MariaDB 12 and 11.8 (and 11.4 once) |
+| Sync server | MariaDB 10.10+, MySQL 8.0 and 8.4, PostgreSQL 11+ | MariaDB `lts` (12 today), MySQL 8 (8.4), PostgreSQL 18 |
+| Accounts | MySQL 8.0 and 8.4, MariaDB 11.4 and later (12: with our accounts images) | MySQL 8 (8.4), MariaDB `lts` (12) and 11 (11.8) (and 11.4 once) |
 
-Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). On MariaDB 12 and later the accounts need our accounts images: Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`), and our images have the fix proposed upstream ([MariaDB 12](FXA.md#mariadb-12)). With Mozilla's own images, MariaDB 11.4 to 11.8. The `fxa-db` container of the stack runs `FXA_MARIADB_IMAGE`: `mariadb:12.3` for the new installs `prepare_environment.sh` sets up, `mariadb:11.8` when it is not set, as the installs from before it ([MySQL or MariaDB](FXA.md#mysql-or-mariadb)). MySQL 9 does not work either: it has no `mysql_native_password`, the only one the accounts' driver supports.
+Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). On MariaDB 12 and later the accounts need our accounts images: Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`), and our images have the fix proposed upstream ([MariaDB 12](FXA.md#mariadb-12)). With Mozilla's own images, MariaDB 11.4 to 11.8. The `fxa-db` container of the stack runs `FXA_MARIADB_IMAGE`: `mariadb:lts` for new installs and when it is not set, `mariadb:11` for the installs from before it once `prepare_environment.sh --upgrade` ran ([MySQL or MariaDB](FXA.md#mysql-or-mariadb)). MySQL 9 does not work either: it has no `mysql_native_password`, the only one the accounts' driver supports.
 
 ## Server requirements
 
@@ -169,7 +169,7 @@ All in `.env`. `prepare_environment.sh` writes them when you answer `y`. The Hel
 | Setting | Default | Your own server |
 |---|---|---|
 | `SYNC_DB_CONTAINERS` | `1` | `0`: no `syncstorage_db`, `tokenserver_db` or `postgres_db` container |
-| `SYNC_DB` | `mariadb` | not used: it picks the database containers, `mysql` for [MySQL 8.4](#mariadb-or-mysql-containers) |
+| `SYNC_DB` | `mariadb` | not used: it picks the database containers, `mysql` for [MySQL 8](#mariadb-or-mysql-containers) |
 | `SYNC_DB_TLS_VERIFY` | `true` | `false`: the init container's client checks the server's certificate, and MySQL's own is self-signed (the Sync server itself does not use TLS) |
 | `SYNC_TOKENSERVER_DB_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD` | `tokenserver_db`, `3306`, `tokenserver`, `tokenserver` | your server and the names of the SQL above |
 | `SYNC_STORAGE_DB_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD` | `syncstorage_db`, `3306`, `syncstorage`, `syncstorage` | the same server, or another one |
@@ -221,7 +221,7 @@ An install from before `ADMIN_DB_PASSWORD` (its `.env` has none) keeps working a
 
 If it cannot read them (a grant missing on your own server), it copies nothing, leaves them where they are and the setup check says why: nothing is lost, and the next start tries again. If it copied them but cannot drop them (no `EXECUTE`, an init image from before), they stay in the tokenserver database, within the Sync server's reach, until you drop them as the tokenserver user (`DROP TABLE ffs_events, ffs_metrics, ffs_gauges, ffs_account_notes, ffs_schema_levels, ffs_jobs, ffs_backups;`); the setup check says so too. If `ffs_admin_ui` cannot create its tables in `ffs_admin` (its grant missing), the admin UI does not start and says why, the old tables untouched. Your own backup jobs that record their runs: they now write into `ffs_admin` as `ffs_admin_ui` ([ADMIN.md](ADMIN.md#your-own-database-servers)).
 
-`tests/e2e.sh` checks this upgrade from a checkout of the release before (`UPGRADE_FROM`: its compose files, admin UI and init image), with MariaDB, MySQL 8.4 and PostgreSQL, and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
+`tests/e2e.sh` checks this upgrade from a checkout of the release before (`UPGRADE_FROM`: its compose files, admin UI and init image), with MariaDB, MySQL 8 and PostgreSQL, and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
 
 ## docker compose
 
