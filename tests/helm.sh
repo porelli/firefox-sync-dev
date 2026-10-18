@@ -39,6 +39,17 @@ lint() {
     check "Helm lint passed with $(basename "${values_file}")"
   done
 
+  # every long-running container has its readiness and liveness probes (not the init
+  # containers, not the pods of Jobs and CronJobs), with every values set of ci/
+  for values_file in "${CHART_DIR}"/ci/*.yaml; do
+    missing=$(helm template test-release "${CHART_DIR}" -f "${values_file}" | manifests | jq -r '.[]
+      | select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet" or .kind == "ReplicaSet")
+      | .metadata.name as $w | .spec.template.spec.containers[]
+      | select(.readinessProbe == null or .livenessProbe == null) | "\($w)/\(.name)"')
+    [[ -z "${missing}" ]] || fail "$(basename "${values_file}"): containers without a readinessProbe or livenessProbe: ${missing}"
+  done
+  check "every container of the Deployments and StatefulSets has a readinessProbe and a livenessProbe (ci/*.yaml)"
+
   # maxUsers: a string, or a number rendered as a string, in the db-init container's MAX_USERS
   echo "Testing maxUsers..."
   max_users() {
