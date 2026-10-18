@@ -199,6 +199,16 @@ def test_after_the_admin_ui_shows_the_new_release_all_up(state):
             break
         time.sleep(3)
     assert re.search(r"<td>Accounts API</td><td>[^<]*<span[^>]*>up</span></td><td>v?" + version + r"\b", health), health
+    # FXA_NEW_DB_SERVER: the accounts database moved to another server version (fxa-upgrade.sh
+    # FXA_MARIADB_FROM), as the health check reads it again
+    db_server = os.environ.get("FXA_NEW_DB_SERVER")
+    if db_server:
+        row = r'<td>Accounts database</td><td><span class="ok">up</span>(?:(?!</td>).)*</td><td>' + db_server
+        deadline = time.time() + 60
+        while not re.search(row, health) and time.time() < deadline:
+            time.sleep(3)
+            health = http.get(f"{ADMIN}/", timeout=30).text.split('<table id="health"')[1].split("</table>")[0]
+        assert re.search(row, health), health
     for component in ("Sync server", "Tokenserver database", "Storage database", "Accounts API", "Accounts pages",
                       "Profile server", "Accounts database", "Accounts Redis"):
         assert re.search(r"<td>" + component + r'</td><td><span class="ok">up</span>', health), (component, health)

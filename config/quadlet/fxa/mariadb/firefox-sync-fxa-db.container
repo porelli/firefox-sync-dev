@@ -4,8 +4,8 @@ Description=Firefox Sync - Mozilla accounts - Database (MariaDB)
 After=firefox-sync-network.service
 
 [Container]
-# FXA_MARIADB_IMAGE of .env (with its registry): mariadb:lts for new installs, mariadb:11.8
-# for those from before (FXA.md#mysql-or-mariadb). On 12 Mozilla's migrations need
+# FXA_MARIADB_IMAGE of .env (with its registry): mariadb:12.3 for new installs, mariadb:11.8
+# when unset, as before it (FXA.md#mysql-or-mariadb). On 12 Mozilla's migrations need
 # https://github.com/mozilla/fxa/pull/21494, in our images (upstream-patches.yml)
 Image=%FXA_MARIADB_IMAGE%
 ContainerName=firefox-sync-fxa-db

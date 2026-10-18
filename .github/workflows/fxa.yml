@@ -451,7 +451,7 @@ jobs:
   # the candidate with the accounts database on MariaDB (FXA_DB=mariadb, FXA.md). Not needed
   # by publish: Mozilla supports MySQL only, a release that breaks MariaDB must not hold back
   # MySQL installs. The failed run is the warning for MariaDB installs (FXA.md: pin FXA_VERSION).
-  # mariadb:12 (new installs: needs mozilla/fxa#21494, upstream-patches.yml), mariadb:11.8 (the
+  # mariadb:12.3 (new installs: needs mozilla/fxa#21494, upstream-patches.yml), mariadb:11.8 (the
   # installs from before), and mariadb:lts, the canary: it fails first when the next MariaDB
   # major (which no install follows by itself) breaks the accounts
   test-mariadb:
@@ -463,7 +463,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mariadb_image: ["mariadb:12", "mariadb:11.8", "mariadb:lts"]
+        mariadb_image: ["mariadb:12.3", "mariadb:11.8", "mariadb:lts"]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

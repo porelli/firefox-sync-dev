@@ -25,9 +25,9 @@ This section is about the database containers of the stack, not your own server.
 | Component | Supported | Tested |
 |---|---|---|
 | Sync server | MariaDB 10.10+, MySQL 8.0 and 8.4, PostgreSQL 11+ | MariaDB 12.3, MySQL 8.4, PostgreSQL 18 |
-| Accounts | MySQL 8.0 and 8.4, MariaDB 11.4 and later (12: with our accounts images) | MySQL 8.4, MariaDB 12 (`mariadb:lts`) and 11.8 (and 11.4 once) |
+| Accounts | MySQL 8.0 and 8.4, MariaDB 11.4 and later (12: with our accounts images) | MySQL 8.4, MariaDB 12 and 11.8 (and 11.4 once) |
 
-Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). On MariaDB 12 (`mariadb:lts` today) the accounts need our accounts images: Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`), and our images have the fix proposed upstream ([MariaDB 12](FXA.md#mariadb-12)). With Mozilla's own images, MariaDB 11.4 to 11.8. MySQL 9 does not work either: it has no `mysql_native_password`, the only one the accounts' driver supports.
+Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). On MariaDB 12 and later the accounts need our accounts images: Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`), and our images have the fix proposed upstream ([MariaDB 12](FXA.md#mariadb-12)). With Mozilla's own images, MariaDB 11.4 to 11.8. The `fxa-db` container of the stack runs `FXA_MARIADB_IMAGE`: `mariadb:12.3` for the new installs `prepare_environment.sh` sets up, `mariadb:11.8` when it is not set, as the installs from before it ([MySQL or MariaDB](FXA.md#mysql-or-mariadb)). MySQL 9 does not work either: it has no `mysql_native_password`, the only one the accounts' driver supports.
 
 ## Server requirements
 

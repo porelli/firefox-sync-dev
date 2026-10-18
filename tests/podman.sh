@@ -556,8 +556,8 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing -f docker-compose.yml -f docker-compose.fxa.yml -f docker-compose.fxa-mariadb.yml)" same \
     "the Quadlets' healthchecks with the accounts on MariaDB are compose's"
   check "$(fxa_db_image) $(ls "${QUADLET_DIR}"/firefox-sync-fxa-db* 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
-    "docker.io/library/mariadb:lts firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB 12 unit and its own volume, not MySQL's"
-  check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" docker.io/library/mariadb:lts "the backups of the accounts with the same MariaDB"
+    "docker.io/library/mariadb:12.3 firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB 12 unit and its own volume, not MySQL's"
+  check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" docker.io/library/mariadb:12.3 "the backups of the accounts with the same MariaDB"
   "${QUADLET}" -dryrun -user > quadlet-fxa-mariadb-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the MariaDB accounts database"
   stop_quadlets
@@ -578,7 +578,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
     "every long-running service has a healthcheck, the Quadlets with the accounts compose's (${FXA_DB})"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
-  [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:lts || expected_image=docker.io/library/mysql:8.4
+  [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:12.3 || expected_image=docker.io/library/mysql:8.4
   check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   # no pairing server in the quadlets

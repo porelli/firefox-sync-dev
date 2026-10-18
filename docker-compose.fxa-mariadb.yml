@@ -1,15 +1,16 @@
 # The accounts database on MariaDB instead of MySQL 8.4 (FXA_DB=mariadb, see FXA.md), on top of
 # docker-compose.fxa.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml
-# Mozilla supports MySQL only; MariaDB passes the same tests here: 12 (mariadb:lts) with our
+# Mozilla supports MySQL only; MariaDB passes the same tests here: 12 (mariadb:12.3) with our
 # accounts images, 11.4 to 11.8 with any (FXA.md#mysql-or-mariadb).
 
 services:
   fxa-db:
-    # FXA_MARIADB_IMAGE: mariadb:lts for new installs, mariadb:11.8 for those from before
-    # (prepare_environment.sh --upgrade keeps them there, FXA.md says how to move). On 12
-    # Mozilla's migrations need https://github.com/mozilla/fxa/pull/21494, applied to our
-    # images until it is in a release (upstream-patches.yml)
-    image: ${FXA_MARIADB_IMAGE:-mariadb:lts}
+    # FXA_MARIADB_IMAGE: prepare_environment.sh writes mariadb:12.3 for new installs; unset,
+    # 11.8 as before it, so that no update moves the data to another major version by itself
+    # (FXA.md says how to move). On 12 Mozilla's migrations need
+    # https://github.com/mozilla/fxa/pull/21494, applied to our images until it is in a
+    # release (upstream-patches.yml)
+    image: ${FXA_MARIADB_IMAGE:-mariadb:11.8}
     environment:
       MARIADB_AUTO_UPGRADE: "true"
     # the default authentication is already mysql_native_password, the only one FxA's driver supports
@@ -23,7 +24,7 @@ services:
 
   # the backups of the accounts with MariaDB's client (the same version as fxa-db, see there)
   backup-fxa:
-    image: ${FXA_MARIADB_IMAGE:-mariadb:lts}
+    image: ${FXA_MARIADB_IMAGE:-mariadb:11.8}
 
 volumes:
   fxa-db-mariadb:

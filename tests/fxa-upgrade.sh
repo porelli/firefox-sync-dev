@@ -21,7 +21,12 @@
 #   ADMIN_IMAGE      admin UI and sign-up policy image, used as is (default: built from admin/)
 #   FXA_DB           mysql (default, MySQL 8.4) or mariadb (FXA_MARIADB_IMAGE) for the accounts
 #   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:11.8, as the installs from before
-#                    MariaDB 12 have it; mariadb:lts needs FXA_FROM with mozilla/fxa#21494)
+#                    MariaDB 12 have it; mariadb:12.3 needs FXA_FROM with mozilla/fxa#21494)
+#   FXA_MARIADB_FROM with FXA_DB=mariadb: the install starts on this MariaDB (e.g. mariadb:11.8)
+#                    and the upgrade also moves it to FXA_MARIADB_IMAGE (default: mariadb:12.3) as
+#                    FXA.md#moving-to-a-newer-mariadb says: then the data must have been
+#                    upgraded (server version, mariadb-upgrade by MARIADB_AUTO_UPGRADE). The new
+#                    accounts image needs mozilla/fxa#21494 for MariaDB 12
 #   FXA_SAME_TAG     set to 1 to install the older release under the new tag (FXA_FROM pulled and
 #                    tagged FXA_IMAGE:FXA_VERSION here), as an install following fxa-mono-latest
 #                    has it: then docker compose up -d alone must not upgrade, the pull must
@@ -40,6 +45,14 @@ ENV_FILE=${WORK}/fxa.env
 FXA_DB=${FXA_DB:-mysql}
 [ -n "${FXA_FROM:-}" ] || { sed -n '12,28p' "$0"; exit 2; }
 case "${FXA_DB}" in mysql|mariadb) ;; *) echo "FXA_DB: mysql or mariadb"; exit 2 ;; esac
+# the MariaDB the install runs, and the one it moves to (FXA_MARIADB_FROM only)
+MARIADB_TO=""
+if [ -n "${FXA_MARIADB_FROM:-}" ]; then
+  [ "${FXA_DB}" = mariadb ] || { echo "FXA_MARIADB_FROM is for FXA_DB=mariadb"; exit 2; }
+  MARIADB_TO=${FXA_MARIADB_IMAGE:-mariadb:12.3}
+  [ "${MARIADB_TO}" != "${FXA_MARIADB_FROM}" ] || { echo "FXA_MARIADB_FROM: the same as FXA_MARIADB_IMAGE"; exit 2; }
+fi
+MARIADB_INSTALLED=${FXA_MARIADB_FROM:-${FXA_MARIADB_IMAGE:-mariadb:11.8}}
 case "$(uname -m)" in aarch64|arm64) native=arm64 ;; *) native=amd64 ;; esac
 case "${FXA_FROM}" in
   docker.io/mozilla/*|mozilla/*) from_arch=${FXA_FROM_ARCH:-amd64} ;;
@@ -80,7 +93,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=allowlist|" \
     -e "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=@example.com|" \
     -e "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|" \
-    -e "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:11.8}|" \
+    -e "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${MARIADB_INSTALLED}|" \
     -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${INSTALLED%:*}|" \
     -e "s|^FXA_VERSION=.*|FXA_VERSION=${INSTALLED##*:}|" \
     -e "s|^FXA_ARCH=.*|FXA_ARCH=${from_arch}|" \
@@ -182,13 +195,14 @@ upgrade_tests() {
     -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
     -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_UPGRADE_PHASE="$1" -e UPGRADE_STATE=/state/upgrade.json \
     -e FXA_NEW_VERSION="${new_release}" -e FXA_OLD_LEVELS="${old_levels:-}" -e FXA_NEW_LEVELS="${new_levels:-}" \
+    -e FXA_NEW_DB_SERVER="${new_db_server:-}" \
     -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
     --entrypoint /bin/sh syncstorage \
     -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_upgrade.py > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
   check "$?" 0 "$1 the upgrade: tests/test_fxa_upgrade.py"
 }
 
-echo "== ${PROJECT}: accounts ${FXA_FROM} (${from_arch}) -> ${NEW} (${NEW_ARCH}), on ${FXA_DB}${FXA_SAME_TAG:+, the older release installed as ${NEW}}"
+echo "== ${PROJECT}: accounts ${FXA_FROM} (${from_arch}) -> ${NEW} (${NEW_ARCH}), on ${FXA_DB}${MARIADB_TO:+ ${MARIADB_INSTALLED} -> ${MARIADB_TO}}${FXA_SAME_TAG:+, the older release installed as ${NEW}}"
 if [ -z "${ADMIN_GIVEN}" ]; then
   COMPOSE_BAKE=false docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
 fi
@@ -223,6 +237,8 @@ echo "== waiting for the older release ${FXA_FROM}"
 wait_up "older release"
 old_levels=$(levels)
 echo "schema levels of ${FXA_FROM}: ${old_levels}"
+old_db_version=$(fxa_sql "SELECT VERSION()")
+echo "accounts database: ${old_db_version}"
 upgrade_tests before
 
 echo "== upgrade as FXA.md says: a backup, FXA_VERSION in .env, docker compose pull, docker compose up -d"
@@ -231,6 +247,8 @@ check "$?" 0 "a backup of the accounts before the upgrade"
 set_env FXA_IMAGE "${NEW_IMAGE}"
 set_env FXA_VERSION "${NEW_VERSION}"
 set_env FXA_ARCH "${NEW_ARCH}"
+# FXA.md#moving-to-a-newer-mariadb: the backup above, FXA_MARIADB_IMAGE, pull and up
+[ -z "${MARIADB_TO}" ] || set_env FXA_MARIADB_IMAGE "${MARIADB_TO}"
 if [ -n "${FXA_SAME_TAG:-}" ]; then
   # FXA.md: up -d alone keeps the image it has under that tag
   dc up -d > "${WORK}/up-no-pull.log" 2>&1 || { echo "FAIL: compose up without a pull"; tail -10 "${WORK}/up-no-pull.log"; }
@@ -240,10 +258,13 @@ fi
 migrations_before=$(state fxa-migrations StartedAt)
 # the pull of FXA.md, also with SKIP_PULL: the accounts image only (the admin UI under test
 # may be a local build)
-dc pull -q "${FXA_SERVICES[@]}" || { echo "FAIL: docker compose pull of ${NEW}"; exit 1; }
+MARIADB_SERVICES=()
+[ -z "${MARIADB_TO}" ] || MARIADB_SERVICES=(fxa-db backup-fxa)
+dc pull -q "${FXA_SERVICES[@]}" "${MARIADB_SERVICES[@]}" || { echo "FAIL: docker compose pull of ${NEW}"; exit 1; }
 dc up -d > "${WORK}/upgrade.log" 2>&1 || { echo "FAIL: compose up with the new release"; tail -10 "${WORK}/upgrade.log"; }
 echo "== waiting for the new release"
 wait_up "upgraded"
+[ -z "${MARIADB_TO}" ] || errors_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 for s in fxa-migrations fxa-auth fxa-content fxa-profile fxa-profile-worker; do
   check "$(image_of "${s}") $(image_id_of "${s}")" "${NEW} ${new_id}" "${s} runs the new release"
 done
@@ -255,8 +276,22 @@ check "${new_levels}" "$(target_levels "${NEW}" "${NEW_ARCH}")" "the patch level
 check "$(fxa_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = 'ffs' AND ROUTINE_DEFINITION LIKE '%missing from the accounts database%'")" 0 \
   "no account procedure of the admin UI replaced by a stand-in after the migrations"
 check "$(fxa_sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'ffs_signup_policy'")" 1 "the sign-up policy trigger after the migrations"
+if [ -n "${MARIADB_TO}" ]; then
+  new_db_version=$(fxa_sql "SELECT VERSION()")
+  echo "accounts database: ${old_db_version} -> ${new_db_version}"
+  check "$(image_of fxa-db) $(image_of backup-fxa)" "${MARIADB_TO} ${MARIADB_TO}" "fxa-db (and its backups) on ${MARIADB_TO}"
+  check "$([ "${old_db_version%%.*}" != "${new_db_version%%.*}" ] && [ "$(printf '%s\n' "${old_db_version}" "${new_db_version}" | sort -V | tail -n 1)" = "${new_db_version}" ] && echo yes)" yes \
+    "the accounts database on a newer major version (${old_db_version%%-*} -> ${new_db_version%%-*})"
+  # the entrypoint ran mariadb-upgrade (MARIADB_AUTO_UPGRADE) and recorded the new version
+  check "$(dc logs fxa-db 2>&1 | grep -c 'Finished mariadb-upgrade') $(dc exec -T fxa-db cat /var/lib/mysql/mariadb_upgrade_info 2> /dev/null | tr -d '\0' | grep -c "^${new_db_version%%-*}")" "1 1" \
+    "mariadb-upgrade ran at the first start on ${MARIADB_TO} (MARIADB_AUTO_UPGRADE)"
+  new_db_server="MariaDB ${new_db_version%%-*}"
+  new_db_server=${new_db_server//./\\.}
+fi
 upgrade_tests after
-admin_errors() { dc logs ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|schema levels|rendering [^:]*): '; }
+# with FXA_MARIADB_FROM the database restarted on its new version during the up: the admin UI's
+# errors of then (the accounts database unreachable) are expected, the ones after it are not
+admin_errors() { dc logs ${errors_since:+--since "${errors_since}"} ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|schema levels|rendering [^:]*): '; }
 check "$(admin_errors | wc -l)" 0 "no background errors in the admin UI logs"
 admin_errors | tail -5
 [ "${FAILED}" = 0 ] || for s in fxa-migrations fxa-auth syncstorage; do echo "---- ${s}"; dc logs --tail 30 "${s}" 2>&1; done
