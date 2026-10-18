@@ -84,7 +84,7 @@ Accepts a dict with "root" (the root context) and "db" (tokenserver|storage)
 For bundled databases (the Services of databases.yaml):
   - mariadb/mysql: <fullname>-tokenserver-db and <fullname>-storage-db (separate databases)
   - postgres: <fullname>-postgres (shared database)
-For external databases: use the configured host
+For your own server: database.external.host (mariadb/mysql storage: storageHost, else host)
 */}}
 {{- define "firefox-sync.dbHost" -}}
 {{- $root := .root }}
@@ -102,25 +102,35 @@ For external databases: use the configured host
 {{- end }}
 {{- end }}
 {{- else }}
-{{- $root.Values.database.external.host }}
+{{- $e := $root.Values.database.external }}
+{{- if and (eq $db "storage") (ne $backend "postgres") $e.storageHost }}
+{{- $e.storageHost }}
+{{- else }}
+{{- $e.host }}
+{{- end }}
 {{- end }}
 {{- end }}
 
 {{/*
 Return the database port
+Accepts a dict with "root" and "db" (tokenserver|storage): 3306 or 5432; your own server's
+database.external.port (mariadb/mysql storage: storagePort, else port), empty for those
 */}}
 {{- define "firefox-sync.dbPort" -}}
 {{- $root := .root }}
 {{- $backend := $root.Values.database.backend }}
-{{- if $root.Values.database.bundled }}
-{{- if eq $backend "postgres" }}
-{{- print "5432" }}
-{{- else }}
-{{- print "3306" }}
+{{- $port := ternary "5432" "3306" (eq $backend "postgres") }}
+{{- if not $root.Values.database.bundled }}
+{{- $e := $root.Values.database.external }}
+{{- $own := $e.port }}
+{{- if and (eq (.db | default "") "storage") (ne $backend "postgres") $e.storagePort }}
+{{- $own = $e.storagePort }}
 {{- end }}
-{{- else }}
-{{- $root.Values.database.external.port }}
+{{- with include "firefox-sync.number" $own }}
+{{- $port = . }}
 {{- end }}
+{{- end }}
+{{- $port }}
 {{- end }}
 
 {{/*
@@ -142,14 +152,12 @@ Accepts a dict with "root" (the root context) and "db" (tokenserver|storage)
 {{- end }}
 {{- end }}
 {{- else }}
-{{- if eq $db "tokenserver" }}
-{{- $root.Values.database.external.tokenserverDatabase }}
-{{- else }}
 {{- if eq $backend "postgres" }}
+{{- $root.Values.database.external.postgresDatabase }}
+{{- else if eq $db "tokenserver" }}
 {{- $root.Values.database.external.tokenserverDatabase }}
 {{- else }}
 {{- $root.Values.database.external.storageDatabase }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -172,14 +180,12 @@ Return the database user for tokenserver or storage
 {{- end }}
 {{- end }}
 {{- else }}
-{{- if eq $db "tokenserver" }}
-{{- $root.Values.database.external.tokenserverUser }}
-{{- else }}
 {{- if eq $backend "postgres" }}
+{{- $root.Values.database.external.postgresUser }}
+{{- else if eq $db "tokenserver" }}
 {{- $root.Values.database.external.tokenserverUser }}
 {{- else }}
 {{- $root.Values.database.external.storageUser }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -197,7 +203,7 @@ The password is read from the environment variable via Kubernetes dependent env,
 {{- $db := .db }}
 {{- $backend := $root.Values.database.backend }}
 {{- $host := include "firefox-sync.dbHost" (dict "root" $root "db" $db) }}
-{{- $port := include "firefox-sync.dbPort" (dict "root" $root) }}
+{{- $port := include "firefox-sync.dbPort" (dict "root" $root "db" $db) }}
 {{- $name := include "firefox-sync.dbName" (dict "root" $root "db" $db) }}
 {{- $user := include "firefox-sync.dbUser" (dict "root" $root "db" $db) }}
 {{- if eq $backend "postgres" }}
@@ -248,27 +254,28 @@ as an integer, never 2e+06; empty for nil
 {{- end }}
 
 {{/*
-PostgreSQL: the Sync server's own role (compose's POSTGRES_SYNC_USER), no superuser, created by
-the sync-role init container before the migrations; the name prepare_environment.sh gives it.
-Empty (compose: an install from before it, or your own server): the Sync server is POSTGRES_USER
+PostgreSQL: the Sync server's own role (compose's POSTGRES_SYNC_USER, database.postgresSyncUser,
+syncserver_app as prepare_environment.sh names it), no superuser, created by the sync-role init
+container before the migrations. Empty with your own server (compose: also an install from
+before it): the Sync server is POSTGRES_USER, the owner there
 */}}
 {{- define "firefox-sync.postgresSyncUser" -}}
 {{- if and (eq .Values.database.backend "postgres") .Values.database.bundled }}
-{{- print "syncserver_app" }}
+{{- .Values.database.postgresSyncUser }}
 {{- end }}
 {{- end }}
 
 {{/*
 The admin UI's own database and users (compose's ADMIN_DB_NAME, ADMIN_DB_USER,
-ADMIN_DB_SYNC_USER, with their defaults), password ADMIN_DB_PASSWORD in the Secret
+ADMIN_DB_SYNC_USER: database.admin.*), password ADMIN_DB_PASSWORD in the Secret
 */}}
-{{- define "firefox-sync.adminDbName" -}}ffs_admin{{- end }}
-{{- define "firefox-sync.adminDbUser" -}}ffs_admin_ui{{- end }}
-{{- define "firefox-sync.adminDbSyncUser" -}}ffs_admin_sync{{- end }}
+{{- define "firefox-sync.adminDbName" -}}{{ .Values.database.admin.name }}{{- end }}
+{{- define "firefox-sync.adminDbUser" -}}{{ .Values.database.admin.user }}{{- end }}
+{{- define "firefox-sync.adminDbSyncUser" -}}{{ .Values.database.admin.syncUser }}{{- end }}
 
 {{/*
 The Secret key holding the password of the tokenserver or storage database user
-(PostgreSQL: POSTGRES_USER, the superuser of the bundled server)
+(PostgreSQL: POSTGRES_USER, the superuser of the bundled server, the owner on your own)
 Accepts a dict with "root" and "db" (tokenserver|storage)
 */}}
 {{- define "firefox-sync.dbPasswordKey" -}}
@@ -353,6 +360,40 @@ The image of the bundled database, also the client of wait-db and of the backups
 */}}
 {{- define "firefox-sync.dbImage" -}}
 {{- index .Values.database.image .Values.database.backend }}
+{{- end }}
+
+{{/*
+The host of the Sync server's Ingress: ingress.host, else the host of syncDomain (without a port)
+*/}}
+{{- define "firefox-sync.ingressHost" -}}
+{{- .Values.ingress.host | default (regexReplaceAll ":[0-9]+$" (urlParse .Values.syncDomain).host "") }}
+{{- end }}
+
+{{/*
+What the values must have, or the render fails saying so (fail closed): your own server needs
+its host and existingSecret (the chart cannot generate passwords your server knows); the admin
+UI's Ingress a host of its own
+*/}}
+{{- define "firefox-sync.checkValues" -}}
+{{- if not .Values.database.bundled }}
+{{- if not .Values.database.external.host }}
+{{- fail "firefox-sync: database.bundled=false needs database.external.host, your database server (DATABASES.md)" }}
+{{- end }}
+{{- if not .Values.existingSecret }}
+{{- fail "firefox-sync: database.bundled=false needs existingSecret, a Secret with the passwords of the users that DATABASES.md's SQL created on your server (and the stack's secrets): the chart cannot generate passwords your server knows" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.ingress.enabled (not (include "firefox-sync.ingressHost" .)) }}
+{{- fail "firefox-sync: ingress.enabled needs ingress.host, or a syncDomain with a host" }}
+{{- end }}
+{{- if and .Values.admin.enabled .Values.admin.ingress.enabled }}
+{{- if not .Values.admin.ingress.host }}
+{{- fail "firefox-sync: admin.ingress.enabled needs admin.ingress.host, a host of its own for the admin UI" }}
+{{- end }}
+{{- if and .Values.ingress.enabled (eq .Values.admin.ingress.host (include "firefox-sync.ingressHost" .)) }}
+{{- fail (printf "firefox-sync: admin.ingress.host %s is the Sync server's host: give the admin UI a host of its own" .Values.admin.ingress.host) }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/*

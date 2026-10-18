@@ -9,7 +9,7 @@ UI's database, which its Backups card shows. One now:
 {{- if .Values.backup.enabled }}
 {{- $fullname := include "firefox-sync.fullname" . }}
 {{- $backend := .Values.database.backend }}
-{{- $port := include "firefox-sync.dbPort" (dict "root" .) }}
+{{- $port := include "firefox-sync.dbPort" (dict "root" . "db" "tokenserver") }}
 {{- $ts := dict "root" . "db" "tokenserver" }}
 {{- $st := dict "root" . "db" "storage" }}
 {{- $syncUser := include "firefox-sync.postgresSyncUser" . }}
@@ -136,7 +136,7 @@ spec:
                 - name: STORAGE_DB_HOST
                   value: {{ include "firefox-sync.dbHost" $st | quote }}
                 - name: STORAGE_DB_PORT
-                  value: {{ $port | quote }}
+                  value: {{ include "firefox-sync.dbPort" $st | quote }}
                 - name: STORAGE_DB_NAME
                   value: {{ include "firefox-sync.dbName" $st | quote }}
                 - name: STORAGE_DB_USER

@@ -1,0 +1,52 @@
+{{- /*
+The Ingresses: the Sync server's (ingress.*) at / of its host, and apart the admin UI's
+(admin.ingress.*), only while admin.enabled and admin.ingress.enabled are both on and on a
+host of its own: turning on the Sync server's never publishes the admin UI.
+*/ -}}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $ingresses := list }}
+{{- if .Values.ingress.enabled }}
+{{- $ingresses = append $ingresses (dict "name" (printf "%s-syncstorage" $fullname) "component" "syncstorage" "values" .Values.ingress
+  "host" (include "firefox-sync.ingressHost" .) "port" .Values.syncstorage.service.port) }}
+{{- end }}
+{{- if and .Values.admin.enabled .Values.admin.ingress.enabled }}
+{{- $ingresses = append $ingresses (dict "name" (include "firefox-sync.adminService" .) "component" "admin" "values" .Values.admin.ingress
+  "host" .Values.admin.ingress.host "port" 8080) }}
+{{- end }}
+{{- range $ingresses }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" $ "component" .component) | nindent 4 }}
+  {{- with .values.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .values.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- if .values.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .host | quote }}
+      {{- with .values.tls.secretName }}
+      secretName: {{ . | quote }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # the Service of the same name
+                name: {{ .name }}
+                port:
+                  number: {{ .port }}
+{{- end }}
