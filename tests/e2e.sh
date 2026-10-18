@@ -817,8 +817,18 @@ if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ]; then
   T=test_node_assignment.py::test_user_creation
   UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
 fi
+# test_misc.py::test_user_updates_with_new_client_state creates its old row at the current
+# millisecond, and the tokenserver replaces only the rows created strictly before the new
+# one (created_at < its timestamp): when both fall in the same millisecond (about 1 in 100
+# here, the request takes about 1 ms) nothing is replaced and the test fails. Upstream's
+# race, not this stack's: run on its own, once more when it fails
+RACY=test_misc.py::test_user_updates_with_new_client_state
+UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${RACY} --deselect tools/integration_tests/tokenserver/${RACY}"
 pytest_in_app "${UPSTREAM_TS}"
 check "$?" 0 "upstream tokenserver tests"
+pytest_in_app "tools/integration_tests/tokenserver/${RACY}" > /dev/null ||
+  { echo "  ${RACY} failed, once more"; pytest_in_app "tools/integration_tests/tokenserver/${RACY}"; }
+check "$?" 0 "upstream ${RACY} (once more when it fails: the same millisecond)"
 
 echo "== admin UI"
 check "$(admin_healthy)" healthy "admin UI container healthcheck"
