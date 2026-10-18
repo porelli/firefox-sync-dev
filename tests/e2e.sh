@@ -759,7 +759,16 @@ if [ -z "${EXTDB}" ]; then
   # runs are named by the second: not the one of the run before
   sleep 1.1
   backup_run
-  check "$(backup_event 'The backup of the Sync databases works again%')" yes "admin UI: event when the backups work again"
+  check "$?" 0 "a backup run after the failed one"
+  AGAIN=$(backup_event 'The backup of the Sync databases works again%')
+  check "${AGAIN}" yes "admin UI: event when the backups work again"
+  # what the runs recorded and the admin UI wrote, for a run where the event did not come
+  if [ "${AGAIN}" != yes ]; then
+    admin_sql "SELECT id, started, finished, ok, error FROM ffs_backups ORDER BY id DESC LIMIT 3;"
+    admin_sql "SELECT id, at, detail FROM ffs_events WHERE kind = 'backup' ORDER BY id DESC LIMIT 3;"
+    tail -5 "${WORK}/backup.log"
+    dc logs --tail 20 ffs-admin backup
+  fi
   echo "== restoring the dumps as ADMIN.md#restoring says"
   dump() { dc exec -T backup sh -c "gunzip -c /backups/sync/*/$1.sql.gz"; }
   if [ "${BACKEND}" = postgres ]; then
