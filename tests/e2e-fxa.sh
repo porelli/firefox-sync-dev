@@ -22,8 +22,9 @@
 #   SKIP_PULL        set to 1 to use the local images (e.g. an init image built from this tree)
 #   FXA_DB           mysql (default, MySQL 8.4) or mariadb (FXA_MARIADB_IMAGE, docker-compose.fxa-mariadb.yml)
 #                    for the accounts database
-#   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:12.3, MariaDB 12: an accounts image with
-#                    mozilla/fxa#21494, upstream-patches.yml; mariadb:11.8 for the installs from before)
+#   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:12.3, MariaDB 12, when the accounts image
+#                    has mozilla/fxa#21494 in its label org.firefox-sync.upstream-patches (upstream-patches.yml);
+#                    else mariadb:11.8, as for the installs from before, e.g. with Mozilla's images)
 #   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, MySQL 8.4
 #                    (FXA_MARIADB_IMAGE with FXA_DB=mariadb) (DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
 #                    DATABASES.md), container EXTDB, created with only the grants of
@@ -94,6 +95,21 @@ sed -i -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${REPOSITORY}|" -e "s|^FXA_ARCH=.*|FXA_ARCH
 [ -n "${FXA_ARCH:-}" ] && sed -i "s|^FXA_ARCH=.*|FXA_ARCH=${FXA_ARCH}|" "${ENV_FILE}"
 [ -n "${FXA_PAIRING_IMAGE:-}" ] && sed -i "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${FXA_PAIRING_IMAGE}|" "${ENV_FILE}"
 case "${FXA_DB:-mysql}" in mysql|mariadb) sed -i "s|^FXA_DB=.*|FXA_DB=${FXA_DB:-mysql}|" "${ENV_FILE}" ;; *) echo "FXA_DB: mysql or mariadb"; exit 2 ;; esac
+# MariaDB 12 needs mozilla/fxa#21494 in the accounts image (upstream-patches.yml, the label
+# our builds set; not in Mozilla's images nor in ours built before): MariaDB 11.8 without it,
+# what prepare_environment.sh warns about
+if [ "${FXA_DB:-mysql}" = mariadb ] && [ -z "${FXA_MARIADB_IMAGE:-}" ] && [ -z "${RERUN:-}" ]; then
+  fxa_tested=$(sed -n 's/^FXA_IMAGE=//p' "${ENV_FILE}"):$(sed -n 's/^FXA_VERSION=//p' "${ENV_FILE}")
+  docker image inspect "${fxa_tested}" > /dev/null 2>&1 || [ -n "${SKIP_PULL:-}" ] ||
+    docker pull -q --platform "linux/$(sed -n 's/^FXA_ARCH=//p' "${ENV_FILE}")" "${fxa_tested}" > /dev/null
+  fxa_patches=$(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${fxa_tested}" 2> /dev/null)
+  if [[ " ${fxa_patches} " == *" mozilla/fxa#21494@"* ]]; then
+    FXA_MARIADB_IMAGE=mariadb:12.3
+  else
+    FXA_MARIADB_IMAGE=mariadb:11.8
+    echo "== ${fxa_tested} without mozilla/fxa#21494 (label org.firefox-sync.upstream-patches): the accounts on ${FXA_MARIADB_IMAGE}"
+  fi
+fi
 # written out, as prepare_environment.sh does for a new install (unset it would be 11.8)
 [ "${FXA_DB:-mysql}" = mariadb ] && sed -i "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:12.3}|" "${ENV_FILE}"
 # EXTERNAL_DB=1: a server elsewhere, its own container and network, reached by name
