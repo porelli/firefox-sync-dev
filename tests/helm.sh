@@ -705,7 +705,7 @@ e2e() {
 
   echo "=== e2e on kind (${backend}${EXTERNAL:+, your own database server}) ==="
   kind delete cluster --name "${CLUSTER}" > /dev/null 2>&1 || true
-  trap 'diagnostics; kind delete cluster --name "${CLUSTER}"' EXIT
+  trap 'rc=$?; if ((rc)); then diagnostics; fi; kind delete cluster --name "${CLUSTER}"' EXIT
   kind create cluster --name "${CLUSTER}" --wait 120s
   kubectl config use-context "kind-${CLUSTER}" > /dev/null
   if [[ -z "${SKIP_BUILD:-}" ]]; then
@@ -1385,15 +1385,24 @@ client_flow() {
   wait_job "${name}" 600
 }
 
-# on the way out, what the pods did (only useful when something failed)
+# on a failure, what the pods did: every pod not Ready
+# (but those that completed) in full, describe, each container's and init container's log,
+# the current one and that of the previous run (a crash loop), and the events
 diagnostics() {
   kubectl get pods -o wide 2>/dev/null || return 0
-  for pod in $(kubectl get pods -l "${POD_SELECTOR}" -o name 2>/dev/null); do
-    for c in wait-db migrate db-init syncstorage; do
-      echo "--- ${pod} ${c}"
-      kubectl logs "${pod}" -c "${c}" --tail=15 2>/dev/null || true
+  local pod c
+  for pod in $(kubectl get pods -o go-template='{{range .items}}{{if ne .status.phase "Succeeded"}}{{$ready := "False"}}{{range .status.conditions}}{{if eq .type "Ready"}}{{$ready = .status}}{{end}}{{end}}{{if ne $ready "True"}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}' 2>/dev/null); do
+    echo "=== pod/${pod} not Ready"
+    kubectl describe pod "${pod}" 2>/dev/null || true
+    for c in $(kubectl get pod "${pod}" -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null); do
+      echo "--- pod/${pod} ${c}: log"
+      kubectl logs "${pod}" -c "${c}" --tail=200 2>&1 || true
+      echo "--- pod/${pod} ${c}: log of the previous run"
+      kubectl logs "${pod}" -c "${c}" --previous --tail=200 2>&1 || true
     done
   done
+  echo "=== events"
+  kubectl get events --sort-by=.lastTimestamp 2>/dev/null || true
   kubectl logs extdb-0 --tail=15 2> /dev/null || true
   # the backup and the restore check
   for pod in $(kubectl get pods -l "ffs-e2e" -o name 2>/dev/null) $(kubectl get pods -l "job-name=backup-now" -o name 2>/dev/null); do
