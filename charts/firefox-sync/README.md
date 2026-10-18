@@ -31,7 +31,7 @@ Then set `identity.sync.tokenserver.uri` to `https://sync.example.com/1.0/sync/1
 
 ## Values
 
-Every value is described in [values.yaml](values.yaml). The main ones:
+Every value is described in [values.yaml](https://github.com/porelli/firefox-sync/blob/main/charts/firefox-sync/values.yaml). The main ones:
 
 | Value | Default | |
 |---|---|---|

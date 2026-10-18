@@ -193,6 +193,12 @@
     "existingSecret": {
       "type": "string"
     },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
     "syncstorage": {
       "type": "object",
       "properties": {

@@ -56,7 +56,7 @@ Backups: the CronJob {{ include "firefox-sync.fullname" . }}-backup ({{ .Values.
 
   kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "firefox-sync.fullname" . }}-backup backup-now-$(date +%s)
 
-Restoring: https://github.com/porelli/firefox-sync/blob/main/ADMIN.md#restoring
+Restoring: https://github.com/porelli/firefox-sync/blob/main/HELM.md#restoring
 {{- end }}
 {{- if not .Values.existingSecret }}
 

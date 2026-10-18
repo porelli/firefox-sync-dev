@@ -146,12 +146,12 @@ The same images and databases, moved to the [Helm chart](HELM.md) with a dump an
 1. On the compose host, with this release (an older one: [Older firefox-sync releases](#older-firefox-sync-releases) first, so that `.env` has the `SYNC_` names): stop the Sync server and the admin UI, so that nothing changes after the dump, and make one with the backup service ([ADMIN.md](ADMIN.md#backups); turn it on for this if it is off, `COMPOSE_PROFILES=...,backup` and `docker compose up -d backup`):
 
     ```bash
-    docker compose stop syncstorage admin
+    docker compose stop syncstorage ffs-admin
     docker compose exec backup sh /ffs-backup/backup.sh now
     docker run --rm -v firefox-sync_backups:/backups:ro -v "$PWD":/out busybox tar -C /backups -czf /out/ffs-backups.tar.gz .
     ```
 
-    The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`, `SYNC_POSTGRES_NAME`, `ADMIN_DB_NAME`): the chart's restore reads `tokenserver`, `syncstorage` (PostgreSQL `syncserver`) and `ffs_admin`. Other names: rename them in the copy. With the Quadlets: `systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service`, `systemctl --user start firefox-sync-backup.service`, `podman volume export firefox-sync-backups > ffs-backups.tar`.
+    The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`, `SYNC_POSTGRES_NAME`, `ADMIN_DB_NAME`): the chart's restore reads `tokenserver`, `syncstorage` (PostgreSQL `syncserver`) and `ffs_admin`. Other names: rename them in the copy. With the Quadlets: `systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service`, `systemctl --user start firefox-sync-backup.service`, `podman volume export firefox-sync-backups | gzip > ffs-backups.tar.gz` (the restore reads a gzipped tar).
 1. An `existingSecret` with the secrets of `.env` ([HELM.md](HELM.md#existingsecret)), so that the Sync server keeps its `SYNC_MASTER_SECRET` and `SYNC_METRICS_HASH_SECRET` (new ones work too: Firefox gets a new token when the old one is refused). The chart's keys are not all named as in `.env`:
 
     ```bash
@@ -184,7 +184,7 @@ The same images and databases, moved to the [Helm chart](HELM.md) with a dump an
 
 With your own database server (`SYNC_DB_CONTAINERS=0`) there is nothing to move: stop the stack (`docker compose down`), put the passwords of `.env` into the `existingSecret` as above, and point the chart to the same server and names ([DATABASES.md](DATABASES.md#kubernetes)).
 
-Rollback: `docker compose start syncstorage admin` (or the Quadlets) and the host name back to it, as long as nothing synced to Kubernetes in the meantime (what did is still on the devices, which upload it again).
+Rollback: `docker compose start syncstorage ffs-admin` (or the Quadlets) and the host name back to it, as long as nothing synced to Kubernetes in the meantime (what did is still on the devices, which upload it again).
 
 Tested: not as a migration. `tests/helm.sh e2e` restores the chart's own backups with the commands of [ADMIN.md#restoring](ADMIN.md#restoring) in pods of the backup's spec, as [HELM.md](HELM.md#restoring) does; HELM.md's steps as written were run once on kind (MariaDB, PostgreSQL), not in CI.
 

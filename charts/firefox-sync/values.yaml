@@ -11,6 +11,12 @@ image:
   initTag: latest
   adminTag: latest
 
+# The names of the chart's objects: <release>-<nameOverride, default firefox-sync>, or
+# fullnameOverride as it is (the release name alone when it contains firefox-sync). Names
+# over Kubernetes' limits are refused at render time (HELM.md#limits)
+nameOverride: ""
+fullnameOverride: ""
+
 # Public domain for the Firefox Sync service (required)
 # Example: https://sync.example.com
 syncDomain: ""
@@ -244,7 +250,7 @@ admin:
 # the Sync server's role, never the superuser); each run shows on the admin UI's Backups card.
 # One now (a new Job name each time):
 #   kubectl create job --from=cronjob/<release>-firefox-sync-backup backup-now-$(date +%s)
-# Restoring: ADMIN.md#restoring. With your own server too (database.bundled=false: as the users
+# Restoring: HELM.md#restoring. With your own server too (database.bundled=false: as the users
 # of its SQL, PostgreSQL as postgresUser, with database.image.<backend> as the client, at least
 # the server's major), next to the server's own backups
 backup:
