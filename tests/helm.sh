@@ -142,6 +142,103 @@ lint() {
     [[ $(echo "${output}" | grep -c 'name: ADMIN_DB_ROLE$') -eq 2 ]] || fail "${backend}: ADMIN_DB_ROLE missing"
   done
   check "admin-user.sh identical to db/mysql/admin-user.sh, run by both MariaDB/MySQL databases"
+  # a changed admin-user.sh rolls the databases out again (their ConfigMap is read at the start)
+  for backend in mariadb mysql; do
+    sums=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" | manifests \
+      | jq -r '.[] | select(.kind == "StatefulSet") | .spec.template.metadata.annotations["checksum/db-scripts"] // "none"' | sort -u)
+    [[ "${sums}" == "$(sha256sum < "${CHART_DIR}/files/admin-user.sh" | cut -d' ' -f1)" ]] \
+      || fail "${backend}: checksum/db-scripts of the databases is not the sha256 of files/admin-user.sh: ${sums}"
+  done
+  check "checksum/db-scripts on both MariaDB/MySQL databases: a changed admin-user.sh restarts them"
+
+  # the backups, compose's backup service (COMPOSE_PROFILES=backup): config/backup/backup.sh
+  # identical, off by default, then a CronJob with compose's image and variables
+  echo "Testing the backups..."
+  cmp -s "${CHART_DIR}/files/backup.sh" "${REPO_ROOT}/config/backup/backup.sh" \
+    || fail "charts/firefox-sync/files/backup.sh differs from config/backup/backup.sh"
+  if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" | manifests \
+    | jq -e '.[] | select(.kind == "CronJob" or (.metadata.name | test("backup")))' > /dev/null; then
+    fail "backup.enabled=false: a CronJob or a backup object rendered"
+  fi
+  check "backup.sh identical to config/backup/backup.sh; no backups by default"
+  names=""
+  for backend in mariadb mysql postgres; do
+    compose=docker-compose.yml image=mariadb:lts
+    [[ ${backend} == mysql ]] && image=mysql:8.4
+    [[ ${backend} == postgres ]] && compose=docker-compose.sync-postgres.yml image=postgres:18
+    docs=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
+      --set backup.enabled=true | manifests)
+    cron=$(echo "${docs}" | jq '.[] | select(.kind == "CronJob" and .metadata.name == "test-release-firefox-sync-backup")')
+    [[ -n "${cron}" ]] || fail "${backend}: no CronJob test-release-firefox-sync-backup"
+    # BACKUP_TIME is UTC: the schedule too, whatever the cluster's time zone
+    [[ "$(echo "${cron}" | jq -c '[.spec.schedule, .spec.timeZone, .spec.concurrencyPolicy, .spec.jobTemplate.spec.template.spec.restartPolicy]')" \
+      == '["0 3 * * *","Etc/UTC","Forbid","Never"]' ]] || fail "${backend}: the CronJob's schedule, timeZone, concurrencyPolicy, restartPolicy: ${cron}"
+    pod=$(echo "${cron}" | jq '.spec.jobTemplate.spec.template.spec')
+    [[ "$(echo "${pod}" | jq -c '.containers | map([.image, .command, .args])')" == "[[\"${image}\",[\"sh\",\"/ffs-backup/backup.sh\"],[\"now\"]]]" ]] \
+      || fail "${backend}: the backup container is not ${image} running backup.sh now: $(echo "${pod}" | jq -c .containers)"
+    # backup.sh from its ConfigMap at /ffs-backup (read-only), the PVC at /backups
+    [[ "$(echo "${pod}" | jq -c '.volumes as $v | [.containers[0].volumeMounts[] | .name as $n
+      | [.mountPath, (.readOnly // false), ($v[] | select(.name == $n) | (.configMap.name // .persistentVolumeClaim.claimName))]] | sort')" \
+      == '[["/backups",false,"test-release-firefox-sync-backups"],["/ffs-backup",true,"test-release-firefox-sync-backup"]]' ]] \
+      || fail "${backend}: the backup's mounts: $(echo "${pod}" | jq -c '[.containers[0].volumeMounts, .volumes]')"
+    cm=$(echo "${docs}" | jq -r '.[] | select(.kind == "ConfigMap" and .metadata.name == "test-release-firefox-sync-backup") | .data["backup.sh"]')
+    [[ "${cm}" == "$(cat "${CHART_DIR}/files/backup.sh")" ]] || fail "${backend}: the backup ConfigMap's backup.sh is not files/backup.sh"
+    # the backups PVC, kept on helm uninstall like the databases' volumes
+    [[ "$(echo "${docs}" | jq -c '.[] | select(.kind == "PersistentVolumeClaim" and .metadata.name == "test-release-firefox-sync-backups")
+      | [.spec.accessModes, .spec.resources.requests.storage, .metadata.annotations["helm.sh/resource-policy"]]')" == '[["ReadWriteOnce"],"10Gi","keep"]' ]] \
+      || fail "${backend}: no PVC test-release-firefox-sync-backups of 10Gi, kept on uninstall"
+    # a Job of the release binds it at once: with a WaitForFirstConsumer storage class (kind,
+    # most clouds) it stays Pending until a pod uses it, which helm install --wait waits for.
+    # Named after its pod template (a Job's is immutable: a new one when it changes)
+    bind=$(echo "${docs}" | jq '[.[] | select(.kind == "Job" and (.metadata.name | startswith("test-release-firefox-sync-backup-volume-")))]')
+    [[ "$(echo "${bind}" | jq -c 'map(.spec.template.spec | [(.volumes[] | .persistentVolumeClaim.claimName // empty), .containers[0].image, .restartPolicy])')" \
+      == "[[\"test-release-firefox-sync-backups\",\"${image}\",\"Never\"]]" ]] || fail "${backend}: no Job binding the backups PVC: ${bind}"
+    names+=" $(echo "${bind}" | jq -r '.[0].metadata.name | ltrimstr("test-release-firefox-sync-backup-volume-")')"
+    # compose's variables of the backup service, the secrets from the Secret
+    env=$(echo "${pod}" | jq '.containers[0].env')
+    want=$(sed -n '/^  backup:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    environment:$/,/^    [a-z_]*:$/p' \
+      | grep -oE '^      [A-Z][A-Z0-9_]*' | tr -d ' ' | sort)
+    got=$(echo "${env}" | jq -r '.[].name' | sort)
+    [[ -n "${want}" && "${want}" == "${got}" ]] || fail "${backend}: the backup's variables differ from ${compose}'s backup: $(diff <(echo "${want}") <(echo "${got}") | grep '^[<>]' | paste -sd' ' -)"
+    vals=$(echo "${env}" | jq -cS 'map({(.name): (.value // ("secret:" + .valueFrom.secretKeyRef.key))}) | add')
+    case ${backend} in
+      # as the Sync server's own role (the owner of its tables, ADMIN.md#restoring loads it as
+      # that role too), never the superuser: no POSTGRES_PASSWORD
+      postgres) expected='{"ADMIN_DB_NAME":"ffs_admin","ADMIN_DB_PASSWORD":"secret:ADMIN_DB_PASSWORD","ADMIN_DB_USER":"ffs_admin_ui","BACKUP_KEEP":"7","BACKUP_SCOPE":"sync","BACKUP_TIME":"03:00","TOKENSERVER_DB_HOST":"test-release-firefox-sync-postgres","TOKENSERVER_DB_NAME":"syncserver","TOKENSERVER_DB_PASSWORD":"secret:POSTGRES_SYNC_PASSWORD","TOKENSERVER_DB_PORT":"5432","TOKENSERVER_DB_TYPE":"postgres","TOKENSERVER_DB_USER":"syncserver_app"}' ;;
+      *) expected='{"ADMIN_DB_NAME":"ffs_admin","ADMIN_DB_PASSWORD":"secret:ADMIN_DB_PASSWORD","ADMIN_DB_USER":"ffs_admin_ui","BACKUP_KEEP":"7","BACKUP_SCOPE":"sync","BACKUP_TIME":"03:00","MARIADB_TLS_VERIFY":"'"$([[ ${backend} == mysql ]] && echo false || echo true)"'","STORAGE_DB_HOST":"test-release-firefox-sync-storage-db","STORAGE_DB_NAME":"syncstorage","STORAGE_DB_PASSWORD":"secret:STORAGE_DB_PASSWORD","STORAGE_DB_PORT":"3306","STORAGE_DB_USER":"syncstorage","TOKENSERVER_DB_HOST":"test-release-firefox-sync-tokenserver-db","TOKENSERVER_DB_NAME":"tokenserver","TOKENSERVER_DB_PASSWORD":"secret:TOKENSERVER_DB_PASSWORD","TOKENSERVER_DB_PORT":"3306","TOKENSERVER_DB_TYPE":"mysql","TOKENSERVER_DB_USER":"tokenserver"}' ;;
+    esac
+    [[ "${vals}" == "${expected}" ]] || fail "${backend}: the backup's variables: ${vals}"
+    check "${backend}: CronJob ${image} backup.sh now at 0 3 * * * UTC (Forbid), the PVC at /backups (bound by a Job), compose's variables, secrets from the Secret"
+  done
+  # (one per image: a hash of the pod template)
+  [[ "${names}" =~ ^\ [0-9a-f]{8}\ [0-9a-f]{8}\ [0-9a-f]{8}$ && $(tr ' ' '\n' <<< "${names}" | sort -u | wc -l) -eq 4 ]] \
+    || fail "the binding Jobs not named after their pod templates: ${names}"
+  # BACKUP_TIME (the admin UI's help, backup.sh) from a daily schedule only, BACKUP_KEEP from
+  # backup.keep: the same in the CronJob and the admin UI
+  # (the admin UI's first: admin.yaml renders before backup.yaml)
+  backup_env() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" --set backup.enabled=true "$@" | manifests | jq -r '[.[]
+      | (select(.kind == "CronJob") | .spec.jobTemplate.spec.template.spec), (select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin") | .spec.template.spec)
+      | .containers[0].env | map(select(.name == "BACKUP_TIME" or .name == "BACKUP_KEEP")) | map(.name + "=" + .value) | join(",")] | join(" ")'
+  }
+  [[ "$(backup_env)" == "BACKUP_TIME=03:00,BACKUP_KEEP=7 BACKUP_KEEP=7,BACKUP_TIME=03:00" ]] || fail "default BACKUP_TIME, BACKUP_KEEP: $(backup_env)"
+  [[ "$(backup_env --set backup.schedule='5 23 * * *' --set backup.keep=3)" == "BACKUP_TIME=23:05,BACKUP_KEEP=3 BACKUP_KEEP=3,BACKUP_TIME=23:05" ]] \
+    || fail "backup.schedule='5 23 * * *', keep 3: $(backup_env --set backup.schedule='5 23 * * *' --set backup.keep=3)"
+  for schedule in '0 */6 * * *' '0 3 * * 1' '@daily' '0 3\,15 * * *'; do
+    [[ "$(backup_env --set backup.schedule="${schedule}")" == "BACKUP_KEEP=7 BACKUP_KEEP=7" ]] \
+      || fail "backup.schedule='${schedule}' is not daily at one time, yet: $(backup_env --set backup.schedule="${schedule}")"
+  done
+  [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" | manifests | jq -r '.[]
+    | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin") | .spec.template.spec.containers[0].env[]
+    | select(.name | startswith("BACKUP_")) | .name + "=" + .value' | paste -sd, -)" == "BACKUP_TIME=03:00,BACKUP_KEEP=7" ]] \
+    || fail "the admin UI without the backups: no BACKUP_TIME, BACKUP_KEEP (compose passes them always)"
+  check "BACKUP_TIME from a daily backup.schedule (else unset), BACKUP_KEEP from backup.keep, in the CronJob and the admin UI"
+  for bad in 'backup.keep=0' 'backup.schedule='; do
+    if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set backup.enabled=true --set "${bad}" > /dev/null 2>&1; then
+      fail "${bad} not refused by the schema"
+    fi
+  done
+  check "backup.keep=0 and an empty backup.schedule refused by the schema"
 
   # existingSecret: no Secret rendered, every secretKeyRef reads that one
   echo "Testing existingSecret..."
@@ -183,9 +280,9 @@ lint() {
     plain=$(echo "${admin}" | jq -r '.[] | select(.value != null) | .name' | grep -E '(^|_)(PASS|PASSWORD|SECRET|TOKEN)$' | grep -vx ADMIN_K8S_SECRET || true)
     [[ -z "${plain}" ]] || fail "${backend}: secrets of the admin UI as plain values: ${plain}"
     # compose's ffs-admin variables, but ADMIN_EXPORT_PORT (a port of the host: the Service
-    # here) and BACKUP_TIME, BACKUP_KEEP (with the backups); and the chart's own
+    # here); and the chart's own
     want=$(sed -n '/^  ffs-admin:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    environment:$/,/^    [a-z_]*:$/p' \
-      | grep -oE '^      [A-Z][A-Z0-9_]*' | tr -d ' ' | grep -vxE 'ADMIN_EXPORT_PORT|BACKUP_TIME|BACKUP_KEEP' | sort)
+      | grep -oE '^      [A-Z][A-Z0-9_]*' | tr -d ' ' | grep -vx ADMIN_EXPORT_PORT | sort)
     got=$(echo "${admin}" | jq -r '.[].name' | grep -vxE 'ADMIN_K8S_(RELEASE|NAMESPACE|FULLNAME|SECRET)' | sort)
     [[ "${want}" == "${got}" ]] || fail "${backend}: the admin UI's variables differ from ${compose}'s ffs-admin: $(diff <(echo "${want}") <(echo "${got}") | grep '^[<>]' | paste -sd' ' -)"
     check "${backend}: admin Service http 8080/TCP + statsd 8125/UDP, SYNC_STATSD_HOST, compose's variables, secrets from the Secret"
@@ -326,7 +423,7 @@ e2e() {
     --set fxa.oauthServerUrl=http://mock-fxa:6000 \
     --set fxa.emailDomain=api-accounts.stage.mozaws.net \
     --set database.backend="${backend}" --set image.repository="${repository}" \
-    --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}" --wait --timeout 10m \
+    --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}" --set backup.enabled=true --wait --timeout 10m \
     || fail "helm install did not get Ready"
   check "helm install (${backend}) Ready"
 
@@ -411,6 +508,8 @@ admin_toggle() {
     kill "${pf}"; fail "sign-in with the Secret's ADMIN_PASSWORD refused: $(head -c 500 <<< "${page}")"
   fi
   check "signed in to the admin UI with the Secret's ADMIN_PASSWORD"
+  # a backup now, the command of the overview's help; restored as ADMIN.md#restoring says
+  backup_restore
   # the first health check runs at the start, the version once the Sync server answered
   deadline=$(( $(date +%s) + 180 ))
   while :; do
@@ -431,6 +530,18 @@ admin_toggle() {
   grep -q "create job --from=cronjob/${FULL}-backup backup-now" <<< "${page}" || { kill "${pf}"; fail "overview: no kubectl backup command"; }
   ! grep -q 'docker compose' <<< "${page}" || { kill "${pf}"; fail "overview: docker compose commands"; }
   check "overview: kubectl commands, no docker compose"
+  # the run of backup-now on the Backups card (the admin UI reads ffs_backups, backup.sh
+  # writes it), within a minute
+  deadline=$(( $(date +%s) + 120 ))
+  until grep -qE '<p class="hint" data-scope="sync">Last backup of the Sync databases: [^<]+, [0-9.]+ [KMG]?B, <span class="ok">ok</span>' <<< "${page}"; do
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      kill "${pf}"; fail "the Backups card does not show the run: $(grep -oE 'id="backups">.{0,300}' <<< "${page}")"
+    fi
+    sleep 5
+    page=$(curl -s -b "${jar}" http://localhost:18090/)
+  done
+  grep -q 'id="backup-what">Every night at 03:00 UTC' <<< "${page}" || { kill "${pf}"; fail "the Backups card without BACKUP_TIME 03:00"; }
+  check "overview: the Backups card shows the run of backup-now, every night at 03:00 UTC"
   [[ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer e2e-token' http://localhost:18090/metrics)" == 200 ]] \
     || { kill "${pf}"; fail "/metrics refuses admin.metricsToken"; }
   check "/metrics with admin.metricsToken"
@@ -456,6 +567,154 @@ admin_toggle() {
   ! kubectl get svc "${FULL}-admin" > /dev/null 2>&1 || fail "the admin Service is still there"
   sync_ready ""
   check "admin UI off: syncstorage Ready again, no SYNC_STATSD_HOST"
+}
+
+# backup_restore: a run of the backup CronJob now (kubectl create job --from=cronjob/...,
+# as the admin UI says), then its dumps restored the way ADMIN.md#restoring says on a new
+# host: into empty database servers like the chart's (pods of the StatefulSets' spec, with
+# empty volumes), by pods of the backup's own spec (its variables, its volume: compose's
+# `docker compose run --rm --no-deps --entrypoint sh backup -c '...'`), as the stack's users,
+# with ADMIN.md's commands. The same users and Sync items there as in the chart's databases
+backup_restore() {
+  kubectl create job --from="cronjob/${FULL}-backup" backup-now > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
+  wait_job backup-now 300 || fail "the backup-now Job did not complete"
+  kubectl logs job/backup-now | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now: no 'ok' in its log"
+  check "kubectl create job --from=cronjob/${FULL}-backup backup-now: complete"
+
+  # 2. the run
+  local run
+  run=$(backup_pod restore-ls '["ls", "/backups/sync"]' | tail -1)
+  [[ "${run}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "no run in the backups volume: ${run}"
+  check "a run in the backups volume: ${run}"
+
+  # 1. empty database servers, as on a new host (the chart's spec, empty volumes)
+  local servers ts st ts_ip st_ip
+  if [[ "${BACKEND}" == postgres ]]; then
+    servers="${FULL}-postgres"
+  else
+    servers="${FULL}-tokenserver-db ${FULL}-storage-db"
+  fi
+  for s in ${servers}; do
+    kubectl get sts "${s}" -o json | jq --arg n "scratch-${s#"${FULL}-"}" '.spec.template.spec as $s | {apiVersion: "v1", kind: "Pod",
+      metadata: {name: $n, labels: {"ffs-e2e": "scratch"}}, spec: ($s + {volumes: (($s.volumes // []) + [{name: "data", emptyDir: {}}])})}' \
+      | kubectl apply -f - > /dev/null || fail "scratch server of ${s} not created"
+  done
+  kubectl wait --for=condition=Ready pod -l ffs-e2e=scratch --timeout=5m > /dev/null || fail "the scratch database servers not Ready"
+  if [[ "${BACKEND}" == postgres ]]; then
+    ts=scratch-postgres st=scratch-postgres
+  else
+    ts=scratch-tokenserver-db st=scratch-storage-db
+  fi
+  ts_ip=$(kubectl get pod "${ts}" -o jsonpath='{.status.podIP}')
+  st_ip=$(kubectl get pod "${st}" -o jsonpath='{.status.podIP}')
+  check "empty database servers like the chart's: ${ts} ${st}"
+
+  # 4. the tokenserver (PostgreSQL: the one database), with ADMIN.md's commands
+  local restore
+  restore=$(admin_md_restore "$([[ "${BACKEND}" == postgres ]] && echo 2 || echo 1)")
+  [[ -n "${restore}" ]] || fail "no restore command of step 4 in ADMIN.md#restoring"
+  [[ "${BACKEND}" == mysql ]] && restore=$(sed 's/^\( *\)mariadb /\1mysql /' <<< "${restore}")
+  if [[ "${BACKEND}" == postgres ]]; then
+    # into the empty database as the Sync server's role, which sync_role_init creates first:
+    # here the sync-role init container of the Sync server's pod, on the new server
+    one_shot restore-sync-role "$(kubectl get deploy "${FULL}-syncstorage" -o json | jq --arg ip "${ts_ip}" '{containers: [.spec.template.spec.initContainers[]
+      | select(.name == "sync-role") | .env |= map(if .name == "POSTGRES_SERVER" then .value = $ip else . end)]}')" > /dev/null \
+      || fail "sync-role on the new server failed"
+    check "the Sync server's role on the new server (sync-role)"
+  fi
+  # a run that is not there (pruned, mistyped) fails, and loads nothing
+  if backup_pod restore-missing "$(jq -nc --arg c "${restore//20261013T030000Z/20000101T000000Z}" '["sh", "-c", $c]')" \
+    "TOKENSERVER_DB_HOST=${ts_ip}" > /dev/null; then
+    fail "the restore of a run that is not there succeeded"
+  fi
+  ! count "${ts}" users > /dev/null 2>&1 || fail "the restore of a run that is not there loaded a users table"
+  check "the restore of a run that is not there fails, loads nothing"
+  backup_pod restore-tokenserver "$(jq -nc --arg c "${restore//20261013T030000Z/${run}}" '["sh", "-c", $c]')" "TOKENSERVER_DB_HOST=${ts_ip}" \
+    || fail "the restore of the tokenserver (step 4) failed"
+  check "the tokenserver restored as its user (ADMIN.md#restoring step 4)"
+  # 6. the storage, "as in step 4 with $STORAGE_DB_NAME..." (PostgreSQL: in the one dump)
+  if [[ "${BACKEND}" != postgres ]]; then
+    backup_pod restore-storage "$(jq -nc --arg c "$(sed 's/TOKENSERVER_DB_/STORAGE_DB_/g' <<< "${restore//20261013T030000Z/${run}}")" '["sh", "-c", $c]')" \
+      "STORAGE_DB_HOST=${st_ip}" || fail "the restore of the storage (step 6) failed"
+    check "the storage restored as its user (ADMIN.md#restoring step 6)"
+  fi
+
+  local bso=bso users_now items_now
+  [[ "${BACKEND}" == postgres ]] && bso=bsos
+  if [[ "${BACKEND}" == postgres ]]; then
+    users_now=$(count "${FULL}-postgres-0" users) items_now=$(count "${FULL}-postgres-0" "${bso}")
+  else
+    users_now=$(count "${FULL}-tokenserver-db-0" users) items_now=$(count "${FULL}-storage-db-0" "${bso}")
+  fi
+  [[ "${users_now}" =~ ^[1-9][0-9]*$ && "${items_now}" =~ ^[1-9][0-9]*$ ]] || fail "no users or Sync items to back up: ${users_now} ${items_now}"
+  [[ "$(count "${ts}" users)" == "${users_now}" ]] || fail "users: $(count "${ts}" users) restored, ${users_now} in the chart's database"
+  [[ "$(count "${st}" "${bso}")" == "${items_now}" ]] || fail "${bso}: $(count "${st}" "${bso}") restored, ${items_now} in the chart's database"
+  check "the same rows of users (${users_now}) and ${bso} (${items_now}) restored"
+  kubectl delete pod -l ffs-e2e --wait=false > /dev/null
+}
+
+# admin_md_restore <n>: the n-th command of ADMIN.md#restoring run in the backup container that
+# restores $TOKENSERVER_DB_NAME (1: MariaDB, 2: PostgreSQL), as it is there
+admin_md_restore() {
+  awk -v n="$1" '
+    /--entrypoint sh backup -c '"'"'$/ { on = 1; b = ""; next }
+    on {
+      line = $0; last = (line ~ /'"'"'$/)
+      if (last) sub(/'"'"'$/, "", line)
+      b = b line "\n"
+      if (last) { on = 0; if (b ~ /\$TOKENSERVER_DB_NAME\.sql\.gz/ && ++i == n) printf "%s", b }
+    }' "${REPO_ROOT}/ADMIN.md"
+}
+
+# backup_pod <name> <command, JSON> [VAR=value...]: a pod of the backup CronJob's spec (its
+# variables from the Secret, its volume) running the command, with these variables changed;
+# its output, and whether it succeeded
+backup_pod() {
+  local name=$1 command=$2 spec
+  shift 2
+  spec=$(kubectl get cronjob "${FULL}-backup" -o json | jq --argjson c "${command}" --args '.spec.jobTemplate.spec.template.spec
+    | .containers[0] |= (.command = $c | del(.args)
+      | reduce ($ARGS.positional[] | capture("^(?<k>[^=]+)=(?<v>.*)$")) as $e (.; .env |= map(if .name == $e.k then .value = $e.v else . end)))' "$@") || return 1
+  one_shot "${name}" "${spec}"
+}
+
+# one_shot <name> <pod spec, JSON>: a pod run once; its logs, and whether it succeeded
+one_shot() {
+  jq --arg n "$1" '{apiVersion: "v1", kind: "Pod", metadata: {name: $n, labels: {"ffs-e2e": "one-shot"}}, spec: (. + {restartPolicy: "Never"})}' <<< "$2" \
+    | kubectl apply -f - > /dev/null || return 1
+  local deadline=$(( $(date +%s) + 300 )) phase=
+  while [[ $(date +%s) -lt ${deadline} ]]; do
+    phase=$(kubectl get pod "$1" -o jsonpath='{.status.phase}')
+    [[ "${phase}" == Succeeded || "${phase}" == Failed ]] && break
+    sleep 2
+  done
+  kubectl logs "$1" 2> /dev/null
+  [[ "${phase}" == Succeeded ]]
+}
+
+# count <pod> <table>: its rows, in the pod's database server, as the stack's user
+count() {
+  case "${BACKEND}" in
+    mariadb) kubectl exec "$1" -c db -- sh -c 'mariadb -N -u"${MARIADB_USER}" -p"${MARIADB_PASSWORD}" "${MARIADB_DATABASE}" -e "SELECT COUNT(*) FROM $1"' sh "$2" ;;
+    mysql) kubectl exec "$1" -c db -- sh -c 'mysql -N -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e "SELECT COUNT(*) FROM $1" 2> /dev/null' sh "$2" ;;
+    postgres) kubectl exec "$1" -c db -- env PGPASSWORD="$(secret POSTGRES_SYNC_PASSWORD)" \
+      psql -X -tA -v ON_ERROR_STOP=1 -h 127.0.0.1 -U syncserver_app -d syncserver -c "SELECT COUNT(*) FROM $2" ;;
+  esac
+}
+
+# wait_job <name> <seconds>: the Job succeeded (its logs on the way)
+wait_job() {
+  local deadline=$(( $(date +%s) + $2 )) succeeded failed
+  while [[ $(date +%s) -lt ${deadline} ]]; do
+    succeeded=$(kubectl get job "$1" -o jsonpath='{.status.succeeded}')
+    failed=$(kubectl get job "$1" -o jsonpath='{.status.failed}')
+    if [[ "${succeeded}" == 1 || -n "${failed}" ]]; then
+      break
+    fi
+    sleep 5
+  done
+  kubectl logs "job/$1" --tail=40 || true
+  [[ "${succeeded}" == 1 ]]
 }
 
 # sync_ready <statsd host, "" for none>: the one syncstorage pod Ready, SYNC_STATSD_HOST as given
@@ -563,17 +822,7 @@ client_flow() {
         command: ["/bin/sh", "-c", ("python3 -m pytest -q -p no:cacheprovider /tests/test_client_flow.py " + $args)],
         env: $env, volumeMounts: [{name: "tests", mountPath: "/tests", readOnly: true}]}],
       volumes: [{name: "tests", configMap: {name: "ffs-tests"}}]}}}}' | kubectl apply -f - || return 1
-  local deadline=$(( $(date +%s) + 600 )) succeeded failed
-  while [[ $(date +%s) -lt ${deadline} ]]; do
-    succeeded=$(kubectl get job "${name}" -o jsonpath='{.status.succeeded}')
-    failed=$(kubectl get job "${name}" -o jsonpath='{.status.failed}')
-    if [[ "${succeeded}" == 1 || -n "${failed}" ]]; then
-      break
-    fi
-    sleep 5
-  done
-  kubectl logs "job/${name}" --tail=40 || true
-  [[ "${succeeded}" == 1 ]]
+  wait_job "${name}" 600
 }
 
 # on the way out, what the pods did (only useful when something failed)
@@ -584,6 +833,11 @@ diagnostics() {
       echo "--- ${pod} ${c}"
       kubectl logs "${pod}" -c "${c}" --tail=15 2>/dev/null || true
     done
+  done
+  # the backup and the restore check
+  for pod in $(kubectl get pods -l "ffs-e2e" -o name 2>/dev/null) $(kubectl get pods -l "job-name=backup-now" -o name 2>/dev/null); do
+    echo "--- ${pod}"
+    kubectl logs "${pod}" --tail=15 2>/dev/null || true
   done
 }
 

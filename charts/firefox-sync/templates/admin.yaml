@@ -178,6 +178,14 @@ spec:
               value: {{ include "firefox-sync.number" $a.signupBurst | quote }}
             - name: ADMIN_TZ
               value: {{ $a.tz | quote }}
+            # the Backups card's help (compose passes them, backups on or off): BACKUP_TIME
+            # only for a daily backup.schedule, else its default (03:00) is said
+            {{- with include "firefox-sync.backupTime" . }}
+            - name: BACKUP_TIME
+              value: {{ . | quote }}
+            {{- end }}
+            - name: BACKUP_KEEP
+              value: {{ include "firefox-sync.number" .Values.backup.keep | quote }}
             # the commands it shows: kubectl and helm, for this release
             - name: ADMIN_DEPLOYMENT
               value: kubernetes

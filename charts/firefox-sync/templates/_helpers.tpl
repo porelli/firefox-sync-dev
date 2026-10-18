@@ -483,3 +483,17 @@ admin.notify as compose's ADMIN_NOTIFY: a list of URLs joined by commas, or a st
 {{- $n | toString }}
 {{- end }}
 {{- end }}
+
+{{/*
+compose's BACKUP_TIME (HH:MM, UTC) of backup.schedule when it is a daily "M H * * *" (the
+CronJob runs in UTC), for the admin UI's help and backup.sh; empty for any other schedule:
+the admin UI then says its default, 03:00
+*/}}
+{{- define "firefox-sync.backupTime" -}}
+{{- $s := .Values.backup.schedule | toString | trim }}
+{{- if regexMatch "^([0-5]?[0-9]) ([01]?[0-9]|2[0-3]) \\* \\* \\*$" $s }}
+{{- $f := splitList " " $s }}
+{{- printf "%02d:%02d" (index $f 1 | atoi) (index $f 0 | atoi) }}
+{{- end }}
+{{- end }}
+
