@@ -67,6 +67,7 @@ spec:
         {{- include "firefox-sync.selectorLabels" (dict "root" $root "component" $component) | nindent 8 }}
     spec:
       containers:
+        {{- $check := list }}
         - name: db
           image: {{ include "firefox-sync.dbImage" $root }}
           {{- if eq $backend "mariadb" }}
@@ -82,13 +83,7 @@ spec:
             - name: MARIADB_AUTO_UPGRADE
               value: "true"
             {{- include "firefox-sync.adminUserEnv" (dict "root" $root "role" $role) | nindent 12 }}
-          readinessProbe:
-            exec:
-              command: [healthcheck.sh, --connect, --innodb_initialized]
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+          {{- $check = list "healthcheck.sh" "--connect" "--innodb_initialized" }}
           {{- else if eq $backend "mysql" }}
           # no binary logging, as docker-compose.sync-mysql.yml: the init container's MAX_USERS
           # procedure and trigger would otherwise need log_bin_trust_function_creators
@@ -102,13 +97,7 @@ spec:
               value: {{ $dbUser | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "MYSQL_PASSWORD" "key" $passwordKey) | nindent 12 }}
             {{- include "firefox-sync.adminUserEnv" (dict "root" $root "role" $role) | nindent 12 }}
-          readinessProbe:
-            exec:
-              command: [sh, -c, 'mysqladmin ping -h 127.0.0.1 --protocol=tcp -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" --silent']
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 10
+          {{- $check = list "sh" "-c" "mysqladmin ping -h 127.0.0.1 --protocol=tcp -u\"${MYSQL_USER}\" -p\"${MYSQL_PASSWORD}\" --silent" }}
           {{- else }}
           env:
             - name: POSTGRES_DB
@@ -116,14 +105,28 @@ spec:
             - name: POSTGRES_USER
               value: {{ $dbUser | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "POSTGRES_PASSWORD" "key" $passwordKey) | nindent 12 }}
+          {{- $check = list "sh" "-c" "pg_isready -U \"${POSTGRES_USER}\" -d \"${POSTGRES_DB}\"" }}
+          {{- end }}
+          # compose's healthcheck; the first start (a new database) within 5 minutes, then
+          # restarted after 2.5 minutes without an answer
+          startupProbe:
+            exec:
+              command: {{ toJson $check }}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             exec:
-              command: [sh, -c, 'pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"']
-            initialDelaySeconds: 10
+              command: {{ toJson $check }}
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
-          {{- end }}
+          livenessProbe:
+            exec:
+              command: {{ toJson $check }}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
           ports:
             - name: db
               containerPort: {{ $port }}
