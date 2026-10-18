@@ -726,9 +726,11 @@ check "$(hb)" 200 "/__heartbeat__ after the admin UI restart"
 echo "== backups"
 backups_of() { admin_sql "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND $1;"; }
 # the admin UI sees a change within HEALTH_CHECK_SECONDS (5): its event, alerted
+# (more than $2 of them: a new one)
+backup_events() { admin_sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'backup' AND detail LIKE '$1';"; }
 backup_event() {
   for _ in $(seq 1 30); do
-    [ "$(admin_sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'backup' AND detail LIKE '$1';")" -gt 0 ] && { echo yes; return; }
+    [ "$(backup_events "$1")" -gt "${2:-0}" ] && { echo yes; return; }
     sleep 1
   done
 }
@@ -751,16 +753,30 @@ if [ -z "${EXTDB}" ]; then
   check "$(dc exec -T backup sh -c 'stat -c %a /backups/sync/*/*.sql.gz' | sort -u)" 600 "the dumps are for root only (0600)"
   check "$(dc exec -T backup sh -c 'gunzip -c /backups/sync/*/*.sql.gz' | grep -cE 'CREATE TABLE [`"]?(public\.)?users[`"]? ')" 1 "the dump has the tokenserver's users table"
   check "$(dc exec -T backup sh -c "gunzip -c /backups/sync/*/${ADMIN_DB_NAME}.sql.gz" | grep -c 'ffs-e2e: before the upgrade by admin')" 1 "the dump of the admin UI's database has the audit trail"
-  # a run that fails (nowhere to write): recorded, alerted, nothing left
+  # a run that fails (nowhere to write): recorded, alerted, nothing left. "Works again" is a
+  # change the admin UI sees in a round (every 5 s): first it must have seen the good runs
+  # (a run that failed before, e.g. that of the loop at the start during the upgrade, is
+  # over: its last backup event is not a failure), then the failure, a new event, before
+  # the next run. An event of before does not do: the failure and the run after it can fit
+  # in one round, with no event at all. (Not by Prometheus: it would read the Sync totals
+  # now, cached for a minute, which tests/test_admin_sync.py checks later)
+  backup_ok() {
+    for _ in $(seq 1 30); do
+      case "$(admin_sql "SELECT detail FROM ffs_events WHERE kind = 'backup' ORDER BY id DESC LIMIT 1;")" in
+        ''|'The backup of the Sync databases works again'*) echo yes; return ;;
+      esac
+      sleep 1
+    done
+  }
+  check "$(backup_ok)" yes "the admin UI sees the last backup worked"
+  FAILS=$(backup_events 'The backup of the Sync databases failed on %') AGAINS=$(backup_events 'The backup of the Sync databases works again%')
   backup_run -e BACKUP_DIR=/proc/ffs-none
   check "$?" 1 "a failed backup run exits with an error"
   check "$(backups_of "ok = 0 AND error LIKE 'cannot write to /proc/ffs-none%'")" 1 "the failed run in ffs_backups"
-  check "$(backup_event 'The backup of the Sync databases failed on %')" yes "admin UI: event and alert for the failed backup"
-  # runs are named by the second: not the one of the run before
-  sleep 1.1
+  check "$(backup_event 'The backup of the Sync databases failed on %' "${FAILS}")" yes "admin UI: event and alert for the failed backup"
   backup_run
   check "$?" 0 "a backup run after the failed one"
-  AGAIN=$(backup_event 'The backup of the Sync databases works again%')
+  AGAIN=$(backup_event 'The backup of the Sync databases works again%' "${AGAINS}")
   check "${AGAIN}" yes "admin UI: event when the backups work again"
   # what the runs recorded and the admin UI wrote, for a run where the event did not come
   if [ "${AGAIN}" != yes ]; then
