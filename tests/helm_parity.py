@@ -44,6 +44,14 @@ ALLOWED_DIFFERENCES = {
     "*:admin/ADMIN_K8S_SECRET": "chart-only: the Secret's name (existingSecret) for the commands the admin UI shows",
     "*:admin/ADMIN_K8S_CHART": "chart-only: where the chart was published, for the helm upgrade commands the admin UI shows",
     "*:admin/ADMIN_EXPORT_PORT": "compose-only: the host port compose publishes the admin UI on; the chart has a Service (and an Ingress)",
+    # the old names of .env (MIGRATING.md#renamed-settings): compose tells its containers which
+    # are still set, or set with their new ones; the chart has no .env
+    "*:migrate/FFS_BOTH_ENV_NAMES": "compose-only: the old .env names set with their new ones; the chart has no .env",
+    "*:syncstorage/FFS_BOTH_ENV_NAMES": "as migrate's",
+    "*:db-init/FFS_BOTH_ENV_NAMES": "as migrate's",
+    "postgres,external-postgres:sync-role/FFS_BOTH_ENV_NAMES": "as migrate's",
+    "*:db-init/FFS_OLD_ENV_NAMES": "compose-only: the old .env names still set, for the init container's warning; no .env here",
+    "*:admin/FFS_OLD_ENV_NAMES": "compose-only: the old .env names still set, for the admin UI's setup check; no .env here",
     # the Sync server
     "*:syncstorage/SYNC_STATSD_HOST": "chart-only as a variable: compose exports it in syncstorage's entrypoint when ffs-admin resolves; "
     "the chart sets it while the admin UI is on (its value is still compared with the export)",
@@ -162,19 +170,19 @@ HOSTS = {
 CASES = {
     "mariadb": (["docker-compose.yml"], {}, ["--set", "database.backend=mariadb"]),
     "mysql": (["docker-compose.yml", "docker-compose.sync-mysql.yml"], {"SYNC_DB": "mysql"}, ["--set", "database.backend=mysql"]),
-    "postgres": (["docker-compose.sync-postgres.yml"], {"POSTGRES_SYNC_USER": "syncserver_app"}, ["--set", "database.backend=postgres"]),
+    "postgres": (["docker-compose.sync-postgres.yml"], {"SYNC_POSTGRES_APP_USER": "syncserver_app"}, ["--set", "database.backend=postgres"]),
     # your own server (DATABASES.md, prepare_environment.sh): no database containers, no TLS
     # check (MySQL's self-signed certificate); PostgreSQL without the Sync role
     "external-mariadb": (["docker-compose.yml"],
-                         {"DB_CONTAINERS": "0", "MARIADB_TLS_VERIFY": "false", "MARIADB_TOKENSERVER_SERVER": EXTDB,
-                          "MARIADB_SYNCSTORAGE_SERVER": EXTDB},
+                         {"SYNC_DB_CONTAINERS": "0", "SYNC_DB_TLS_VERIFY": "false", "SYNC_TOKENSERVER_DB_HOST": EXTDB,
+                          "SYNC_STORAGE_DB_HOST": EXTDB},
                          ["--set", "database.backend=mariadb"]),
     "external-mysql": (["docker-compose.yml"],
-                       {"SYNC_DB": "mysql", "DB_CONTAINERS": "0", "MARIADB_TLS_VERIFY": "false",
-                        "MARIADB_TOKENSERVER_SERVER": EXTDB, "MARIADB_SYNCSTORAGE_SERVER": EXTDB},
+                       {"SYNC_DB": "mysql", "SYNC_DB_CONTAINERS": "0", "SYNC_DB_TLS_VERIFY": "false",
+                        "SYNC_TOKENSERVER_DB_HOST": EXTDB, "SYNC_STORAGE_DB_HOST": EXTDB},
                        ["--set", "database.backend=mysql"]),
     "external-postgres": (["docker-compose.sync-postgres.yml"],
-                          {"DB_CONTAINERS": "0", "POSTGRES_SERVER": EXTDB, "POSTGRES_SYNC_PASSWORD": ""},
+                          {"SYNC_DB_CONTAINERS": "0", "SYNC_POSTGRES_HOST": EXTDB, "SYNC_POSTGRES_APP_PASSWORD": ""},
                           ["--set", "database.backend=postgres"]),
 }
 EXTERNAL_HELM = ["--set", "database.bundled=false", "--set", f"database.external.host={EXTDB}", "--set", "existingSecret=mine"]
@@ -199,12 +207,12 @@ def run(cmd, env=None):
 # --- the test .env: .env-example filled as tests/e2e.sh does it ---------------------------
 
 def set_line(lines, name, value):
-    """NAME=value, also under the SYNC_ prefix compose's .env names may get"""
-    pattern = re.compile(rf"^(?:SYNC_)?{re.escape(name)}=")
+    """NAME=value of .env-example's names (the SYNC_ ones, MIGRATING.md#renamed-settings)"""
+    pattern = re.compile(rf"^{re.escape(name)}=")
     hits = [i for i, line in enumerate(lines) if pattern.match(line)]
     if not hits:
-        # appended, an old name compose may no longer read: the case would test nothing
-        sys.exit(f".env-example has no {name} (or SYNC_{name}): update helm_parity.py's CASES")
+        # appended, an old name compose reads only as a fallback: the case would test nothing
+        sys.exit(f".env-example has no {name}: update helm_parity.py's CASES")
     for i in hits:
         lines[i] = lines[i].split("=", 1)[0] + "=" + value
 
@@ -233,7 +241,7 @@ def env_file(overrides, profiles):
                 value = ""
             line = f"{name}={value}"
         out.append(line)
-    for name, value in dict(SYNCSTORAGE_DOMAIN=f"https://{DOMAIN}", **overrides).items():
+    for name, value in dict(SYNC_PUBLIC_URL=f"https://{DOMAIN}", **overrides).items():
         set_line(out, name, value)
     return "\n".join(out) + "\n"
 

@@ -217,3 +217,26 @@ func TestDeploymentChartAddress(t *testing.T) {
 		}
 	}
 }
+
+// the old names of .env: no setup check with the Helm chart (no .env there), also if
+// FFS_OLD_ENV_NAMES came from somewhere
+func TestDeploymentKubernetesNoOldNamesCheck(t *testing.T) {
+	t.Setenv("FFS_OLD_ENV_NAMES", "MAX_USERS SYNCSTORAGE_DOMAIN")
+	k8s := &App{deployment: deployment{kind: "kubernetes", release: "t", prefix: "t-firefox-sync", secret: "t-firefox-sync"}}
+	for _, c := range k8s.setupChecks(t.Context(), nil, nil) {
+		if strings.Contains(c.Name, "Old setting names") {
+			t.Errorf("kubernetes: %+v", c)
+		}
+	}
+	found := false
+	for _, c := range (&App{}).setupChecks(t.Context(), nil, nil) {
+		found = found || strings.Contains(c.Name, "Old setting names")
+	}
+	if !found {
+		t.Error("compose: no check of the old names")
+	}
+	// the node check names the chart's value
+	if c := nodeCheck(k8s.deployment, "https://sync.example.com", nil); !strings.Contains(c.Text, "syncDomain is https://sync.example.com") || strings.Contains(c.Text, "SYNC_PUBLIC_URL") {
+		t.Errorf("node check, kubernetes: %s", c.Text)
+	}
+}

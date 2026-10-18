@@ -987,13 +987,6 @@ backup_restore() {
   if [[ -n "${EXTERNAL}" ]]; then
     servers=
     extdb_server scratchdb
-    if [[ "${BACKEND}" == mysql ]]; then
-      # the dumps of MySQL lock each table while they load it (LOCK TABLES), which
-      # db/mysql/sync.sql does not grant the Sync users (the stack's MySQL containers grant
-      # them everything on their databases): given here, as the administrator of the new server
-      EXTDB_POD=scratchdb-0 extdb_admin -e "GRANT LOCK TABLES ON \`${EXT_TS_DB}\`.* TO '${EXT_TS_USER}'@'%';
-        GRANT LOCK TABLES ON \`${EXT_ST_DB}\`.* TO '${EXT_ST_USER}'@'%';" < /dev/null || fail "LOCK TABLES not granted on scratchdb"
-    fi
   elif [[ "${BACKEND}" == postgres ]]; then
     servers="${FULL}-postgres"
   else
@@ -1378,10 +1371,10 @@ client_flow() {
   local env
   env=$(kubectl get deploy "${FULL}-syncstorage" -o json | jq '.spec.template.spec.containers[]
     | select(.name == "syncstorage") | .env
-    | map(select(.name != "SYNC_SERVER_URL" and .name != "MAX_USERS"))
+    | map(select(.name != "SYNC_SERVER_URL" and .name != "SYNC_MAX_USERS"))
     + [{name: "SYNC_SERVER_URL", value: "http://'"${FULL}"'-syncstorage:8000"},
-       {name: "SYNCSTORAGE_DOMAIN", value: "'"${SYNCSTORAGE_DOMAIN}"'"},
-       {name: "MAX_USERS", value: "1"},
+       {name: "SYNC_PUBLIC_URL", value: "'"${SYNCSTORAGE_DOMAIN}"'"},
+       {name: "SYNC_MAX_USERS", value: "1"},
        {name: "PYTHONPATH", value: "/app:/app/tools"},
        {name: "PYTHONDONTWRITEBYTECODE", value: "1"}]') || return 1
   jq -n --arg name "${name}" --arg image "${SYNC_IMAGE}" --arg args "${args}" --argjson env "${env}" '{

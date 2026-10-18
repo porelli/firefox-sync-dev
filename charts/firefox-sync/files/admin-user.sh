@@ -30,6 +30,7 @@ if [ -n "${ADMIN_DB_PASSWORD:-}" ]; then
     printf '%s' "${name}" | grep -Eqx '[a-z_][a-z0-9_]{0,31}' || fail "not a database or user name (a-z, 0-9, _): '${name}'"
   done
   [ "${user}" != "${reader}" ] || fail "ADMIN_DB_USER and ADMIN_DB_SYNC_USER must be two users"
+  case "${ADMIN_DB_PASSWORD}" in *"<REPLACE_WITH_"*) fail "ADMIN_DB_PASSWORD is still the placeholder of .env-example: set it in .env" ;; esac
   printf '%s' "${ADMIN_DB_PASSWORD}" | grep -Eqx '[A-Za-z0-9._~-]+' || fail "ADMIN_DB_PASSWORD: only A-Z a-z 0-9 . _ ~ -"
   # (again with a new password: ADMIN_DB_PASSWORD changed in .env)
   account() {

@@ -104,8 +104,19 @@ spec:
           {{- include "firefox-sync.syncstorageSecurityContext" . | nindent 10 }}
           # compose's script verbatim: Kubernetes, like compose, turns $$ into $
           command: ["/bin/sh", "-c"]
+          # (FFS_BOTH_ENV_NAMES: compose's, of the old names of .env; never set here)
           args:
             - |
+              if [ -n "$${FFS_BOTH_ENV_NAMES:-}" ]; then
+                for p in $$FFS_BOTH_ENV_NAMES; do
+                  echo "ERROR: $${p%%/*} and $${p#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset $${p#*/} in your shell (MIGRATING.md#renamed-settings)"
+                done
+                exit 1
+              fi
+              # the node the init container sets: not empty, not the placeholder of .env-example
+              case "$${SYNC_TOKENSERVER__INIT_NODE_URL:-}" in
+                ""|*"<REPLACE_WITH_"*) echo "ERROR: the public Sync URL (SYNC_PUBLIC_URL) is empty or still the placeholder of .env-example: set it in .env"; exit 1 ;;
+              esac
               pid=
               for i in $$(seq 1 120); do
                 # (re)start syncstorage-rs until the databases accept connections
