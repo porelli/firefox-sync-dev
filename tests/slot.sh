@@ -39,3 +39,9 @@ one_at_a_time() {
     "$@"
   fi
 }
+
+# src_hash <dir>: a hash of the files of a folder (an image's build context): the same
+# files, the same hash
+src_hash() {
+  (cd -- "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
+}

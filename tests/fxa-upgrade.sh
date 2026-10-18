@@ -36,6 +36,7 @@
 #   SLOT             runs next to each other on one host (tests/slot.sh): 1, 2...: -s<SLOT> after
 #                    the project, port 28663 + 1000 * SLOT, the others at 28700-28706 + 1000 * SLOT
 #                    (FXA_SAME_TAG tags the shared FXA_IMAGE:FXA_VERSION: not next to other runs)
+#   INIT_TAG         tag suffix of the init image (default: TAG)
 set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -44,6 +45,7 @@ CODE=$(dirname "${TESTS}")
 source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
+INIT_TAG=${INIT_TAG:-${TAG}}
 PROJECT=ffs-fxa-upgrade${SLOT_SUFFIX}
 WORK=$(mktemp -d)
 ENV_FILE=${WORK}/fxa.env
@@ -81,7 +83,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:$((28663 + SLOT_PORTS))|" \
     -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
     -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
+    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${INIT_TAG}|" \
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.fxa.test|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1|" \
     -e "s|^FXA_CONTENT_URL=.*|FXA_CONTENT_URL=https://accounts.fxa.test|" \

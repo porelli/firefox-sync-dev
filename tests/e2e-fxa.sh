@@ -32,6 +32,7 @@
 #   SLOT             runs next to each other on one host (tests/slot.sh): 0 (default) project
 #                    ffs-e2e-fxa, port 28653 and the other ports of .env-example; 1, 2...: -s<SLOT>
 #                    after the project, 1000 * SLOT added to 28653, the others at 28700-28706 + 1000 * SLOT
+#   INIT_TAG         tag suffix of the init image (default: TAG), e.g. one built from this tree
 set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -40,6 +41,7 @@ CODE=$(dirname "${TESTS}")
 source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
+INIT_TAG=${INIT_TAG:-${TAG}}
 PROJECT=ffs-e2e-fxa${SLOT_SUFFIX}
 WORK=$(mktemp -d)
 ENV_FILE=${WORK}/fxa.env
@@ -59,7 +61,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^MAX_USERS=.*|MAX_USERS=initial:10|" \
     -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
     -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
+    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${INIT_TAG}|" \
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.fxa.test|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1|" \
     -e "s|^FXA_CONTENT_URL=.*|FXA_CONTENT_URL=https://accounts.fxa.test|" \
@@ -661,12 +663,15 @@ fi
 
 if [ -z "${SKIP_BROWSER:-}" ] && runs browser; then
   echo "== real Firefox: sign-up on one profile, sync to a second one"
-  docker build -q -t ffs-fxa-browser "${TESTS}/browser" > /dev/null || check build failed "Firefox test image"
+  # tagged by its files: built once, the same for runs next to each other
+  BROWSER_IMAGE=ffs-fxa-browser:src-$(src_hash "${TESTS}/browser")
+  docker image inspect "${BROWSER_IMAGE}" > /dev/null 2>&1 || one_at_a_time browser-build docker build -q -t "${BROWSER_IMAGE}" "${TESTS}/browser" > /dev/null ||
+    check build failed "Firefox test image"
   docker run --rm --network "${PROJECT}_default" --shm-size 1g \
     -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
     -e FXA_CONTENT_URL -e MAILPIT_URL=http://mailpit:8025 -e PYTHONDONTWRITEBYTECODE=1 \
     -e FXA_PAIRING_URL -e ADMIN_PASSWORD -e ADMIN_URL=https://admin.fxa.test -e ADMIN_FXA_CLIENT_ID \
-    ffs-fxa-browser sh -c "python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -30 /tmp/pytest.log; [ \$rc = 0 ] || grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10; exit \$rc" < /dev/null
+    "${BROWSER_IMAGE}" sh -c "python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -30 /tmp/pytest.log; [ \$rc = 0 ] || grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10; exit \$rc" < /dev/null
   check "$?" 0 "real Firefox sign-up and sync, pairing server"
 fi
 echo "== admin UI"

@@ -20,6 +20,7 @@
 #   SLOT            runs next to each other on one host (tests/slot.sh): 0 (default) the project,
 #                   ports and networks below; 1, 2...: -s<SLOT> after the project, 1000 * SLOT
 #                   added to the ports, 10 * SLOT to the third byte of the networks
+#   INIT_TAG        tag suffix of the init image (default: TAG), e.g. one built from this tree
 #   TEST_SUBNET     the stack's network, a /24 (default: 10.231.1.0/24 mysql, 10.231.2.0/24 postgres,
 #                   10.231.4.0/24 SYNC_DB=mysql);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
@@ -46,6 +47,7 @@ CODE=$(dirname "${TESTS}")
 source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
+INIT_TAG=${INIT_TAG:-${TAG}}
 PROJECT=ffs-e2e-${BACKEND}
 WORK=$(mktemp -d)
 ENV_FILE=${WORK}/${BACKEND}.env
@@ -92,7 +94,7 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     -e "s|^SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-${BACKEND}|" \
     -e "s|^SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-${BACKEND}-init|" \
     -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
+    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${INIT_TAG}|" \
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api-accounts.stage.mozaws.net|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://mock_fxa:6000|" \
     -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" \
@@ -335,7 +337,7 @@ teardown() {
     docker network rm "${EXTDB}" > /dev/null 2>&1
   fi
   if [ -n "${CLEANUP_IMAGES:-}" ]; then
-    docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${TAG}" > /dev/null 2>&1
+    docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${INIT_TAG}" > /dev/null 2>&1
     [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
     [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
     [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mysql:8.4' && docker rmi mysql:8.4 > /dev/null 2>&1
@@ -391,7 +393,7 @@ set_env POSTGRES_SYNC_PASSWORD ""
 if [ -n "${UPGRADE_FROM:-}" ]; then
   # that release itself: its compose files, its admin UI and its init container
   ROOT=$(cd -- "${UPGRADE_FROM}" && pwd) || exit 1
-  ADMIN_NOW=${ADMIN_IMAGE} INIT_TAG=${SYNCSTORAGE_INIT_IMAGE_TAG}
+  ADMIN_NOW=${ADMIN_IMAGE} INIT_NOW=${SYNCSTORAGE_INIT_IMAGE_TAG}
   export ADMIN_IMAGE=ffs-admin:e2e-from${SLOT_SUFFIX}
   ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build-from -f "${ROOT}/tests/docker-compose.admin-build.yml" build -q ||
     { echo "FAIL: admin UI image built from ${UPGRADE_FROM}/admin"; exit 1; }
@@ -427,7 +429,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   ROOT=${CODE}
   [ "${BACKEND}" = postgres ] && COMPOSE=${CODE}/docker-compose.postgres.yml
   export ADMIN_IMAGE=${ADMIN_NOW}
-  set_env SYNCSTORAGE_INIT_IMAGE_TAG "${INIT_TAG}"
+  set_env SYNCSTORAGE_INIT_IMAGE_TAG "${INIT_NOW}"
 fi
 set_env ADMIN_DB_PASSWORD "${ADMIN_DB_SECRET}"
 set_env POSTGRES_SYNC_USER "${SYNC_ROLE}"

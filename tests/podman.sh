@@ -11,12 +11,13 @@
 #   SLOT        runs next to each other on one host (tests/slot.sh): 1000 * SLOT added to the
 #               ports (default 0). The Quadlets' units, containers and volumes have the names
 #               of a user's install: one run of this test at a time per user in any case
+#   INIT_TAG    tag suffix of the init images (default: TAG), e.g. ones built from this tree
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
 #   SYNC_DB     mariadb (default) or mysql: the Sync databases of the compose and quadlet phases
 #               (MySQL 8.4, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/); the MySQL
 #               quadlets are rendered and checked in any case
-#   ADMIN_IMAGE     admin UI image to test, pulled and used as is (default: built from admin/)
+#   ADMIN_IMAGE     admin UI image to test, used as is, pulled when not here (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1, or a digest (default: REPOSITORY:fxa-mono-latest)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
@@ -31,6 +32,7 @@ CODE=$(dirname "${TESTS}")
 source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
+INIT_TAG=${INIT_TAG:-${TAG}}
 PORT=${PORT:-$((28660 + SLOT_PORTS))}
 # the admin UI, the sign-up gate, the accounts' pages and API
 ADMIN_PORT=$((28690 + SLOT_PORTS)) GATE_PORT=$((28691 + SLOT_PORTS)) CONTENT_PORT=$((28630 + SLOT_PORTS)) AUTH_PORT=$((28600 + SLOT_PORTS))
@@ -78,7 +80,7 @@ cp -r "${CODE}" "${WORK}/ffs" && cd "${WORK}/ffs" || exit 1
 rm -f .env
 # ports of its own, next to whatever else runs on this host
 example() { sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
-       -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
+       -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${INIT_TAG}|" \
        -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:${ADMIN_PORT}|" \
        -e "s|^ADMIN_GATE_EXPORT_PORT=.*|ADMIN_GATE_EXPORT_PORT=127.0.0.1:${GATE_PORT}|" \
        -e "s|^ADMIN_METRICS_TOKEN=.*|ADMIN_METRICS_TOKEN=ffs-test-metrics-token|" \
@@ -92,7 +94,7 @@ example() { sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
 example .
 # the admin UI under test, where compose and the quadlets look for it
 if [ -n "${ADMIN_IMAGE:-}" ]; then
-  podman pull -q "${ADMIN_IMAGE}" > build-admin.log 2>&1 && podman tag "${ADMIN_IMAGE}" "${REPOSITORY}:admin-latest" >> build-admin.log 2>&1
+  { podman image exists "${ADMIN_IMAGE}" || podman pull -q "${ADMIN_IMAGE}" > build-admin.log 2>&1; } && podman tag "${ADMIN_IMAGE}" "${REPOSITORY}:admin-latest" >> build-admin.log 2>&1
 else
   podman build -q --format docker -t "${REPOSITORY}:admin-latest" admin > build-admin.log 2>&1
 fi
@@ -258,7 +260,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   FROM=${WORK}/from
   cp -r "${UPGRADE_FROM}" "${FROM}" && rm -f "${FROM}/.env" && example "${FROM}" || exit 1
   # that release's admin UI and init image under the names of the units, this tree's aside
-  INIT_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-init-${TAG}
+  INIT_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-init-${INIT_TAG}
   # (releases before db/: syncstorage-rs-init)
   INIT_DIR=${FROM}/db/mysql/init; [ -d "${INIT_DIR}" ] || INIT_DIR=${FROM}/syncstorage-rs-init
   podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:upgrade-to && podman tag "${INIT_IMAGE}" localhost/ffs-init:upgrade-to &&
