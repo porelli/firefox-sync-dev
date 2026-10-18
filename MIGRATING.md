@@ -148,9 +148,10 @@ The same images and databases, moved to the [Helm chart](HELM.md) with a dump an
     ```bash
     docker compose stop syncstorage ffs-admin
     docker compose exec backup sh /ffs-backup/backup.sh now
-    docker run --rm -v firefox-sync_backups:/backups:ro -v "$PWD":/out busybox tar -C /backups -czf /out/ffs-backups.tar.gz .
+    docker compose cp backup:/backups ffs-backups && tar -C ffs-backups -czf ffs-backups.tar.gz . && rm -rf ffs-backups
     ```
 
+    (`docker compose cp` reads the backup service's volume whatever the compose project is called. The volume itself is `<project>_backups`: the project is the name of the folder of `docker-compose.yml`, unless `COMPOSE_PROJECT_NAME` or `-p` set another, so `firefox-sync_backups` only in a folder `firefox-sync`.)
     The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`, `SYNC_POSTGRES_NAME`, `ADMIN_DB_NAME`): the chart's restore reads `tokenserver`, `syncstorage` (PostgreSQL `syncserver`) and `ffs_admin`. Other names: rename them in the copy. With the Quadlets: `systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service`, `systemctl --user start firefox-sync-backup.service`, `podman volume export firefox-sync-backups | gzip > ffs-backups.tar.gz` (the restore reads a gzipped tar).
 1. An `existingSecret` with the secrets of `.env` ([HELM.md](HELM.md#existingsecret)), so that the Sync server keeps its `SYNC_MASTER_SECRET` and `SYNC_METRICS_HASH_SECRET` (new ones work too: Firefox gets a new token when the old one is refused). The chart's keys are not all named as in `.env`:
 

@@ -25,7 +25,7 @@ This section is about the database containers of the stack, not your own server.
 
 The `postgres_db` and `backup` services use `SYNC_POSTGRES_IMAGE` (`.env`): `postgres:18` for the new installs `prepare_environment.sh` sets up, also when it is not set, as the installs from before it. `./prepare_environment.sh --upgrade`, or running `prepare_environment.sh` again on the install, writes `SYNC_POSTGRES_IMAGE=postgres:18` for them, which pins the PostgreSQL major of each install. The official PostgreSQL image keeps its data at `/var/lib/postgresql/<major>/docker` and refuses to start when an older major's data is there: moving to a newer major needs a dump and restore ([ADMIN.md#restoring](ADMIN.md#restoring)) or `pg_upgrade` (not automated here), and the image fails loudly when neither was done — so no guard is needed, unlike MariaDB where the server silently upgrades the data.
 
-The Helm chart has the same as `database.image.postgres` (and `database.image.mariadb`, `database.image.mysql`), `postgres:18` by default ([HELM.md](HELM.md#upgrades)).
+The Helm chart has the same as `database.image.postgres` (and `database.image.mariadb`, `database.image.mysql`), `docker.io/library/postgres:18` by default ([HELM.md](HELM.md#upgrades)).
 
 With your own database server (`EXTERNAL_DB=1`): `SYNC_POSTGRES_IMAGE` picks the backup client image (`postgres:18` by default): set it to your server's major, since `pg_dump` must be at least the server's major.
 
