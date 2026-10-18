@@ -150,7 +150,7 @@ func TestMoveOwnTables(t *testing.T) {
 	if got := copiedSummary(st.Copied); got != "2 events, 1 notes" {
 		t.Errorf("summary: %q", got)
 	}
-	if c := ownDBCheck(s, st, false); !c.OK {
+	if c := ownDBCheck(s, st, deployment{}); !c.OK {
 		t.Errorf("check after the move: %+v", c)
 	}
 
@@ -170,7 +170,7 @@ func TestMoveOwnTables(t *testing.T) {
 	if !st.Again || st.Copied != nil || !slices.Equal(st.Left, []string{"ffs_events"}) || len(ts.statements()) != 0 || len(metaWrites(own)) != 0 {
 		t.Errorf("again: %+v %q %q", st, ts.statements(), own.statements())
 	}
-	if c := ownDBCheck(s, st, false); c.OK || !strings.Contains(c.Text, "admin UI tables again (ffs_events)") || !strings.Contains(c.Text, "not copied") {
+	if c := ownDBCheck(s, st, deployment{}); c.OK || !strings.Contains(c.Text, "admin UI tables again (ffs_events)") || !strings.Contains(c.Text, "not copied") {
 		t.Errorf("check, again: %+v", c)
 	}
 
@@ -195,7 +195,7 @@ func TestMoveOwnTables(t *testing.T) {
 	if got := metaWrites(own); !slices.Equal(got, []string{moveCopied}) {
 		t.Errorf("drop failed, ffs_meta: %q", got)
 	}
-	if c := ownDBCheck(s, st, false); c.OK || !strings.Contains(c.Text, "still in the tokenserver database (ffs_events)") || !strings.Contains(c.Text, "nothing is lost") {
+	if c := ownDBCheck(s, st, deployment{}); c.OK || !strings.Contains(c.Text, "still in the tokenserver database (ffs_events)") || !strings.Contains(c.Text, "nothing is lost") {
 		t.Errorf("check, drop failed: %+v", c)
 	}
 
@@ -221,22 +221,22 @@ func TestMoveOwnTables(t *testing.T) {
 	if st := s.moveOwnTables(ctx); st.Err != "" || st.Copied != nil {
 		t.Errorf("without ADMIN_DB_PASSWORD: %+v", st)
 	}
-	if c := ownDBCheck(s, moveState{}, false); c.OK || !strings.Contains(c.Text, "which the Sync server's database user can read and change") ||
+	if c := ownDBCheck(s, moveState{}, deployment{}); c.OK || !strings.Contains(c.Text, "which the Sync server's database user can read and change") ||
 		!strings.Contains(c.Text, "prepare_environment.sh --upgrade (it sets ADMIN_DB_PASSWORD") || !strings.Contains(c.Text, "docker compose up -d") {
 		t.Errorf("check without ADMIN_DB_PASSWORD: %+v", c)
 	}
 	// with the Quadlets (ADMIN_DEPLOYMENT=quadlets): their steps of MIGRATING.md, no compose
-	if c := ownDBCheck(s, moveState{}, true); c.OK || strings.Contains(c.Text, "docker compose") || strings.Contains(c.Text, "Run ./prepare_environment.sh --upgrade") ||
+	if c := ownDBCheck(s, moveState{}, deployment{kind: "quadlets"}); c.OK || strings.Contains(c.Text, "docker compose") || strings.Contains(c.Text, "Run ./prepare_environment.sh --upgrade") ||
 		!strings.Contains(c.Text, "run ./prepare_environment.sh again with the same answers") || !strings.Contains(c.Text, "database-setup.sql") ||
 		!strings.Contains(c.Text, "systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service") {
 		t.Errorf("check without ADMIN_DB_PASSWORD, Quadlets: %+v", c)
 	}
-	if compose, quadlets := ownDBHint(false), ownDBHint(true); !strings.Contains(compose, "--upgrade") || strings.Contains(quadlets, "--upgrade") || !strings.Contains(quadlets, "Quadlets") {
+	if compose, quadlets := ownDBHint(deployment{}), ownDBHint(deployment{kind: "quadlets"}); !strings.Contains(compose, "--upgrade") || strings.Contains(quadlets, "--upgrade") || !strings.Contains(quadlets, "Quadlets") {
 		t.Errorf("the line of the log: %q, %q", compose, quadlets)
 	}
 	// PostgreSQL's container without POSTGRES_SYNC_USER: the Sync server's role is a superuser
 	s = &SyncDB{own: sql.OpenDB(&fakeFxa{}), ownName: "ffs_admin", postgres: true}
-	if c := ownDBCheck(s, moveState{Superuser: "syncserver"}, false); c.OK || !strings.Contains(c.Text, "belong to syncserver, a superuser") || !strings.Contains(c.Text, "POSTGRES_SYNC_USER") {
+	if c := ownDBCheck(s, moveState{Superuser: "syncserver"}, deployment{}); c.OK || !strings.Contains(c.Text, "belong to syncserver, a superuser") || !strings.Contains(c.Text, "POSTGRES_SYNC_USER") {
 		t.Errorf("check with a superuser: %+v", c)
 	}
 }
@@ -334,7 +334,7 @@ func TestForeignObjectsInTheOwnDatabase(t *testing.T) {
 	if err := s.checkOwnDB(ctx); err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("an error of the check: %v", err)
 	}
-	if c := ownDBCheck(s, moveState{ForeignErr: "permission denied"}, false); c.OK || !strings.Contains(c.Text, "Could not check") {
+	if c := ownDBCheck(s, moveState{ForeignErr: "permission denied"}, deployment{}); c.OK || !strings.Contains(c.Text, "Could not check") {
 		t.Errorf("setup check when the check fails: %+v", c)
 	}
 	own.queryErr = nil
@@ -346,7 +346,7 @@ func TestForeignObjectsInTheOwnDatabase(t *testing.T) {
 	}
 	foreign = [][]driver.Value{{"table ffs_admin_ui.ffs_events of syncserver_app"}}
 	found, _ := s.foreignObjects(ctx)
-	if c := ownDBCheck(s, moveState{Foreign: found}, false); c.OK || !strings.Contains(c.Text, "holds what its role does not own: table ffs_admin_ui.ffs_events of syncserver_app") {
+	if c := ownDBCheck(s, moveState{Foreign: found}, deployment{}); c.OK || !strings.Contains(c.Text, "holds what its role does not own: table ffs_admin_ui.ffs_events of syncserver_app") {
 		t.Errorf("setup check: %+v", c)
 	}
 	// MariaDB and MySQL have no owners: nothing asked

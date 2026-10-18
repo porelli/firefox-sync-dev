@@ -115,11 +115,11 @@ type App struct {
 	// MAX_USERS=initial:N: max users is set on the dashboard, otherwise by .env; the same
 	// for FXA_MAX_ACCOUNTS (also when not given: initial:unlimited)
 	maxUsersEditable, maxAccountsEditable bool
-	// BACKUP_TIME, BACKUP_KEEP of the backup service, for its help on the overview;
-	// ADMIN_DEPLOYMENT=quadlets: the commands of the Quadlets there, compose's otherwise
+	// BACKUP_TIME, BACKUP_KEEP of the backup service, for its help on the overview
 	backupTime string
 	backupKeep int
-	quadlets   bool
+	// ADMIN_DEPLOYMENT: the commands of compose, the Quadlets or the Helm chart there
+	deployment deployment
 	// the token of the gate's answer to the public check (public.go), new on every start
 	gateProbe string
 	// SYNCSTORAGE_DOMAIN, FXA_EMAIL_DOMAIN, FXA_PAIRING_URL: the setup checks and the device steps
@@ -163,6 +163,10 @@ func serve(ctx context.Context) error {
 		}
 	}
 	autoPurge := env("ADMIN_PURGE", "") == "1"
+	deploy, err := loadDeployment()
+	if err != nil {
+		return err
+	}
 	eventsSetting, eventsSet := os.LookupEnv("FXA_ACCOUNT_EVENTS")
 	adminZone = loadZone()
 	syncDB, err := openSyncDB()
@@ -195,7 +199,7 @@ func serve(ctx context.Context) error {
 			syncDB.ownName, copiedSummary(syncDB.moved.Copied)))
 	} else if syncDB.own == nil {
 		log.Printf("ADMIN_DB_PASSWORD is not set: the event log is in the tokenserver database, which the Sync server's user can change (%s)",
-			ownDBHint(env("ADMIN_DEPLOYMENT", "") == "quadlets"))
+			ownDBHint(deploy))
 	}
 	go rec.run(ctx)
 	go func() {
@@ -206,7 +210,7 @@ func serve(ctx context.Context) error {
 	app := &App{sync: syncDB, storage: storageDB, fxa: fxaDB, rec: rec, auth: auth, sessions: map[string]*session{},
 		staleDays: staleDays, unconfirmedHours: unconfirmedHours, maxUsersEditable: maxUsersEditable(os.Getenv("MAX_USERS")),
 		maxAccountsEditable: limitEditable(os.Getenv("FXA_MAX_ACCOUNTS"), true),
-		backupTime:          env("BACKUP_TIME", "03:00"), backupKeep: envInt("BACKUP_KEEP", 7), quadlets: env("ADMIN_DEPLOYMENT", "") == "quadlets",
+		backupTime:          env("BACKUP_TIME", "03:00"), backupKeep: envInt("BACKUP_KEEP", 7), deployment: deploy,
 		gateProbe: randomToken(), syncDomain: strings.TrimSuffix(env("SYNCSTORAGE_DOMAIN", ""), "/"),
 		emailDomain: strings.ToLower(env("FXA_EMAIL_DOMAIN", "")), pairingURL: env("FXA_PAIRING_URL", ""),
 		autoPurge: autoPurge, unconfirmedDays: unconfirmedDays, signupBurst: signupBurst,
@@ -607,9 +611,10 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 
 	in := attentionInput{now: now, components: components, certs: certs, status: status, backups: backups, fxa: a.fxa != nil,
-		staleDays: a.staleDays, alerts: alerts, accountLimit: accountLimit}
+		staleDays: a.staleDays, alerts: alerts, accountLimit: accountLimit, deployment: a.deployment}
 	// what the backup service does, for its help (the admin UI cannot see the volume)
-	data["Backup"] = map[string]any{"Time": a.backupTime, "Local": localClock(a.backupTime, now, adminZone), "Keep": a.backupKeep, "Quadlets": a.quadlets}
+	data["Backup"] = map[string]any{"Time": a.backupTime, "Local": localClock(a.backupTime, now, adminZone), "Keep": a.backupKeep,
+		"Quadlets": a.deployment.Quadlets(), "Kubernetes": a.deployment.Kubernetes()}
 	var pages pager
 	if a.fxa != nil {
 		if policy, err := a.fxa.Policy(ctx); err != nil {

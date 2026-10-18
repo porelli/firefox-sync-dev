@@ -19,7 +19,7 @@ type setupCheck struct {
 
 // nodeCheck: the tokenserver hands out its nodes in use, Firefox syncs there; the init
 // container sets the node from SYNCSTORAGE_DOMAIN on every start
-func nodeCheck(domain string, nodes []SyncNode) setupCheck {
+func nodeCheck(d deployment, domain string, nodes []SyncNode) setupCheck {
 	c := setupCheck{Name: "Sync node"}
 	var inUse []string
 	for _, n := range nodes {
@@ -36,10 +36,10 @@ func nodeCheck(domain string, nodes []SyncNode) setupCheck {
 	case c.OK:
 		c.Text = "The tokenserver hands out " + domain + ", the public Sync URL (SYNCSTORAGE_DOMAIN)."
 	case len(inUse) == 0:
-		c.Text = "The tokenserver has no Sync node in use, SYNCSTORAGE_DOMAIN is " + domain + ": nobody can sync. The init container adds it when it starts: docker compose up -d (or restart the Quadlets)."
+		c.Text = "The tokenserver has no Sync node in use, SYNCSTORAGE_DOMAIN is " + domain + ": nobody can sync. The init container adds it when it starts: " + d.startInit() + "."
 	default:
-		c.Text = fmt.Sprintf("The tokenserver hands out %s, but SYNCSTORAGE_DOMAIN is %s: Firefox syncs with %s. The init container sets the node from SYNCSTORAGE_DOMAIN when it starts: docker compose up -d (or restart the Quadlets).",
-			strings.Join(inUse, ", "), domain, inUse[0])
+		c.Text = fmt.Sprintf("The tokenserver hands out %s, but SYNCSTORAGE_DOMAIN is %s: Firefox syncs with %s. The init container sets the node from SYNCSTORAGE_DOMAIN when it starts: %s.",
+			strings.Join(inUse, ", "), domain, inUse[0], d.startInit())
 	}
 	return c
 }
@@ -93,10 +93,10 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 		} else {
 			st.Foreign = found
 		}
-		checks = append(checks, ownDBCheck(a.sync, st, a.quadlets))
+		checks = append(checks, ownDBCheck(a.sync, st, a.deployment))
 	}
 	if a.syncDomain != "" && status != nil {
-		checks = append(checks, nodeCheck(a.syncDomain, status.Nodes))
+		checks = append(checks, nodeCheck(a.deployment, a.syncDomain, status.Nodes))
 	}
 	for _, comp := range components {
 		if comp.Name != oauthKeysCheck {

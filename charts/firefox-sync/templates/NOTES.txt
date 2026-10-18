@@ -10,6 +10,17 @@ Publish {{ include "firefox-sync.fullname" . }}-syncstorage:{{ .Values.syncstora
 
 as identity.sync.tokenserver.uri in about:config, see
 https://github.com/porelli/firefox-sync/blob/main/SYNC.md#firefox-setup
+{{- if .Values.admin.enabled }}
+
+The admin UI is not published: open it through
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "firefox-sync.adminService" . }} 8090:8080
+
+at http://localhost:8090 (or give it its own Ingress, admin.ingress, behind your own sign-in),
+with ADMIN_PASSWORD of the Secret {{ include "firefox-sync.secretName" . }}:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "firefox-sync.secretName" . }} -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
+{{- end }}
 {{- if not .Values.existingSecret }}
 
 The secrets were generated into the Secret {{ include "firefox-sync.fullname" . }} and are read back on
@@ -18,5 +29,6 @@ set existingSecret instead: there they cannot be read back and would change on e
 It must hold SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_PASSWORD and
 {{- if eq .Values.database.backend "postgres" }} POSTGRES_PASSWORD, POSTGRES_SYNC_PASSWORD.
 {{- else }} TOKENSERVER_DB_PASSWORD, STORAGE_DB_PASSWORD.
-{{- end }}
+{{- end }} The admin UI also reads, when there: FXA_SMTP_PASS,
+ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN.
 {{- end }}

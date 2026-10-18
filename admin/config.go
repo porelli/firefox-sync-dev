@@ -58,7 +58,7 @@ var configVars = map[string]bool{
 	"ADMIN_ALLOWED_USERS": false, "ADMIN_ALLOWED_GROUPS": false, "ADMIN_INSECURE_COOKIE": false,
 	// the admin UI itself
 	"ADMIN_LISTEN": false, "GATE_LISTEN": false, "METRICS_LISTEN": false, "ADMIN_EXPORT_PORT": false, "ADMIN_GATE_EXPORT_PORT": false,
-	"ADMIN_DEPLOYMENT": false, "ADMIN_TZ": false, "TZ": false, "SSL_CERT_FILE": false,
+	"ADMIN_DEPLOYMENT": false, "ADMIN_K8S_RELEASE": false, "ADMIN_K8S_NAMESPACE": false, "ADMIN_TZ": false, "TZ": false, "SSL_CERT_FILE": false,
 	// email, alerts, metrics and checks
 	"SMTP_HOST": false, "SMTP_PORT": false, "SMTP_USER": false, "SMTP_SECURE": false, "SMTP_SENDER": false, "SMTP_INSECURE_AUTH": false,
 	"ALERT_EMAIL": false, "ALERT_INTERVAL_SECONDS": false, "HEALTH_CHECK_SECONDS": false, "METRICS_FLUSH_SECONDS": false,
@@ -185,8 +185,8 @@ func dbAddress(user, host, port, name string) string {
 var stackHosts = map[string]bool{"tokenserver_db": true, "syncstorage_db": true, "postgres_db": true, "fxa-db": true,
 	"firefox-sync-tokenserver-db": true, "firefox-sync-syncstorage-db": true, "firefox-sync-fxa-db": true}
 
-func whereDB(host string) string {
-	if stackHosts[host] {
+func (d deployment) whereDB(host string) string {
+	if d.stackHost(host) {
 		return "a container of the stack"
 	}
 	return "your own server (DATABASES.md)"
@@ -195,13 +195,13 @@ func whereDB(host string) string {
 // dbServer: the server as the health check read it (MariaDB 11.8.3), otherwise the
 // image of the stack's container (stack) or only the kind (your own server: the
 // version is not known before the check)
-func dbServer(components []Component, check, kind, stack string, host string) string {
+func (d deployment) dbServer(components []Component, check, kind, stack string, host string) string {
 	for _, c := range components {
 		if c.Name == check && c.Version != "" {
 			return c.Version
 		}
 	}
-	if stackHosts[host] {
+	if d.stackHost(host) {
 		return stack
 	}
 	return kind
@@ -348,9 +348,13 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		}
 		return setting(label, name, dotenv, "not set", "")
 	}
+	postgresSetting := "COMPOSE_FILE=docker-compose.sync-postgres.yml"
+	if a.deployment.Kubernetes() != nil {
+		postgresSetting = "database.backend=postgres"
+	}
 	if kind == "postgres" {
 		syncGroup.Rows = append(syncGroup.Rows,
-			fact("Database", "PostgreSQL, tokenserver and storage in one database", whereDB(tsHost), "COMPOSE_FILE=docker-compose.sync-postgres.yml"),
+			fact("Database", "PostgreSQL, tokenserver and storage in one database", a.deployment.whereDB(tsHost), postgresSetting),
 			func() configRow {
 				user, userVar := syncUser("TOKENSERVER_DB_USER", "POSTGRES_USER")
 				return fact("Server", dbAddress(user, tsHost, shown("TOKENSERVER_DB_PORT", "5432"), configLookup("TOKENSERVER_DB_NAME")), "",
@@ -359,13 +363,13 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			syncPassword("Database password", "TOKENSERVER_DB_PASSWORD", "POSTGRES_PASSWORD"),
 			setting("TLS", "TOKENSERVER_DB_SSLMODE", "", "disable", "sslmode of the connection"))
 	} else {
-		name := dbServer(components, "Tokenserver database", "MariaDB", "MariaDB", tsHost)
+		name := a.deployment.dbServer(components, "Tokenserver database", "MariaDB", "MariaDB", tsHost)
 		if configLookup("SYNC_DB") == "mysql" {
-			name = dbServer(components, "Tokenserver database", "MySQL", "MySQL 8.4", tsHost)
+			name = a.deployment.dbServer(components, "Tokenserver database", "MySQL", "MySQL 8.4", tsHost)
 		}
 		user, userVar := syncUser("TOKENSERVER_DB_USER", "MARIADB_TOKENSERVER_USER")
 		syncGroup.Rows = append(syncGroup.Rows,
-			fact("Databases", name, "the tokenserver and the storage databases, on "+whereDB(tsHost), "SYNC_DB"),
+			fact("Databases", name, "the tokenserver and the storage databases, on "+a.deployment.whereDB(tsHost), "SYNC_DB"),
 			fact("Tokenserver database", dbAddress(user, tsHost, shown("TOKENSERVER_DB_PORT", "3306"), configLookup("TOKENSERVER_DB_NAME")), "",
 				"MARIADB_TOKENSERVER_SERVER", "MARIADB_TOKENSERVER_SERVER_PORT", userVar, "MARIADB_TOKENSERVER_DATABASE"),
 			syncPassword("Tokenserver password", "TOKENSERVER_DB_PASSWORD", "MARIADB_TOKENSERVER_PASSWORD"))
@@ -390,7 +394,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			setting("Admin UI database password", "ADMIN_DB_PASSWORD", "", "not set", "of "+shown("ADMIN_DB_USER", "ffs_admin_ui")+" and "+reader))
 	} else {
 		syncGroup.Rows = append(syncGroup.Rows, fact("Admin UI database", "the tokenserver database, as the Sync server's user",
-			"an install from before ADMIN_DB_PASSWORD: "+ownDBHint(a.quadlets), "ADMIN_DB_PASSWORD"))
+			"an install from before ADMIN_DB_PASSWORD: "+ownDBHint(a.deployment), "ADMIN_DB_PASSWORD"))
 	}
 	oauthNote := "the Sync server checks the sign-ins of Firefox with its keys (/jwks)"
 	if fxa {
@@ -407,14 +411,14 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		accounts.Intro = "Mozilla's accounts: Firefox signs in at accounts.firefox.com, the server only knows the account ids. Self-hosted accounts: docker-compose.fxa.yml, see FXA.md."
 	} else {
 		fxaHost := shown("FXA_DB_HOST", "fxa-db")
-		dbName := dbServer(components, "Accounts database", "MySQL", "MySQL 8.4", fxaHost)
+		dbName := a.deployment.dbServer(components, "Accounts database", "MySQL", "MySQL 8.4", fxaHost)
 		if configLookup("FXA_DB") == "mariadb" {
 			// the image is FXA_MARIADB_IMAGE, not known here: the version once checked
-			dbName = dbServer(components, "Accounts database", "MariaDB", "MariaDB", fxaHost)
+			dbName = a.deployment.dbServer(components, "Accounts database", "MariaDB", "MariaDB", fxaHost)
 		}
 		accounts.Intro = "The self-hosted Mozilla accounts (docker-compose.fxa.yml)."
 		accounts.Rows = append(accounts.Rows,
-			fact("Database", dbName, "fxa, fxa_oauth, fxa_profile, pushbox and ffs, on "+whereDB(fxaHost), "FXA_DB"),
+			fact("Database", dbName, "fxa, fxa_oauth, fxa_profile, pushbox and ffs, on "+a.deployment.whereDB(fxaHost), "FXA_DB"),
 			fact("Server", dbAddress(shown("FXA_DB_USER", "ffs_admin"), fxaHost, shown("FXA_DB_PORT", "3306"), ""),
 				"as the accounts' database user ffs_admin, not the admin UI's own database (ADMIN_DB_NAME, its user ADMIN_DB_USER): it reads the accounts through the views of ffs only",
 				"FXA_MYSQL_HOST", "FXA_MYSQL_PORT"),
@@ -480,19 +484,23 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	if a.auth.insecureCookie {
 		cookie = "also over plain HTTP"
 	}
-	admin.Rows = append(admin.Rows, fact("Session cookie", cookie, "", "ADMIN_INSECURE_COOKIE"),
-		setting("Published on", "ADMIN_EXPORT_PORT", "", "127.0.0.1:8090", "the port of the host; a loopback address: the server only"))
+	published := setting("Published on", "ADMIN_EXPORT_PORT", "", "127.0.0.1:8090", "the port of the host; a loopback address: the server only")
+	if k := a.deployment.Kubernetes(); k != nil {
+		published = fact("Published on", "the Service "+k.AdminService()+", port 8080",
+			k.Kubectl()+" port-forward svc/"+k.AdminService()+" 8090:8080, or its own Ingress (admin.ingress)")
+	}
+	admin.Rows = append(admin.Rows, fact("Session cookie", cookie, "", "ADMIN_INSECURE_COOKIE"), published)
 	if fxa {
 		admin.Rows = append(admin.Rows, setting("Sign-up gate published on", "ADMIN_GATE_EXPORT_PORT", "", "127.0.0.1:8091", "POST /v1/account/create of FXA_AUTH_URL goes there"))
 	}
-	deployment := "docker compose"
-	if a.quadlets {
-		deployment = "Podman Quadlets"
-	}
 	zone := adminZone.String()
+	deployVars := []string{"ADMIN_DEPLOYMENT"}
+	if a.deployment.Kubernetes() != nil {
+		deployVars = append(deployVars, "ADMIN_K8S_RELEASE", "ADMIN_K8S_NAMESPACE")
+	}
 	admin.Rows = append(admin.Rows,
 		fact("Time zone", zone, "of the pages and the alerts", "ADMIN_TZ", "TZ").unset(),
-		fact("Runs with", deployment, "the commands the pages show", "ADMIN_DEPLOYMENT"),
+		fact("Runs with", a.deployment.name(), "the commands the pages show", deployVars...),
 		fact("Version", version, "of the admin UI"))
 
 	// email
@@ -594,8 +602,10 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	_, backupText := backupTile(backups, time.Now())
 	how := "COMPOSE_PROFILES=backup"
-	if a.quadlets {
+	if a.deployment.Quadlets() {
 		how = "firefox-sync-backup.timer"
+	} else if a.deployment.Kubernetes() != nil {
+		how = "backup.enabled of the chart"
 	}
 	backupGroup.Rows = append(backupGroup.Rows,
 		fact("Last runs", backupText, "as recorded in ffs_backups; on with "+how, ""),
@@ -637,7 +647,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 
 	data["Groups"] = []configGroup{public, syncGroup, accounts, limits, admin, email, alerts, backupGroup, maintenance, metrics}
 	data["Hints"] = a.configHints(r, status, components, backups)
-	data["Errors"] = errs
+	data["Errors"], data["Kubernetes"] = errs, a.deployment.Kubernetes()
 	a.render(w, "config.html", data)
 }
 

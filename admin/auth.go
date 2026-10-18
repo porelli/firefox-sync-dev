@@ -395,7 +395,7 @@ func (a *App) authenticated(next handler) http.HandlerFunc {
 }
 
 func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"Password": a.auth.password != nil, "Error": r.URL.Query().Get("error")}
+	data := map[string]any{"Password": a.auth.password != nil, "Error": r.URL.Query().Get("error"), "Kubernetes": a.deployment.Kubernetes()}
 	if a.auth.oidc != nil {
 		data["OIDC"] = a.auth.oidc.name
 	}

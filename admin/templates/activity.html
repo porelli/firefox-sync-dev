@@ -12,7 +12,7 @@
 <section aria-labelledby="sync-title">
   <h2 class="group-title" id="sync-title">Sync server</h2>
   {{if and .Received.IsZero (not .History)}}
-  <p class="box">No metrics received since the admin UI started. They come from the Sync server, which sends them only if the admin UI was running when it started: restart it (<code>docker compose restart syncstorage</code>, or <code>systemctl --user restart firefox-sync-syncstorage.service</code>) if this stays empty while people sync.</p>
+  <p class="box">No metrics received since the admin UI started. They come from the Sync server, which sends them only if the admin UI was running when it started: restart it ({{with .Kubernetes}}<code>{{.RestartSync}}</code>{{else}}<code>docker compose restart syncstorage</code>, or <code>systemctl --user restart firefox-sync-syncstorage.service</code>{{end}}) if this stays empty while people sync.</p>
   {{end}}
   <div class="charts">
   {{range .Charts}}

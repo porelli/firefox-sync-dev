@@ -1,0 +1,245 @@
+{{- /*
+The admin UI, compose's ffs-admin (docker-compose.yml, docker-compose.sync-postgres.yml)
+with the same variables, and ADMIN_DEPLOYMENT=kubernetes for the commands its pages show.
+Its Service is also the statsd host of the Sync server (SYNC_STATSD_HOST, syncstorage.yaml).
+*/ -}}
+{{- if .Values.admin.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $backend := .Values.database.backend }}
+{{- $port := include "firefox-sync.dbPort" (dict "root" .) }}
+{{- $ts := dict "root" . "db" "tokenserver" }}
+{{- $st := dict "root" . "db" "storage" }}
+{{- $a := .Values.admin }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "firefox-sync.adminService" . }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "admin") | nindent 4 }}
+spec:
+  selector:
+    {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "admin") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    # the Sync server's metrics
+    - name: statsd
+      port: 8125
+      targetPort: statsd
+      protocol: UDP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-admin
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "admin") | nindent 4 }}
+spec:
+  # one: its database's tables are moved and pruned by it alone
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "admin") | nindent 8 }}
+    spec:
+      # the image's user nonroot, by number: Kubernetes checks runAsNonRoot on a uid
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      initContainers:
+        # compose's depends_on tokenserver_db_init: the Sync server serves only once its
+        # init containers succeeded (PostgreSQL: they create the admin UI's roles and database)
+        - name: wait-sync
+          image: {{ include "firefox-sync.image" (dict "root" . "name" "syncstorage") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              until curl -sf -o /dev/null http://{{ $fullname }}-syncstorage:{{ .Values.syncstorage.service.port }}/__heartbeat__; do
+                echo "waiting for the Sync server"; sleep 5
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: admin
+          image: {{ include "firefox-sync.image" (dict "root" . "name" "admin") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_PASSWORD" "key" "ADMIN_PASSWORD" "optional" true) | nindent 12 }}
+            # initial:N: the admin UI manages max users, otherwise the chart does (read-only)
+            - name: MAX_USERS
+              value: {{ include "firefox-sync.maxUsers" . | quote }}
+            # its own users and database, out of the Sync server's reach (DATABASES.md)
+            - name: ADMIN_DB_USER
+              value: {{ include "firefox-sync.adminDbUser" . }}
+            - name: ADMIN_DB_SYNC_USER
+              value: {{ include "firefox-sync.adminDbSyncUser" . }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_DB_PASSWORD" "key" "ADMIN_DB_PASSWORD") | nindent 12 }}
+            - name: ADMIN_DB_NAME
+              value: {{ include "firefox-sync.adminDbName" . }}
+            - name: TOKENSERVER_DB_TYPE
+              value: {{ ternary "postgres" "mysql" (eq $backend "postgres") }}
+            - name: TOKENSERVER_DB_HOST
+              value: {{ include "firefox-sync.dbHost" $ts | quote }}
+            - name: TOKENSERVER_DB_PORT
+              value: {{ $port | quote }}
+            - name: TOKENSERVER_DB_NAME
+              value: {{ include "firefox-sync.dbName" $ts | quote }}
+            # (compose: the Sync server's role, never the superuser, when there is one)
+            - name: TOKENSERVER_DB_USER
+              value: {{ include "firefox-sync.postgresSyncUser" . | default (include "firefox-sync.dbUser" $ts) | quote }}
+            # compose's ${ADMIN_DB_PASSWORD:-...}: the chart always has ADMIN_DB_PASSWORD
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "TOKENSERVER_DB_PASSWORD" "key" "ADMIN_DB_PASSWORD") | nindent 12 }}
+            {{- if ne $backend "postgres" }}
+            # what each account stores (sizes only, the data is encrypted by Firefox)
+            - name: STORAGE_DB_HOST
+              value: {{ include "firefox-sync.dbHost" $st | quote }}
+            - name: STORAGE_DB_PORT
+              value: {{ $port | quote }}
+            - name: STORAGE_DB_NAME
+              value: {{ include "firefox-sync.dbName" $st | quote }}
+            - name: STORAGE_DB_USER
+              value: {{ include "firefox-sync.dbUser" $st | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "STORAGE_DB_PASSWORD" "key" "ADMIN_DB_PASSWORD") | nindent 12 }}
+            {{- end }}
+            - name: SYNCSTORAGE_URL
+              value: http://{{ $fullname }}-syncstorage:{{ .Values.syncstorage.service.port }}
+            # the setup checks: the Sync node, the keys of the sign-ins, the accounts' email domain
+            - name: SYNCSTORAGE_DOMAIN
+              value: {{ .Values.syncDomain | quote }}
+            - name: FXA_OAUTH_SERVER_URL
+              value: {{ .Values.fxa.oauthServerUrl | quote }}
+            - name: FXA_EMAIL_DOMAIN
+              value: {{ .Values.fxa.emailDomain | quote }}
+            - name: ADMIN_PUBLIC_CHECK
+              value: {{ $a.publicCheck | toString | quote }}
+            - name: ALERT_EMAIL
+              value: {{ $a.alertEmail | quote }}
+            - name: SMTP_HOST
+              value: {{ $a.smtp.host | quote }}
+            - name: SMTP_PORT
+              value: {{ $a.smtp.port | toString | quote }}
+            - name: SMTP_USER
+              value: {{ $a.smtp.user | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "SMTP_PASS" "key" "FXA_SMTP_PASS" "optional" true) | nindent 12 }}
+            - name: SMTP_SECURE
+              value: {{ $a.smtp.secure | toString | quote }}
+            - name: SMTP_SENDER
+              value: {{ $a.smtp.sender | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "METRICS_TOKEN" "key" "ADMIN_METRICS_TOKEN" "optional" true) | nindent 12 }}
+            - name: ADMIN_UPDATE_CHECK
+              value: {{ $a.updateCheck | toString | quote }}
+            - name: ADMIN_STALE_DAYS
+              value: {{ $a.staleDays | toString | quote }}
+            - name: ADMIN_RETENTION_DAYS
+              value: {{ $a.retentionDays | toString | quote }}
+            - name: ADMIN_AUDIT_RETENTION_DAYS
+              value: {{ $a.auditRetentionDays | toString | quote }}
+            # the alerts on a spike of Sync errors and on the growth of the databases (ADMIN.md)
+            - name: ADMIN_ERROR_RATE_PERCENT
+              value: {{ $a.errorRatePercent | toString | quote }}
+            - name: ADMIN_ERROR_RATE_MIN_ERRORS
+              value: {{ $a.errorRateMinErrors | toString | quote }}
+            - name: ADMIN_DB_GROWTH_MB
+              value: {{ $a.dbGrowthMb | toString | quote }}
+            - name: ADMIN_DB_GROWTH_FACTOR
+              value: {{ $a.dbGrowthFactor | toString | quote }}
+            # the daily purge of the Sync storage, the old unconfirmed accounts, sign-up bursts
+            - name: ADMIN_PURGE
+              value: {{ $a.purge | toString | quote }}
+            - name: ADMIN_DELETE_UNCONFIRMED_DAYS
+              value: {{ $a.deleteUnconfirmedDays | toString | quote }}
+            - name: ADMIN_SIGNUP_BURST
+              value: {{ $a.signupBurst | toString | quote }}
+            - name: ADMIN_TZ
+              value: {{ $a.tz | quote }}
+            # the commands it shows: kubectl and helm, for this release (the admin UI names
+            # the chart's objects from it as firefox-sync.fullname does)
+            - name: ADMIN_DEPLOYMENT
+              value: kubernetes
+            - name: ADMIN_K8S_RELEASE
+              value: {{ .Release.Name | quote }}
+            - name: ADMIN_K8S_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if ne $backend "postgres" }}
+            # the configuration page: the Sync databases (compose: SYNC_DB of .env)
+            - name: SYNC_DB
+              value: {{ $backend }}
+            {{- end }}
+            # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
+            - name: ADMIN_OIDC_ISSUER
+              value: {{ $a.oidc.issuer | quote }}
+            - name: ADMIN_OIDC_CLIENT_ID
+              value: {{ $a.oidc.clientId | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_OIDC_CLIENT_SECRET" "key" "ADMIN_OIDC_CLIENT_SECRET" "optional" true) | nindent 12 }}
+            - name: ADMIN_OIDC_REDIRECT_URL
+              value: {{ $a.oidc.redirectUrl | quote }}
+            - name: ADMIN_OIDC_SCOPES
+              value: {{ $a.oidc.scopes | quote }}
+            - name: ADMIN_OIDC_NAME
+              value: {{ $a.oidc.name | quote }}
+            - name: ADMIN_OIDC_GROUPS_CLAIM
+              value: {{ $a.oidc.groupsClaim | quote }}
+            - name: ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL
+              value: {{ $a.oidc.trustUnverifiedEmail | toString | quote }}
+            - name: ADMIN_AUTH_HEADER
+              value: {{ $a.trustedHeader.header | quote }}
+            - name: ADMIN_AUTH_GROUPS_HEADER
+              value: {{ $a.trustedHeader.groupsHeader | quote }}
+            - name: ADMIN_TRUSTED_PROXIES
+              value: {{ $a.trustedHeader.trustedProxies | quote }}
+            - name: ADMIN_ALLOWED_USERS
+              value: {{ $a.allowed.users | quote }}
+            - name: ADMIN_ALLOWED_GROUPS
+              value: {{ $a.allowed.groups | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: statsd
+              containerPort: 8125
+              protocol: UDP
+          # the image's HEALTHCHECK (/ffs-admin healthcheck: GET /healthz, every 30s, 5s timeout)
+          # over HTTP, the image has no shell. It listens once its database is ready: the
+          # first start moves the tables of an older install, within 10 minutes
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- with $a.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

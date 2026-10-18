@@ -48,6 +48,8 @@ type attentionInput struct {
 	alerts          *SendStatus // nil without ADMIN_ALERT_EMAIL
 	// FXA_MAX_ACCOUNTS, nil when not read
 	accountLimit *Limit
+	// ADMIN_DEPLOYMENT, for the commands
+	deployment deployment
 }
 
 // nearMaxUsers: 90% of max users or more are taken, full too (0: no new account at all,
@@ -83,8 +85,13 @@ func metricsRow(syncUp bool, lastWrite, last, from time.Time) (Component, bool) 
 		Error: fmt.Sprintf("Sync data changed at %s but no metrics arrived since %s", formatTime(lastWrite, adminZone), since)}, true
 }
 
-// restartSync: how to restart the Sync server, for the missing metrics
-const restartSync = "restart it (docker compose restart syncstorage, or systemctl --user restart firefox-sync-syncstorage.service)"
+// deployment: the App's, compose's without one (in the tests)
+func (h *Health) deployment() deployment {
+	if h.app == nil {
+		return deployment{}
+	}
+	return h.app.deployment
+}
 
 // silenceFrom: since when no metrics count as silence, the start of the admin UI or the
 // Sync server's last coming up (after an outage the old last packet is no measure)
@@ -120,7 +127,7 @@ func needsAttention(in attentionInput) []attention {
 		case c.Name == notifyCheckName && !c.Up:
 			add("#notify-status", "Alerts", "Notifications fail (%s): the alerts wait for the next try.", c.Error)
 		case c.Name == metricsCheck && c.Warn:
-			add("/activity", "Activity", "%s: %s.", c.Error, restartSync)
+			add("/activity", "Activity", "%s: %s.", c.Error, in.deployment.restartSync())
 		case c.Name == errorRateCheck && c.Warn:
 			add("/activity#errors", "Activity", "%s: see the errors by kind.", c.Error)
 		case c.Name == growthCheck && c.Warn:
@@ -265,7 +272,7 @@ func (h *Health) thresholdEvents(st *SyncStatus, accounts *Limit, syncUp bool, l
 	// the Sync server down: its health alerts, the silence keeps its state until it is up
 	if row, silent := metricsRow(syncUp, lastWrite, lastStatsd, h.silenceFrom()); syncUp && h.changed("statsd-silent", okState(!silent)) {
 		if silent {
-			events = append(events, row.Error+": "+restartSync)
+			events = append(events, row.Error+": "+h.deployment().restartSync())
 		} else {
 			events = append(events, "Metrics from the Sync server arrive again")
 		}
