@@ -185,6 +185,13 @@ upgrade_env() {
         [ -n "$(env_value POSTGRES_SYNC_USER)" ] || set_value POSTGRES_SYNC_USER syncserver_app
         set_value POSTGRES_SYNC_PASSWORD "$(generate_random_string 32)"
     fi
+    # Sync on PostgreSQL, from before POSTGRES_IMAGE: postgres:18, the major it runs (every
+    # release so far used 18, git log -- docker-compose.sync-postgres.yml confirms it)
+    if [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && ! grep -q '^POSTGRES_IMAGE=' "${env_file}"; then
+        set_value POSTGRES_IMAGE postgres:18
+        echo "POSTGRES_IMAGE=postgres:18: the Sync database stays on PostgreSQL 18. To move it to"
+        echo "  a newer major: a dump and restore (ADMIN.md#restoring) or pg_upgrade (DATABASES.md#another-postgresql-major)"
+    fi
     # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11.8, they stay there
     if [ "$(env_value FXA_DB)" = mariadb ] && ! grep -q '^FXA_MARIADB_IMAGE=' "${env_file}"; then
         set_value FXA_MARIADB_IMAGE mariadb:11.8
@@ -522,9 +529,12 @@ fxa_mariadb_volume() {
     return 1
 }
 
-# run again on an install: its accounts database stays on the MariaDB version it runs
+# run again on an install: its databases stay on the PostgreSQL or MariaDB versions they run
+PREVIOUS_SYNCSTORAGE_IMAGE="" PREVIOUS_POSTGRES_IMAGE=""
 PREVIOUS_FXA_DB="" PREVIOUS_FXA_MARIADB_IMAGE=""
 if [ -f "${SCRIPT_DIR}/.env" ]; then
+    PREVIOUS_SYNCSTORAGE_IMAGE=$(env_value SYNCSTORAGE_IMAGE)
+    PREVIOUS_POSTGRES_IMAGE=$(env_value POSTGRES_IMAGE)
     PREVIOUS_FXA_DB=$(env_value FXA_DB)
     PREVIOUS_FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
 fi
@@ -677,6 +687,15 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SYNC_USER=.*|POSTGRES_SYNC_USER=syncserver_app|"
         apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SYNC_PASSWORD=.*|POSTGRES_SYNC_PASSWORD=$(generate_random_string 32)|"
     fi
+    # PostgreSQL 18 for new installs, written out (unset it is postgres:18; not lts: no install
+    # moves to a new major by itself). One that ran PostgreSQL before POSTGRES_IMAGE, or whose
+    # PostgreSQL volume is still there, runs postgres:18 (every release so far used 18, git log
+    # -- docker-compose.sync-postgres.yml confirms it)
+    POSTGRES_IMAGE=postgres:18
+    if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
+        POSTGRES_IMAGE=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
+    fi
+    apply_sed ${SCRIPT_DIR}/.env "s|^# POSTGRES_IMAGE=.*|POSTGRES_IMAGE=$(sed_escape "${POSTGRES_IMAGE}")|"
 fi
 
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)

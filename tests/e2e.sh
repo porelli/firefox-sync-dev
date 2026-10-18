@@ -444,6 +444,16 @@ check "$(hb)" 200 "/__heartbeat__ after the upgrade"
 # (this tree's compose files from here on, also with UPGRADE_FROM)
 check "$(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -q syncstorage)") $(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -a -q syncstorage_migrate)")" \
   "[CAP_NET_RAW] [CAP_NET_RAW]" "the Sync server and its migrations without raw sockets (cap_drop)"
+if [ "${BACKEND}" = postgres ] && [ -z "${EXTERNAL_DB:-}" ]; then
+  # postgres_db and backup use POSTGRES_IMAGE from .env (postgres:18 by default)
+  POSTGRES_IMAGE=$(grep "^POSTGRES_IMAGE=" "${ENV_FILE}" | cut -d= -f2)
+  POSTGRES_IMAGE=${POSTGRES_IMAGE:-postgres:18}
+  check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -q postgres_db)")" \
+    "${POSTGRES_IMAGE}" "postgres_db uses POSTGRES_IMAGE from .env"
+  # backup service: check the compose config (not running unless COMPOSE_PROFILES=backup was used)
+  check "$(dc config | sed -n '/^  backup:/,/^  [a-z]/p' | grep "image:" | awk '{print $2}')" \
+    "${POSTGRES_IMAGE}" "backup service configured with POSTGRES_IMAGE from .env"
+fi
 
 echo "== the migrations step ends when syncstorage-rs does not stop on SIGTERM"
 # its graceful shutdown can hang for good: the step kills it 30 s after SIGTERM, and still

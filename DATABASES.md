@@ -20,6 +20,12 @@ This section is about the database containers of the stack, not your own server.
 - The users use MySQL 8.4's default `caching_sha2_password`, with no `mysql_native_password`. The Sync server and the admin UI connect without TLS, the same as with your own MySQL server. The init container's MariaDB client connects over TLS without checking MySQL's self-signed certificate, on the stack's own network (`MARIADB_TLS_VERIFY=false`, which `docker-compose.sync-mysql.yml` sets for compose; without it the init fails with `ERROR 2026`).
 - `mysql:8.4` is the current MySQL LTS release.
 
+## Another PostgreSQL major
+
+The `postgres_db` and `backup` services use `POSTGRES_IMAGE` (`.env`): `postgres:18` for the new installs `prepare_environment.sh` sets up, also when it is not set, as the installs from before it. `./prepare_environment.sh --upgrade`, or running `prepare_environment.sh` again on the install, writes `POSTGRES_IMAGE=postgres:18` for them, which pins the PostgreSQL major of each install. The official PostgreSQL image keeps its data at `/var/lib/postgresql/<major>/docker` and refuses to start when an older major's data is there: moving to a newer major needs a dump and restore ([ADMIN.md#restoring](ADMIN.md#restoring)) or `pg_upgrade` (not automated here), and the image fails loudly when neither was done — so no guard is needed, unlike MariaDB where the server silently upgrades the data.
+
+With your own database server (`EXTERNAL_DB=1`): `POSTGRES_IMAGE` picks the backup client image (`postgres:18` by default): set it to your server's major, since `pg_dump` must be at least the server's major.
+
 ## Supported servers
 
 | Component | Supported | Tested |

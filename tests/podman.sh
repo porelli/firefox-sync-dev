@@ -174,6 +174,8 @@ compose_test() {
     "1 1" "--upgrade renames docker-compose.postgres.yml in COMPOSE_FILE, and says so (postgres)"
   check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $([ "${backend}" != postgres ] || env_of POSTGRES_SYNC_USER)" \
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
+  [ "${backend}" != postgres ] || check "$(env_of POSTGRES_IMAGE)" "postgres:18" "--upgrade writes POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"
+  [ "${backend}" != mysql ] || check "$(env_of FXA_DB | grep -c mariadb)" "0" "no FXA_MARIADB_IMAGE for MariaDB backend without accounts (${backend})"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
   timeout 600 docker compose "$@" up -d >> "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up (${backend})"

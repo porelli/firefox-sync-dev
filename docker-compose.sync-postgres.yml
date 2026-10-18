@@ -122,7 +122,7 @@ services:
       - ${CONTAINER_EXPORT_PORT}:8000
 
   postgres_db:
-    image: postgres:18
+    image: ${POSTGRES_IMAGE:-postgres:18}
     # 0: your own server (DATABASES.md); compose then skips the dependency on it
     deploy:
       replicas: ${DB_CONTAINERS:-1}
@@ -262,7 +262,7 @@ services:
   # optional nightly backups (COMPOSE_PROFILES=backup) of the database into the backups
   # volume, see ADMIN.md#backups. Run one now: docker compose exec backup sh /ffs-backup/backup.sh now
   backup:
-    image: postgres:18
+    image: ${POSTGRES_IMAGE:-postgres:18}
     profiles: [backup]
     entrypoint: [sh, /ffs-backup/backup.sh]
     command: [loop]
