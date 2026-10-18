@@ -132,19 +132,6 @@ lint() {
   output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --show-only templates/syncstorage.yaml)
   [[ $(echo "${output}" | grep -c 'drop: \["NET_RAW"\]') -eq 2 ]] || fail "mariadb: NET_RAW not dropped on migrate and syncstorage"
   check "mariadb: migrate and syncstorage without NET_RAW"
-  # the migrate init container runs compose's syncstorage_migrate script, verbatim
-  for backend in mariadb postgres; do
-    compose=docker-compose.yml
-    [[ ${backend} == postgres ]] && compose=docker-compose.sync-postgres.yml
-    want=$(sed -n '/^  syncstorage_migrate:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    command:$/,/^    [a-z_]*:/p' \
-      | sed '1,2d;$d' | sed 's/^        //')
-    got=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
-      --show-only templates/syncstorage.yaml | manifests | jq -r '.[] | select(.kind == "Deployment") | .spec.template.spec.initContainers[]
-      | select(.name == "migrate") | .args[0]' | sed '$ { /^$/d; }')
-    [[ -n "${want}" && "${want}" == "${got}" ]] || fail "${backend}: the migrate script differs from ${compose}'s syncstorage_migrate: $(diff <(echo "${want}") <(echo "${got}"))"
-  done
-  check "migrate: compose's syncstorage_migrate script verbatim (docker-compose.yml, docker-compose.sync-postgres.yml)"
-
   # database.image.<backend>: the database server, wait-db, the backups and the PVC's binding
   # Job (compose's POSTGRES_IMAGE: postgres_db and backup), postgres:18 by default
   for backend in mariadb mysql postgres; do
@@ -165,15 +152,13 @@ lint() {
   [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == postgres:18 ]] || fail "database.image.postgres is not postgres:18 by default"
   check "database.image.<backend> for the server, wait-db, the backups and the binding Job (mariadb:lts, mysql:8.4, postgres:18), empty refused"
 
-  # db/mysql/admin-user.sh: the chart's copy identical, run by the MariaDB and MySQL containers
-  cmp -s "${CHART_DIR}/files/admin-user.sh" "${REPO_ROOT}/db/mysql/admin-user.sh" \
-    || fail "charts/firefox-sync/files/admin-user.sh differs from db/mysql/admin-user.sh"
+  # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
     output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --show-only templates/databases.yaml)
     [[ $(echo "${output}" | grep -c 'args: \[sh, /ffs-db/admin-user.sh, ') -eq 2 ]] || fail "${backend}: admin-user.sh not the command of both databases"
     [[ $(echo "${output}" | grep -c 'name: ADMIN_DB_ROLE$') -eq 2 ]] || fail "${backend}: ADMIN_DB_ROLE missing"
   done
-  check "admin-user.sh identical to db/mysql/admin-user.sh, run by both MariaDB/MySQL databases"
+  check "admin-user.sh run by both MariaDB/MySQL databases"
   # a changed admin-user.sh rolls the databases out again (their ConfigMap is read at the start)
   for backend in mariadb mysql; do
     sums=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" | manifests \
@@ -183,21 +168,19 @@ lint() {
   done
   check "checksum/db-scripts on both MariaDB/MySQL databases: a changed admin-user.sh restarts them"
 
-  # the backups, compose's backup service (COMPOSE_PROFILES=backup): config/backup/backup.sh
-  # identical, off by default, then a CronJob with compose's image and variables
+  # the backups, compose's backup service (COMPOSE_PROFILES=backup): off by default, then a
+  # CronJob with compose's image (its variables, backup.sh identical: parity)
   echo "Testing the backups..."
-  cmp -s "${CHART_DIR}/files/backup.sh" "${REPO_ROOT}/config/backup/backup.sh" \
-    || fail "charts/firefox-sync/files/backup.sh differs from config/backup/backup.sh"
   if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" | manifests \
     | jq -e '.[] | select(.kind == "CronJob" or (.metadata.name | test("backup")))' > /dev/null; then
     fail "backup.enabled=false: a CronJob or a backup object rendered"
   fi
-  check "backup.sh identical to config/backup/backup.sh; no backups by default"
+  check "no backups by default"
   names=""
   for backend in mariadb mysql postgres; do
-    compose=docker-compose.yml image=mariadb:lts
+    image=mariadb:lts
     [[ ${backend} == mysql ]] && image=mysql:8.4
-    [[ ${backend} == postgres ]] && compose=docker-compose.sync-postgres.yml image=postgres:18
+    [[ ${backend} == postgres ]] && image=postgres:18
     docs=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
       --set backup.enabled=true | manifests)
     cron=$(echo "${docs}" | jq '.[] | select(.kind == "CronJob" and .metadata.name == "test-release-firefox-sync-backup")')
@@ -226,21 +209,7 @@ lint() {
     [[ "$(echo "${bind}" | jq -c 'map(.spec.template.spec | [(.volumes[] | .persistentVolumeClaim.claimName // empty), .containers[0].image, .restartPolicy])')" \
       == "[[\"test-release-firefox-sync-backups\",\"${image}\",\"Never\"]]" ]] || fail "${backend}: no Job binding the backups PVC: ${bind}"
     names+=" $(echo "${bind}" | jq -r '.[0].metadata.name | ltrimstr("test-release-firefox-sync-backup-volume-")')"
-    # compose's variables of the backup service, the secrets from the Secret
-    env=$(echo "${pod}" | jq '.containers[0].env')
-    want=$(sed -n '/^  backup:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    environment:$/,/^    [a-z_]*:$/p' \
-      | grep -oE '^      [A-Z][A-Z0-9_]*' | tr -d ' ' | sort)
-    got=$(echo "${env}" | jq -r '.[].name' | sort)
-    [[ -n "${want}" && "${want}" == "${got}" ]] || fail "${backend}: the backup's variables differ from ${compose}'s backup: $(diff <(echo "${want}") <(echo "${got}") | grep '^[<>]' | paste -sd' ' -)"
-    vals=$(echo "${env}" | jq -cS 'map({(.name): (.value // ("secret:" + .valueFrom.secretKeyRef.key))}) | add')
-    case ${backend} in
-      # as the Sync server's own role (the owner of its tables, ADMIN.md#restoring loads it as
-      # that role too), never the superuser: no POSTGRES_PASSWORD
-      postgres) expected='{"ADMIN_DB_NAME":"ffs_admin","ADMIN_DB_PASSWORD":"secret:ADMIN_DB_PASSWORD","ADMIN_DB_USER":"ffs_admin_ui","BACKUP_KEEP":"7","BACKUP_SCOPE":"sync","BACKUP_TIME":"03:00","TOKENSERVER_DB_HOST":"test-release-firefox-sync-postgres","TOKENSERVER_DB_NAME":"syncserver","TOKENSERVER_DB_PASSWORD":"secret:POSTGRES_SYNC_PASSWORD","TOKENSERVER_DB_PORT":"5432","TOKENSERVER_DB_TYPE":"postgres","TOKENSERVER_DB_USER":"syncserver_app"}' ;;
-      *) expected='{"ADMIN_DB_NAME":"ffs_admin","ADMIN_DB_PASSWORD":"secret:ADMIN_DB_PASSWORD","ADMIN_DB_USER":"ffs_admin_ui","BACKUP_KEEP":"7","BACKUP_SCOPE":"sync","BACKUP_TIME":"03:00","MARIADB_TLS_VERIFY":"'"$([[ ${backend} == mysql ]] && echo false || echo true)"'","STORAGE_DB_HOST":"test-release-firefox-sync-storage-db","STORAGE_DB_NAME":"syncstorage","STORAGE_DB_PASSWORD":"secret:STORAGE_DB_PASSWORD","STORAGE_DB_PORT":"3306","STORAGE_DB_USER":"syncstorage","TOKENSERVER_DB_HOST":"test-release-firefox-sync-tokenserver-db","TOKENSERVER_DB_NAME":"tokenserver","TOKENSERVER_DB_PASSWORD":"secret:TOKENSERVER_DB_PASSWORD","TOKENSERVER_DB_PORT":"3306","TOKENSERVER_DB_TYPE":"mysql","TOKENSERVER_DB_USER":"tokenserver"}' ;;
-    esac
-    [[ "${vals}" == "${expected}" ]] || fail "${backend}: the backup's variables: ${vals}"
-    check "${backend}: CronJob ${image} backup.sh now at 0 3 * * * UTC (Forbid), the PVC at /backups (bound by a Job), compose's variables, secrets from the Secret"
+    check "${backend}: CronJob ${image} backup.sh now at 0 3 * * * UTC (Forbid), the PVC at /backups (bound by a Job)"
   done
   # (one per image: a hash of the pod template)
   [[ "${names}" =~ ^\ [0-9a-f]{8}\ [0-9a-f]{8}\ [0-9a-f]{8}$ && $(tr ' ' '\n' <<< "${names}" | sort -u | wc -l) -eq 4 ]] \
@@ -348,8 +317,6 @@ lint() {
   fi
   check "admin UI off by default, no SYNC_STATSD_* on the Sync server"
   for backend in mariadb mysql postgres; do
-    compose=docker-compose.yml
-    [[ ${backend} == postgres ]] && compose=docker-compose.sync-postgres.yml
     output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" \
       --set database.backend="${backend}" --set admin.enabled=true)
     docs=$(echo "${output}" | manifests)
@@ -368,13 +335,7 @@ lint() {
     # (ADMIN_K8S_SECRET: the name of the Secret)
     plain=$(echo "${admin}" | jq -r '.[] | select(.value != null) | .name' | grep -E '(^|_)(PASS|PASSWORD|SECRET|TOKEN)$' | grep -vx ADMIN_K8S_SECRET || true)
     [[ -z "${plain}" ]] || fail "${backend}: secrets of the admin UI as plain values: ${plain}"
-    # compose's ffs-admin variables, but ADMIN_EXPORT_PORT (a port of the host: the Service
-    # here); and the chart's own
-    want=$(sed -n '/^  ffs-admin:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    environment:$/,/^    [a-z_]*:$/p' \
-      | grep -oE '^      [A-Z][A-Z0-9_]*' | tr -d ' ' | grep -vx ADMIN_EXPORT_PORT | sort)
-    got=$(echo "${admin}" | jq -r '.[].name' | grep -vxE 'ADMIN_K8S_(RELEASE|NAMESPACE|FULLNAME|SECRET)' | sort)
-    [[ "${want}" == "${got}" ]] || fail "${backend}: the admin UI's variables differ from ${compose}'s ffs-admin: $(diff <(echo "${want}") <(echo "${got}") | grep '^[<>]' | paste -sd' ' -)"
-    check "${backend}: admin Service http 8080/TCP + statsd 8125/UDP, SYNC_STATSD_HOST, compose's variables, secrets from the Secret"
+    check "${backend}: admin Service http 8080/TCP + statsd 8125/UDP, SYNC_STATSD_HOST, secrets from the Secret"
   done
   # its optional secrets: from the values into the Secret, optional in an existingSecret
   output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true \
@@ -450,9 +411,17 @@ lint() {
 
   external_lint
   ingress_lint
+  # compose's variables, commands, probes and scripts
+  parity
 
   echo ""
   echo "=== All lint checks passed ==="
+}
+
+# the chart against compose (docker compose config, no daemon): tests/helm_parity.py
+parity() {
+  echo "=== Comparing the chart with compose ==="
+  python3 "${SCRIPT_DIR}/helm_parity.py" "$@" || fail "the chart differs from compose"
 }
 
 # every env entry of every container (init containers too) of the rendered manifests (a JSON
@@ -1391,12 +1360,17 @@ case "${1:-}" in
   lint)
     lint
     ;;
+  parity)
+    shift
+    parity "$@"
+    ;;
   e2e)
     e2e "${2:-}"
     ;;
   *)
-    echo "Usage: $0 {lint|e2e <mariadb|mysql|postgres>}"
-    echo "  lint                              - helm lint and template checks"
+    echo "Usage: $0 {lint|parity [case...]|e2e <mariadb|mysql|postgres>}"
+    echo "  lint                              - helm lint and template checks (parity too)"
+    echo "  parity [case...]                  - the chart's env, commands and probes against compose's (tests/helm_parity.py)"
     echo "  e2e <mariadb|mysql|postgres>      - install on a kind cluster and run the client flow"
     exit 1
     ;;
