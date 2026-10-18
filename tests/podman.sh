@@ -8,6 +8,9 @@
 #   REPOSITORY  image repository (default: ghcr.io/porelli/firefox-sync)
 #   TAG         tag suffix of both the app and init images (default: latest)
 #   PORT        host port (default: 28660)
+#   SLOT        runs next to each other on one host (tests/slot.sh): 1000 * SLOT added to the
+#               ports (default 0). The Quadlets' units, containers and volumes have the names
+#               of a user's install: one run of this test at a time per user in any case
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
 #   SYNC_DB     mariadb (default) or mysql: the Sync databases of the compose and quadlet phases
@@ -24,9 +27,13 @@ set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CODE=$(dirname "${TESTS}")
+# shellcheck source=tests/slot.sh
+source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
-PORT=${PORT:-28660}
+PORT=${PORT:-$((28660 + SLOT_PORTS))}
+# the admin UI, the sign-up gate, the accounts' pages and API
+ADMIN_PORT=$((28690 + SLOT_PORTS)) GATE_PORT=$((28691 + SLOT_PORTS)) CONTENT_PORT=$((28630 + SLOT_PORTS)) AUTH_PORT=$((28600 + SLOT_PORTS))
 WORK=$(mktemp -d)
 export QUADLET_DIR=${WORK}/quadlets-unused  # replaced below for the quadlet phase
 # the backup timer: a plain systemd unit
@@ -72,16 +79,16 @@ rm -f .env
 # ports of its own, next to whatever else runs on this host
 example() { sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
        -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
-       -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:28690|" \
-       -e "s|^ADMIN_GATE_EXPORT_PORT=.*|ADMIN_GATE_EXPORT_PORT=127.0.0.1:28691|" \
+       -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:${ADMIN_PORT}|" \
+       -e "s|^ADMIN_GATE_EXPORT_PORT=.*|ADMIN_GATE_EXPORT_PORT=127.0.0.1:${GATE_PORT}|" \
        -e "s|^ADMIN_METRICS_TOKEN=.*|ADMIN_METRICS_TOKEN=ffs-test-metrics-token|" \
        -e "s|^ADMIN_UPDATE_CHECK=.*|ADMIN_UPDATE_CHECK=false|" \
        -e "s|^ADMIN_PUBLIC_CHECK=.*|ADMIN_PUBLIC_CHECK=false|" \
-       -e "s|^FXA_CONTENT_EXPORT_PORT=.*|FXA_CONTENT_EXPORT_PORT=127.0.0.1:28630|" \
-       -e "s|^FXA_AUTH_EXPORT_PORT=.*|FXA_AUTH_EXPORT_PORT=127.0.0.1:28600|" \
-       -e "s|^FXA_PROFILE_EXPORT_PORT=.*|FXA_PROFILE_EXPORT_PORT=127.0.0.1:28611|" \
-       -e "s|^FXA_PROFILE_STATIC_EXPORT_PORT=.*|FXA_PROFILE_STATIC_EXPORT_PORT=127.0.0.1:28612|" \
-       -e "s|^FXA_PAIRING_EXPORT_PORT=.*|FXA_PAIRING_EXPORT_PORT=127.0.0.1:28658|" "$1/.env-example"; }
+       -e "s|^FXA_CONTENT_EXPORT_PORT=.*|FXA_CONTENT_EXPORT_PORT=127.0.0.1:${CONTENT_PORT}|" \
+       -e "s|^FXA_AUTH_EXPORT_PORT=.*|FXA_AUTH_EXPORT_PORT=127.0.0.1:${AUTH_PORT}|" \
+       -e "s|^FXA_PROFILE_EXPORT_PORT=.*|FXA_PROFILE_EXPORT_PORT=127.0.0.1:$((28611 + SLOT_PORTS))|" \
+       -e "s|^FXA_PROFILE_STATIC_EXPORT_PORT=.*|FXA_PROFILE_STATIC_EXPORT_PORT=127.0.0.1:$((28612 + SLOT_PORTS))|" \
+       -e "s|^FXA_PAIRING_EXPORT_PORT=.*|FXA_PAIRING_EXPORT_PORT=127.0.0.1:$((28658 + SLOT_PORTS))|" "$1/.env-example"; }
 example .
 # the admin UI under test, where compose and the quadlets look for it
 if [ -n "${ADMIN_IMAGE:-}" ]; then
@@ -95,7 +102,7 @@ setup() { printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 "$1" "$2" "" "${TAG}" "" 
 admin_up() {
   local c
   for _ in $(seq 1 30); do
-    c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:28690$1")
+    c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ADMIN_PORT}$1")
     [ "${c}" = 200 ] && break
     sleep 2
   done
@@ -108,7 +115,7 @@ admin_up() {
 metrics_show() {
   local m line missing
   for _ in $(seq 1 75); do
-    m=$(curl -s -H 'Authorization: Bearer ffs-test-metrics-token' http://127.0.0.1:28690/metrics)
+    m=$(curl -s -H 'Authorization: Bearer ffs-test-metrics-token' http://127.0.0.1:${ADMIN_PORT}/metrics)
     missing=""
     for line in "$@"; do grep -qxF "${line}" <<< "${m}" || { missing=${line}; break; }; done
     [ -z "${missing}" ] && break
@@ -123,8 +130,8 @@ SYNC_UP=('ffs_up{component="Sync server"} 1' 'ffs_up{component="Tokenserver data
 # it for localhost
 admin_sign_in() {
   local jar=${WORK}/cookies-$1
-  curl -s -o /dev/null -c "${jar}" --data-urlencode "password=$(grep '^ADMIN_PASSWORD=' .env | cut -d= -f2)" http://localhost:28690/login
-  curl -s -b "${jar}" http://localhost:28690/ | grep -q 'Sign out' && echo yes
+  curl -s -o /dev/null -c "${jar}" --data-urlencode "password=$(grep '^ADMIN_PASSWORD=' .env | cut -d= -f2)" http://localhost:${ADMIN_PORT}/login
+  curl -s -b "${jar}" http://localhost:${ADMIN_PORT}/ | grep -q 'Sign out' && echo yes
 }
 
 env_of() { grep "^$1=" .env | cut -d= -f2; }
@@ -620,25 +627,25 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$?" 0 "systemctl --user start (syncstorage and accounts)"
   ok=""
   for _ in $(seq 1 90); do
-    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28630/__heartbeat__)" = 200 ] && ok=yes && break
+    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${CONTENT_PORT}/__heartbeat__)" = 200 ] && ok=yes && break
     sleep 5
   done
   check "${ok}" yes "accounts web pages answer (quadlets)"
   ok=""
   for _ in $(seq 1 90); do
-    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28600/__heartbeat__)" = 200 ] && ok=yes && break
+    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${AUTH_PORT}/__heartbeat__)" = 200 ] && ok=yes && break
     sleep 5
   done
   check "${ok}" yes "accounts API answers (quadlets)"
-  check "$(curl -s http://127.0.0.1:28630/.well-known/fxa-client-configuration | grep -o '"auth_server_base_url":"[^"]*"')" '"auth_server_base_url":"https://api.fxa.invalid"' "client configuration (quadlets)"
+  check "$(curl -s http://127.0.0.1:${CONTENT_PORT}/.well-known/fxa-client-configuration | grep -o '"auth_server_base_url":"[^"]*"')" '"auth_server_base_url":"https://api.fxa.invalid"' "client configuration (quadlets)"
   journalctl --user -u firefox-sync-fxa-policy.service --no-pager 2> /dev/null | grep -m1 "sign-ups:"
   check "$(journalctl --user -u firefox-sync-fxa-policy.service --no-pager 2> /dev/null | grep -q 'max accounts: unlimited (FXA_MAX_ACCOUNTS=initial:unlimited' && echo yes)" yes \
     "fxa-policy set max accounts (quadlets)"
-  check "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"email":"someone@example.org","authPW":"00"}' http://127.0.0.1:28691/v1/account/create)" 400 "sign-up gate refuses an email not on the allowlist (quadlets)"
+  check "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"email":"someone@example.org","authPW":"00"}' http://127.0.0.1:${GATE_PORT}/v1/account/create)" 400 "sign-up gate refuses an email not on the allowlist (quadlets)"
   # the gate reaches the accounts API by its network alias: give it the same time as the checks above
   gate=""
   for _ in $(seq 1 30); do
-    gate=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:28691/__heartbeat__)
+    gate=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${GATE_PORT}/__heartbeat__)
     [ "${gate}" = 200 ] && break
     sleep 2
   done
@@ -649,7 +656,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
     'ffs_up{component="Accounts pages"} 1' 'ffs_up{component="Profile server"} 1' 'ffs_up{component="Accounts database"} 1' \
     'ffs_up{component="Accounts Redis"} 1' 'ffs_accounts 0')" all "admin UI reaches the accounts services (quadlets)"
   check "$(podman healthcheck run firefox-sync-admin > /dev/null 2>&1; echo $?)" 0 "admin UI healthcheck (quadlets with accounts)"
-  check "$(curl -s http://127.0.0.1:28690/login | grep -c '>Sign in with Mozilla account</a>')" 1 "admin UI offers the accounts' sign-in (quadlets)"
+  check "$(curl -s http://127.0.0.1:${ADMIN_PORT}/login | grep -c '>Sign in with Mozilla account</a>')" 1 "admin UI offers the accounts' sign-in (quadlets)"
   # the backup of the accounts runs with that of Sync, before it (WantedBy=, Before=)
   timeout 600 systemctl --user start firefox-sync-backup.service
   check "$?" 0 "systemctl --user start firefox-sync-backup.service (quadlets with accounts)"

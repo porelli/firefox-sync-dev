@@ -17,6 +17,9 @@
 #   CLEANUP_IMAGES  set to 1 to remove the pulled images at the end
 #   SKIP_PULL       set to 1 to use the local images (e.g. an init image built from this tree)
 #   KEEP            set to 1 to leave the stack running
+#   SLOT            runs next to each other on one host (tests/slot.sh): 0 (default) the project,
+#                   ports and networks below; 1, 2...: -s<SLOT> after the project, 1000 * SLOT
+#                   added to the ports, 10 * SLOT to the third byte of the networks
 #   TEST_SUBNET     the stack's network, a /24 (default: 10.231.1.0/24 mysql, 10.231.2.0/24 postgres,
 #                   10.231.4.0/24 SYNC_DB=mysql);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
@@ -49,14 +52,15 @@ ENV_FILE=${WORK}/${BACKEND}.env
 
 SYNC_DB=${SYNC_DB:-mariadb}
 case ${BACKEND}:${SYNC_DB} in
-  mysql:mariadb)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28651}; NET=1 ;;
-  postgres:mariadb) COMPOSE=${CODE}/docker-compose.sync-postgres.yml; PORT=${PORT:-28652}; NET=2 ;;
+  mysql:mariadb)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28651 + SLOT_PORTS))}; NET=$((1 + SLOT_NET)) ;;
+  postgres:mariadb) COMPOSE=${CODE}/docker-compose.sync-postgres.yml; PORT=${PORT:-$((28652 + SLOT_PORTS))}; NET=$((2 + SLOT_NET)) ;;
   # (28653 is tests/e2e-fxa.sh's)
-  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28654}; NET=4; PROJECT=${PROJECT}-mysql84 ;;
+  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28654 + SLOT_PORTS))}; NET=$((4 + SLOT_NET)); PROJECT=${PROJECT}-mysql84 ;;
   postgres:*) echo "SYNC_DB is for the mysql backend"; exit 2 ;;
   mysql:*) echo "SYNC_DB: mariadb or mysql"; exit 2 ;;
   *) echo "unknown backend ${BACKEND}"; exit 2 ;;
 esac
+PROJECT=${PROJECT}${SLOT_SUFFIX}
 if [ "${SYNC_DB}" = mysql ] && [ -n "${EXTERNAL_DB:-}" ]; then
   echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL 8.4"; exit 2
 fi
@@ -388,14 +392,14 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   # that release itself: its compose files, its admin UI and its init container
   ROOT=$(cd -- "${UPGRADE_FROM}" && pwd) || exit 1
   ADMIN_NOW=${ADMIN_IMAGE} INIT_TAG=${SYNCSTORAGE_INIT_IMAGE_TAG}
-  export ADMIN_IMAGE=ffs-admin:e2e-from
+  export ADMIN_IMAGE=ffs-admin:e2e-from${SLOT_SUFFIX}
   ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build-from -f "${ROOT}/tests/docker-compose.admin-build.yml" build -q ||
     { echo "FAIL: admin UI image built from ${UPGRADE_FROM}/admin"; exit 1; }
   # (releases before db/: syncstorage-rs-init, syncstorage-rs-init-postgres)
   init_dir=${ROOT}/db/${BACKEND}/init
   [ -d "${init_dir}" ] || init_dir=${ROOT}/syncstorage-rs-init$([ "${BACKEND}" = postgres ] && echo -postgres)
-  docker build -q -t "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-e2e-from" "${init_dir}" > /dev/null || { echo "FAIL: init image of ${UPGRADE_FROM}"; exit 1; }
-  set_env SYNCSTORAGE_INIT_IMAGE_TAG e2e-from
+  docker build -q -t "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-e2e-from${SLOT_SUFFIX}" "${init_dir}" > /dev/null || { echo "FAIL: init image of ${UPGRADE_FROM}"; exit 1; }
+  set_env SYNCSTORAGE_INIT_IMAGE_TAG "e2e-from${SLOT_SUFFIX}"
 fi
 dc up -d > /dev/null 2>&1 || { dc logs; exit 1; }
 check "$(wait_init)" 0 "init container exit code"

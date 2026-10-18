@@ -33,6 +33,9 @@
 #   SKIP_PULL        set to 1 to use the local images (the FxA images are pulled when missing;
 #                    the docker compose pull of the upgrade runs anyway, as FXA.md says)
 #   KEEP             set to 1 to leave the upgraded stack running (project ffs-fxa-upgrade)
+#   SLOT             runs next to each other on one host (tests/slot.sh): 1, 2...: -s<SLOT> after
+#                    the project, port 28663 + 1000 * SLOT, the others at 28700-28706 + 1000 * SLOT
+#                    (FXA_SAME_TAG tags the shared FXA_IMAGE:FXA_VERSION: not next to other runs)
 set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -41,7 +44,7 @@ CODE=$(dirname "${TESTS}")
 source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
-PROJECT=ffs-fxa-upgrade
+PROJECT=ffs-fxa-upgrade${SLOT_SUFFIX}
 WORK=$(mktemp -d)
 ENV_FILE=${WORK}/fxa.env
 FXA_DB=${FXA_DB:-mysql}
@@ -75,7 +78,7 @@ rnd() { tr -dc '[:alnum:]' < /dev/urandom 2> /dev/null | head -c 32; }
 sed -e "s|<REPLACE_WITH_SOMETHING_SECURE>|RANDOM|" "${CODE}/.env-example" | while IFS= read -r line; do
   case "${line}" in *=RANDOM) echo "${line%RANDOM}$(rnd)" ;; *) echo "${line}" ;; esac
 done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test|" \
-    -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:28663|" \
+    -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:$((28663 + SLOT_PORTS))|" \
     -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
     -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
     -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
@@ -101,6 +104,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^FXA_ARCH=.*|FXA_ARCH=${from_arch}|" \
     -e "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${REPOSITORY}:fxa-channelserver-latest|" \
     -e "/^COMPOSE_FILE=/d" > "${ENV_FILE}"
+slot_fxa_ports "${ENV_FILE}"
 set -a; source "${ENV_FILE}"; set +a
 COMPOSE_EXTRA=()
 if [ "${FXA_DB}" = mariadb ]; then

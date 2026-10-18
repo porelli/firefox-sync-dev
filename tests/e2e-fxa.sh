@@ -29,6 +29,9 @@
 #                    DATABASES.md), container EXTDB, created with only the grants of
 #                    db/mysql/; kept with KEEP, reused by RERUN. fxa: only the accounts
 #                    there, with one user for the accounts and the sign-up policy
+#   SLOT             runs next to each other on one host (tests/slot.sh): 0 (default) project
+#                    ffs-e2e-fxa, port 28653 and the other ports of .env-example; 1, 2...: -s<SLOT>
+#                    after the project, 1000 * SLOT added to 28653, the others at 28700-28706 + 1000 * SLOT
 set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -37,10 +40,10 @@ CODE=$(dirname "${TESTS}")
 source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync}
 TAG=${TAG:-latest}
-PROJECT=ffs-e2e-fxa
+PROJECT=ffs-e2e-fxa${SLOT_SUFFIX}
 WORK=$(mktemp -d)
 ENV_FILE=${WORK}/fxa.env
-KEPT_ENV=${KEPT_ENV:-${HOME}/.cache/ffs-e2e-fxa.env}
+KEPT_ENV=${KEPT_ENV:-${HOME}/.cache/${PROJECT}.env}
 ONLY=${ONLY:-flow,admin,browser}
 PYTEST_ARGS=${PYTEST_ARGS:-}
 runs() { [ -z "${RERUN:-}" ] || [[ ",${ONLY}," == *",$1,"* ]]; }
@@ -52,7 +55,7 @@ ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee
 sed -e "s|<REPLACE_WITH_SOMETHING_SECURE>|RANDOM|" "${CODE}/.env-example" | while IFS= read -r line; do
   case "${line}" in *=RANDOM) echo "${line%RANDOM}$(rnd)" ;; *) echo "${line}" ;; esac
 done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test|" \
-    -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:28653|" \
+    -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:$((28653 + SLOT_PORTS))|" \
     -e "s|^MAX_USERS=.*|MAX_USERS=initial:10|" \
     -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
     -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
@@ -79,6 +82,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=.*|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true|" \
     -e "s|^FXA_ACCOUNT_EVENTS=.*|FXA_ACCOUNT_EVENTS=${FXA_ACCOUNT_EVENTS:-true}|" \
     -e "/^COMPOSE_FILE=/d" > "${ENV_FILE}"
+slot_fxa_ports "${ENV_FILE}"
 # by default the accounts images of the registry under test, for this machine
 case "$(uname -m)" in aarch64|arm64) default_arch=arm64 ;; *) default_arch=amd64 ;; esac
 sed -i -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${REPOSITORY}|" -e "s|^FXA_ARCH=.*|FXA_ARCH=${default_arch}|" \
@@ -176,7 +180,7 @@ trap teardown EXIT
 
 if [ -z "${RERUN:-}" ]; then
 echo "== prepare_environment.sh with self-hosted accounts"
-SETUP=${WORK}/setup && mkdir -p "${SETUP}" && cp -r "${CODE}/." "${SETUP}/" && rm -f "${SETUP}/.env"
+SETUP=${WORK}/setup${SLOT_SUFFIX} && mkdir -p "${SETUP}" && cp -r "${CODE}/." "${SETUP}/" && rm -f "${SETUP}/.env"
 # answers: domain, compose dir, port, max users, backend, [deploy method], user, image tag, admin UI,
 # FxA, FxA domain, SMTP host, port, user, password, sender, sign-up allowlist, admin emails, admin host
 answers=(sync.example.org "${SETUP}" 5000 2 mariadb)

@@ -43,6 +43,8 @@
 #   REPOSITORY, TAG  firefox-sync images under test (default ghcr.io/porelli/firefox-sync-dev, latest)
 #   ADMIN_IMAGE      the admin UI (default ffs-admin:test, built from admin/ when missing)
 #   KEEP             1: leave the stacks running
+#   SLOT             tests/slot.sh: 1, 2...: -s<SLOT> after the projects, PORT 28661 + 1000 * SLOT
+#                    (the old stacks' container names are fixed: one run of a scenario at a time)
 set -u
 
 SCENARIO=${1:?usage: $0 <scenario>, see the top of $0}
@@ -54,7 +56,7 @@ source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync-dev}
 TAG=${TAG:-latest}
 ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
-PORT=${PORT:-28661}
+PORT=${PORT:-$((28661 + SLOT_PORTS))}
 TEST_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-${TAG}
 KEEP_IMAGES=${KEEP_IMAGES:-mariadb:lts mysql:8.4 postgres:18}
 OLD_DOMAIN=https://sync-old.ffs-e2e.invalid
@@ -65,8 +67,8 @@ UPSTREAM_IMAGE_TAG=0.23.3
 WORK=$(mktemp -d /tmp/ffs-mig.XXXXXX)
 SRC=${WORK}/old
 DST=${WORK}/firefox-sync
-SRC_PROJECT=mig-src-${SCENARIO}
-DST_PROJECT=mig-dst-${SCENARIO}
+SRC_PROJECT=mig-src-${SCENARIO}${SLOT_SUFFIX}
+DST_PROJECT=mig-dst-${SCENARIO}${SLOT_SUFFIX}
 STATE=${WORK}/state
 mkdir -p "${SRC}" "${STATE}"
 chmod 777 "${STATE}"
