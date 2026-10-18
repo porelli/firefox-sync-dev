@@ -8,13 +8,16 @@ import (
 
 // deployment: how the stack runs (ADMIN_DEPLOYMENT), for the commands the pages show:
 // compose (the default), quadlets, or kubernetes, the Helm chart, which also passes its
-// release (ADMIN_K8S_RELEASE) and namespace (ADMIN_K8S_NAMESPACE). The admin UI names the
-// chart's objects from the release as the chart does (firefox-sync.fullname)
+// release (ADMIN_K8S_RELEASE) and namespace (ADMIN_K8S_NAMESPACE) for the helm commands,
+// the prefix of its objects (ADMIN_K8S_FULLNAME, firefox-sync.fullname) and its Secret
+// (ADMIN_K8S_SECRET, the chart's or the existingSecret)
 type deployment struct {
 	// compose, quadlets or kubernetes ("": compose)
 	kind string
 	// kubernetes: the Helm release and its namespace ("": kubectl's current one)
 	release, namespace string
+	// kubernetes: the prefix of the chart's objects, its Secret
+	prefix, secret string
 }
 
 // loadDeployment reads ADMIN_DEPLOYMENT: an unknown one stops the start, rather than
@@ -25,8 +28,9 @@ func loadDeployment() (deployment, error) {
 	case "compose", "quadlets":
 	case "kubernetes":
 		d.release, d.namespace = env("ADMIN_K8S_RELEASE", ""), env("ADMIN_K8S_NAMESPACE", "")
-		if d.release == "" {
-			return d, errors.New("ADMIN_DEPLOYMENT=kubernetes needs ADMIN_K8S_RELEASE, the Helm release (the chart sets it)")
+		d.prefix, d.secret = env("ADMIN_K8S_FULLNAME", ""), env("ADMIN_K8S_SECRET", "")
+		if d.release == "" || d.prefix == "" || d.secret == "" {
+			return d, errors.New("ADMIN_DEPLOYMENT=kubernetes needs ADMIN_K8S_RELEASE, ADMIN_K8S_FULLNAME and ADMIN_K8S_SECRET (the chart sets them)")
 		}
 	default:
 		return d, fmt.Errorf("ADMIN_DEPLOYMENT must be compose, quadlets or kubernetes, not %q", d.kind)
@@ -46,18 +50,8 @@ func (d deployment) Kubernetes() *deployment {
 	return &d
 }
 
-// fullname: the prefix of the chart's objects, as its firefox-sync.fullname helper makes
-// it from the release (no fullnameOverride)
-func (d deployment) fullname() string {
-	name := d.release
-	if !strings.Contains(name, "firefox-sync") {
-		name += "-firefox-sync"
-	}
-	if len(name) > 63 {
-		name = name[:63]
-	}
-	return strings.TrimSuffix(name, "-")
-}
+// fullname: the prefix of the chart's objects, as the chart passes it
+func (d deployment) fullname() string { return d.prefix }
 
 // Release: the Helm release
 func (d deployment) Release() string { return d.release }
@@ -80,7 +74,7 @@ func (d deployment) helmUpgrade(set string) string {
 }
 
 // the chart's objects
-func (d deployment) Secret() string         { return d.fullname() }
+func (d deployment) Secret() string         { return d.secret }
 func (d deployment) BackupVolume() string   { return d.fullname() + "-backups" }
 func (d deployment) AdminService() string   { return d.fullname() + "-admin" }
 func (d deployment) syncDeployment() string { return "deployment/" + d.fullname() + "-syncstorage" }
@@ -146,4 +140,12 @@ func (d deployment) setting(env, values string) string {
 		return values
 	}
 	return env
+}
+
+// checkOAuth: where FXA_OAUTH_SERVER_URL is set, for the setup check of its keys
+func (d deployment) checkOAuth() string {
+	if d.Kubernetes() != nil {
+		return "Check fxa.oauthServerUrl in your values of the chart, then " + d.helmUpgrade("") + "."
+	}
+	return "Check FXA_OAUTH_SERVER_URL in .env (http://fxa-auth:9000/v1 with self-hosted accounts)."
 }

@@ -179,13 +179,14 @@ lint() {
     [[ "$(echo "${admin}" | jq -r 'map(select(.name == "ADMIN_DEPLOYMENT" or .name == "ADMIN_K8S_RELEASE"))[].value' | paste -sd' ' -)" == "kubernetes test-release" ]] \
       || fail "${backend}: ADMIN_DEPLOYMENT, ADMIN_K8S_RELEASE"
     # no secret as a plain value
-    plain=$(echo "${admin}" | jq -r '.[] | select(.value != null) | .name' | grep -E '(^|_)(PASS|PASSWORD|SECRET|TOKEN)$' || true)
+    # (ADMIN_K8S_SECRET: the name of the Secret)
+    plain=$(echo "${admin}" | jq -r '.[] | select(.value != null) | .name' | grep -E '(^|_)(PASS|PASSWORD|SECRET|TOKEN)$' | grep -vx ADMIN_K8S_SECRET || true)
     [[ -z "${plain}" ]] || fail "${backend}: secrets of the admin UI as plain values: ${plain}"
     # compose's ffs-admin variables, but ADMIN_EXPORT_PORT (a port of the host: the Service
     # here) and BACKUP_TIME, BACKUP_KEEP (with the backups); and the chart's own
     want=$(sed -n '/^  ffs-admin:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    environment:$/,/^    [a-z_]*:$/p' \
       | grep -oE '^      [A-Z][A-Z0-9_]*' | tr -d ' ' | grep -vxE 'ADMIN_EXPORT_PORT|BACKUP_TIME|BACKUP_KEEP' | sort)
-    got=$(echo "${admin}" | jq -r '.[].name' | grep -vxE 'ADMIN_K8S_RELEASE|ADMIN_K8S_NAMESPACE' | sort)
+    got=$(echo "${admin}" | jq -r '.[].name' | grep -vxE 'ADMIN_K8S_(RELEASE|NAMESPACE|FULLNAME|SECRET)' | sort)
     [[ "${want}" == "${got}" ]] || fail "${backend}: the admin UI's variables differ from ${compose}'s ffs-admin: $(diff <(echo "${want}") <(echo "${got}") | grep '^[<>]' | paste -sd' ' -)"
     check "${backend}: admin Service http 8080/TCP + statsd 8125/UDP, SYNC_STATSD_HOST, compose's variables, secrets from the Secret"
   done
@@ -202,6 +203,48 @@ lint() {
   refs=$(echo "${output}" | grep -A1 'secretKeyRef:' | grep 'name:' | sort -u)
   [[ "${refs}" =~ ^[[:space:]]*name:\ my-secret$ ]] || fail "admin UI on, secretKeyRefs not all to my-secret: ${refs}"
   check "admin secrets: values into the Secret; FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_PASSWORD optional in an existingSecret"
+  # the three optional ones are the values' alone: an empty value an empty key, never what a
+  # lookup of the Secret found (helm template has no cluster: the template must not read them)
+  data=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" --set admin.metricsToken= \
+    --set admin.smtp.password= --set admin.oidc.clientSecret= | manifests | jq -c '.[] | select(.kind == "Secret") | .data
+    | [.ADMIN_METRICS_TOKEN, .FXA_SMTP_PASS, .ADMIN_OIDC_CLIENT_SECRET]')
+  [[ "${data}" == '["","",""]' ]] || fail "empty admin secrets of the values not empty in the Secret: ${data}"
+  for key in FXA_SMTP_PASS ADMIN_OIDC_CLIENT_SECRET ADMIN_METRICS_TOKEN; do
+    grep -qE '^\{\{- \$_ := set \$data "'"${key}"'" \(\.Values\.admin\.' "${CHART_DIR}/templates/secret.yaml" \
+      || fail "${key} not set from the values alone in secret.yaml"
+  done
+  check "FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN from the values alone (empty: empty)"
+  # a new admin pod when a secret of the values changes
+  sum() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests | jq -r '.[]
+      | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
+      | .spec.template.metadata.annotations["checksum/admin-secrets"] // empty'
+  }
+  a=$(sum --set admin.password=one) b=$(sum --set admin.password=two) c=$(sum --set admin.password=one --set admin.metricsToken=other)
+  [[ -n "${a}" && "${a}" != "${b}" && "${a}" != "${c}" && "${a}" == "$(sum --set admin.password=one)" ]] \
+    || fail "checksum/admin-secrets does not follow admin.password and admin.metricsToken: ${a} ${b} ${c}"
+  check "checksum/admin-secrets changes with admin.password and admin.metricsToken"
+  # the names the admin UI shows, as the chart has them
+  env_of() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests | jq -cS '[.[]
+      | select(.kind == "Deployment") | .spec.template.spec.containers[] | .env[]?
+      | select(.name | test("^(ADMIN_K8S_|SYNC_STATSD_HOST)")) | {(.name): .value}] | add'
+  }
+  [[ "$(env_of --set fullnameOverride=x --set existingSecret=mine)" == \
+    '{"ADMIN_K8S_FULLNAME":"x","ADMIN_K8S_NAMESPACE":"default","ADMIN_K8S_RELEASE":"test-release","ADMIN_K8S_SECRET":"mine","SYNC_STATSD_HOST":"x-admin"}' ]] \
+    || fail "names with fullnameOverride and existingSecret: $(env_of --set fullnameOverride=x --set existingSecret=mine)"
+  [[ "$(env_of | jq -r '.ADMIN_K8S_FULLNAME + " " + .ADMIN_K8S_SECRET')" == "test-release-firefox-sync test-release-firefox-sync" ]] \
+    || fail "default names: $(env_of)"
+  check "ADMIN_K8S_FULLNAME, ADMIN_K8S_SECRET as the chart names them (fullnameOverride, existingSecret)"
+  # numbers of a values file (float64 there) as integers, never 2e+06
+  values=$(mktemp)
+  printf 'admin:\n  dbGrowthMb: 2000000\n  retentionDays: 1000000\n  smtp:\n    port: 465\n' > "${values}"
+  numbers=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" -f "${values}" | manifests | jq -r '.[]
+    | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin") | .spec.template.spec.containers[0].env[]
+    | select(.name == "ADMIN_DB_GROWTH_MB" or .name == "ADMIN_RETENTION_DAYS" or .name == "SMTP_PORT") | .value' | paste -sd' ' -)
+  rm -f "${values}"
+  [[ "${numbers}" == "465 1000000 2000000" ]] || fail "numbers of a values file: ${numbers}"
+  check "numbers of a values file as integers (dbGrowthMb 2000000, retentionDays 1000000, smtp.port 465)"
 
   echo ""
   echo "=== All lint checks passed ==="
@@ -332,7 +375,7 @@ e2e() {
 # server and alice of the client flow), then off: the Sync server Ready both ways, with
 # SYNC_STATSD_HOST only while the admin UI's Service exists
 admin_toggle() {
-  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=true \
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=true --set admin.metricsToken=e2e-token \
     --set image.adminTag="${ADMIN_TAG}" --wait --timeout 10m || fail "helm upgrade with the admin UI did not get Ready"
   check "admin UI on: Ready"
   sync_ready "${FULL}-admin"
@@ -372,8 +415,20 @@ admin_toggle() {
   grep -q "create job --from=cronjob/${FULL}-backup backup-now" <<< "${page}" || { kill "${pf}"; fail "overview: no kubectl backup command"; }
   ! grep -q 'docker compose' <<< "${page}" || { kill "${pf}"; fail "overview: docker compose commands"; }
   check "overview: kubectl commands, no docker compose"
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer e2e-token' http://localhost:18090/metrics)" == 200 ]] \
+    || { kill "${pf}"; fail "/metrics refuses admin.metricsToken"; }
+  check "/metrics with admin.metricsToken"
   kill "${pf}" 2> /dev/null || true
   rm -f "${jar}"
+
+  # the token taken out of the values: out of the Secret (no lookup keeps it), a new admin pod
+  local before
+  before=$(kubectl get pods -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=admin" -o jsonpath='{.items[0].metadata.name}')
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.metricsToken= --wait --timeout 10m \
+    || fail "helm upgrade without admin.metricsToken did not get Ready"
+  [[ -z "$(secret ADMIN_METRICS_TOKEN)" ]] || fail "admin.metricsToken emptied, still in the Secret"
+  kubectl wait --for=delete "pod/${before}" --timeout=2m > /dev/null 2>&1 || fail "the admin pod ${before} kept running with the old secret"
+  check "admin.metricsToken emptied: empty in the Secret, a new admin pod"
 
   helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=false --wait --timeout 10m \
     || fail "helm upgrade without the admin UI did not get Ready"

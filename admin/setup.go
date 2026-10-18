@@ -109,7 +109,7 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 		}
 		c := setupCheck{Name: oauthKeysCheck, OK: comp.Up, Text: "The Sync server checks every sign-in of Firefox with these keys: " + comp.Detail + "."}
 		if !comp.Up {
-			c.Text = "The Sync server checks every sign-in of Firefox with the keys of FXA_OAUTH_SERVER_URL, which do not answer (" + comp.Error + "): nobody gets a Sync token. Check FXA_OAUTH_SERVER_URL in .env (http://fxa-auth:9000/v1 with self-hosted accounts)."
+			c.Text = "The Sync server checks every sign-in of Firefox with the keys of FXA_OAUTH_SERVER_URL, which do not answer (" + comp.Error + "): nobody gets a Sync token. " + a.deployment.checkOAuth()
 		}
 		checks = append(checks, c)
 	}

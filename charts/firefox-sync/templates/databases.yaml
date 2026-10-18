@@ -107,26 +107,27 @@ spec:
             {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "POSTGRES_PASSWORD" "key" $passwordKey) | nindent 12 }}
           {{- $check = list "sh" "-c" "pg_isready -U \"${POSTGRES_USER}\" -d \"${POSTGRES_DB}\"" }}
           {{- end }}
-          # compose's healthcheck; the first start (a new database) within 5 minutes, then
-          # restarted after 2.5 minutes without an answer
+          # compose's healthcheck. The first start (a new database, or a long recovery) has
+          # up to 30 minutes; ready as compose's healthy; restarted only after 5 minutes
+          # without an answer, compose would only mark it unhealthy
           startupProbe:
             exec:
               command: {{ toJson $check }}
-            periodSeconds: 5
+            periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 60
+            failureThreshold: 180
           readinessProbe:
             exec:
               command: {{ toJson $check }}
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: {{ ternary 10 3 (eq $backend "mysql") }}
           livenessProbe:
             exec:
               command: {{ toJson $check }}
             periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 5
+            timeoutSeconds: 10
+            failureThreshold: 10
           ports:
             - name: db
               containerPort: {{ $port }}
