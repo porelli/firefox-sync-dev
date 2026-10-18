@@ -450,13 +450,20 @@ jobs:
 
   # the candidate with the accounts database on MariaDB (FXA_DB=mariadb, FXA.md). Not needed
   # by publish: Mozilla supports MySQL only, a release that breaks MariaDB must not hold back
-  # MySQL installs. The failed run is the warning for MariaDB installs (FXA.md: pin FXA_VERSION)
+  # MySQL installs. The failed run is the warning for MariaDB installs (FXA.md: pin FXA_VERSION).
+  # mariadb:12 (new installs: needs mozilla/fxa#21494, upstream-patches.yml), mariadb:11.8 (the
+  # installs from before), and mariadb:lts, the canary: it fails first when the next MariaDB
+  # major (which no install follows by itself) breaks the accounts
   test-mariadb:
     needs: [prepare, build, push, build-pairing, push-pairing]
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
     permissions:
       contents: read
       packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        mariadb_image: ["mariadb:12", "mariadb:11.8", "mariadb:lts"]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -519,12 +526,13 @@ jobs:
           docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
           docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
-      - name: End-to-end tests with our amd64 image, the accounts on MariaDB
+      - name: End-to-end tests with our amd64 image, the accounts on ${{ matrix.mariadb_image }}
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
           SKIP_PULL: 1
           FXA_DB: mariadb
+          FXA_MARIADB_IMAGE: ${{ matrix.mariadb_image }}
           # FXA_VERSION, FXA_PAIRING_IMAGE: the images under test, above
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           FXA_ARCH: amd64

@@ -20,10 +20,12 @@
 #   FXA_ACCOUNT_EVENTS true (default here, off for users) records the security history of the
 #                    accounts: every test then also runs with it on, test_fxa_admin.py checks it
 #   SKIP_PULL        set to 1 to use the local images (e.g. an init image built from this tree)
-#   FXA_DB           mysql (default, MySQL 8.4) or mariadb (MariaDB 11.8, docker-compose.fxa-mariadb.yml)
+#   FXA_DB           mysql (default, MySQL 8.4) or mariadb (FXA_MARIADB_IMAGE, docker-compose.fxa-mariadb.yml)
 #                    for the accounts database
+#   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:lts, MariaDB 12: an accounts image with
+#                    mozilla/fxa#21494, upstream-patches.yml; mariadb:11.8 for the installs from before)
 #   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, MySQL 8.4
-#                    (MariaDB 11.8 with FXA_DB=mariadb) (DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
+#                    (FXA_MARIADB_IMAGE with FXA_DB=mariadb) (DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
 #                    DATABASES.md), container EXTDB, created with only the grants of
 #                    db/mysql/; kept with KEEP, reused by RERUN. fxa: only the accounts
 #                    there, with one user for the accounts and the sign-up policy
@@ -84,6 +86,7 @@ sed -i -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${REPOSITORY}|" -e "s|^FXA_ARCH=.*|FXA_ARCH
 [ -n "${FXA_ARCH:-}" ] && sed -i "s|^FXA_ARCH=.*|FXA_ARCH=${FXA_ARCH}|" "${ENV_FILE}"
 [ -n "${FXA_PAIRING_IMAGE:-}" ] && sed -i "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${FXA_PAIRING_IMAGE}|" "${ENV_FILE}"
 case "${FXA_DB:-mysql}" in mysql|mariadb) sed -i "s|^FXA_DB=.*|FXA_DB=${FXA_DB:-mysql}|" "${ENV_FILE}" ;; *) echo "FXA_DB: mysql or mariadb"; exit 2 ;; esac
+[ -n "${FXA_MARIADB_IMAGE:-}" ] && sed -i "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE}|" "${ENV_FILE}"
 # EXTERNAL_DB=1: a server elsewhere, its own container and network, reached by name
 EXTDB=${PROJECT}-extdb
 if [ -n "${EXTERNAL_DB:-}" ]; then
@@ -121,7 +124,13 @@ if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
 fi
 # the server's name and version as the admin UI shows them, its client
 if [ "${FXA_DB}" = mariadb ]; then
-  FXA_DB_SERVER='MariaDB 11\.8' DB_CLIENT=mariadb EXTDB_IMAGE=mariadb:11.8
+  # mariadb:11.8: MariaDB 11.8.x; lts or another name: any version
+  FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:lts}
+  case "${FXA_MARIADB_IMAGE##*:}" in
+    [0-9]*.[0-9]*) FXA_DB_SERVER="MariaDB ${FXA_MARIADB_IMAGE##*:}" FXA_DB_SERVER=${FXA_DB_SERVER//./\\.} ;;
+    *) FXA_DB_SERVER='MariaDB [0-9]+\.[0-9]+' ;;
+  esac
+  DB_CLIENT=mariadb EXTDB_IMAGE=${FXA_MARIADB_IMAGE}
   # binary logging is off by default on MariaDB: on, as DATABASES.md expects it may be
   EXTDB_ARGS=(--log-bin --log-bin-trust-function-creators=ON)
 else
@@ -362,8 +371,27 @@ rm -f "${SETUP}/.env" "${SETUP}"/database-setup*.sql
 printf '%s\n' "${answers[@]}" n n mariadb | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-mariadb.log" 2>&1
 check "$?" 0 "prepare_environment.sh with the accounts on MariaDB"
 check "$(env_value FXA_DB) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml$' "${SETUP}/.env")" "mariadb 1" "MariaDB for the accounts in .env"
-check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mariadb:11\.8|source: fxa-db-mariadb|- mariadbd)$')" 3 "fxa-db on MariaDB 11.8, in its own volume"
-rm -f "${SETUP}/.env"
+check "$(env_value FXA_MARIADB_IMAGE) $(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mariadb:lts|source: fxa-db-mariadb|- mariadbd)$')" "mariadb:lts 3" "fxa-db on MariaDB 12 (lts) for a new install, in its own volume"
+check "$(setup_compose --profile backup config | sed -n '/^  backup-fxa:/,/^  [a-z]/p' | grep -cE '^ +image: mariadb:lts$')" 1 "the backups of the accounts with the same MariaDB"
+# an install from before FXA_MARIADB_IMAGE (MariaDB 11.8): run again, it stays on 11.8
+sed -i '/^FXA_MARIADB_IMAGE=/d' "${SETUP}/.env"
+printf '%s\n' "${answers[@]}" n n mariadb | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-mariadb-again.log" 2>&1
+check "$? $(env_value FXA_MARIADB_IMAGE) $(grep -c 'stays on MariaDB 11.8' "${WORK}/setup-mariadb-again.log")" "0 mariadb:11.8 1" "prepare_environment.sh again on an install on MariaDB 11.8 keeps it there"
+check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +image: mariadb:11\.8$')" 1 "fxa-db on MariaDB 11.8 after running it again"
+printf '%s\n' "${answers[@]}" n n mariadb | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-mariadb-again2.log" 2>&1
+check "$? $(env_value FXA_MARIADB_IMAGE) $(grep -c 'stays on MariaDB 11.8' "${WORK}/setup-mariadb-again2.log")" "0 mariadb:11.8 0" "and again: FXA_MARIADB_IMAGE kept, nothing to say"
+# --upgrade of an install from before
+sed -i '/^FXA_MARIADB_IMAGE=/d' "${SETUP}/.env"
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-upgrade.log" 2>&1
+check "$? $(env_value FXA_MARIADB_IMAGE) $(grep -c 'stays on MariaDB 11.8' "${WORK}/setup-mariadb-upgrade.log")" "0 mariadb:11.8 1" "prepare_environment.sh --upgrade pins MariaDB 11.8"
+# MariaDB 12 with Mozilla's images (no mozilla/fxa#21494): a warning; with 11.8 none
+sed -i -e 's|^FXA_IMAGE=.*|FXA_IMAGE=docker.io/mozilla/fxa-mono|' -e 's|^FXA_VERSION=.*|FXA_VERSION=v1.347.3|' "${SETUP}/.env"
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-mozilla-118.log" 2>&1
+check "$? $(grep -c 'mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-118.log")" "0 0" "Mozilla's images on MariaDB 11.8: no warning"
+sed -i 's|^FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=mariadb:lts|' "${SETUP}/.env"
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-mozilla-12.log" 2>&1
+check "$? $(grep -c 'WARNING: the accounts on MariaDB 12 (FXA_MARIADB_IMAGE=mariadb:lts) need an image with mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-12.log")" "0 1" "Mozilla's images on MariaDB 12: a warning"
+rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade
 printf '%s\n' "${answers[@]}" n n postgres | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-db-wrong.log" 2>&1
 check "$? $(grep -c "ERROR: mysql or mariadb" "${WORK}/setup-fxa-db-wrong.log")" "1 1" "prepare_environment.sh refuses another accounts database"
 

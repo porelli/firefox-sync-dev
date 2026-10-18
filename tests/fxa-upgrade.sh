@@ -19,7 +19,9 @@
 #                    fxa-mono-latest, this machine), as in tests/e2e-fxa.sh
 #   REPOSITORY, TAG  syncstorage images (default: ghcr.io/porelli/firefox-sync, latest)
 #   ADMIN_IMAGE      admin UI and sign-up policy image, used as is (default: built from admin/)
-#   FXA_DB           mysql (default, MySQL 8.4) or mariadb (MariaDB 11.8) for the accounts
+#   FXA_DB           mysql (default, MySQL 8.4) or mariadb (FXA_MARIADB_IMAGE) for the accounts
+#   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:11.8, as the installs from before
+#                    MariaDB 12 have it; mariadb:lts needs FXA_FROM with mozilla/fxa#21494)
 #   FXA_SAME_TAG     set to 1 to install the older release under the new tag (FXA_FROM pulled and
 #                    tagged FXA_IMAGE:FXA_VERSION here), as an install following fxa-mono-latest
 #                    has it: then docker compose up -d alone must not upgrade, the pull must
@@ -78,6 +80,7 @@ done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test
     -e "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=allowlist|" \
     -e "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=@example.com|" \
     -e "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|" \
+    -e "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:11.8}|" \
     -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${INSTALLED%:*}|" \
     -e "s|^FXA_VERSION=.*|FXA_VERSION=${INSTALLED##*:}|" \
     -e "s|^FXA_ARCH=.*|FXA_ARCH=${from_arch}|" \

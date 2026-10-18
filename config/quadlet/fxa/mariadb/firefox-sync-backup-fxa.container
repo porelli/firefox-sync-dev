@@ -8,7 +8,7 @@ Before=firefox-sync-backup.service
 [Container]
 # installed instead of ../firefox-sync-backup-fxa.container with FXA_DB=mariadb: its client
 # the same version as firefox-sync-fxa-db.container
-Image=docker.io/library/mariadb:11.8
+Image=%FXA_MARIADB_IMAGE%
 ContainerName=firefox-sync-backup-fxa
 Network=firefox-sync-network.network
 Volume=firefox-sync-backups.volume:/backups

@@ -441,7 +441,7 @@ func TestConfigPageReadsLikeTheProgram(t *testing.T) {
 		"Sender":         "firefox-sync admin &lt;admin@example.com&gt; FXA_SMTP_SENDER , ADMIN_ALERT_EMAIL FXA_SMTP_SENDER not set",
 		"Databases":      "MySQL 8.0.39 SYNC_DB the tokenserver and the storage databases, on your own server",
 		// not checked yet: the image of the stack's container
-		"Database": "MariaDB 11.8 FXA_DB fxa, fxa_oauth, fxa_profile, pushbox and ffs, on a container of the stack",
+		"Database": "MariaDB FXA_DB fxa, fxa_oauth, fxa_profile, pushbox and ffs, on a container of the stack",
 	} {
 		if got := configRowOf(page, setting); !strings.HasPrefix(got, want) {
 			t.Errorf("%s: %q, want %q", setting, got, want)

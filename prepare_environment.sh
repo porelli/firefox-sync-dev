@@ -71,12 +71,59 @@ render_sync_sql() {
     fi
 }
 
+# MariaDB 12 (FXA_MARIADB_IMAGE=mariadb:lts) needs accounts images with mozilla/fxa#21494
+# (upstream-patches.yml): ours list it in their label org.firefox-sync.upstream-patches,
+# Mozilla's (docker.io/mozilla/fxa-mono) and ours built before don't have it. Read from the
+# registry (docker buildx imagetools or skopeo), else from a local image; only a warning.
+# Here and not in the admin UI, which cannot inspect images
+fxa_image_patches() {
+    local image=${1} runtime out
+    out=$(docker buildx imagetools inspect "${image}" --format '{{json .Image}}' 2> /dev/null) \
+        || out=$(skopeo inspect "docker://${image}" 2> /dev/null) \
+        || for runtime in docker podman; do
+            out=$(${runtime} image inspect "${image}" 2> /dev/null) && break
+        done
+    [ -n "${out}" ] || return 1
+    printf '%s' "${out}" | grep -o '"org\.firefox-sync\.upstream-patches": *"[^"]*"' | head -n 1 | sed 's/.*: *"//; s/"$//'
+}
+fxa_mariadb_image_check() {
+    local db_image image patches
+    [ "$(env_value FXA_DB)" = mariadb ] || return 0
+    db_image=$(env_value FXA_MARIADB_IMAGE)
+    db_image=${db_image:-mariadb:lts}
+    # your own server: its version is not known here
+    if [ "$(env_value FXA_DB_CONTAINERS)" != 0 ]; then
+        case "${db_image##*:}" in 10.*|11.*) return 0 ;; esac
+    fi
+    image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
+    case "${image}" in
+        mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*) patches="" ;;
+        *) patches=$(fxa_image_patches "${image}") || {
+            echo "NOTE: could not read the labels of ${image}: MariaDB 12 needs an accounts image with mozilla/fxa#21494"
+            echo "  (label org.firefox-sync.upstream-patches, see FXA.md#mysql-or-mariadb)"
+            echo ""
+            return 0; } ;;
+    esac
+    case " ${patches} " in *" mozilla/fxa#21494@"*) return 0 ;; esac
+    if [ "$(env_value FXA_DB_CONTAINERS)" = 0 ]; then
+        echo "WARNING: if your MariaDB server is 12, the accounts need an image with mozilla/fxa#21494,"
+    else
+        echo "WARNING: the accounts on MariaDB 12 (FXA_MARIADB_IMAGE=${db_image}) need an image with mozilla/fxa#21494,"
+    fi
+    echo "  which ${image} does not have (Mozilla's images, or ours built before it): on a new"
+    echo "  database Mozilla's migrations stop. Use our images (FXA_IMAGE=ghcr.io/porelli/firefox-sync,"
+    echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11.8 (FXA_MARIADB_IMAGE=mariadb:11.8), see FXA.md#mysql-or-mariadb"
+    echo ""
+}
+
 # ./prepare_environment.sh --upgrade: the .env of an install that runs (docker compose), given
 # the settings of this release that need a value of their own (MIGRATING.md), nothing else
 # changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
 # Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
 # container (POSTGRES_SYNC_USER, POSTGRES_SYNC_PASSWORD), and in COMPOSE_FILE the new name of
-# docker-compose.postgres.yml (docker-compose.sync-postgres.yml). A value already set is kept; the
+# docker-compose.postgres.yml (docker-compose.sync-postgres.yml), and with the accounts on
+# MariaDB FXA_MARIADB_IMAGE=mariadb:11.8, the version they run (the default is now MariaDB
+# 12, a move to it is up to the admin, FXA.md). A value already set is kept; the
 # old file is kept as .env.before-upgrade. With your own database server database-setup.sql
 # is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
 upgrade_env() {
@@ -121,6 +168,12 @@ upgrade_env() {
         [ -n "$(env_value POSTGRES_SYNC_USER)" ] || set_value POSTGRES_SYNC_USER syncserver_app
         set_value POSTGRES_SYNC_PASSWORD "$(generate_random_string 32)"
     fi
+    # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11.8, they stay there
+    if [ "$(env_value FXA_DB)" = mariadb ] && ! grep -q '^FXA_MARIADB_IMAGE=' "${env_file}"; then
+        set_value FXA_MARIADB_IMAGE mariadb:11.8
+        echo "FXA_MARIADB_IMAGE=mariadb:11.8: the accounts database stays on MariaDB 11.8. To move it to"
+        echo "  MariaDB 12 (a backup first, there is no way back): FXA.md#moving-an-install-to-mariadb-12"
+    fi
     if [ "${#changed[@]}" = 0 ]; then
         rm -f "${env_file}.upgrading"
         echo "Nothing to add: ${env_file} has every setting of this release."
@@ -132,6 +185,7 @@ upgrade_env() {
         [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && render_sync_sql postgres || render_sync_sql mariadb
         echo "Your own database server: run database-setup.sql there first, as its administrator (DATABASES.md)."
     fi
+    fxa_mariadb_image_check
     echo "Then: docker compose pull && docker compose up -d"
     exit 0
 }
@@ -321,7 +375,7 @@ if [ "${EXTERNAL_DB}" = "yes" ]; then
     fi
 fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    read -r -e -p "Use an existing MySQL 8 or MariaDB 11.4-11.8 server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See DATABASES.md (y/N): " EXTERNAL_FXA_DB
+    read -r -e -p "Use an existing MySQL 8 or MariaDB 11.4+ server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See DATABASES.md (y/N): " EXTERNAL_FXA_DB
     case "${EXTERNAL_FXA_DB}" in y|Y|yes) EXTERNAL_FXA_DB=yes ;; *) EXTERNAL_FXA_DB=no ;; esac
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Accounts database server host${DB_HOST:+ [${DB_HOST}]}: " FXA_MYSQL_HOST
@@ -340,7 +394,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Is that server MySQL or MariaDB? (mysql/mariadb) [mysql]: " FXA_DB
     else
-        read -r -e -p "Accounts database: mysql (MySQL 8.4, what Mozilla supports) or mariadb (MariaDB 11.8, see FXA.md) [mysql]: " FXA_DB
+        read -r -e -p "Accounts database: mysql (MySQL 8.4, what Mozilla supports) or mariadb (MariaDB 12, see FXA.md) [mysql]: " FXA_DB
     fi
     case "${FXA_DB}" in
         ""|mysql|MySQL) FXA_DB=mysql ;;
@@ -437,6 +491,13 @@ METRICS_HASH_SECRET=$(generate_random_string 24)
 ADMIN_PASSWORD=$(generate_random_string 24)
 ADMIN_DB_PASSWORD=$(generate_random_string 32)
 
+# run again on an install: its accounts database stays on the MariaDB version it runs
+PREVIOUS_FXA_DB="" PREVIOUS_FXA_MARIADB_IMAGE=""
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    PREVIOUS_FXA_DB=$(env_value FXA_DB)
+    PREVIOUS_FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
+fi
+
 # prepare .env file
 cp ${SCRIPT_DIR}/.env-example ${SCRIPT_DIR}/.env
 apply_sed ${SCRIPT_DIR}/.env "s|MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=${MARIADB_TOKENSERVER_PASSWORD}|"
@@ -514,6 +575,13 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=$(generate_random_string 32)|"
     fi
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|"
+    # MariaDB 12 for new installs; one that ran MariaDB before FXA_MARIADB_IMAGE runs 11.8
+    FXA_MARIADB_IMAGE=mariadb:lts
+    if [ "${FXA_DB}" = "mariadb" ] && [ "${PREVIOUS_FXA_DB}" = "mariadb" ]; then
+        FXA_MARIADB_IMAGE=${PREVIOUS_FXA_MARIADB_IMAGE:-mariadb:11.8}
+        [ -n "${PREVIOUS_FXA_MARIADB_IMAGE}" ] || PINNED_FXA_MARIADB=yes
+    fi
+    apply_sed ${SCRIPT_DIR}/.env "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=$(sed_escape "${FXA_MARIADB_IMAGE}")|"
     if [ -n "${ADMIN_ALLOWED_USERS:-}" ]; then
         # the admin UI signs in with these accounts: a public OAuth client (PKCE, no secret:
         # the accounts service refuses PKCE from clients with one), registered by fxa-auth
@@ -615,6 +683,13 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         export "${key}=${value}"
     done < ${SCRIPT_DIR}/.env
     mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
+    # podman needs the registry in the image name (compose is fine with mariadb:lts)
+    case "${FXA_MARIADB_IMAGE:=mariadb:lts}" in
+        */*/*|*.*/*|localhost/*) ;;
+        */*) FXA_MARIADB_IMAGE=docker.io/${FXA_MARIADB_IMAGE} ;;
+        *) FXA_MARIADB_IMAGE=docker.io/library/${FXA_MARIADB_IMAGE} ;;
+    esac
+    export FXA_MARIADB_IMAGE
 
     # the database containers: the .env names (syncstorage_db) are compose's, here the
     # containers are reached by their names. Your own server: none of them
@@ -741,13 +816,20 @@ if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
     [ "${EXTERNAL_DB}" = "yes" ] || echo "First, on your database server (see DATABASES.md):"
     if [ "${FXA_DB}" = "mariadb" ]; then
         echo "  mariadb -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
-        echo "  MariaDB 11.4 to 11.8 (not 12), with binary logging: log_bin_trust_function_creators=ON"
+        echo "  MariaDB 11.4 or later (12: with our accounts images, FXA.md), with binary logging: log_bin_trust_function_creators=ON"
     else
         echo "  mysql -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
         echo "  MySQL 8.4 started with mysql_native_password=ON and log_bin_trust_function_creators=ON"
     fi
 fi
 [ "${EXTERNAL_DB}" = "yes" ] || [ "${EXTERNAL_FXA_DB}" = "yes" ] && echo ""
+if [ "${SELF_HOST_FXA}" = "yes" ]; then
+    if [ "${PINNED_FXA_MARIADB:-}" = "yes" ]; then
+        echo "FXA_MARIADB_IMAGE=mariadb:11.8: the accounts database of this install stays on MariaDB 11.8."
+        echo "  To move it to MariaDB 12 (a backup first, there is no way back): FXA.md#moving-an-install-to-mariadb-12"
+    fi
+    fxa_mariadb_image_check
+fi
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
     echo "Next steps for Quadlet deployment:"

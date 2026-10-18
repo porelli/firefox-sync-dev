@@ -64,7 +64,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - Base image: [Mozilla's](https://github.com/mozilla-services/syncstorage-rs/blob/master/Dockerfile) container
     - Base image differences: image built with `SYNCSTORAGE_DATABASE_BACKEND=mysql` and `TOKENSERVER_DATABASE_BACKEND=mysql` (`DATABASE_BACKEND=mysql` for releases before 0.23) to use the MySQL-compatible interface instead of Google Spanner
     - source code: https://github.com/mozilla-services/syncstorage-rs
-        - code changes: none
+        - code changes: only the upstream pull requests listed in [upstream-patches.yml](/upstream-patches.yml), until they are in a release; the image lists them in its label `org.firefox-sync.upstream-patches`
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - GitHub [workflow](/.github/workflows/syncstorage-rs.yml) and [logs](https://github.com/porelli/firefox-sync/actions/workflows/syncstorage-rs.yml)
     - Base image: [MariaDB's](https://github.com/MariaDB/mariadb-docker/blob/master/Dockerfile.template) container
@@ -91,7 +91,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - GitHub [workflow](/.github/workflows/fxa.yml): Mozilla only publishes [`mozilla/fxa-mono`](https://hub.docker.com/r/mozilla/fxa-mono) for amd64, this builds the same releases for amd64 and arm64 and tests them on both before publishing
     - Base image: [Mozilla's](https://github.com/mozilla/fxa/blob/main/_dev/docker/mono/Dockerfile) container
     - source code: https://github.com/mozilla/fxa
-        - code changes: none
+        - code changes: only the upstream pull requests listed in [upstream-patches.yml](/upstream-patches.yml), until they are in a release (today [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494), for MariaDB 12, see [FXA.md](FXA.md#mariadb-12)); the image lists them in its label `org.firefox-sync.upstream-patches`
     - used by default with self-hosted accounts (`FXA_VERSION=fxa-mono-latest`); Mozilla's own image works too on amd64
 - `ghcr.io/porelli/firefox-sync:fxa-channelserver-<release>` and `fxa-channelserver-latest`, amd64 and arm64: the optional QR code pairing server, built the same way from [Mozilla's channelserver](https://github.com/mozilla-services/channelserver)
 

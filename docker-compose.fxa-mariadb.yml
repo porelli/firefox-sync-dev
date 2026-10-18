@@ -1,13 +1,15 @@
 # The accounts database on MariaDB instead of MySQL 8.4 (FXA_DB=mariadb, see FXA.md), on top of
 # docker-compose.fxa.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml
-# Mozilla supports MySQL only; MariaDB 11.4 to 11.8 passes the same tests here.
+# Mozilla supports MySQL only; MariaDB passes the same tests here: 12 (mariadb:lts) with our
+# accounts images, 11.4 to 11.8 with any (FXA.md#mysql-or-mariadb).
 
 services:
   fxa-db:
-    # not mariadb:lts: from 12.0 unnamed foreign keys are named 1, 2... instead of
-    # <table>_ibfk_N, and Mozilla's migrations drop them by those names. Fixed by
-    # https://github.com/mozilla/fxa/pull/21494: move to mariadb:lts once it is in a release
-    image: mariadb:11.8
+    # FXA_MARIADB_IMAGE: mariadb:lts for new installs, mariadb:11.8 for those from before
+    # (prepare_environment.sh --upgrade keeps them there, FXA.md says how to move). On 12
+    # Mozilla's migrations need https://github.com/mozilla/fxa/pull/21494, applied to our
+    # images until it is in a release (upstream-patches.yml)
+    image: ${FXA_MARIADB_IMAGE:-mariadb:lts}
     environment:
       MARIADB_AUTO_UPGRADE: "true"
     # the default authentication is already mysql_native_password, the only one FxA's driver supports
@@ -21,7 +23,7 @@ services:
 
   # the backups of the accounts with MariaDB's client (the same version as fxa-db, see there)
   backup-fxa:
-    image: mariadb:11.8
+    image: ${FXA_MARIADB_IMAGE:-mariadb:lts}
 
 volumes:
   fxa-db-mariadb:

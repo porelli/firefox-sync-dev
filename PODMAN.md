@@ -132,7 +132,7 @@ Answer `mysql` to the database backend question of `prepare_environment.sh` (`SY
 
 #### Your own database server
 
-To use a MariaDB or MySQL server you already run, answer `y` to "Use an existing database server instead of starting one?" in `prepare_environment.sh` (and for the accounts, a MySQL 8.0/8.4 or MariaDB 11.4 to 11.8 server). The database units are then not installed, the other units don't depend on them, and the script writes `database-setup.sql` for your server. A server on this host is `host.containers.internal` for the containers, not `localhost`. See [DATABASES.md](DATABASES.md).
+To use a MariaDB or MySQL server you already run, answer `y` to "Use an existing database server instead of starting one?" in `prepare_environment.sh` (and for the accounts, a MySQL 8.0/8.4 or MariaDB 11.4 or later server, 12 with our accounts images). The database units are then not installed, the other units don't depend on them, and the script writes `database-setup.sql` for your server. A server on this host is `host.containers.internal` for the containers, not `localhost`. See [DATABASES.md](DATABASES.md).
 
 #### Admin UI
 

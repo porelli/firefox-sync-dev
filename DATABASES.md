@@ -25,9 +25,9 @@ This section is about the database containers of the stack, not your own server.
 | Component | Supported | Tested |
 |---|---|---|
 | Sync server | MariaDB 10.10+, MySQL 8.0 and 8.4, PostgreSQL 11+ | MariaDB 12.3, MySQL 8.4, PostgreSQL 18 |
-| Accounts | MySQL 8.0 and 8.4, MariaDB 11.4 to 11.8 | MySQL 8.4, MariaDB 11.8 (and 11.4 once) |
+| Accounts | MySQL 8.0 and 8.4, MariaDB 11.4 and later (12: with our accounts images) | MySQL 8.4, MariaDB 12 (`mariadb:lts`) and 11.8 (and 11.4 once) |
 
-Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). The accounts don't work on MariaDB 12 (`mariadb:lts` today): Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`). MySQL 9 does not work either: it has no `mysql_native_password`, the only one the accounts' driver supports.
+Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). On MariaDB 12 (`mariadb:lts` today) the accounts need our accounts images: Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`), and our images have the fix proposed upstream ([MariaDB 12](FXA.md#mariadb-12)). With Mozilla's own images, MariaDB 11.4 to 11.8. MySQL 9 does not work either: it has no `mysql_native_password`, the only one the accounts' driver supports.
 
 ## Server requirements
 
@@ -50,7 +50,7 @@ mysql -h db.example.com -u root -p < database-setup.sql          # MySQL
 mariadb -h db.example.com -u root -p < database-setup.sql        # MariaDB (its client may not install a mysql command)
 psql -h db.example.com -U postgres -f database-setup.sql         # PostgreSQL
 mysql -h db.example.com -u root -p < database-setup-fxa.sql      # the accounts, MySQL 8
-mariadb -h db.example.com -u root -p < database-setup-fxa.sql    # the accounts, MariaDB 11.4 to 11.8
+mariadb -h db.example.com -u root -p < database-setup-fxa.sql    # the accounts, MariaDB 11.4 and later
 ```
 
 Use only `A-Z a-z 0-9 . _ ~ -` in passwords (the generated ones are letters and digits): they are part of the database URLs. Names are `a-z`, `0-9` and `_`.
@@ -257,5 +257,5 @@ With docker compose. Not covered by the tests: check the result before you remov
 - `ERROR 2026 ... self-signed certificate in certificate chain`, then "Timeout waiting for database connection" in the init container: set `MARIADB_TLS_VERIFY=false`.
 - "Timeout waiting for database connection", or the migrations never finish: the containers cannot reach the server. Check the host (not `localhost`), the port, the server's listen address, the firewall and the users' host part. Test from the stack's network: `docker compose run --rm --no-deps --entrypoint mariadb tokenserver_db_init --host=... --user=... -p --skip-ssl-verify-server-cert -e 'SELECT 1'`.
 - `ER_NOT_SUPPORTED_AUTH_MODE` from the accounts (fxa-migrations, fxa-auth): `FXA_MYSQL_USER` must use `mysql_native_password`, and MySQL 8.4 needs `mysql_native_password=ON`.
-- `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY ..._ibfk_1` from fxa-migrations: the server is MariaDB 12, use 11.4 to 11.8 (until [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494) is in a release).
+- `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY ..._ibfk_1` from fxa-migrations: the server is MariaDB 12 and the accounts image does not have [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494) (Mozilla's images, or ours from before, [MariaDB 12](FXA.md#mariadb-12)): use our current images, or MariaDB 11.4 to 11.8 on a new database.
 - `Access denied` from PostgreSQL, or `no pg_hba.conf entry`: add a `host` line for the containers' addresses.

@@ -409,7 +409,8 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		fxaHost := shown("FXA_DB_HOST", "fxa-db")
 		dbName := dbServer(components, "Accounts database", "MySQL", "MySQL 8.4", fxaHost)
 		if configLookup("FXA_DB") == "mariadb" {
-			dbName = dbServer(components, "Accounts database", "MariaDB", "MariaDB 11.8", fxaHost)
+			// the image is FXA_MARIADB_IMAGE, not known here: the version once checked
+			dbName = dbServer(components, "Accounts database", "MariaDB", "MariaDB", fxaHost)
 		}
 		accounts.Intro = "The self-hosted Mozilla accounts (docker-compose.fxa.yml)."
 		accounts.Rows = append(accounts.Rows,

@@ -6,10 +6,10 @@ By default Firefox signs in with Mozilla accounts (`accounts.firefox.com`) and o
 
 ## What you need
 
-- The accounts image, about 5 GB unpacked: by default amd64 and arm64 builds of Mozilla's releases from this repository (`fxa-mono-latest`, the newest release that passed the tests on both architectures, built by [fxa.yml](/.github/workflows/fxa.yml) from Mozilla's sources without changes). Pin a release with `FXA_VERSION=fxa-mono-v1.347.1`, or use Mozilla's own image (amd64 only) with `FXA_IMAGE=docker.io/mozilla/fxa-mono` and `FXA_VERSION=v1.347.1`.
+- The accounts image, about 5 GB unpacked: by default amd64 and arm64 builds of Mozilla's releases from this repository (`fxa-mono-latest`, the newest release that passed the tests on both architectures, built by [fxa.yml](/.github/workflows/fxa.yml) from Mozilla's sources, with only the upstream pull requests of [upstream-patches.yml](/upstream-patches.yml) applied, see [MariaDB 12](#mariadb-12)). Pin a release with `FXA_VERSION=fxa-mono-v1.347.1`, or use Mozilla's own image (amd64 only) with `FXA_IMAGE=docker.io/mozilla/fxa-mono` and `FXA_VERSION=v1.347.1`.
 - 3-4 GB of RAM for the whole stack.
 - An SMTP server: new accounts and new sign-ins are confirmed with a code sent by email.
-- A database: by default the `fxa-db` container, MySQL 8.4. It can be MariaDB 11.8 instead, see [MySQL or MariaDB](#mysql-or-mariadb). Or your own MySQL 8.0/8.4 or MariaDB 11.4 to 11.8 server (not MariaDB 12, not MySQL 9): `prepare_environment.sh` asks, see [DATABASES.md](DATABASES.md).
+- A database: by default the `fxa-db` container, MySQL 8.4. It can be MariaDB instead, see [MySQL or MariaDB](#mysql-or-mariadb). Or your own MySQL 8.0/8.4 or MariaDB 11.4 or later server (MariaDB 12 with our accounts images, not MySQL 9): `prepare_environment.sh` asks, see [DATABASES.md](DATABASES.md).
 - Four host names behind your reverse proxy, with HTTPS:
 
   | host name | `.env` | proxy to |
@@ -84,17 +84,37 @@ To check it works, open `about:sync-log`: the newest logs show no errors. To go 
 
 ## MySQL or MariaDB
 
-Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL 8.4 by default. If you would rather run only MariaDB, the stack can use MariaDB 11.8 for the accounts. Every release is tested on it here with the same tests as on MySQL (sign-up, sync, the sign-up policy and the admin UI, a real Firefox), and nothing in Mozilla's migrations or the sign-up policy needs a change.
+Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL 8.4 by default. If you would rather run only MariaDB, the stack can use MariaDB for the accounts: MariaDB 12 (`mariadb:lts`) for new installs, with our accounts images. Every release is tested on it here with the same tests as on MySQL (sign-up, sync, the sign-up policy and the admin UI, a real Firefox), on MariaDB 12 and on 11.8, and the sign-up policy needs no change.
 
 - `prepare_environment.sh` asks, with `mysql` as the default. It does not follow the Sync server's choice: Sync uses MariaDB by default, so that would move most new installs off what Mozilla supports.
 - By hand: `FXA_DB=mariadb` in `.env`, and with docker compose `docker-compose.fxa-mariadb.yml` at the end of `COMPOSE_FILE`, e.g. `COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml`. The Quadlets get `config/quadlet/fxa/mariadb/` in place of the MySQL unit.
-- The version is pinned to `mariadb:11.8`, not `mariadb:lts`. `lts` is MariaDB 12 now, and the accounts don't work on 12 (see below).
+- The image is `FXA_MARIADB_IMAGE` in `.env` (`fxa-db` and the backups of the accounts): `mariadb:lts` for new installs, MariaDB 12 today. The installs from before it run MariaDB 11.8: `./prepare_environment.sh --upgrade`, or running `prepare_environment.sh` again on the install, writes `FXA_MARIADB_IMAGE=mariadb:11.8` for them, so that no upgrade moves their data to another major version by itself. Run it before `docker compose up -d` with the new files: without the setting compose would start `mariadb:lts`. To move to 12, see [Moving an install to MariaDB 12](#moving-an-install-to-mariadb-12).
+- MariaDB 12 needs our accounts images, see [below](#mariadb-12); with Mozilla's own image use `FXA_MARIADB_IMAGE=mariadb:11.8`.
 - Choose it before the first start. MariaDB gets its own volume (`fxa-db-mariadb`, Quadlets: `firefox-sync-fxa-db-mariadb`) because it cannot open MySQL's data files. Switching an existing install leaves the MySQL data in `fxa-db` and starts with empty accounts. Moving the data needs a dump and a reload, and that is not tested here.
-- Mozilla could release a migration that works on MySQL only. Releases are published once they pass on MySQL, and a MariaDB failure does not hold them back. With MariaDB, pin `FXA_VERSION` and upgrade after a release passed the `test-mariadb` job of [fxa.yml](/.github/workflows/fxa.yml).
+- Mozilla could release a migration that works on MySQL only. Releases are published once they pass on MySQL, and a MariaDB failure does not hold them back. With MariaDB, pin `FXA_VERSION` and upgrade after a release passed the `test-mariadb` jobs of [fxa.yml](/.github/workflows/fxa.yml).
 
-### Why not MariaDB 12
+### MariaDB 12
 
-MariaDB 12 names unnamed foreign keys `1`, `2`, ... MySQL and MariaDB 11 name them `<table>_ibfk_N`. Mozilla's migrations drop foreign keys by those names, so on MariaDB 12 they stop at the first one: `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1` (`fxa`, patch 096-097), then the same in `fxa_oauth` (`clientDevelopers_ibfk_1`). No server setting changes that, only a modified copy of Mozilla's migrations would. The fix is proposed upstream in [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494): the pin moves to `mariadb:lts` once a release includes it.
+MariaDB 12 names unnamed foreign keys `1`, `2`, ... MySQL and MariaDB 11 name them `<table>_ibfk_N`. Mozilla's migrations drop foreign keys by those names, so on a new database on MariaDB 12 they stop at the first one: `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1` (`fxa`, patch 096-097), then the same in `fxa_oauth` (`clientDevelopers_ibfk_1`). No server setting changes that. The fix is proposed upstream in [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494): it names those foreign keys `<table>_ibfk_N` where the migrations create them, which changes nothing on MySQL and MariaDB 11.
+
+Until a release includes it, the accounts images built here have it: [fxa.yml](/.github/workflows/fxa.yml) applies the pull requests listed in [upstream-patches.yml](/upstream-patches.yml), each as of the commit that was reviewed, to Mozilla's sources before building, and tests the images on MariaDB 12 and 11.8. The images list what was applied in the label `org.firefox-sync.upstream-patches`:
+
+```bash
+docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' ghcr.io/porelli/firefox-sync:fxa-mono-latest
+# mozilla/fxa#21494@aa0b178
+```
+
+Mozilla's own images (`docker.io/mozilla/fxa-mono`) and ours built before don't have it (no label): with them, `FXA_MARIADB_IMAGE=mariadb:11.8`. `prepare_environment.sh` (also with `--upgrade`) warns when the accounts would run on MariaDB 12, or on your own MariaDB server, with an image that does not have it; it reads the label from the registry (`docker buildx imagetools` or `skopeo`) or from the local image. The admin UI does not check it: it cannot inspect images.
+
+### Moving an install to MariaDB 12
+
+For an install on MariaDB 11.8 (`FXA_MARIADB_IMAGE=mariadb:11.8`), with our accounts images (the label above):
+
+1. A backup of the accounts: `docker compose exec backup-fxa sh /ffs-backup/backup.sh now` (the [backup service](ADMIN.md#backups)), or of the `fxa-db-mariadb` volume with the stack stopped. It is the only way back: MariaDB 11.8 cannot open the data once 12 started on it.
+1. `FXA_MARIADB_IMAGE=mariadb:lts` in `.env`.
+1. `docker compose pull && docker compose up -d`. At its first start MariaDB 12 upgrades the data itself (`MARIADB_AUTO_UPGRADE`, set in the stack: `mariadb-upgrade`, after a backup of its system tables); then the migrations and the services start as after any upgrade. Check as in [Upgrades](#upgrades), step 4.
+
+With Quadlets: the backup (`systemctl --user start firefox-sync-backup.service`), then `Image=docker.io/library/mariadb:lts` in `~/.config/containers/systemd/firefox-sync-fxa-db.container` and `firefox-sync-backup-fxa.container` (and `FXA_MARIADB_IMAGE=mariadb:lts` in `.env`, for the next `prepare_environment.sh`), `systemctl --user daemon-reload`, `podman pull docker.io/library/mariadb:lts` and `systemctl --user restart firefox-sync-fxa-db.service`.
 
 ## Who can sign up
 
@@ -163,7 +183,7 @@ Don't stay too far behind either: Firefox itself refuses to sign in to accounts 
 
 ## Tests
 
-[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit), then [`tests/test_fxa_flow.py`](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token from the tokenserver and syncs, then signs in again as a second device. [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) checks the sign-up policy and the [admin UI](ADMIN.md). Then [`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [`tests/browser`](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it. No Mozilla service is involved. With `FXA_DB=mariadb` the same runs with the accounts on MariaDB 11.8. All the tests: [TESTING.md](TESTING.md).
+[`tests/e2e-fxa.sh`](/tests/e2e-fxa.sh) starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit), then [`tests/test_fxa_flow.py`](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token from the tokenserver and syncs, then signs in again as a second device. [`tests/test_fxa_admin.py`](/tests/test_fxa_admin.py) checks the sign-up policy and the [admin UI](ADMIN.md). Then [`tests/test_fxa_browser.py`](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [`tests/browser`](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it. No Mozilla service is involved. With `FXA_DB=mariadb` the same runs with the accounts on MariaDB (`FXA_MARIADB_IMAGE`, default `mariadb:lts`; fxa.yml runs it on `mariadb:lts` and `mariadb:11.8`). All the tests: [TESTING.md](TESTING.md).
 
 [`tests/fxa-upgrade.sh`](/tests/fxa-upgrade.sh) upgrades an install in place, with the steps of [Upgrades](#upgrades): it starts the stack on an older release (`FXA_FROM`), where [`tests/test_fxa_upgrade.py`](/tests/test_fxa_upgrade.py) signs up, registers a device, gets a refresh token and syncs; then a backup, the new `FXA_VERSION`, `docker compose pull` and `docker compose up -d`. With `FXA_SAME_TAG=1` the older release is installed under the new tag, as an install following `fxa-mono-latest` has it, and `docker compose up -d` without the pull must keep it. After it the migrations ran with the new image up to the levels of its `target-patch.json`, the sign-up policy and the admin UI's procedures were installed again, the old session, device and refresh token still work, the Sync data reads back on the same tokenserver user, a new sign-in and a new sign-up work, and the admin UI is all up, shows the new release and recorded each migrated schema as an event. [fxa.yml](/.github/workflows/fxa.yml) runs it from the published `fxa-mono-latest` to every new release before publishing it (amd64; not for a rebuild of a release older than the published one). It upgrades to `FXA_IMAGE:FXA_VERSION` (default: `REPOSITORY`, `fxa-mono-latest`) and reads the release the admin UI must show from that image, and refuses a target older than `FXA_FROM`. Our builds are in the registry of the repository whose fxa.yml built them; the examples use the development builds. Locally, e.g. from Mozilla's own image (amd64, emulated on arm64) with older schemas, from one of our older builds on MariaDB, and from an older `fxa-mono-latest`:
 

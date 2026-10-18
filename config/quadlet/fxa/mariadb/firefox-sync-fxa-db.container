@@ -1,14 +1,13 @@
 # Installed instead of ../firefox-sync-fxa-db.container with FXA_DB=mariadb (FXA.md).
-# Not mariadb:lts: from 12.0 unnamed foreign keys are named 1, 2... instead of
-# <table>_ibfk_N, and Mozilla's migrations drop them by those names.
 [Unit]
 Description=Firefox Sync - Mozilla accounts - Database (MariaDB)
 After=firefox-sync-network.service
 
 [Container]
-# not mariadb:lts: MariaDB 12 breaks Mozilla's migrations, fixed by
-# https://github.com/mozilla/fxa/pull/21494 (move to lts once it is in a release)
-Image=docker.io/library/mariadb:11.8
+# FXA_MARIADB_IMAGE of .env (with its registry): mariadb:lts for new installs, mariadb:11.8
+# for those from before (FXA.md#mysql-or-mariadb). On 12 Mozilla's migrations need
+# https://github.com/mozilla/fxa/pull/21494, in our images (upstream-patches.yml)
+Image=%FXA_MARIADB_IMAGE%
 ContainerName=firefox-sync-fxa-db
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-db
