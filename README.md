@@ -45,7 +45,7 @@ Then point your reverse proxy to it and set up Firefox: [for the Sync server onl
 ## Background
 
 Mozilla's server side components are open source and Firefox allows to easily change the official endpoints.
-[Some documentation](https://mozilla-services.readthedocs.io/en/latest/index.html) is provided to install the each component on your own server but this is neither officially supported or very well maintained. Furthermore, there are no official Docker images that can be used to avoid installing everything manually; all the instructions and artifacts provided are focused on setting up a developer environment rather than a production self hosted service. For example, `syncstorage-rs` has a [docker release on docker-hub](https://hub.docker.com/r/mozilla/syncstorage-rs/) but it is targeted to work exclusively with Google Spanner which is what Mozilla uses to provide the service.
+[Some documentation](https://mozilla-services.readthedocs.io/en/latest/index.html) is provided to install the each component on your own server but this is neither officially supported or very well maintained. Furthermore, there are no official Docker images that can be used to avoid installing everything manually; all the instructions and artifacts provided are focused on setting up a developer environment rather than a production self hosted service. For example, `syncstorage-rs` has a [docker release on docker-hub](https://hub.docker.com/r/mozilla/syncstorage-rs/) with images for Google Spanner and PostgreSQL (`<sha>-spanner`, `<sha>-postgres`), amd64 only; version tags stop at 0.21.1; no MySQL/MariaDB image and no arm64.
 
 This project provides:
 - GitHub workflows that build images as vanilla as possible from Mozilla's code (below)
@@ -58,11 +58,12 @@ This project provides:
 ## Images
 
 All the images are updated weekly to the latest tag available from Mozilla's official repositories, and published only after the [tests](TESTING.md) passed
-All the images are updated weekly to the latest tag available from Mozilla's official repositories
+
+### Sync server images
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - GitHub [workflow](/.github/workflows/syncstorage-rs.yml) and [logs](https://github.com/porelli/firefox-sync/actions/workflows/syncstorage-rs.yml)
     - Base image: [Mozilla's](https://github.com/mozilla-services/syncstorage-rs/blob/master/Dockerfile) container
-    - Base image differences: image built with `SYNCSTORAGE_DATABASE_BACKEND=mysql` and `TOKENSERVER_DATABASE_BACKEND=mysql` (`DATABASE_BACKEND=mysql` for releases before 0.23) to use the MySQL-compatible interface instead of Google Spanner
+    - Base image differences: image built with `SYNCSTORAGE_DATABASE_BACKEND=mysql` and `TOKENSERVER_DATABASE_BACKEND=mysql` to use the MySQL-compatible interface instead of Google Spanner
     - source code: https://github.com/mozilla-services/syncstorage-rs
         - code changes: only the upstream pull requests listed in [upstream-patches.yml](/upstream-patches.yml), until they are in a release; the image lists them in its label `org.firefox-sync.upstream-patches`
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
@@ -87,13 +88,13 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - source code: [admin/](/admin), a Go program in a distroless image
 
 ### Mozilla accounts images
-- `ghcr.io/porelli/firefox-sync:fxa-mono-<release>` and `fxa-mono-latest`, amd64 and arm64
+- [`ghcr.io/porelli/firefox-sync:fxa-mono-<release>` and `fxa-mono-latest`](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions), amd64 and arm64
     - GitHub [workflow](/.github/workflows/fxa.yml): Mozilla only publishes [`mozilla/fxa-mono`](https://hub.docker.com/r/mozilla/fxa-mono) for amd64, this builds the same releases for amd64 and arm64 and tests them on both before publishing
     - Base image: [Mozilla's](https://github.com/mozilla/fxa/blob/main/_dev/docker/mono/Dockerfile) container
     - source code: https://github.com/mozilla/fxa
         - code changes: only the upstream pull requests listed in [upstream-patches.yml](/upstream-patches.yml), until they are in a release (today [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494), for MariaDB 12, see [FXA.md](FXA.md#mariadb-12)); the image lists them in its label `org.firefox-sync.upstream-patches`
     - used by default with self-hosted accounts (`FXA_VERSION=fxa-mono-latest`); Mozilla's own image works too on amd64
-- `ghcr.io/porelli/firefox-sync:fxa-channelserver-<release>` and `fxa-channelserver-latest`, amd64 and arm64: the optional QR code pairing server, built the same way from [Mozilla's channelserver](https://github.com/mozilla-services/channelserver)
+- [`ghcr.io/porelli/firefox-sync:fxa-channelserver-<release>` and `fxa-channelserver-latest`](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions), amd64 and arm64: the optional QR code pairing server, built the same way from [Mozilla's channelserver](https://github.com/mozilla-services/channelserver)
 
 ## Credits
 - [Mozilla](https://www.mozilla.org/) for [Firefox](https://www.mozilla.org/firefox) and opensourcing all their software, including the backend
