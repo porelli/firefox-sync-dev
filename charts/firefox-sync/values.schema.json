@@ -323,6 +323,10 @@
           "type": "integer",
           "minimum": 1
         },
+        "activeDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
         "persistence": {
           "type": "object",
           "properties": {

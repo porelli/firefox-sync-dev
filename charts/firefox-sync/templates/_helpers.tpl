@@ -497,3 +497,17 @@ the admin UI then says its default, 03:00
 {{- end }}
 {{- end }}
 
+{{/*
+The backup's pods (the CronJob's and the PVC's binding Job): root, as compose (the dumps are
+root's, 0600), without any capability: root owns what it writes into the PVC and /tmp, the
+dumps and their clients need none (the e2e dumps and restores so)
+*/}}
+{{- define "firefox-sync.backupPodSecurityContext" -}}
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+{{- define "firefox-sync.backupSecurityContext" -}}
+allowPrivilegeEscalation: false
+capabilities:
+  drop: ["ALL"]
+{{- end }}

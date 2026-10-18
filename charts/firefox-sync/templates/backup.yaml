@@ -4,7 +4,7 @@ CronJob: config/backup/backup.sh (a copy in files/, kept identical) runs once a 
 (`backup.sh now`, compose's loop is the schedule here) in the database's image, as the
 stack's users, into the PVC <fullname>-backups. Each run is a row of ffs_backups in the admin
 UI's database, which its Backups card shows. One now:
-  kubectl create job --from=cronjob/<fullname>-backup backup-now
+  kubectl create job --from=cronjob/<fullname>-backup backup-now-$(date +%s)
 */ -}}
 {{- if .Values.backup.enabled }}
 {{- $fullname := include "firefox-sync.fullname" . }}
@@ -44,19 +44,20 @@ spec:
 {{- /* the PVC used once at install: with a WaitForFirstConsumer storage class (kind, k3s,
 most clouds' default) it would stay Pending until the first night, and helm install --wait
 waits for it to be bound. A Job's pod template cannot change: named after it, a new Job
-(the old one removed) when it does */}}
+(the old one removed) when it does; the name within 63 characters (also its job-name label)
+with the hash kept */}}
 {{- $bind := dict "metadata" (dict "labels" (include "firefox-sync.selectorLabels" (dict "root" . "component" "backup-volume") | fromYaml))
-  "spec" (dict "restartPolicy" "Never"
+  "spec" (dict "restartPolicy" "Never" "securityContext" (include "firefox-sync.backupPodSecurityContext" . | fromYaml)
     "containers" (list (dict "name" "bind" "image" (include "firefox-sync.dbImage" .) "imagePullPolicy" "IfNotPresent"
       "command" (list "test" "-d" "/backups")
-      "securityContext" (dict "allowPrivilegeEscalation" false)
+      "securityContext" (include "firefox-sync.backupSecurityContext" . | fromYaml)
       "volumeMounts" (list (dict "name" "backups" "mountPath" "/backups"))))
     "volumes" (list (dict "name" "backups" "persistentVolumeClaim" (dict "claimName" (printf "%s-backups" $fullname))))) }}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $fullname }}-backup-volume-{{ toJson $bind | sha256sum | trunc 8 }}
+  name: {{ $fullname | trunc 40 | trimSuffix "-" }}-backup-volume-{{ toJson $bind | sha256sum | trunc 8 }}
   labels:
     {{- include "firefox-sync.labels" (dict "root" . "component" "backup-volume") | nindent 4 }}
 spec:
@@ -82,12 +83,16 @@ spec:
     spec:
       # a failed run is recorded (and alerted) as such, compose does not retry either
       backoffLimit: 0
+      # a hung dump is stopped: under Forbid it would hold back every later run
+      activeDeadlineSeconds: {{ include "firefox-sync.number" .Values.backup.activeDeadlineSeconds }}
       template:
         metadata:
           labels:
             {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "backup") | nindent 12 }}
         spec:
           restartPolicy: Never
+          securityContext:
+            {{- include "firefox-sync.backupPodSecurityContext" . | nindent 12 }}
           containers:
             - name: backup
               # the database's image, its client and dump (as compose)
@@ -96,7 +101,7 @@ spec:
               command: [sh, /ffs-backup/backup.sh]
               args: [now]
               securityContext:
-                allowPrivilegeEscalation: false
+                {{- include "firefox-sync.backupSecurityContext" . | nindent 16 }}
               env:
                 - name: BACKUP_SCOPE
                   value: sync

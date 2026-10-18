@@ -213,6 +213,35 @@ lint() {
   # (one per image: a hash of the pod template)
   [[ "${names}" =~ ^\ [0-9a-f]{8}\ [0-9a-f]{8}\ [0-9a-f]{8}$ && $(tr ' ' '\n' <<< "${names}" | sort -u | wc -l) -eq 4 ]] \
     || fail "the binding Jobs not named after their pod templates: ${names}"
+  # a hung dump ends within a day: under Forbid it would block every later run
+  deadline() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set backup.enabled=true "$@" | manifests \
+      | jq -r '.[] | select(.kind == "CronJob") | .spec.jobTemplate.spec.activeDeadlineSeconds'
+  }
+  [[ "$(deadline)" == 82800 && "$(deadline --set backup.activeDeadlineSeconds=3600)" == 3600 ]] \
+    || fail "the backup Job's activeDeadlineSeconds: $(deadline), with 3600: $(deadline --set backup.activeDeadlineSeconds=3600)"
+  check "the backup Job ends after backup.activeDeadlineSeconds (82800 by default)"
+  # the backup and binding pods: root (the dumps are root's, 0600) without capabilities
+  for backend in mariadb mysql postgres; do
+    sec=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --set backup.enabled=true \
+      | manifests | jq -c '[.[] | select(.kind == "CronJob" or (.kind == "Job" and (.metadata.name | contains("backup")))) | (.spec.jobTemplate.spec // .spec).template.spec
+      | [.securityContext.seccompProfile.type, (.containers[] | .securityContext | [.allowPrivilegeEscalation, .capabilities.drop])]] | unique')
+    [[ "${sec}" == '[["RuntimeDefault",[false,["ALL"]]]]' ]] || fail "${backend}: the backup pods' securityContext: ${sec}"
+  done
+  check "backup and binding pods: seccomp RuntimeDefault, no privilege escalation, every capability dropped"
+  # the binding Job's name (and its job-name label) within 63 characters, with a long fullname
+  # too (the CronJob keeps <fullname>-backup, the name the admin UI shows)
+  long=$(printf 'f%.0s' $(seq 1 63))
+  names=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set backup.enabled=true --set fullnameOverride="${long}" \
+    | manifests | jq -r '.[] | select(.kind == "Job") | .metadata.name')
+  [[ -n "${names}" ]] && ! awk 'length($0) > 63 {bad = 1} END {exit !bad}' <<< "${names}" || fail "Job names over 63 characters: ${names}"
+  grep -q -- "-backup-volume-[0-9a-f]\{8\}$" <<< "${names}" || fail "the binding Job lost its hash: ${names}"
+  check "the binding Job's name within 63 characters (fullnameOverride of 63), with its hash"
+  # helm install --dry-run renders NOTES: a backup now, under a new name each time
+  grep -qF 'create job --from=cronjob/{{ include "firefox-sync.fullname" . }}-backup backup-now-$(date +%s)' "${CHART_DIR}/templates/NOTES.txt" \
+    || fail "NOTES.txt: the backup-now command is not one for every run"
+  [[ "$(sed -n 's/^kubeVersion: //p' "${CHART_DIR}/Chart.yaml")" == '">=1.27.0-0"' ]] || fail "Chart.yaml: kubeVersion not >=1.27.0-0 (CronJob timeZone)"
+  check "NOTES: backup-now-\$(date +%s); kubeVersion >=1.27.0-0 (CronJob timeZone)"
   # BACKUP_TIME (the admin UI's help, backup.sh) from a daily schedule only, BACKUP_KEEP from
   # backup.keep: the same in the CronJob and the admin UI
   # (the admin UI's first: admin.yaml renders before backup.yaml)
@@ -527,7 +556,8 @@ admin_toggle() {
   done
   check "overview: the Sync server up with its version, alice's account"
   # the commands of the Helm chart there
-  grep -q "create job --from=cronjob/${FULL}-backup backup-now" <<< "${page}" || { kill "${pf}"; fail "overview: no kubectl backup command"; }
+  # (a new Job name for each run; + is &#43; in the page)
+  grep -qF "create job --from=cronjob/${FULL}-backup backup-now-\$(date &#43;%s)" <<< "${page}" || { kill "${pf}"; fail "overview: no kubectl backup command"; }
   ! grep -q 'docker compose' <<< "${page}" || { kill "${pf}"; fail "overview: docker compose commands"; }
   check "overview: kubectl commands, no docker compose"
   # the run of backup-now on the Backups card (the admin UI reads ffs_backups, backup.sh

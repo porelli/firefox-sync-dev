@@ -4,6 +4,8 @@ description: Self-hosted Firefox Sync server with syncstorage-rs, tokenserver, a
 type: application
 version: 0.1.0
 appVersion: "latest"
+# CronJob timeZone (GA in 1.27): the backups run in UTC
+kubeVersion: ">=1.27.0-0"
 keywords:
   - firefox
   - sync
