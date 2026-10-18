@@ -466,7 +466,20 @@ there is empty here, the feature off (existingSecret to manage them out of band)
 {{- $_ := set $data "FXA_SMTP_PASS" (.Values.admin.smtp.password | toString | b64enc) }}
 {{- $_ := set $data "ADMIN_OIDC_CLIENT_SECRET" (.Values.admin.oidc.clientSecret | toString | b64enc) }}
 {{- $_ := set $data "ADMIN_METRICS_TOKEN" (.Values.admin.metricsToken | toString | b64enc) }}
+{{- $_ := set $data "ADMIN_NOTIFY" (include "firefox-sync.adminNotify" . | b64enc) }}
 {{- $_ := set $ "ffsSecretData" $data }}
 {{- end }}
 {{- toJson (get $ "ffsSecretData") }}
+{{- end }}
+
+{{/*
+admin.notify as compose's ADMIN_NOTIFY: a list of URLs joined by commas, or a string as it is
+*/}}
+{{- define "firefox-sync.adminNotify" -}}
+{{- $n := .Values.admin.notify }}
+{{- if kindIs "slice" $n }}
+{{- join "," $n }}
+{{- else if $n }}
+{{- $n | toString }}
+{{- end }}
 {{- end }}

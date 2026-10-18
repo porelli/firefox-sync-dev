@@ -137,6 +137,9 @@ spec:
               value: {{ $a.publicCheck | toString | quote }}
             - name: ALERT_EMAIL
               value: {{ $a.alertEmail | quote }}
+            # alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook:
+            # URLs with their tokens, in the Secret
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_NOTIFY" "key" "ADMIN_NOTIFY" "optional" true) | nindent 12 }}
             - name: SMTP_HOST
               value: {{ $a.smtp.host | quote }}
             - name: SMTP_PORT

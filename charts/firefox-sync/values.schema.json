@@ -213,6 +213,19 @@
             }
           }
         },
+        "notify": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
         "metricsToken": {
           "type": "string"
         },
