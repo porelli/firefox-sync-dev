@@ -231,12 +231,40 @@ lint() {
   check "backup and binding pods: seccomp RuntimeDefault, no privilege escalation, every capability dropped"
   # the binding Job's name (and its job-name label) within 63 characters, with a long fullname
   # too (the CronJob keeps <fullname>-backup, the name the admin UI shows)
-  long=$(printf 'f%.0s' $(seq 1 63))
+  # (45: the longest a CronJob allows)
+  long=$(printf 'f%.0s' $(seq 1 45))
   names=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set backup.enabled=true --set fullnameOverride="${long}" \
+    --set database.bundled=false --set database.external.host=db.example.test \
     | manifests | jq -r '.[] | select(.kind == "Job") | .metadata.name')
   [[ -n "${names}" ]] && ! awk 'length($0) > 63 {bad = 1} END {exit !bad}' <<< "${names}" || fail "Job names over 63 characters: ${names}"
   grep -q -- "-backup-volume-[0-9a-f]\{8\}$" <<< "${names}" || fail "the binding Job lost its hash: ${names}"
-  check "the binding Job's name within 63 characters (fullnameOverride of 63), with its hash"
+  check "the binding Job's name within 63 characters (fullnameOverride of 45), with its hash"
+  # names within Kubernetes' limits, refused at render time otherwise (none truncated: the
+  # admin UI builds them from ADMIN_K8S_FULLNAME): the CronJob 52 (its Jobs get 11 more), the
+  # StatefulSets 52 (their pods' controller-revision-hash label, <name>-<hash of 10>), the
+  # Services 63
+  of() { printf "f%.0s" $(seq 1 "$1"); }
+  renders() { helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" "$@" 2>&1; }
+  external=(--set database.bundled=false --set database.external.host=db.example.test)
+  out=$(renders "${external[@]}" --set backup.enabled=true --set fullnameOverride="$(of 46)") \
+    && fail "a fullname of 46 with the backups renders"
+  grep -q "fullnameOverride or a shorter release name: the backup CronJob name $(of 46)-backup is 53 characters, at most 52" <<< "${out}" \
+    || fail "a fullname of 46 with the backups: not the message on the CronJob's name: ${out}"
+  renders "${external[@]}" --set backup.enabled=true --set fullnameOverride="$(of 45)" > /dev/null || fail "a fullname of 45 with the backups does not render"
+  # (component: the longest fullname that renders, its name)
+  for limit in "mariadb 37 tokenserver-db StatefulSet" "mysql 37 tokenserver-db StatefulSet" "postgres 43 postgres StatefulSet" \
+    "external 51 syncstorage Service" "admin 51 syncstorage Service"; do
+    read -r what max name kind <<< "${limit}"
+    case ${what} in
+      external) args=("${external[@]}") ;;
+      admin) args=("${external[@]}" --set admin.enabled=true) ;;
+      *) args=(--set database.backend="${what}") ;;
+    esac
+    renders "${args[@]}" --set fullnameOverride="$(of "${max}")" > /dev/null || fail "${what}: a fullname of ${max} does not render: $(renders "${args[@]}" --set fullnameOverride="$(of "${max}")" | tail -1)"
+    out=$(renders "${args[@]}" --set fullnameOverride="$(of $((max + 1)))") && fail "${what}: a fullname of $((max + 1)) renders"
+    grep -q "the ${name} ${kind} name $(of $((max + 1)))-${name} is" <<< "${out}" || fail "${what}: a fullname of $((max + 1)): not the message on the ${name} ${kind}: ${out}"
+  done
+  check "names over Kubernetes' limits refused at render time (CronJob 52, StatefulSets 52, Services 63): backups 45, mariadb/mysql 37, postgres 43, Sync 51"
   # helm install --dry-run renders NOTES: a backup now, under a new name each time
   grep -qF 'create job --from=cronjob/{{ include "firefox-sync.fullname" . }}-backup backup-now-$(date +%s)' "${CHART_DIR}/templates/NOTES.txt" \
     || fail "NOTES.txt: the backup-now command is not one for every run"

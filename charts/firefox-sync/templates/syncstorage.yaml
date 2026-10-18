@@ -3,6 +3,7 @@ The Sync server. Compose's one-shot containers are its init containers, in compo
 order, so that it never serves before the migrations and the MAX_USERS init succeeded:
 a failing init keeps the pod in Init:Error (and out of the Service), without fallback.
 */ -}}
+{{- include "firefox-sync.checkNames" . }}
 {{- $fullname := include "firefox-sync.fullname" . }}
 {{- $backend := .Values.database.backend }}
 {{- $port := include "firefox-sync.dbPort" (dict "root" .) }}
