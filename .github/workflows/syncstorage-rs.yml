@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       rebuild:
-        description: Rebuild all images from scratch instead of reusing identical ones (manual runs on main always do, they publish a release)
+        description: Rebuild all images from scratch instead of reusing identical ones (scheduled runs, and releases, a tagged commit on main, always do)
         type: boolean
         default: false
       fxa_version:
@@ -20,7 +20,12 @@ on:
       - '**'
     paths-ignore:
       - '**/README.md'
-      - '/PODMAN.md'
+      - '**/PODMAN.md'
+
+# one run at a time per branch: a branch never cancels or waits for main's runs
+concurrency:
+  group: syncstorage-rs-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   # repository variables
@@ -43,11 +48,14 @@ jobs:
   ## Set common libraries ##
   prepare-env:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       github_release: ${{ steps.set-version-suffix-and-release-strategy.outputs.github_release }}
       service_tag: ${{ steps.get-service-latest-tag.outputs.service_tag }}
       internal_commit_head: ${{ steps.find-code.outputs.internal_commit_head }}
       build_date: ${{ steps.build_date.outputs.build_date }}
+      patches_obsolete: ${{ steps.patches.outputs.obsolete_json }}
 
     steps:
       - name: Checkout
@@ -80,6 +88,16 @@ jobs:
           echo "Latest tag for this service: ${latest_tag}"
           echo "service_tag=${latest_tag}" >> ${GITHUB_OUTPUT}
 
+      - name: Unit tests of the upstream patches script
+        run: python3 tests/test_upstream_patches.py
+
+      # the pull requests of upstream-patches.yml for the app images: a closed one fails here
+      - name: Upstream patches for the release
+        id: patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/upstream-patches.py plan syncstorage-rs "${{ steps.get-service-latest-tag.outputs.service_tag }}"
+
       - name: Set current date as env variable
         id: build_date
         run: echo "build_date=$(date +'%Y%m%dT%H%M%S')" >> ${GITHUB_OUTPUT}
@@ -108,7 +126,7 @@ jobs:
       - cleanup-registry
 
     permissions:
-      contents: write
+      contents: read
       packages: write
 
     strategy:
@@ -169,6 +187,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: workflows
+          persist-credentials: false
 
       - name: Prepare image name
         id: image_name
@@ -188,6 +207,49 @@ jobs:
         with:
           ref: ${{ steps.prepare-variables.outputs.code_commit_head }}
           repository: ${{ steps.prepare-variables.outputs.code_repository }}
+          # the token stays off the disk of upstream's sources (the build has no credentials)
+          persist-credentials: false
+
+      - name: Checkout upstream-patches.yml
+        if: matrix.image_type == 'app'
+        uses: actions/checkout@v7
+        with:
+          path: ffs
+          persist-credentials: false
+          sparse-checkout: |
+            upstream-patches.yml
+            .github/scripts/upstream-patches.py
+          sparse-checkout-cone-mode: false
+
+      # the pull requests of upstream-patches.yml, into the label org.firefox-sync.upstream-patches
+      - name: Apply the upstream patches
+        id: patches
+        if: matrix.image_type == 'app'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 ffs/.github/scripts/upstream-patches.py apply syncstorage-rs "${{ needs.prepare-env.outputs.service_tag }}" .
+          # not in the image
+          rm -rf ffs
+          git status --short
+
+      # for the job upstream-patches: a patch found already in the sources is obsolete too
+      - name: Export the obsolete upstream patches
+        if: matrix.image_type == 'app'
+        env:
+          OBSOLETE: ${{ steps.patches.outputs.obsolete_json }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/upstream-patches"
+          printf '%s\n' "${OBSOLETE:-[]}" > "${RUNNER_TEMP}/upstream-patches/obsolete.json"
+
+      - name: Upload the obsolete upstream patches
+        if: matrix.image_type == 'app'
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-patches-${{ matrix.database_backend }}-${{ steps.prepare-platform-pair.outputs.platform_pair }}
+          path: ${{ runner.temp }}/upstream-patches/obsolete.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Version of the app
         if: matrix.image_type == 'app'
@@ -223,17 +285,33 @@ jobs:
       - name: Look for an identical image
         id: reuse
         run: |
-          # the key only changes when the inputs of the image change: the upstream tag for
-          # the app, the content of its directory in this repository for the init image
+          # the key only changes when the inputs of the image change: the upstream tag and
+          # the upstream patches applied for the app, the content of its directory in this
+          # repository for the init image
           if [ "${{ matrix.image_type }}" = app ]; then
-            key="${{ needs.prepare-env.outputs.service_tag }}-r${{ env.APP_BUILD_REVISION }}"
+            key="${{ needs.prepare-env.outputs.service_tag }}-r${{ env.APP_BUILD_REVISION }}-p${{ steps.patches.outputs.key }}"
           else
             dir="${{ steps.prepare-variables.outputs.code_dockerfile_path }}"
             dir=${dir#./}
             key="src-$(git rev-parse --short=12 "HEAD:${dir%/}")"
           fi
-          key_tag="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-key-${key}-${{ steps.prepare-platform-pair.outputs.platform_pair }}"
-          echo "key_tag=${key_tag}" >> ${GITHUB_OUTPUT}
+          # main's tags (the key tags it reuses, the per-architecture tags, the build cache) are
+          # written by main only: a branch gets key tags of its own and only the dated tag
+          prefix="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}"
+          pair="${{ steps.prepare-platform-pair.outputs.platform_pair }}"
+          if [ "${GITHUB_REF}" = "refs/heads/${{ env.REPOSITORY_MAIN_BRANCH }}" ]; then
+            scope=""
+          else
+            scope="-ref-$(printf '%s' "${GITHUB_REF_NAME}" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-40)"
+          fi
+          key_tag="${prefix}-key-${key}${scope}-${pair}"
+          echo "key_tag=${key_tag}" >> "${GITHUB_OUTPUT}"
+          tags="${prefix}-${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-${pair}"
+          if [ -z "${scope}" ]; then
+            tags="${tags},${prefix}-${{ needs.prepare-env.outputs.service_tag }}-${pair},${prefix}-${pair}-latest"
+            echo "cache_to=type=registry,ref=${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:buildcache-${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.service_tag }}-${pair},mode=max" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "tags=${tags},${key_tag}" >> "${GITHUB_OUTPUT}"
 
           # scheduled builds, releases and manual rebuilds start from scratch to pick up
           # base image (security) updates
@@ -249,12 +327,14 @@ jobs:
 
       - name: Tag the identical image
         if: steps.reuse.outputs.digest != ''
+        env:
+          TAGS: ${{ steps.reuse.outputs.tags }}
+          KEY_TAG: ${{ steps.reuse.outputs.key_tag }}
         run: |
-          docker buildx imagetools create \
-            -t ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-${{ steps.prepare-platform-pair.outputs.platform_pair }} \
-            -t ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.service_tag }}-${{ steps.prepare-platform-pair.outputs.platform_pair }} \
-            -t ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ steps.prepare-platform-pair.outputs.platform_pair }}-latest \
-            "${{ steps.reuse.outputs.key_tag }}"
+          args=()
+          IFS=, read -r -a tags <<< "${TAGS}"
+          for t in "${tags[@]}"; do [ "${t}" = "${KEY_TAG}" ] || args+=(-t "${t}"); done
+          docker buildx imagetools create "${args[@]}" "${KEY_TAG}"
 
       - name: Build and push
         id: build
@@ -262,12 +342,10 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           platforms: ${{ steps.prepare-variables.outputs.docker_target }}
-          tags: |
-            ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-${{ steps.prepare-platform-pair.outputs.platform_pair }},
-            ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.service_tag }}-${{ steps.prepare-platform-pair.outputs.platform_pair }},
-            ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ steps.prepare-platform-pair.outputs.platform_pair }}-latest,
-            ${{ steps.reuse.outputs.key_tag }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.reuse.outputs.tags }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            ${{ matrix.image_type == 'app' && format('org.firefox-sync.upstream-patches={0}', steps.patches.outputs.label) || '' }}
           no-cache: ${{ steps.reuse.outputs.fresh == 'true' }}
           outputs: type=image,"name=${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}",name-canonical=true,push=true
           context: ${{ steps.prepare-variables.outputs.code_dockerfile_path }}
@@ -276,7 +354,8 @@ jobs:
             SYNCSTORAGE_DATABASE_BACKEND=${{ matrix.database_backend }}
             TOKENSERVER_DATABASE_BACKEND=${{ matrix.database_backend }}
           cache-from: type=registry,ref=${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:buildcache-${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.service_tag }}-${{ steps.prepare-platform-pair.outputs.platform_pair }}
-          cache-to: type=registry,ref=${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:buildcache-${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.service_tag }}-${{ steps.prepare-platform-pair.outputs.platform_pair }},mode=max
+          # main only (empty on branches: no cache written)
+          cache-to: ${{ steps.reuse.outputs.cache_to }}
 
       - name: Export digest
         run: |
@@ -430,6 +509,9 @@ jobs:
       - build-and-push-containers
       - test
       - test-podman
+    # the multi-arch tags from the default branch only: other branches build and test (an
+    # unmerged pin in upstream-patches.yml never reaches them)
+    if: github.ref == 'refs/heads/main'
 
     permissions:
       contents: write
@@ -446,6 +528,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: workflows
+          persist-credentials: false
 
       - name: Prepare image name
         id: image_name
@@ -509,6 +592,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: workflows
+          persist-credentials: false
 
       - name: Prepare image name
         id: image_name
@@ -560,3 +644,35 @@ jobs:
           name: ${{ env.SERVICE_NAME }}
           tag: ${{ env.SERVICE_NAME }}-${{ steps.image_name.outputs.docker_image_name_suffix }}-${{ needs.prepare-env.outputs.build_date }}
           bodyFile: ./release-notes.md
+
+  ## An entry of upstream-patches.yml in the release now (not applied any more) ##
+  # red until it is removed and its when_released done; after publishing, not holding it back
+  upstream-patches:
+    needs:
+      - prepare-env
+      - build-and-push-containers
+      - build-and-push-manifests
+    if: ${{ !cancelled() && needs.prepare-env.result == 'success' }}
+    permissions:
+      actions: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: The obsolete upstream patches of the app builds
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/upstream-patches
+          pattern: upstream-patches-*
+
+      - name: Upstream patches in the release now
+        env:
+          PLANNED: ${{ needs.prepare-env.outputs.patches_obsolete }}
+        run: |
+          # the plan's, and those the builds found already in the sources
+          OBSOLETE=$(cat <(printf '%s\n' "${PLANNED:-[]}") "${RUNNER_TEMP}"/upstream-patches/*/obsolete.json 2> /dev/null | jq -cs 'add | unique_by(.id)')
+          if [ "$(jq length <<< "${OBSOLETE:-[]}")" = 0 ]; then
+            echo "No entry of upstream-patches.yml for syncstorage-rs is in the release yet"
+            exit 0
+          fi
+          jq -r '.[] | "::error title=Upstream patch released::\(.id), \(.pr) is in the release, no longer applied. Remove the entry from upstream-patches.yml and: \(.when_released)"' <<< "${OBSOLETE}"
+          exit 1

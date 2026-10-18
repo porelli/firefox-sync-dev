@@ -1,0 +1,83 @@
+# Upstream pull requests applied to the images built here, before they are in a release.
+#
+# The workflows build Mozilla's sources as released (.github/workflows/fxa.yml: mozilla/fxa
+# for fxa-mono, syncstorage-rs.yml: mozilla-services/syncstorage-rs). Each entry below is a
+# pull request to one of them that this project needs now: .github/scripts/upstream-patches.py
+# applies its changes, from the pinned `base` to the reviewed commit `sha`, to the checked
+# out release, for every architecture, before the image is built. The images get the list of
+# what was applied in the label org.firefox-sync.upstream-patches (e.g.
+# "mozilla/fxa#21494@517651a..aa0b178", base..sha; "none" without any), shown in the summary
+# of the run; the tests run on these images as always.
+#
+# Fields (all required):
+#   id             a short name for the entry
+#   repo           the upstream repository, owner/name
+#   pr             the pull request number
+#   head_repo      the repository of the pull request's branch (owner/name): another one fails
+#   base           the full sha of the commit the reviewed changes start from, the merge base
+#                  of the pull request with its target branch
+#   sha            the full head commit that was reviewed: exactly the changes base...sha are
+#                  applied, never newer commits of the pull request. It must be in the pull
+#                  request's history and base an ancestor of it, else the build fails
+#   component      fxa-mono or syncstorage-rs: the image it goes into
+#   why            what it fixes for this project
+#   when_released  what to undo here once it is in a release (workarounds, pins, docs)
+# Values are plain one-line scalars, or folded blocks (>-) for the long texts.
+#
+# Adding a pull request: review it at the commit to apply and pin it:
+#   gh api repos/<repo>/pulls/<pr> --jq '.head.repo.full_name, .head.sha, .base.sha'
+#   gh api repos/<repo>/compare/<base.sha>...<head.sha> --jq .merge_base_commit.sha   # base
+# Merged into the default branch, a change of this file rebuilds the current release of the
+# component with the patch (same image tag, a new digest); on other branches the images are
+# built and tested, not published. Updating it: review the new commits, move sha (and base
+# if the pull request was rebased); again a rebuild.
+#
+# What a run of a workflow says about each entry:
+#   open, or merged but not in the release built yet
+#           applied; the run goes on. A ::notice:: if the pull request has commits after
+#           sha: they are not applied until sha is moved to them here
+#   merged and in the release built (or its changes already in the sources)
+#           not applied, the image is built from the release as it is; after publishing
+#           the job "Upstream patches" fails with the entry and its when_released: do
+#           what it says and remove the entry. Publishing is not held back
+#   closed without being merged, its changes don't apply to the release, sha not in its
+#   history, another head repository, or merged and released but its changes not in the
+#   sources
+#           the build fails, nothing is published: decide (another pull request, a rebase
+#           and a new sha, or remove the entry and its workaround)
+# Removing an entry: also undo what when_released says, in the same commit.
+#
+# Unit tests: python3 tests/test_upstream_patches.py (no network)
+
+- id: fxa-mariadb12-foreign-keys
+  repo: mozilla/fxa
+  pr: 21494
+  head_repo: porelli/fxa
+  base: 517651a36053d1fc306520bd7d95bfeb4543c7fd
+  sha: aa0b1780901844fc5639f7837d7841f5e90ce227
+  component: fxa-mono
+  why: >-
+    fix(db-migrations): name foreign keys that later patches drop. MariaDB 12 names unnamed
+    foreign keys 1, 2... instead of <table>_ibfk_N, and later migrations drop them by those
+    names: without it the migrations stop on MariaDB 12 on a new database.
+  when_released: >-
+    MariaDB 12 then works with every accounts image from that release on, Mozilla's too: say
+    so (the release) instead of "our images" in FXA.md (MariaDB 12, MySQL or MariaDB),
+    DATABASES.md, PODMAN.md, README.md, .env-example and prepare_environment.sh, and make
+    fxa_mariadb_image_check in prepare_environment.sh compare FXA_VERSION with that release
+    instead of reading the label.
+
+- id: tokenserver-node-ties
+  repo: mozilla-services/syncstorage-rs
+  pr: 2638
+  head_repo: porelli/syncstorage-rs
+  base: 3a5abd9e2365fd70ee9ac27bc2c07561a727c4a9
+  sha: c670cf0843a3af9a3d58bb3187323257039aa642
+  component: syncstorage-rs
+  why: >-
+    fix: break ties by id when choosing the best tokenserver node. On MariaDB the nodes that
+    tie (LOG(0) of empty nodes is NULL) come back in any order, upstream's
+    test_node_assignment.py::test_user_creation fails there.
+  when_released: >-
+    In tests/e2e.sh drop the --deselect of test_node_assignment.py::test_user_creation (the
+    LOG(0) comment) and its check of the image label: every image tested then has the fix.

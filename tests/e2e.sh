@@ -911,10 +911,15 @@ check "$(wait_init)" 0 "init container exit code (MAX_USERS=1000000)"
 hb > /dev/null
 # test_e2e.py needs real accounts on Mozilla's FxA stage environment
 UPSTREAM_TS="tools/integration_tests/tokenserver --ignore=tools/integration_tests/tokenserver/test_e2e.py"
-if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ]; then
+# the upstream pull requests built into the image under test (upstream-patches.yml), none
+# for images from before it
+UPSTREAM_PATCHES=$(docker inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "$(dc ps -q syncstorage)" 2> /dev/null)
+echo "upstream patches of the image: ${UPSTREAM_PATCHES:-none (no label)}"
+if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ] && [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2638@"* ]]; then
   # with several empty nodes the tokenserver orders them by LOG(0) (NULL), MySQL 8
   # (upstream CI, EXTERNAL_DB=1 and SYNC_DB=mysql here, where it runs) returns them in id
-  # order, MariaDB does not: this stack has one node
+  # order, MariaDB does not: this stack has one node. Fixed by mozilla-services/syncstorage-rs#2638,
+  # in our images since upstream-patches.yml: deselected only for the images without it
   # (node ids are relative to tools/integration_tests, pytest's rootdir in the image)
   T=test_node_assignment.py::test_user_creation
   UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"

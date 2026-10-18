@@ -5,6 +5,12 @@ name: fxa-mono
 # tests/podman.sh on both architectures, and an upgrade from the published release
 # with tests/fxa-upgrade.sh, before the multi-arch tags are published (and on
 # MariaDB, without holding back the publishing, see test-mariadb).
+# The pull requests of upstream-patches.yml are applied to the sources first (the label
+# org.firefox-sync.upstream-patches lists them); a change of what is applied rebuilds the
+# release under the same tags (a new digest). Upstream's code runs in jobs without write
+# access; the images are pushed under tags of their run (<tag>-run<id>), tested by digest, and
+# the multi-arch tags published from those digests on the default branch only (other branches
+# build and test). One run at a time per branch.
 # Experimental, see FXA.md.
 
 on:
@@ -23,6 +29,13 @@ on:
   push:
     paths:
       - .github/workflows/fxa.yml
+      - upstream-patches.yml
+      - .github/scripts/upstream-patches.py
+
+concurrency:
+  # per branch: a branch run never cancels or waits for main's
+  group: fxa-mono-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REPOSITORY_REGISTRY: ghcr.io
@@ -34,10 +47,14 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       packages: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.existing.outputs.build }}
+      patches: ${{ steps.patches.outputs.label }}
+      patches_obsolete: ${{ steps.patches.outputs.obsolete_json }}
+      patches_present: ${{ steps.existing.outputs.present }}
       pairing_version: ${{ steps.pairing.outputs.version }}
       build_pairing: ${{ steps.pairing.outputs.build }}
     steps:
@@ -65,18 +82,46 @@ jobs:
           echo "FxA release: ${version}"
           echo "version=${version}" >> ${GITHUB_OUTPUT}
 
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Unit tests of the upstream patches script
+        run: python3 tests/test_upstream_patches.py
+
+      - name: Upstream patches for the release
+        id: patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/upstream-patches.py plan fxa-mono "${{ steps.version.outputs.version }}"
+
       - name: Look for an existing image
         id: existing
         env:
           REBUILD: ${{ inputs.rebuild }}
+          PATCHES: ${{ steps.patches.outputs.label }}
         run: |
           image="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono-${{ steps.version.outputs.version }}"
-          if [ "${REBUILD}" != true ] && docker buildx imagetools inspect "${image}" > /dev/null 2>&1; then
-            echo "${image} exists, nothing to build"
-            echo "build=false" >> ${GITHUB_OUTPUT}
-          else
-            echo "build=true" >> ${GITHUB_OUTPUT}
+          if [ "${REBUILD}" != true ] && config=$(docker buildx imagetools inspect "${image}" --format '{{json .Image}}' 2> /dev/null); then
+            # the image of an index is per platform; built before upstream-patches.yml: unlabelled.
+            # The plan of its build (-plan) against this one: what the build applied can be less
+            # (a patch already in the sources), which a rebuild would not change
+            labels=$(jq -c 'if has("config") then . else .["linux/amd64"] end | .config.Labels // {}' <<< "${config}")
+            planned=$(jq -r '.["org.firefox-sync.upstream-patches-plan"] // "unlabelled"' <<< "${labels}")
+            applied=$(jq -r '.["org.firefox-sync.upstream-patches"] // "unlabelled"' <<< "${labels}")
+            if [ "${planned}" = "${PATCHES}" ]; then
+              echo "${image} exists (upstream patches: ${applied}, planned: ${planned}), nothing to build"
+              echo "build=false" >> "${GITHUB_OUTPUT}"
+              # planned but not applied: already in the sources, for the job upstream-patches
+              present=""
+              for p in ${planned}; do
+                [ "${p}" = none ] || [[ " ${applied} " == *" ${p} "* ]] || present="${present:+${present} }${p}"
+              done
+              echo "present=${present}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            echo "${image} was built for the upstream patches '${planned}', upstream-patches.yml '${PATCHES}': rebuilding it"
           fi
+          echo "build=true" >> "${GITHUB_OUTPUT}"
 
       - name: Pairing server release
         id: pairing
@@ -95,12 +140,15 @@ jobs:
             echo "build=true" >> ${GITHUB_OUTPUT}
           fi
 
+  # The builds run upstream's code (its scripts, its Dockerfile) with a read-only token and
+  # write an OCI archive; the push jobs, which can write packages, only copy that archive to
+  # the registry under a tag of this run (<tag>-run<id>) and run nothing of upstream's. The
+  # tests and publish use the digests the push jobs record (artifacts *-digest-<arch>).
   build-pairing:
     needs: prepare
     if: needs.prepare.outputs.build_pairing == 'true'
     permissions:
       contents: read
-      packages: write
     strategy:
       matrix:
         include:
@@ -116,6 +164,7 @@ jobs:
         with:
           repository: ${{ env.PAIRING_REPOSITORY }}
           ref: ${{ needs.prepare.outputs.pairing_version }}
+          persist-credentials: false
 
       - name: Version of the pairing server
         env:
@@ -126,35 +175,74 @@ jobs:
             "${PAIRING_VERSION}" "$(git rev-parse HEAD)" "${{ env.PAIRING_REPOSITORY }}" \
             "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}" | tee version.json
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REPOSITORY_REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push
+      - name: Build
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/${{ matrix.arch }}
-          push: true
           provenance: false
-          tags: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-${{ matrix.arch }}
+          outputs: type=oci,dest=${{ runner.temp }}/image.tar
           labels: |
             org.opencontainers.image.source=https://github.com/${{ env.PAIRING_REPOSITORY }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.pairing_version }}
             org.opencontainers.image.licenses=MPL-2.0
+
+      - name: Upload the image
+        uses: actions/upload-artifact@v7
+        with:
+          name: fxa-channelserver-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  push-pairing:
+    needs: [prepare, build-pairing]
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: The image built
+        uses: actions/download-artifact@v8
+        with:
+          name: fxa-channelserver-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image
+
+      - name: Push it under a tag of this run, record its digest
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          TARGET: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-${{ matrix.arch }}-run${{ github.run_id }}
+        run: |
+          echo "${TOKEN}" | skopeo login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
+          mkdir -p "${RUNNER_TEMP}/digest"
+          skopeo copy --digestfile "${RUNNER_TEMP}/digestfile" "oci-archive:${RUNNER_TEMP}/image/image.tar" "docker://${TARGET}"
+          digest=$(cat "${RUNNER_TEMP}/digestfile")
+          echo "${TARGET} is ${digest}"
+          touch "${RUNNER_TEMP}/digest/${digest#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: fxa-channelserver-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digest/*
+          if-no-files-found: error
+          retention-days: 1
 
   build:
     needs: prepare
     if: needs.prepare.outputs.build == 'true'
     permissions:
       contents: read
-      packages: write
+    outputs:
+      # the same on both architectures; with the sources at hand: also a patch already in them
+      patches_obsolete: ${{ steps.patches.outputs.obsolete_json }}
     strategy:
       matrix:
         include:
@@ -170,6 +258,28 @@ jobs:
         with:
           repository: ${{ env.FXA_REPOSITORY }}
           ref: ${{ needs.prepare.outputs.version }}
+          # no credentials on the disk: the steps below run upstream's scripts (l10n)
+          persist-credentials: false
+
+      - name: Checkout upstream-patches.yml
+        uses: actions/checkout@v7
+        with:
+          path: ffs
+          persist-credentials: false
+          sparse-checkout: |
+            upstream-patches.yml
+            .github/scripts/upstream-patches.py
+          sparse-checkout-cone-mode: false
+
+      - name: Apply the upstream patches
+        id: patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 ffs/.github/scripts/upstream-patches.py apply fxa-mono "${{ needs.prepare.outputs.version }}" .
+          # not in the image
+          rm -rf ffs
+          git status --short
 
       - name: Prepare the sources like upstream's docker workflow
         run: |
@@ -185,32 +295,73 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REPOSITORY_REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push
+      - name: Build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: _dev/docker/mono/Dockerfile
           platforms: linux/${{ matrix.arch }}
-          push: true
           provenance: false
-          tags: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+          outputs: type=oci,dest=${{ runner.temp }}/image.tar
           labels: |
             org.opencontainers.image.source=https://github.com/${{ env.FXA_REPOSITORY }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.licenses=MPL-2.0
+            org.firefox-sync.upstream-patches=${{ steps.patches.outputs.label }}
+            org.firefox-sync.upstream-patches-plan=${{ needs.prepare.outputs.patches }}
+
+      - name: Upload the image
+        uses: actions/upload-artifact@v7
+        with:
+          name: fxa-mono-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image.tar
+          if-no-files-found: error
+          # its layers are compressed already
+          compression-level: 0
+          retention-days: 1
+
+  push:
+    needs: [prepare, build]
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: The image built
+        uses: actions/download-artifact@v8
+        with:
+          name: fxa-mono-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image
+
+      - name: Push it under a tag of this run, record its digest
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          TARGET: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}-run${{ github.run_id }}
+        run: |
+          echo "${TOKEN}" | skopeo login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
+          mkdir -p "${RUNNER_TEMP}/digest"
+          skopeo copy --digestfile "${RUNNER_TEMP}/digestfile" "oci-archive:${RUNNER_TEMP}/image/image.tar" "docker://${TARGET}"
+          digest=$(cat "${RUNNER_TEMP}/digestfile")
+          echo "${TARGET} is ${digest}"
+          touch "${RUNNER_TEMP}/digest/${digest#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: fxa-mono-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digest/*
+          if-no-files-found: error
+          retention-days: 1
 
   test:
-    needs: [prepare, build, build-pairing]
+    needs: [prepare, build, push, build-pairing, push-pairing]
     # runs when anything was built (a skipped build means the image already exists)
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
     permissions:
@@ -237,6 +388,46 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: The digests of this run's images
+        if: needs.push.result == 'success' || needs.push-pairing.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: fxa-*-digest-${{ matrix.arch }}
+
+      # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
+      # pull reads), else the published release (the run built only the other image)
+      - name: The images under test
+        env:
+          IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PAIRING_VERSION: ${{ needs.prepare.outputs.pairing_version }}
+          BUILT: ${{ needs.push.result == 'success' }}
+          PAIRING_BUILT: ${{ needs.push-pairing.result == 'success' }}
+          PULL: docker
+        run: |
+          d="${RUNNER_TEMP}/digests"
+          if [ "${BUILT}" = true ]; then
+            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
+            if [ -n "${PULL}" ]; then
+              docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
+              docker tag "${IMAGE}@${digest}" "${IMAGE}:${tag}"
+            fi
+            echo "FXA_TEST_IMAGE=${IMAGE}@${digest}" >> "${GITHUB_ENV}"
+          else
+            tag="fxa-mono-${VERSION}"
+            echo "FXA_TEST_IMAGE=${IMAGE}:${tag}" >> "${GITHUB_ENV}"
+          fi
+          echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
+          if [ "${PAIRING_BUILT}" = true ]; then
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+          else
+            echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
+          fi
+          grep '^FXA_' "${GITHUB_ENV}"
+
       - name: Init images from this commit
         # the admin UI of this commit needs the procedures and grants of its init scripts: the
         # published init images may be older (the syncstorage-rs workflow rebuilds them)
@@ -252,17 +443,16 @@ jobs:
           TAG: latest
           # the init images above (the others are pulled when missing)
           SKIP_PULL: 1
+          # FXA_VERSION, FXA_PAIRING_IMAGE: the images under test, above
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
-          FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
           FXA_ARCH: ${{ matrix.arch }}
-          FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-${{ matrix.arch }}
         run: ./tests/e2e-fxa.sh
 
   # the candidate with the accounts database on MariaDB (FXA_DB=mariadb, FXA.md). Not needed
   # by publish: Mozilla supports MySQL only, a release that breaks MariaDB must not hold back
   # MySQL installs. The failed run is the warning for MariaDB installs (FXA.md: pin FXA_VERSION)
   test-mariadb:
-    needs: [prepare, build, build-pairing]
+    needs: [prepare, build, push, build-pairing, push-pairing]
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
     permissions:
       contents: read
@@ -280,6 +470,46 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: The digests of this run's images
+        if: needs.push.result == 'success' || needs.push-pairing.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: fxa-*-digest-amd64
+
+      # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
+      # pull reads), else the published release (the run built only the other image)
+      - name: The images under test
+        env:
+          IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          ARCH: amd64
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PAIRING_VERSION: ${{ needs.prepare.outputs.pairing_version }}
+          BUILT: ${{ needs.push.result == 'success' }}
+          PAIRING_BUILT: ${{ needs.push-pairing.result == 'success' }}
+          PULL: docker
+        run: |
+          d="${RUNNER_TEMP}/digests"
+          if [ "${BUILT}" = true ]; then
+            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
+            if [ -n "${PULL}" ]; then
+              docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
+              docker tag "${IMAGE}@${digest}" "${IMAGE}:${tag}"
+            fi
+            echo "FXA_TEST_IMAGE=${IMAGE}@${digest}" >> "${GITHUB_ENV}"
+          else
+            tag="fxa-mono-${VERSION}"
+            echo "FXA_TEST_IMAGE=${IMAGE}:${tag}" >> "${GITHUB_ENV}"
+          fi
+          echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
+          if [ "${PAIRING_BUILT}" = true ]; then
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+          else
+            echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
+          fi
+          grep '^FXA_' "${GITHUB_ENV}"
+
       - name: Init images from this commit
         # the admin UI of this commit needs the procedures and grants of its init scripts: the
         # published init images may be older (the syncstorage-rs workflow rebuilds them)
@@ -295,16 +525,15 @@ jobs:
           TAG: latest
           SKIP_PULL: 1
           FXA_DB: mariadb
+          # FXA_VERSION, FXA_PAIRING_IMAGE: the images under test, above
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
-          FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-amd64
           FXA_ARCH: amd64
-          FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-${{ needs.prepare.outputs.pairing_version }}-linux-amd64
         run: ./tests/e2e-fxa.sh
 
   # an install of the published release (fxa-mono-latest, not moved yet) with an account,
   # a device and Sync data, upgraded in place to the candidate as FXA.md says
   test-upgrade:
-    needs: [prepare, build, build-pairing]
+    needs: [prepare, build, push, build-pairing, push-pairing]
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
     permissions:
       contents: read
@@ -328,6 +557,46 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: The digests of this run's images
+        if: needs.push.result == 'success' || needs.push-pairing.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: fxa-*-digest-amd64
+
+      # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
+      # pull reads), else the published release (the run built only the other image)
+      - name: The images under test
+        env:
+          IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          ARCH: amd64
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PAIRING_VERSION: ${{ needs.prepare.outputs.pairing_version }}
+          BUILT: ${{ needs.push.result == 'success' }}
+          PAIRING_BUILT: ${{ needs.push-pairing.result == 'success' }}
+          PULL: docker
+        run: |
+          d="${RUNNER_TEMP}/digests"
+          if [ "${BUILT}" = true ]; then
+            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
+            if [ -n "${PULL}" ]; then
+              docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
+              docker tag "${IMAGE}@${digest}" "${IMAGE}:${tag}"
+            fi
+            echo "FXA_TEST_IMAGE=${IMAGE}@${digest}" >> "${GITHUB_ENV}"
+          else
+            tag="fxa-mono-${VERSION}"
+            echo "FXA_TEST_IMAGE=${IMAGE}:${tag}" >> "${GITHUB_ENV}"
+          fi
+          echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
+          if [ "${PAIRING_BUILT}" = true ]; then
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+          else
+            echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
+          fi
+          grep '^FXA_' "${GITHUB_ENV}"
+
       - name: Init images from this commit
         # the admin UI of this commit needs the procedures and grants of its init scripts: the
         # published init images may be older (the syncstorage-rs workflow rebuilds them)
@@ -341,11 +610,11 @@ jobs:
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
-          # the init images above; the accounts images are pulled, and the upgrade's own
-          # docker compose pull runs anyway
+          # the init images above and the candidate by its digest; the older release is pulled,
+          # and the upgrade's own docker compose pull runs anyway, as FXA.md says: FXA_VERSION
+          # (the images under test, above) is the candidate's tag of this run, that digest
           SKIP_PULL: 1
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
-          FXA_VERSION: fxa-mono-${{ needs.prepare.outputs.version }}-linux-amd64
           FXA_ARCH: amd64
         run: |
           from="${REPOSITORY}:fxa-mono-latest"
@@ -367,7 +636,7 @@ jobs:
   # the candidate under rootless podman too: quadlets with the accounts, set up by
   # prepare_environment.sh like a user would (and compose on the Podman socket)
   test-podman:
-    needs: [prepare, build, build-pairing]
+    needs: [prepare, build, push, build-pairing, push-pairing]
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
     permissions:
       contents: read
@@ -413,6 +682,46 @@ jobs:
           echo "${TOKEN}" | podman login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
           echo "${TOKEN}" | docker login "${REPOSITORY_REGISTRY}" -u "${OWNER}" --password-stdin
 
+      - name: The digests of this run's images
+        if: needs.push.result == 'success' || needs.push-pairing.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: fxa-*-digest-${{ matrix.arch }}
+
+      # this run's: by digest (also under its tag of this run, which the upgrade's docker compose
+      # pull reads), else the published release (the run built only the other image)
+      - name: The images under test
+        env:
+          IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PAIRING_VERSION: ${{ needs.prepare.outputs.pairing_version }}
+          BUILT: ${{ needs.push.result == 'success' }}
+          PAIRING_BUILT: ${{ needs.push-pairing.result == 'success' }}
+          PULL: ""
+        run: |
+          d="${RUNNER_TEMP}/digests"
+          if [ "${BUILT}" = true ]; then
+            digest="sha256:$(ls "${d}/fxa-mono-digest-${ARCH}")"
+            tag="fxa-mono-${VERSION}-linux-${ARCH}-run${GITHUB_RUN_ID}"
+            if [ -n "${PULL}" ]; then
+              docker pull -q --platform "linux/${ARCH}" "${IMAGE}@${digest}" > /dev/null
+              docker tag "${IMAGE}@${digest}" "${IMAGE}:${tag}"
+            fi
+            echo "FXA_TEST_IMAGE=${IMAGE}@${digest}" >> "${GITHUB_ENV}"
+          else
+            tag="fxa-mono-${VERSION}"
+            echo "FXA_TEST_IMAGE=${IMAGE}:${tag}" >> "${GITHUB_ENV}"
+          fi
+          echo "FXA_VERSION=${tag}" >> "${GITHUB_ENV}"
+          if [ "${PAIRING_BUILT}" = true ]; then
+            echo "FXA_PAIRING_IMAGE=${IMAGE}@sha256:$(ls "${d}/fxa-channelserver-digest-${ARCH}")" >> "${GITHUB_ENV}"
+          else
+            echo "FXA_PAIRING_IMAGE=${IMAGE}:fxa-channelserver-${PAIRING_VERSION}" >> "${GITHUB_ENV}"
+          fi
+          grep '^FXA_' "${GITHUB_ENV}"
+
       - name: Init images from this commit
         # see the test job; podman has its own image store
         env:
@@ -425,16 +734,24 @@ jobs:
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
-          FXA_TEST_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
         run: ./tests/podman.sh
 
+  # from the default branch only: a branch (an unmerged pin in upstream-patches.yml) builds and
+  # tests under its own tags. The multi-arch tags from the digests this run built and tested:
+  # each image only when this run built it
   publish:
-    needs: [prepare, test, test-podman, test-upgrade]
-    if: ${{ !failure() && !cancelled() && needs.test.result == 'success' && needs.test-podman.result == 'success' && needs.test-upgrade.result == 'success' }}
+    needs: [prepare, push, push-pairing, test, test-podman, test-upgrade]
+    if: ${{ !failure() && !cancelled() && github.ref == 'refs/heads/main' && needs.test.result == 'success' && needs.test-podman.result == 'success' && needs.test-upgrade.result == 'success' }}
     permissions:
       packages: write
     runs-on: ubuntu-latest
     steps:
+      - name: The digests of this run's images, tested
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: fxa-*-digest-*
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -446,13 +763,49 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Multi-arch tags
+        env:
+          BUILT: ${{ needs.push.result == 'success' }}
+          PAIRING_BUILT: ${{ needs.push-pairing.result == 'success' }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PAIRING_VERSION: ${{ needs.prepare.outputs.pairing_version }}
         run: |
-          prefix="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-mono"
-          version="${{ needs.prepare.outputs.version }}"
-          docker buildx imagetools create -t "${prefix}-${version}" -t "${prefix}-latest" \
-            "${prefix}-${version}-linux-amd64" "${prefix}-${version}-linux-arm64"
-          docker buildx imagetools inspect "${prefix}-${version}"
-          pairing="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver"
-          pairing_version="${{ needs.prepare.outputs.pairing_version }}"
-          docker buildx imagetools create -t "${pairing}-${pairing_version}" -t "${pairing}-latest" \
-            "${pairing}-${pairing_version}-linux-amd64" "${pairing}-${pairing_version}-linux-arm64"
+          image="${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}"
+          # <name>:<tag 1> <tag 2>, from the digests of fxa-<name>-digest-amd64 and -arm64
+          publish() {
+            local digests=() arch
+            for arch in amd64 arm64; do
+              digests+=("${image}@sha256:$(ls "${RUNNER_TEMP}/digests/fxa-$1-digest-${arch}")")
+            done
+            docker buildx imagetools create -t "${image}:fxa-$1-$2" -t "${image}:fxa-$1-latest" "${digests[@]}"
+            docker buildx imagetools inspect "${image}:fxa-$1-$2"
+          }
+          [ "${BUILT}" = true ] && publish mono "${VERSION}"
+          [ "${PAIRING_BUILT}" = true ] && publish channelserver "${PAIRING_VERSION}"
+          exit 0
+
+  # an entry of upstream-patches.yml that is in the release now (not applied any more): red
+  # until it is removed and its when_released done. After publish, which it does not hold back
+  upstream-patches:
+    needs: [prepare, build, publish]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    permissions: {}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Upstream patches in the release now
+        env:
+          OBSOLETE: ${{ needs.build.outputs.patches_obsolete || needs.prepare.outputs.patches_obsolete }}
+          # not built now: the published image was planned with them, but they were in the sources
+          PRESENT: ${{ needs.prepare.outputs.patches_present }}
+        run: |
+          if [ -n "${PRESENT}" ]; then
+            for p in ${PRESENT}; do
+              echo "::error title=Upstream patch released::${p} is already in the sources of the release, not applied: remove its entry from upstream-patches.yml and do what its when_released says"
+            done
+            exit 1
+          fi
+          if [ "$(jq length <<< "${OBSOLETE:-[]}")" = 0 ]; then
+            echo "No entry of upstream-patches.yml for fxa-mono is in the release yet"
+            exit 0
+          fi
+          jq -r '.[] | "::error title=Upstream patch released::\(.id), \(.pr) is in the release, no longer applied. Remove the entry from upstream-patches.yml and: \(.when_released)"' <<< "${OBSOLETE}"
+          exit 1

@@ -15,7 +15,7 @@
 #               quadlets are rendered and checked in any case
 #   ADMIN_IMAGE     admin UI image to test, pulled and used as is (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
-#                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1-linux-arm64 (default: REPOSITORY:fxa-mono-latest)
+#                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1, or a digest (default: REPOSITORY:fxa-mono-latest)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the quadlets (SYNC_DB=mariadb) start as an install of it, its files, admin UI
 #                   and init image (built from it), then are upgraded to this tree as MIGRATING.md
