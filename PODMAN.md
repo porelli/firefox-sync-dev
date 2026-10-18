@@ -32,7 +32,7 @@ This project has been specifically optimized for rootless podman environments:
 1. **Extended Wait Times**: The database initialization script waits up to 2 minutes (vs 50 seconds) for migrations to complete
 2. **Proper Table Checking**: Verifies all required tables exist before initialization
 3. **Better Error Handling**: Clear progress indicators and error messages
-4. **Dynamic Configuration**: MAX_USERS stored in database, updatable without rebuilding
+4. **Dynamic Configuration**: SYNC_MAX_USERS stored in database, updatable without rebuilding
 5. **Podman-Specific Overrides**: Optional `docker-compose.podman.yml` with rootless optimizations
 
 ### Known Considerations
@@ -171,7 +171,7 @@ systemctl --user restart firefox-sync-syncstorage.service
 
 #### Updating Configuration
 
-To update MAX_USERS or other settings:
+To update SYNC_MAX_USERS or other settings:
 
 1. Edit your `.env` file
 2. Re-run the preparation script (it will detect existing config and update quadlets):
@@ -183,7 +183,7 @@ To update MAX_USERS or other settings:
    ```bash
    systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-syncstorage.service
    ```
-   With the admin UI, also restart `firefox-sync-admin.service` after changing `MAX_USERS` between a plain number (read-only in the admin UI) and `initial:N` (managed there), see [ADMIN.md](ADMIN.md#max-users).
+   With the admin UI, also restart `firefox-sync-admin.service` after changing `SYNC_MAX_USERS` between a plain number (read-only in the admin UI) and `initial:N` (managed there), see [ADMIN.md](ADMIN.md#max-users).
 
 ### Method 2: Using docker compose with the Podman socket
 
@@ -214,7 +214,7 @@ Ports below 1024 need `sudo sysctl net.ipv4.ip_unprivileged_port_start=80` in ro
 ### Why not podman-compose?
 
 The stack starts in a precise order: the databases, then a one-shot container running the
-migrations, then the one-shot init that installs the MAX_USERS limit, and only then the
+migrations, then the one-shot init that installs the max users limit, and only then the
 public syncstorage service, so that nobody can sign up before the limit exists.
 
 podman-compose links containers with `podman create --requires`, and Podman refuses to start

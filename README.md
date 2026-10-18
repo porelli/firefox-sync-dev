@@ -17,7 +17,7 @@ Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history
 |---|---|---|
 | Signing in | your Mozilla account, at `accounts.firefox.com` | accounts created on your server |
 | Stored on your server | the Sync data (encrypted by Firefox) | the Sync data, the accounts and their keys |
-| Who can use it | anybody with a Mozilla account who points Firefox to it, up to `MAX_USERS` | who you allow to sign up: everybody, an allowlist of emails and domains, or nobody |
+| Who can use it | anybody with a Mozilla account who points Firefox to it, up to `SYNC_MAX_USERS` | who you allow to sign up: everybody, an allowlist of emails and domains, or nobody |
 | Needs | a host name with HTTPS | four host names with HTTPS, 3-4 GB of RAM, an SMTP server (the accounts email their codes) |
 | Guide | [SYNC.md](SYNC.md) | [SYNC.md](SYNC.md), then [FXA.md](FXA.md) |
 
@@ -34,7 +34,7 @@ Then point your reverse proxy to it and set up Firefox: [for the Sync server onl
 
 ## Documentation
 
-- [SYNC.md](SYNC.md): the Sync server: setup, who can use it (`MAX_USERS`), Firefox on desktop, Android and iOS, backups and upgrades
+- [SYNC.md](SYNC.md): the Sync server: setup, who can use it (`SYNC_MAX_USERS`), Firefox on desktop, Android and iOS, backups and upgrades
 - [FXA.md](FXA.md): self-hosted Mozilla accounts: setup, who can sign up, Firefox setup, upgrades
 - [ADMIN.md](ADMIN.md): the optional admin UI: max users, sign-ups and accounts, storage, health, alerts (by email, or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or any webhook: no SMTP server needed for them), backups, Prometheus, signing in with OpenID Connect or a trusted header
 - [DATABASES.md](DATABASES.md): MariaDB, MySQL or PostgreSQL, in containers or on a database server you already run
@@ -68,7 +68,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - GitHub [workflow](/.github/workflows/syncstorage-rs.yml) and [logs](https://github.com/porelli/firefox-sync/actions/workflows/syncstorage-rs.yml)
     - Base image: [MariaDB's](https://github.com/MariaDB/mariadb-docker/blob/master/Dockerfile.template) container
-    - Purpose: Post-migration database initialization and handling of MAX_USERS
+    - Purpose: Post-migration database initialization and handling of SYNC_MAX_USERS
     - Base image differences: [added](/db/mysql/init/Dockerfile) [`db_init.sh`](/db/mysql/init/db_init.sh) and [`db_init.sql`](/db/mysql/init/db_init.sql) scripts
     - source code: https://github.com/MariaDB/server
         - code changes: none
@@ -76,7 +76,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - same as `syncstorage-rs-mysql` but built with `SYNCSTORAGE_DATABASE_BACKEND=postgres` and `TOKENSERVER_DATABASE_BACKEND=postgres` to use PostgreSQL
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - Base image: [PostgreSQL's](https://github.com/docker-library/postgres/blob/master/18/trixie/Dockerfile) container (`postgres:18`)
-    - Purpose: Post-migration database initialization and handling of MAX_USERS
+    - Purpose: Post-migration database initialization and handling of SYNC_MAX_USERS
     - Base image differences: [added](/db/postgres/init/Dockerfile) [`db_init.sh`](/db/postgres/init/db_init.sh) and [`db_init.sql`](/db/postgres/init/db_init.sql) scripts
     - source code: https://github.com/postgres/postgres
         - code changes: none

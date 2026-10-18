@@ -23,7 +23,7 @@ Quadlets are systemd unit files that Podman automatically converts into containe
 - `firefox-sync-syncstorage-db.container` - Syncstorage MariaDB database
 - `firefox-sync-tokenserver-db.container` - Tokenserver MariaDB database
 - `firefox-sync-syncstorage-migrate.container` - Database migrations, without exposing the service (runs once)
-- `firefox-sync-tokenserver-db-init.container` - Database initialization and MAX_USERS (runs once, after the migrations)
+- `firefox-sync-tokenserver-db-init.container` - Database initialization and SYNC_MAX_USERS (runs once, after the migrations)
 - `firefox-sync-syncstorage.container` - Main Firefox Sync service (starts only after the init succeeded)
 - `fxa/` - self-hosted Mozilla accounts (see [FXA.md](../../FXA.md)), installed only when chosen in `prepare_environment.sh`; `firefox-sync-fxa-policy.container` installs the sign-up policy before the accounts start; with `FXA_DB=mariadb` the files in `fxa/mariadb/` replace `firefox-sync-fxa-db.container` and its volume (see [FXA.md](../../FXA.md#mysql-or-mariadb))
 - `firefox-sync-backup.container`, `firefox-sync-backups.volume` and `firefox-sync-backup.timer` (installed in `~/.config/systemd/user`, off until `systemctl --user enable --now firefox-sync-backup.timer`) - nightly backups of the databases, `fxa/firefox-sync-backup-fxa.container` those of the accounts, see [ADMIN.md](../../ADMIN.md#backups)
@@ -32,7 +32,7 @@ Quadlets are systemd unit files that Podman automatically converts into containe
 
 ### Your own database server
 
-With `DB_CONTAINERS=0` in `.env` (`prepare_environment.sh` asks) the `firefox-sync-syncstorage-db` and `firefox-sync-tokenserver-db` files are not installed, and they are removed from the other units' `After=` and `Requires=`; the same for `firefox-sync-fxa-db` with `FXA_DB_CONTAINERS=0`. The host names come from `.env` (`MARIADB_*_SERVER`, `FXA_MYSQL_HOST`). See [DATABASES.md](../../DATABASES.md).
+With `SYNC_DB_CONTAINERS=0` in `.env` (`prepare_environment.sh` asks) the `firefox-sync-syncstorage-db` and `firefox-sync-tokenserver-db` files are not installed, and they are removed from the other units' `After=` and `Requires=`; the same for `firefox-sync-fxa-db` with `FXA_DB_CONTAINERS=0`. The host names come from `.env` (`SYNC_TOKENSERVER_DB_HOST`, `SYNC_STORAGE_DB_HOST`, `FXA_MYSQL_HOST`). See [DATABASES.md](../../DATABASES.md).
 
 ### Setup Script
 - `../../prepare_environment.sh` (choose Quadlets) - Automated setup that:
@@ -105,7 +105,7 @@ systemctl --user stop firefox-sync-tokenserver-db.service
 
 ## Updating Configuration
 
-If you need to change settings (like MAX_USERS):
+If you need to change settings (like SYNC_MAX_USERS):
 
 1. Edit your `.env` file in the project root
 2. Re-run the main setup script (it will update quadlets):
@@ -184,7 +184,7 @@ For rootless Podman, ensure:
 ### Port Conflicts
 
 If port 5000 (or your configured port) is in use:
-1. Edit `.env` and change `CONTAINER_EXPORT_PORT`
+1. Edit `.env` and change `SYNC_EXPORT_PORT`
 2. Re-run `./prepare_environment.sh` from the project root
 3. Restart services
 

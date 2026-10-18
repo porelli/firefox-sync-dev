@@ -5,7 +5,7 @@
 ## What you need
 
 - Docker with the compose plugin, or Podman ([PODMAN.md](PODMAN.md))
-- A host name with HTTPS behind a reverse proxy, e.g. `firefox-sync.example.com`, proxied to `127.0.0.1:${CONTAINER_EXPORT_PORT}` (`5000` by default)
+- A host name with HTTPS behind a reverse proxy, e.g. `firefox-sync.example.com`, proxied to `127.0.0.1:${SYNC_EXPORT_PORT}` (`5000` by default)
 - A database: by default the containers of the stack, MariaDB. It can be MySQL 8.4 or PostgreSQL instead, or a server you already run, see [DATABASES.md](DATABASES.md)
 
 ## Setup
@@ -44,11 +44,11 @@ systemctl --user start firefox-sync-syncstorage.service
 
 ## Who can use your server
 
-syncstorage-rs has no allowlist: anybody who can reach your server and has a Mozilla account can point Firefox to it. firefox-sync limits how many accounts can use it instead, with a trigger in the tokenserver database that refuses new accounts once `MAX_USERS` is reached:
+syncstorage-rs has no allowlist: anybody who can reach your server and has a Mozilla account can point Firefox to it. firefox-sync limits how many accounts can use it instead, with a trigger in the tokenserver database that refuses new accounts once `SYNC_MAX_USERS` is reached:
 
-- `MAX_USERS=5` (or `fixed:5`) sets the limit on every start
-- `MAX_USERS=initial:5` sets it on the first start only, then the [admin UI](ADMIN.md#max-users) manages it, without a restart (`prepare_environment.sh` writes `initial:` when you enable the admin UI)
-- `MAX_USERS=unlimited` (or `initial:unlimited`) means no limit, `0` no new account at all. Anything else stops the stack from starting
+- `SYNC_MAX_USERS=5` (or `fixed:5`) sets the limit on every start
+- `SYNC_MAX_USERS=initial:5` sets it on the first start only, then the [admin UI](ADMIN.md#max-users) manages it, without a restart (`prepare_environment.sh` writes `initial:` when you enable the admin UI)
+- `SYNC_MAX_USERS=unlimited` (or `initial:unlimited`) means no limit, `0` no new account at all. Anything else stops the stack from starting
 - the limit counts accounts, not database rows: an account changing its keys (e.g. after a password reset) is never locked out
 
 To choose who exactly can use it (an allowlist of emails and domains, or closed sign-ups), self-host the accounts as well: only accounts created on your server can then sign in, see [FXA.md](FXA.md#who-can-sign-up).
@@ -59,7 +59,7 @@ Do this on every device, starting with the one that has the most data.
 
 **Before you start**: if Firefox is already signed in, sign out first (`Settings` > `Sync` > `Sign out`, and keep the data on the device when Firefox asks). Firefox reads the Sync server address only when it signs in.
 
-The examples below use `https://firefox-sync.example.com`: use your `SYNCSTORAGE_DOMAIN`. The [admin UI](ADMIN.md#invitations-and-connect-a-device)'s Connect a device page shows the same steps with your server's values, and its invitations send them by email.
+The examples below use `https://firefox-sync.example.com`: use your `SYNC_PUBLIC_URL`. The [admin UI](ADMIN.md#invitations-and-connect-a-device)'s Connect a device page shows the same steps with your server's values, and its invitations send them by email.
 
 ### Desktop
 
@@ -89,7 +89,7 @@ The Sync data is encrypted by Firefox, but it is the only copy of what is not on
 
 ## Upgrades
 
-The images follow `latest` by default (`SYNCSTORAGE_IMAGE_TAG` and `SYNCSTORAGE_INIT_IMAGE_TAG` in `.env`): a new syncstorage-rs release is published here only after the [tests](TESTING.md) passed with it. Upgrade with:
+The images follow `latest` by default (`SYNC_IMAGE_TAG` and `SYNC_INIT_IMAGE_TAG` in `.env`): a new syncstorage-rs release is published here only after the [tests](TESTING.md) passed with it. Upgrade with:
 
 ```bash
 docker compose pull
