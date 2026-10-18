@@ -894,7 +894,105 @@ if [ -z "${EXTDB}" ]; then
   fi
   dc logs backup 2>&1 | grep -m1 'every day at'
 else
-  # your own backups: the INSERT of ADMIN.md#backups, as the admin UI's user
+  # your own backups: run a backup using the database client (no backup service with EXTERNAL_DB),
+  # test that the dumps restore with only the documented grants
+  echo "== backup and restore with EXTERNAL_DB (only documented grants)"
+  if [ "${BACKEND}" = mysql ]; then
+    BACKUP_IMAGE="mysql:8.4"
+    BACKUP_VOL="${PROJECT}_backups-extdb"
+  else
+    BACKUP_IMAGE="${POSTGRES_IMAGE:-postgres:18}"
+    BACKUP_VOL="${PROJECT}_backups-extdb"
+  fi
+  docker volume create "${BACKUP_VOL}" > /dev/null
+  # run backup.sh in the database client image with the external server's credentials
+  backup_extdb() {
+    local db_port db_user db_password db_name storage_host
+    if [ "${BACKEND}" = postgres ]; then
+      db_port=5432
+      db_user="${POSTGRES_USER}"
+      db_password="${POSTGRES_PASSWORD}"
+      db_name="${POSTGRES_DATABASE}"
+      storage_host=""
+    else
+      db_port=3306
+      db_user="${MARIADB_TOKENSERVER_USER}"
+      db_password="${MARIADB_TOKENSERVER_PASSWORD}"
+      db_name="${MARIADB_TOKENSERVER_DATABASE}"
+      storage_host="${EXTDB}"
+    fi
+    docker run --rm --network "${EXTDB}" \
+      -v "${BACKUP_VOL}:/backups" \
+      -v "${CODE}/config/backup/backup.sh:/ffs-backup/backup.sh:ro" \
+      -e BACKUP_SCOPE=sync \
+      -e BACKUP_DIR=/backups \
+      -e BACKUP_KEEP=1 \
+      -e TOKENSERVER_DB_TYPE="${BACKEND}" \
+      -e TOKENSERVER_DB_HOST="${EXTDB}" \
+      -e TOKENSERVER_DB_PORT="${db_port}" \
+      -e TOKENSERVER_DB_USER="${db_user}" \
+      -e TOKENSERVER_DB_PASSWORD="${db_password}" \
+      -e TOKENSERVER_DB_NAME="${db_name}" \
+      -e STORAGE_DB_HOST="${storage_host}" \
+      -e STORAGE_DB_USER="${MARIADB_SYNCSTORAGE_USER:-}" \
+      -e STORAGE_DB_PASSWORD="${MARIADB_SYNCSTORAGE_PASSWORD:-}" \
+      -e STORAGE_DB_NAME="${MARIADB_SYNCSTORAGE_DATABASE:-}" \
+      -e ADMIN_DB_PASSWORD="${ADMIN_DB_SECRET}" \
+      -e ADMIN_DB_USER="${ADMIN_DB_USER}" \
+      -e ADMIN_DB_NAME="${ADMIN_DB_NAME}" \
+      "${BACKUP_IMAGE}" sh /ffs-backup/backup.sh now >> "${WORK}/backup-extdb.log" 2>&1
+  }
+  backup_extdb
+  check "$?" 0 "a backup run with EXTERNAL_DB (as database client)"
+  # check the dumps exist and pass gzip -t
+  if [ "${BACKEND}" = mysql ]; then
+    expected="${ADMIN_DB_NAME}.sql.gz ${MARIADB_SYNCSTORAGE_DATABASE}.sql.gz ${MARIADB_TOKENSERVER_DATABASE}.sql.gz"
+  else
+    expected="${ADMIN_DB_NAME}.sql.gz ${POSTGRES_DATABASE}.sql.gz"
+  fi
+  DUMPS=$(docker run --rm -v "${BACKUP_VOL}:/backups:ro" "${BACKUP_IMAGE}" sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" 2>/dev/null && basename "$f"; done' | LC_ALL=C sort | paste -sd' ')
+  check "${DUMPS}" "${expected}" "the dumps of EXTERNAL_DB pass gzip -t"
+  # test restore into scratch databases with only the documented grants
+  echo "== restore the dumps as ADMIN.md#restoring says (EXTERNAL_DB, documented grants only)"
+  dump_extdb() { docker run --rm -v "${BACKUP_VOL}:/backups:ro" "${BACKUP_IMAGE}" sh -c "gunzip -c /backups/sync/*/$1.sql.gz"; }
+  if [ "${BACKEND}" = postgres ]; then
+    # PostgreSQL: test restoring as the Sync role (documented grants) into a scratch database
+    extdb_admin -c "DROP DATABASE IF EXISTS ffs_restore_test" > /dev/null 2>&1
+    extdb_admin -c "CREATE DATABASE ffs_restore_test OWNER ${POSTGRES_USER} TEMPLATE template0" > /dev/null
+    dump_extdb "${POSTGRES_DATABASE}" | docker exec -i -e PGPASSWORD="${POSTGRES_PASSWORD}" "${EXTDB}" psql -q -h 127.0.0.1 -U "${POSTGRES_USER}" -d ffs_restore_test -v ON_ERROR_STOP=1 > /dev/null 2>&1
+    check "$?" 0 "the dump of the Sync database restores with documented grants (PostgreSQL, ON_ERROR_STOP)"
+    check "$(sql "SELECT COUNT(*) FROM users;")" "$(extdb_admin -d ffs_restore_test -c "SELECT COUNT(*) FROM users;")" "every row of users restored"
+    extdb_admin -c "DROP DATABASE ffs_restore_test" > /dev/null
+  else
+    # MySQL: test restoring as tokenserver and syncstorage users into their databases (documented
+    # grants, no LOCK TABLES needed). The dumps DROP and CREATE each table, so clear the database
+    # first (a row added after the dump: it goes), then restore over it
+    USERS_BEFORE=$(sql "SELECT COUNT(*) FROM users;")
+    extdb_admin -D "${MARIADB_TOKENSERVER_DATABASE}" -e "DROP TABLE IF EXISTS users;" > /dev/null
+    dump_extdb "${MARIADB_TOKENSERVER_DATABASE}" | docker exec -i -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" "${EXTDB}" mysql -h 127.0.0.1 -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" > /dev/null 2>&1
+    check "$?" 0 "the tokenserver dump restores with documented grants (no LOCK TABLES needed)"
+    check "$(sql "SELECT COUNT(*) FROM users;")" "${USERS_BEFORE}" "every row of tokenserver users restored"
+    if [ -n "${MARIADB_SYNCSTORAGE_DATABASE:-}" ]; then
+      # storage database exists: test it too (typically empty in these tests, check it restores)
+      dump_extdb "${MARIADB_SYNCSTORAGE_DATABASE}" | docker exec -i -e MYSQL_PWD="${MARIADB_SYNCSTORAGE_PASSWORD}" "${EXTDB}" mysql -h 127.0.0.1 -u"${MARIADB_SYNCSTORAGE_USER}" "${MARIADB_SYNCSTORAGE_DATABASE}" > /dev/null 2>&1
+      check "$?" 0 "the syncstorage dump restores with documented grants (no LOCK TABLES needed)"
+    fi
+  fi
+  # admin DB restores as its user. PostgreSQL: --clean --if-exists, into a scratch database (the
+  # admin user owns it). MySQL: DROP TABLE IF EXISTS (default), into the original database
+  if [ "${BACKEND}" = postgres ]; then
+    extdb_admin -c "DROP DATABASE IF EXISTS ffs_restore_test_admin" > /dev/null 2>&1
+    extdb_admin -c "CREATE DATABASE ffs_restore_test_admin OWNER ${ADMIN_DB_USER}" > /dev/null
+    dump_extdb "${ADMIN_DB_NAME}" | docker exec -i -e PGPASSWORD="${ADMIN_DB_SECRET}" "${EXTDB}" psql -q -h 127.0.0.1 -U "${ADMIN_DB_USER}" -d ffs_restore_test_admin -v ON_ERROR_STOP=1 > /dev/null 2>&1
+    check "$?" 0 "the admin UI's database dump restores as its user (PostgreSQL)"
+    extdb_admin -c "DROP DATABASE ffs_restore_test_admin" > /dev/null
+  else
+    # MySQL: the dump has DROP TABLE IF EXISTS, restore into the original database
+    dump_extdb "${ADMIN_DB_NAME}" | docker exec -i -e MYSQL_PWD="${ADMIN_DB_SECRET}" "${EXTDB}" mysql -h 127.0.0.1 -u"${ADMIN_DB_USER}" "${ADMIN_DB_NAME}" > /dev/null 2>&1
+    check "$?" 0 "the admin UI's database dump restores as its user (MySQL)"
+  fi
+  docker volume rm "${BACKUP_VOL}" > /dev/null 2>&1
+  # the INSERT of your own backups record (tested before the fix: ADMIN.md#backups)
   admin_sql "INSERT INTO ffs_backups (scope, started, finished, ok, bytes, location) VALUES ('sync', $(date +%s)000, $(date +%s)000, 1, 123456, 'my own backup');"
   check "$?" 0 "the INSERT of your own backups (EXTERNAL_DB)"
   check "$(backups_of "ok = 1 AND location = 'my own backup'")" 1 "your own backup in ffs_backups"

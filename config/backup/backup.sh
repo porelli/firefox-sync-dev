@@ -121,7 +121,7 @@ cnf() { # file host port user password
 
 # dump_mysql cnf database out: a consistent dump with the procedures, triggers (and events)
 dump_mysql() {
-  set -- "$@" --single-transaction --routines --hex-blob --no-tablespaces
+  set -- "$@" --single-transaction --routines --hex-blob --no-tablespaces --skip-add-locks
   # MySQL's own dump would add the GTIDs of the server, which a restore elsewhere refuses
   [ "${DUMP}" = mysqldump ] && set -- "$@" --set-gtid-purged=OFF
   # the accounts' databases have events (the tokenserver user has no EVENT grant). Their
