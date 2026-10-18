@@ -454,13 +454,13 @@ if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
 fi
 dc up -d > "${WORK}/up.log" 2>&1 || { echo "FAIL: compose up"; grep -iE "error|fail" "${WORK}/up.log" | tail -10; }
 echo "== waiting for FxA (slow under emulation)"
-for _ in $(seq 1 120); do
+for _ in $(seq 1 600); do
   [ "$(state fxa-content Health.Status)" = healthy ] && [ "$(state syncstorage Health.Status)" = healthy ] && break
   [ "$(state fxa-migrations ExitCode)" != "" ] && [ "$(state fxa-migrations ExitCode)" != 0 ] && break
   crashing=""
   for s in fxa-auth fxa-content fxa-profile; do [ "$(state "${s}" RestartCount || echo 0)" -ge 3 ] 2> /dev/null && crashing="${s}"; done
   [ -n "${crashing}" ] && { echo "${crashing} keeps restarting"; break; }
-  sleep 10
+  sleep 2
 done
 check "$(state fxa-migrations ExitCode)" 0 "FxA database migrations"
 check "$(state fxa-auth Health.Status)" healthy "FxA auth server healthy"

@@ -145,13 +145,21 @@ export ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
 
 # the compose files of ROOT: this tree, or UPGRADE_FROM for the install from before
 ROOT=${CODE}
+# the healthchecks of this tree's stack every second while their containers start (start_interval,
+# within start_period), then as set: what waits for "healthy" (docker compose up for the
+# migrations, the checks below) waits a second, not the first interval (10 to 60 s)
+{ echo "services:"
+  for s in syncstorage ffs-admin backup $([ "${BACKEND}" = postgres ] && echo postgres_db || echo tokenserver_db syncstorage_db); do
+    printf '  %s:\n    healthcheck:\n      start_period: 5m\n      start_interval: 1s\n' "${s}"
+  done; } > "${WORK}/health-test.yml"
 # (releases before docker-compose.sync-postgres.yml: docker-compose.postgres.yml)
 dc() {
-  local compose
+  local compose health=()
   compose=${ROOT}/$(basename "${COMPOSE}")
   [ -e "${compose}" ] || compose=${ROOT}/docker-compose.postgres.yml
+  [ "${ROOT}" = "${CODE}" ] && health=(-f "${WORK}/health-test.yml")
   docker compose -p "${PROJECT}" -f "${compose}" -f "${ROOT}/tests/docker-compose.test.yml" \
-    "${COMPOSE_EXTRA[@]/#"${CODE}"/${ROOT}}" --env-file "${ENV_FILE}" "$@"
+    "${COMPOSE_EXTRA[@]/#"${CODE}"/${ROOT}}" "${health[@]}" --env-file "${ENV_FILE}" "$@"
 }
 FAILED=0
 # compose_healthy, the healthchecks of the stack

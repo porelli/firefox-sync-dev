@@ -7,6 +7,13 @@
 x-trust-caddy: &trust-caddy
   NODE_EXTRA_CA_CERTS: /caddy-ca/root.crt
 
+# the healthchecks every second while the containers start (start_interval, within
+# start_period), then as set: what waits for "healthy" (docker compose up for the
+# dependencies, tests/e2e-fxa.sh) waits a second, not the first interval (10 to 60 s)
+x-health-test: &health-test
+  start_period: 5m
+  start_interval: 1s
+
 services:
   caddy:
     image: caddy:2-alpine
@@ -66,6 +73,7 @@ services:
 
   ffs-admin:
     pull_policy: missing
+    healthcheck: *health-test
     environment:
       # everything faster, alerts to the mail catcher
       METRICS_FLUSH_SECONDS: 5
@@ -88,6 +96,7 @@ services:
         condition: service_completed_successfully
 
   fxa-auth:
+    healthcheck: *health-test
     environment:
       <<: *trust-caddy
     volumes:
@@ -97,6 +106,7 @@ services:
         condition: service_completed_successfully
 
   fxa-content:
+    healthcheck: *health-test
     environment:
       <<: *trust-caddy
     volumes:
@@ -106,6 +116,7 @@ services:
         condition: service_completed_successfully
 
   fxa-profile:
+    healthcheck: *health-test
     environment:
       <<: *trust-caddy
     volumes:
@@ -113,6 +124,27 @@ services:
     depends_on:
       caddy-ca:
         condition: service_completed_successfully
+
+  syncstorage:
+    healthcheck: *health-test
+  tokenserver_db:
+    healthcheck: *health-test
+  syncstorage_db:
+    healthcheck: *health-test
+  backup:
+    healthcheck: *health-test
+  fxa-db:
+    healthcheck: *health-test
+  fxa-redis:
+    healthcheck: *health-test
+  fxa-profile-worker:
+    healthcheck: *health-test
+  fxa-profile-static:
+    healthcheck: *health-test
+  fxa-pairing:
+    healthcheck: *health-test
+  backup-fxa:
+    healthcheck: *health-test
 
 volumes:
   caddy-data:

@@ -110,10 +110,18 @@ admin_up() {
   done
   echo "${c}"
 }
-# Prometheus metrics of the admin UI, retried until they have every line given (it
-# checks the components every HEALTH_CHECK_SECONDS, 60, and its first check of the
-# Quadlets runs before the Sync server is up; a check can take 10 s more on a timeout):
-# "all", or the first missing
+# the admin UI checks the components every 5 s here, as in the other tests
+# (HEALTH_CHECK_SECONDS, a minute by default): what it sees is there within seconds, not at
+# its next round a minute later. For compose an override (ADMIN_TEST_COMPOSE), for the
+# Quadlets a line in the admin UI's unit once its checks are done (fast_admin_checks)
+ADMIN_TEST_COMPOSE=(-f "${WORK}/admin-test.yml")
+printf 'services:\n  ffs-admin:\n    environment:\n      HEALTH_CHECK_SECONDS: 5\n' > "${WORK}/admin-test.yml"
+fast_admin_checks() {
+  sed -i '/^\[Container\]$/a Environment=HEALTH_CHECK_SECONDS=5' "${QUADLET_DIR}/firefox-sync-admin.container" && systemctl --user daemon-reload
+}
+# Prometheus metrics of the admin UI, retried until they have every line given (its first
+# check of the Quadlets runs before the Sync server is up; a check can take 10 s more on a
+# timeout): "all", or the first missing
 metrics_show() {
   local m line missing
   for _ in $(seq 1 75); do
@@ -168,7 +176,7 @@ compose_test() {
   else
     sync_user=$(env_of MARIADB_TOKENSERVER_USER) sync_password=$(env_of MARIADB_TOKENSERVER_PASSWORD) sync_db=$(env_of MARIADB_TOKENSERVER_DATABASE)
   fi
-  timeout 600 docker compose "$@" up -d > "compose-${backend}.log" 2>&1
+  timeout 600 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" up -d > "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up, before ADMIN_DB_PASSWORD (${backend})"
   check "$(admin_up /login)" 200 "admin UI before ADMIN_DB_PASSWORD (compose, ${backend})"
   compose_sql "${backend}" "${sync_user}" "${sync_password}" "${sync_db}" \
@@ -186,7 +194,7 @@ compose_test() {
   [ "${backend}" != postgres ] || check "$(env_of POSTGRES_IMAGE)" "postgres:18" "--upgrade writes POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"
   [ "${backend}" != mysql ] || check "$(env_of FXA_DB | grep -c mariadb)" "0" "no FXA_MARIADB_IMAGE for MariaDB backend without accounts (${backend})"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
-  timeout 600 docker compose "$@" up -d >> "compose-${backend}.log" 2>&1
+  timeout 600 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" up -d >> "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up (${backend})"
   check "$(hb)" 200 "/__heartbeat__ (compose, ${backend})"
   check "$(podman inspect -f '{{.State.ExitCode}}' "$(ctr syncstorage_migrate)")" 0 "migrate container exit code (${backend})"
@@ -223,9 +231,9 @@ compose_test() {
       "the tokenserver user cannot write the event log (compose, ${backend})"
   fi
   podman logs "$(ctr tokenserver_db_init)" 2>&1 | grep -E "Max users|ERROR"
-  check "$(compose_healthy 300 docker compose "$@")" "all healthy" "every long-running container healthy, the one-shot ones exited 0 (compose, ${backend})"
+  check "$(compose_healthy 300 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}")" "all healthy" "every long-running container healthy, the one-shot ones exited 0 (compose, ${backend})"
   [ "${FAILED}" = 0 ] || diagnose "compose-${backend}.log"
-  docker compose "$@" down -v > /dev/null 2>&1
+  docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" down -v > /dev/null 2>&1
 }
 if [ "${SYNC_DB}" = mysql ]; then
   compose_test mysql -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml
@@ -323,6 +331,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   done
 fi
 # the journal keeps earlier runs
+fast_admin_checks
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 timeout 900 systemctl --user start firefox-sync-syncstorage.service
 check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service"
@@ -613,6 +622,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
     "${QUADLET_DIR}/firefox-sync-admin.container")" 6 "admin UI signs in with the accounts (quadlets)"
   "${QUADLET}" -dryrun -user > quadlet-fxa-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the accounts files"
+  fast_admin_checks
   # one pull up front, otherwise every unit pulls the 5 GB image at the same time
   fxa_arch=$(grep '^FXA_ARCH=' .env | cut -d= -f2)
   fxa_image=$(grep '^FXA_IMAGE=' .env | cut -d= -f2):$(grep '^FXA_VERSION=' .env | cut -d= -f2)
@@ -628,15 +638,15 @@ if [ -z "${SKIP_FXA:-}" ]; then
     firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service firefox-sync-admin.service
   check "$?" 0 "systemctl --user start (syncstorage and accounts)"
   ok=""
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 225); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${CONTENT_PORT}/__heartbeat__)" = 200 ] && ok=yes && break
-    sleep 5
+    sleep 2
   done
   check "${ok}" yes "accounts web pages answer (quadlets)"
   ok=""
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 225); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${AUTH_PORT}/__heartbeat__)" = 200 ] && ok=yes && break
-    sleep 5
+    sleep 2
   done
   check "${ok}" yes "accounts API answers (quadlets)"
   check "$(curl -s http://127.0.0.1:${CONTENT_PORT}/.well-known/fxa-client-configuration | grep -o '"auth_server_base_url":"[^"]*"')" '"auth_server_base_url":"https://api.fxa.invalid"' "client configuration (quadlets)"
