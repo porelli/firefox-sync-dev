@@ -11,7 +11,8 @@ import (
 // release (ADMIN_K8S_RELEASE) and namespace (ADMIN_K8S_NAMESPACE) for the helm commands,
 // the prefix of its objects (ADMIN_K8S_FULLNAME, firefox-sync.fullname), its Secret
 // (ADMIN_K8S_SECRET, the chart's or the existingSecret) and where the chart was published
-// (ADMIN_K8S_CHART, its Chart.yaml annotation org.firefox-sync/chart)
+// (ADMIN_K8S_CHART, its Chart.yaml annotation org.firefox-sync/chart) in which version
+// (ADMIN_K8S_CHART_VERSION, its .Chart.Version)
 type deployment struct {
 	// compose, quadlets or kubernetes ("": compose)
 	kind string
@@ -19,8 +20,8 @@ type deployment struct {
 	release, namespace string
 	// kubernetes: the prefix of the chart's objects, its Secret
 	prefix, secret string
-	// kubernetes: the chart's OCI address for helm upgrade
-	chart string
+	// kubernetes: the chart's OCI address and the release's chart version for helm upgrade
+	chart, chartVersion string
 }
 
 // publicChart: the chart of the public repository, when the chart does not say where it
@@ -37,6 +38,7 @@ func loadDeployment() (deployment, error) {
 		d.release, d.namespace = env("ADMIN_K8S_RELEASE", ""), env("ADMIN_K8S_NAMESPACE", "")
 		d.prefix, d.secret = env("ADMIN_K8S_FULLNAME", ""), env("ADMIN_K8S_SECRET", "")
 		d.chart = env("ADMIN_K8S_CHART", publicChart)
+		d.chartVersion = env("ADMIN_K8S_CHART_VERSION", "")
 		if d.release == "" || d.prefix == "" || d.secret == "" {
 			return d, errors.New("ADMIN_DEPLOYMENT=kubernetes needs ADMIN_K8S_RELEASE, ADMIN_K8S_FULLNAME and ADMIN_K8S_SECRET (the chart sets them)")
 		}
@@ -72,7 +74,10 @@ func (d deployment) Kubectl() string {
 	return "kubectl -n " + d.namespace
 }
 
-// helmUpgrade: helm upgrade of the release with the values it has, plus those given
+// helmUpgrade: helm upgrade of the release with the values it has, plus those given, in
+// the chart version it runs: --reuse-values with another version would apply the old
+// release's values to the new chart (HELM.md#upgrading), and without --version helm takes
+// the newest
 func (d deployment) helmUpgrade(set string) string {
 	ns := ""
 	if d.namespace != "" {
@@ -82,7 +87,11 @@ func (d deployment) helmUpgrade(set string) string {
 	if chart == "" {
 		chart = publicChart
 	}
-	return strings.TrimSpace("helm upgrade " + d.release + " " + chart + ns + " --reuse-values " + set)
+	version := ""
+	if d.chartVersion != "" {
+		version = " --version " + d.chartVersion
+	}
+	return strings.TrimSpace("helm upgrade " + d.release + " " + chart + version + ns + " --reuse-values " + set)
 }
 
 // the chart's objects

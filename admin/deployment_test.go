@@ -195,25 +195,28 @@ func TestDeploymentKubernetesNoDotEnv(t *testing.T) {
 }
 
 // the chart's address in the helm commands: the one the chart passes (ADMIN_K8S_CHART, where
-// it was published), else the public repository's, never another repository's
+// it was published), else the public repository's, never another repository's; in the
+// release's chart version (ADMIN_K8S_CHART_VERSION): --reuse-values never moves to another one
 func TestDeploymentChartAddress(t *testing.T) {
 	t.Setenv("ADMIN_DEPLOYMENT", "kubernetes")
 	t.Setenv("ADMIN_K8S_RELEASE", "t")
 	t.Setenv("ADMIN_K8S_NAMESPACE", "ffs")
 	t.Setenv("ADMIN_K8S_FULLNAME", "t-firefox-sync")
 	t.Setenv("ADMIN_K8S_SECRET", "t-firefox-sync")
-	for _, c := range []struct{ env, want string }{
-		{"", "helm upgrade t oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync -n ffs --reuse-values --set backup.enabled=true"},
-		{"oci://ghcr.io/porelli/firefox-sync-dev/charts/firefox-sync",
-			"helm upgrade t oci://ghcr.io/porelli/firefox-sync-dev/charts/firefox-sync -n ffs --reuse-values --set backup.enabled=true"},
+	for _, c := range []struct{ env, version, want string }{
+		{"", "", "helm upgrade t oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync -n ffs --reuse-values --set backup.enabled=true"},
+		{"", "0.1.0", "helm upgrade t oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync --version 0.1.0 -n ffs --reuse-values --set backup.enabled=true"},
+		{"oci://ghcr.io/porelli/firefox-sync-dev/charts/firefox-sync", "0.1.0-dev.1",
+			"helm upgrade t oci://ghcr.io/porelli/firefox-sync-dev/charts/firefox-sync --version 0.1.0-dev.1 -n ffs --reuse-values --set backup.enabled=true"},
 	} {
 		t.Setenv("ADMIN_K8S_CHART", c.env)
+		t.Setenv("ADMIN_K8S_CHART_VERSION", c.version)
 		d, err := loadDeployment()
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got := d.BackupsOn(); got != c.want {
-			t.Errorf("ADMIN_K8S_CHART=%q: %s", c.env, got)
+			t.Errorf("ADMIN_K8S_CHART=%q ADMIN_K8S_CHART_VERSION=%q: %s", c.env, c.version, got)
 		}
 	}
 }
