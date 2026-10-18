@@ -48,19 +48,24 @@ spec:
     metadata:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "admin") | nindent 8 }}
+      {{- /* its env reads the Secret at the start: a new pod when the chart's Secret changes.
+      Over all of its data, the generated secrets with it: no guessing a weak password from
+      the pod spec (existingSecret: nothing of it here, restart it yourself) */}}
+      {{- $annotations := dict }}
       {{- if not .Values.existingSecret }}
-      annotations:
-        # its env reads the Secret at the start: a new pod when the chart's Secret changes.
-        # Over all of its data, the generated secrets with it: no guessing a weak password
-        # from the pod spec (existingSecret: nothing of it here, restart it yourself)
-        checksum/admin-secrets: {{ include "firefox-sync.secretData" . | sha256sum }}
+      {{- $_ := set $annotations "checksum/admin-secrets" (include "firefox-sync.secretData" . | sha256sum) }}
       {{- end }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" . "annotations" $annotations) }}{{ . | trim | nindent 6 }}{{ end }}
     spec:
-      # the image's user nonroot, by number: Kubernetes checks runAsNonRoot on a uid
+      {{- include "firefox-sync.podSpec" . | nindent 6 }}
+      # the image's user nonroot, by number: Kubernetes checks runAsNonRoot on a uid. The
+      # pod meets the PodSecurity level restricted (HELM.md#what-you-need)
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         # compose's depends_on tokenserver_db_init: the Sync server serves only once its
         # init containers succeeded (PostgreSQL: they create the admin UI's roles and database)
@@ -77,6 +82,10 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          {{- with $a.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       containers:
         - name: admin
           image: {{ include "firefox-sync.image" (dict "root" . "name" "admin") }}
@@ -201,6 +210,10 @@ spec:
             # where the chart is published (Chart.yaml's annotation), for helm upgrade
             - name: ADMIN_K8S_CHART
               value: {{ index .Chart.Annotations "org.firefox-sync/chart" | default "oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync" | quote }}
+            # the release's chart version: the --version of those commands (--reuse-values
+            # must never move to another version, HELM.md#upgrades)
+            - name: ADMIN_K8S_CHART_VERSION
+              value: {{ .Chart.Version | quote }}
             {{- if ne $backend "postgres" }}
             # the configuration page: the Sync databases (compose: SYNC_DB of .env)
             - name: SYNC_DB

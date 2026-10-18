@@ -396,9 +396,13 @@ UI's Ingress a host of its own
 {{- if not .Values.admin.ingress.host }}
 {{- fail "firefox-sync: admin.ingress.enabled needs admin.ingress.host, a host of its own for the admin UI" }}
 {{- end }}
-{{- /* the Sync server's host, with or without its Ingress (yours, a reverse proxy) */ -}}
-{{- $syncHosts := list (regexReplaceAll ":[0-9]+$" (urlParse .Values.syncDomain).host "") (include "firefox-sync.ingressHost" .) }}
-{{- if has .Values.admin.ingress.host $syncHosts }}
+{{- /* the Sync server's host, with or without its Ingress (yours, a reverse proxy); host
+names are case-insensitive (and a trailing dot the same host) */ -}}
+{{- $syncHosts := list }}
+{{- range list (regexReplaceAll ":[0-9]+$" (urlParse .Values.syncDomain).host "") (include "firefox-sync.ingressHost" .) }}
+{{- $syncHosts = append $syncHosts (lower . | trimSuffix ".") }}
+{{- end }}
+{{- if has (lower .Values.admin.ingress.host | trimSuffix ".") $syncHosts }}
 {{- fail (printf "firefox-sync: admin.ingress.host %s is the Sync server's host: give the admin UI a host of its own" .Values.admin.ingress.host) }}
 {{- end }}
 {{- end }}
@@ -456,10 +460,12 @@ container (empty without the Sync server's own role, as compose's ${...:-})
 {{- end }}
 
 {{/*
-compose's cap_drop: [NET_RAW] of the Sync server and its migrations: no raw sockets
+compose's cap_drop: [NET_RAW] of the Sync server and its migrations: no raw sockets; no
+privilege escalation
 */}}
 {{- define "firefox-sync.syncstorageSecurityContext" -}}
 securityContext:
+  allowPrivilegeEscalation: false
   capabilities:
     drop: ["NET_RAW"]
 {{- end }}
@@ -583,5 +589,63 @@ Service 63 (a DNS label)
 {{- if gt (len $name) (index . 2) }}
 {{- fail (printf "firefox-sync: set a shorter fullnameOverride or a shorter release name: the %s %s name %s is %d characters, at most %d (the fullname %s is %d)" (index . 0) (index . 1) $name (len $name) (index . 2) $fullname (len $fullname)) }}
 {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+What every pod of the chart has in its spec: no service account token (no pod uses the
+Kubernetes API), the pull secrets and the scheduling of the values (imagePullSecrets,
+nodeSelector, tolerations, affinity), for nindent at the level of the pod's spec
+*/}}
+{{- define "firefox-sync.podSpec" -}}
+automountServiceAccountToken: false
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+
+{{/*
+The annotations of a pod: podAnnotations of the values, then the chart's own (dict "root"
+and "annotations"), which win; empty: nothing, for nindent at the level of the pod's metadata
+*/}}
+{{- define "firefox-sync.podAnnotations" -}}
+{{- $annotations := merge (deepCopy (.annotations | default dict)) (deepCopy (.root.Values.podAnnotations | default dict)) }}
+{{- with $annotations }}
+annotations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+
+{{/*
+The container securityContext of the Sync server's init containers and of the database
+servers: no privilege escalation (no setuid binary gains anything; the database images'
+entrypoints drop root with gosu, a setuid() of root, which this does not stop). Capabilities
+as the images need them (the database servers chown their data as root)
+*/}}
+{{- define "firefox-sync.noEscalation" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+{{- end }}
+
+{{/*
+resources: of the Sync server's init containers (syncstorage.initResources), empty: none
+*/}}
+{{- define "firefox-sync.initResources" -}}
+{{- with .Values.syncstorage.initResources }}
+resources:
+  {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}

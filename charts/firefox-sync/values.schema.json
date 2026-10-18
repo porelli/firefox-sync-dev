@@ -22,7 +22,8 @@
         "adminTag": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "syncDomain": {
       "type": "string",
@@ -50,7 +51,8 @@
         "emailDomain": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "database": {
       "type": "object",
@@ -78,7 +80,8 @@
               "type": "string",
               "minLength": 1
             }
-          }
+          },
+          "additionalProperties": false
         },
         "postgresSyncUser": {
           "type": "string",
@@ -103,7 +106,8 @@
               "pattern": "^[a-z_][a-z0-9_]*$",
               "maxLength": 32
             }
-          }
+          },
+          "additionalProperties": false
         },
         "external": {
           "type": "object",
@@ -175,7 +179,8 @@
             "tlsVerify": {
               "type": "boolean"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "persistence": {
           "type": "object",
@@ -186,9 +191,15 @@
             "storageClass": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
+        },
+        "resources": {
+          "type": "object",
+          "$comment": "a container's resources (requests, limits), as Kubernetes has them"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "existingSecret": {
       "type": "string"
@@ -207,7 +218,8 @@
           "minimum": 0
         },
         "resources": {
-          "type": "object"
+          "type": "object",
+          "$comment": "a container's resources (requests, limits), as Kubernetes has them"
         },
         "service": {
           "type": "object",
@@ -215,9 +227,15 @@
             "port": {
               "type": "integer"
             }
-          }
+          },
+          "additionalProperties": false
+        },
+        "initResources": {
+          "type": "object",
+          "$comment": "a container's resources (requests, limits), as Kubernetes has them"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "admin": {
       "type": "object",
@@ -252,7 +270,8 @@
             "sender": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "oidc": {
           "type": "object",
@@ -281,7 +300,8 @@
             "trustUnverifiedEmail": {
               "type": ["string", "boolean"]
             }
-          }
+          },
+          "additionalProperties": false
         },
         "trustedHeader": {
           "type": "object",
@@ -295,7 +315,8 @@
             "trustedProxies": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "allowed": {
           "type": "object",
@@ -306,7 +327,8 @@
             "groups": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "notify": {
           "oneOf": [
@@ -372,7 +394,8 @@
           "minimum": 0
         },
         "resources": {
-          "type": "object"
+          "type": "object",
+          "$comment": "a container's resources (requests, limits), as Kubernetes has them"
         },
         "ingress": {
           "type": "object",
@@ -395,14 +418,20 @@
                 "secretName": {
                   "type": "string"
                 }
-              }
+              },
+              "additionalProperties": false
             },
             "annotations": {
-              "type": "object"
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "backup": {
       "type": "object",
@@ -431,9 +460,15 @@
             "storageClass": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
+        },
+        "resources": {
+          "type": "object",
+          "$comment": "a container's resources (requests, limits), as Kubernetes has them"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ingress": {
       "type": "object",
@@ -456,12 +491,57 @@
             "secretName": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "annotations": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
+      },
+      "additionalProperties": false
+    },
+    "global": {
+      "type": "object",
+      "$comment": "Helm's global values (of a parent chart), not read"
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
       }
     }
-  }
+  },
+  "additionalProperties": false
 }

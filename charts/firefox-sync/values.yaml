@@ -49,11 +49,12 @@ database:
   # /var/lib/postgresql/<major>/docker and refuses to start on an older major's data, so
   # moving to a newer one needs a dump and restore (ADMIN.md#restoring) or pg_upgrade
   # (DATABASES.md#another-postgresql-major). With your own server (bundled: false) it is only
-  # the client: pg_dump must be at least the server's major
+  # the client: pg_dump must be at least the server's major. Fully qualified (Docker Hub's
+  # official images), for the nodes whose runtime has no default registry or another one
   image:
-    mariadb: mariadb:lts
-    mysql: mysql:8.4
-    postgres: postgres:18
+    mariadb: docker.io/library/mariadb:lts
+    mysql: docker.io/library/mysql:8.4
+    postgres: docker.io/library/postgres:18
 
   # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),
   # no superuser, the owner of the Sync tables (DATABASES.md). Not used with your own server,
@@ -99,12 +100,22 @@ database:
     # trust (their system CAs) for this host name. The Sync server itself connects without TLS
     tlsVerify: false
 
-  # Persistence configuration for bundled databases
+  # Persistence configuration for bundled databases: the StatefulSets' volumeClaimTemplates,
+  # which Kubernetes never changes. Set them before the first install: a helm upgrade with
+  # another size or storageClass fails (forbidden: updates to statefulset spec). To grow a
+  # volume, resize its PVC (data-<release>-firefox-sync-<server>-0) with a StorageClass that
+  # has allowVolumeExpansion (HELM.md#database-volumes)
   persistence:
     # Size of persistent volume
     size: 8Gi
     # Storage class (empty for default)
     storageClass: ""
+
+  # The database servers' container (each of them: two with MariaDB and MySQL, one with
+  # PostgreSQL), e.g. requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1Gi}. Empty:
+  # none, as the Sync server's: what they need grows with the data and the accounts, and a
+  # memory limit set too low gets the server OOM-killed mid-write (HELM.md#resources)
+  resources: {}
 
 # Name of existing secret containing database passwords and secrets, with the keys
 # SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_PASSWORD (the admin UI's
@@ -140,6 +151,11 @@ syncstorage:
     # requests:
     #   cpu: 100m
     #   memory: 128Mi
+
+  # Its init containers (wait-db, sync-role, migrate, db-init), one at a time before it:
+  # migrate runs a whole Sync server for its migrations, so give it about what resources
+  # has (empty: none). A namespace with a ResourceQuota on cpu or memory needs these too
+  initResources: {}
 
   # Service configuration
   service:
@@ -229,6 +245,7 @@ admin:
   deleteUnconfirmedDays: ""
   signupBurst: 10
 
+  # the admin UI's container and its init container (wait-sync)
   resources: {}
 
   # Its own Ingress, apart from the Sync server's: <release>-firefox-sync-admin:8080 at / of
@@ -268,6 +285,9 @@ backup:
   persistence:
     size: 10Gi
     storageClass: ""
+  # the backup container (and the one-shot Job that binds the PVC at install): the dump's
+  # client, gzip (empty: none)
+  resources: {}
 
 # The Sync server's Ingress: <release>-firefox-sync-syncstorage at / of host (never the admin
 # UI, which has admin.ingress)
@@ -284,3 +304,17 @@ ingress:
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt-prod
     # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+# The pull secrets of every pod, for a registry that needs a login (a mirror of
+# ghcr.io/porelli/firefox-sync and Docker Hub, a private image.repository):
+#   imagePullSecrets: [{name: my-registry}]
+imagePullSecrets: []
+
+# Where every pod of the chart runs (the Sync server, the admin UI, the database servers,
+# the backups), as in a pod spec: nodeSelector, tolerations, affinity
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Annotations on every pod of the chart (next to the chart's own checksums)
+podAnnotations: {}

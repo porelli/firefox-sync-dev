@@ -43,6 +43,7 @@ ALLOWED_DIFFERENCES = {
     "*:admin/ADMIN_K8S_FULLNAME": "chart-only: the chart's object names (fullnameOverride), which the admin UI builds from it",
     "*:admin/ADMIN_K8S_SECRET": "chart-only: the Secret's name (existingSecret) for the commands the admin UI shows",
     "*:admin/ADMIN_K8S_CHART": "chart-only: where the chart was published, for the helm upgrade commands the admin UI shows",
+    "*:admin/ADMIN_K8S_CHART_VERSION": "chart-only: the release's chart version, the --version of the helm upgrade commands the admin UI shows",
     "*:admin/ADMIN_EXPORT_PORT": "compose-only: the host port compose publishes the admin UI on; the chart has a Service (and an Ingress)",
     # the old names of .env (MIGRATING.md#renamed-settings): compose tells its containers which
     # are still set, or set with their new ones; the chart has no .env

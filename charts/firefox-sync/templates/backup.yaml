@@ -46,13 +46,22 @@ most clouds' default) it would stay Pending until the first night, and helm inst
 waits for it to be bound. A Job's pod template cannot change: named after it, a new Job
 (the old one removed) when it does; the name within 63 characters (also its job-name label)
 with the hash kept */}}
-{{- $bind := dict "metadata" (dict "labels" (include "firefox-sync.selectorLabels" (dict "root" . "component" "backup-volume") | fromYaml))
-  "spec" (dict "restartPolicy" "Never" "securityContext" (include "firefox-sync.backupPodSecurityContext" . | fromYaml)
-    "containers" (list (dict "name" "bind" "image" (include "firefox-sync.dbImage" .) "imagePullPolicy" "IfNotPresent"
-      "command" (list "test" "-d" "/backups")
-      "securityContext" (include "firefox-sync.backupSecurityContext" . | fromYaml)
-      "volumeMounts" (list (dict "name" "backups" "mountPath" "/backups"))))
-    "volumes" (list (dict "name" "backups" "persistentVolumeClaim" (dict "claimName" (printf "%s-backups" $fullname))))) }}
+{{- $bindContainer := dict "name" "bind" "image" (include "firefox-sync.dbImage" .) "imagePullPolicy" "IfNotPresent"
+  "command" (list "test" "-d" "/backups")
+  "securityContext" (include "firefox-sync.backupSecurityContext" . | fromYaml)
+  "volumeMounts" (list (dict "name" "backups" "mountPath" "/backups")) }}
+{{- with .Values.backup.resources }}
+{{- $_ := set $bindContainer "resources" . }}
+{{- end }}
+{{- $bindMeta := dict "labels" (include "firefox-sync.selectorLabels" (dict "root" . "component" "backup-volume") | fromYaml) }}
+{{- with .Values.podAnnotations }}
+{{- $_ := set $bindMeta "annotations" . }}
+{{- end }}
+{{- $bind := dict "metadata" $bindMeta
+  "spec" (merge (dict "restartPolicy" "Never" "securityContext" (include "firefox-sync.backupPodSecurityContext" . | fromYaml)
+    "containers" (list $bindContainer)
+    "volumes" (list (dict "name" "backups" "persistentVolumeClaim" (dict "claimName" (printf "%s-backups" $fullname)))))
+    (include "firefox-sync.podSpec" . | fromYaml)) }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -89,7 +98,9 @@ spec:
         metadata:
           labels:
             {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "backup") | nindent 12 }}
+          {{- with include "firefox-sync.podAnnotations" (dict "root" .) }}{{ . | trim | nindent 10 }}{{ end }}
         spec:
+          {{- include "firefox-sync.podSpec" . | nindent 10 }}
           restartPolicy: Never
           securityContext:
             {{- include "firefox-sync.backupPodSecurityContext" . | nindent 12 }}
@@ -102,6 +113,10 @@ spec:
               args: [now]
               securityContext:
                 {{- include "firefox-sync.backupSecurityContext" . | nindent 16 }}
+              {{- with .Values.backup.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
               env:
                 - name: BACKUP_SCOPE
                   value: sync

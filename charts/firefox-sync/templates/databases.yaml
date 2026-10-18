@@ -65,16 +65,28 @@ spec:
     metadata:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" $root "component" $component) | nindent 8 }}
+      {{- $annotations := dict }}
       {{- if ne $backend "postgres" }}
-      annotations:
-        # admin-user.sh runs at the start: a new pod when it changes
-        checksum/db-scripts: {{ $root.Files.Get "files/admin-user.sh" | sha256sum }}
+      {{- /* admin-user.sh runs at the start: a new pod when it changes */}}
+      {{- $_ := set $annotations "checksum/db-scripts" ($root.Files.Get "files/admin-user.sh" | sha256sum) }}
       {{- end }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" $root "annotations" $annotations) }}{{ . | trim | nindent 6 }}{{ end }}
     spec:
+      {{- include "firefox-sync.podSpec" $root | nindent 6 }}
+      # root at the start (the image's entrypoint chowns the data, then drops to its user
+      # with gosu): PodSecurity baseline, not restricted (HELM.md#what-you-need)
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         {{- $check := list }}
         - name: db
           image: {{ include "firefox-sync.dbImage" $root }}
+          {{- include "firefox-sync.noEscalation" $root | nindent 10 }}
+          {{- with $root.Values.database.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if eq $backend "mariadb" }}
           args: [sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
           env:

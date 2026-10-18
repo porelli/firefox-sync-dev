@@ -223,7 +223,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Helm
-        uses: azure/setup-helm@v5
+        # by commit (v5.0.1), in this job alone: it runs with packages: write, a moved tag
+        # of a third-party action must not reach the token that publishes (the other jobs
+        # keep the tags, as the repository's other workflows)
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
 

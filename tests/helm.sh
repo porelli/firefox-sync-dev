@@ -149,8 +149,8 @@ lint() {
       fail "an empty database.image.${backend} not refused by the schema"
     fi
   done
-  [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == postgres:18 ]] || fail "database.image.postgres is not postgres:18 by default"
-  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (mariadb:lts, mysql:8.4, postgres:18), empty refused"
+  [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:18 ]] || fail "database.image.postgres is not docker.io/library/postgres:18 by default"
+  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:8.4, postgres:18), empty refused"
 
   # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
@@ -178,9 +178,9 @@ lint() {
   check "no backups by default"
   names=""
   for backend in mariadb mysql postgres; do
-    image=mariadb:lts
-    [[ ${backend} == mysql ]] && image=mysql:8.4
-    [[ ${backend} == postgres ]] && image=postgres:18
+    image=docker.io/library/mariadb:lts
+    [[ ${backend} == mysql ]] && image=docker.io/library/mysql:8.4
+    [[ ${backend} == postgres ]] && image=docker.io/library/postgres:18
     docs=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
       --set backup.enabled=true | manifests)
     cron=$(echo "${docs}" | jq '.[] | select(.kind == "CronJob" and .metadata.name == "test-release-firefox-sync-backup")')
@@ -394,11 +394,11 @@ lint() {
       | select(.name | test("^(ADMIN_K8S_|SYNC_STATSD_HOST)")) | {(.name): .value}] | add'
   }
   [[ "$(env_of --set fullnameOverride=x --set existingSecret=mine)" == \
-    '{"ADMIN_K8S_CHART":"oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync","ADMIN_K8S_FULLNAME":"x","ADMIN_K8S_NAMESPACE":"default","ADMIN_K8S_RELEASE":"test-release","ADMIN_K8S_SECRET":"mine","SYNC_STATSD_HOST":"x-admin"}' ]] \
+    '{"ADMIN_K8S_CHART":"oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync","ADMIN_K8S_CHART_VERSION":"'"$(sed -n 's/^version: //p' "${CHART_DIR}/Chart.yaml")"'","ADMIN_K8S_FULLNAME":"x","ADMIN_K8S_NAMESPACE":"default","ADMIN_K8S_RELEASE":"test-release","ADMIN_K8S_SECRET":"mine","SYNC_STATSD_HOST":"x-admin"}' ]] \
     || fail "names with fullnameOverride and existingSecret: $(env_of --set fullnameOverride=x --set existingSecret=mine)"
   [[ "$(env_of | jq -r '.ADMIN_K8S_FULLNAME + " " + .ADMIN_K8S_SECRET')" == "test-release-firefox-sync test-release-firefox-sync" ]] \
     || fail "default names: $(env_of)"
-  check "ADMIN_K8S_FULLNAME, ADMIN_K8S_SECRET as the chart names them (fullnameOverride, existingSecret)"
+  check "ADMIN_K8S_FULLNAME, ADMIN_K8S_SECRET as the chart names them (fullnameOverride, existingSecret), ADMIN_K8S_CHART_VERSION the chart's version"
   # where the chart was published (the annotation the publish job sets), for helm upgrade
   [[ "$(sed -n 's|^  org.firefox-sync/chart: ||p' "${CHART_DIR}/Chart.yaml")" == oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync ]] \
     || fail "Chart.yaml: the annotation org.firefox-sync/chart is not the public repository's chart"
@@ -415,12 +415,101 @@ lint() {
 
   external_lint
   ingress_lint
+  pods_lint
+  schema_lint
   publish_lint
   # compose's variables, commands, probes and scripts
   parity
 
   echo ""
   echo "=== All lint checks passed ==="
+}
+
+# every pod of the chart (the Deployments', the StatefulSets', the CronJob's, the binding Job's),
+# everything on (the admin UI, the backups), each backend: what all of them share
+# pod_specs <helm args>...: {w: "<kind>/<name>", s: <pod template>} per workload
+pod_specs() {
+  helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/backup-values.yaml" "$@" | manifests | jq -c '[.[]
+    | select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "CronJob" or .kind == "Job")
+    | {w: "\(.kind)/\(.metadata.name)", s: (.spec.jobTemplate.spec // .spec).template}]'
+}
+pods_lint() {
+  echo "Testing what every pod has..."
+  local backend pods bad
+  for backend in mariadb mysql postgres; do
+    pods=$(pod_specs --set database.backend="${backend}")
+    [[ "$(jq length <<< "${pods}")" -ge 4 ]] || fail "${backend}: not every workload rendered: ${pods}"
+    # no service account token (no pod uses the API), seccomp RuntimeDefault, no privilege
+    # escalation in any container (init containers too): PodSecurity baseline, hardened
+    bad=$(jq -r '.[] | .w as $w | .s.spec | select(.automountServiceAccountToken != false or .securityContext.seccompProfile.type != "RuntimeDefault"
+      or ([(.initContainers // [])[], .containers[] | .securityContext.allowPrivilegeEscalation] | any(. != false))) | $w' <<< "${pods}")
+    [[ -z "${bad}" ]] || fail "${backend}: pods without automountServiceAccountToken false, seccomp RuntimeDefault or allowPrivilegeEscalation false: ${bad}"
+    # nothing PodSecurity baseline refuses: no host namespaces, ports or paths, no privileged
+    # container, no capability added
+    bad=$(jq -r '.[] | .w as $w | .s.spec | select(.hostNetwork or .hostPID or .hostIPC
+      or ([.volumes[]? | .hostPath] | any(. != null))
+      or ([(.initContainers // [])[], .containers[] | (.securityContext.privileged // false), ((.securityContext.capabilities.add // []) | length > 0), ([.ports[]? | .hostPort] | any(. != null))] | any)) | $w' <<< "${pods}")
+    [[ -z "${bad}" ]] || fail "${backend}: pods PodSecurity baseline refuses: ${bad}"
+    # the admin UI's pod meets restricted
+    jq -e '.[] | select(.w | endswith("-admin")) | .s.spec | .securityContext.runAsNonRoot == true
+      and ([(.initContainers // [])[], .containers[] | .securityContext.capabilities.drop == ["ALL"]] | all)' <<< "${pods}" > /dev/null \
+      || fail "${backend}: the admin UI's pod is not runAsNonRoot with every capability dropped (restricted)"
+    # scheduling, pull secrets and annotations of the values on every pod; the chart's own
+    # annotations (checksums) kept
+    pods=$(pod_specs --set database.backend="${backend}" --set nodeSelector.disk=ssd --set 'tolerations[0].key=dedicated' \
+      --set 'tolerations[0].operator=Exists' --set affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=zone \
+      --set affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=Exists \
+      --set 'imagePullSecrets[0].name=my-registry' --set podAnnotations.team=sync --set podAnnotations.checksum/db-scripts=mine)
+    bad=$(jq -r '.[] | .w as $w | .s | select(.metadata.annotations.team != "sync" or .spec.nodeSelector != {disk: "ssd"}
+      or .spec.tolerations != [{key: "dedicated", operator: "Exists"}] or .spec.imagePullSecrets != [{name: "my-registry"}]
+      or .spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key != "zone") | $w' <<< "${pods}")
+    [[ -z "${bad}" ]] || fail "${backend}: pods without nodeSelector, tolerations, affinity, imagePullSecrets or podAnnotations: ${bad}"
+    jq -e '[.[] | select(.w | endswith("-admin")) | .s.metadata.annotations["checksum/admin-secrets"] | test("^[0-9a-f]{64}$")] == [true]' <<< "${pods}" > /dev/null \
+      || fail "${backend}: podAnnotations lost the admin UI's checksum/admin-secrets"
+    if [[ ${backend} != postgres ]]; then
+      jq -e '[.[] | select(.w | startswith("StatefulSet/")) | .s.metadata.annotations["checksum/db-scripts"] | test("^[0-9a-f]{64}$")] == [true, true]' <<< "${pods}" > /dev/null \
+        || fail "${backend}: podAnnotations replaced the databases' checksum/db-scripts"
+    fi
+    # resources: each where it belongs (empty by default: none)
+    jq -e '[.[] | .s.spec | (.initContainers // [])[], .containers[] | .resources // empty] == []' <<< "$(pod_specs --set database.backend="${backend}")" > /dev/null \
+      || fail "${backend}: resources by default"
+    pods=$(pod_specs --set database.backend="${backend}" --set syncstorage.resources.requests.cpu=1m --set syncstorage.initResources.requests.cpu=2m \
+      --set admin.resources.requests.cpu=3m --set database.resources.requests.cpu=4m --set backup.resources.requests.cpu=5m)
+    bad=$(jq -r '.[] | .w as $w | .s.spec | (.initContainers // [])[], .containers[] | "\($w | sub("^[A-Za-z]+/test-release-firefox-sync-"; "") | sub("-[0-9a-f]{8}$"; ""))/\(.name)=\(.resources.requests.cpu // "none")"' <<< "${pods}" | sort | paste -sd' ' -)
+    local want="admin/admin=3m admin/wait-sync=3m backup-volume/bind=5m backup/backup=5m"
+    if [[ ${backend} == postgres ]]; then
+      want+=" postgres/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/sync-role=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m"
+    else
+      want+=" storage-db/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m tokenserver-db/db=4m"
+    fi
+    [[ "${bad}" == "${want}" ]] || fail "${backend}: the resources of the containers: ${bad}, expected ${want}"
+  done
+  check "every pod: no service account token, seccomp RuntimeDefault, no privilege escalation, nothing baseline refuses; the admin UI restricted (mariadb, mysql, postgres)"
+  check "every pod: nodeSelector, tolerations, affinity, imagePullSecrets, podAnnotations of the values (the chart's checksums kept)"
+  check "resources: syncstorage.resources, .initResources (wait-db, sync-role, migrate, db-init), admin.resources (and wait-sync), database.resources, backup.resources (and bind)"
+}
+
+# values.schema.json: no key the chart does not know (a typo fails), where the chart owns
+# the keys; the maps of Kubernetes (annotations, resources, scheduling) stay open
+schema_lint() {
+  echo "Testing the schema's closed objects..."
+  local bad
+  for bad in admin.enable=true database.bakend=mysql syncstorage.replica=2 backup.persistence.sise=1Gi ingress.tls.secret=x image.tag=x \
+    unknownTopLevel=1 database.external.hots=db; do
+    if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set "${bad}" > /dev/null 2>&1; then
+      fail "${bad}: an unknown key not refused by the schema"
+    fi
+  done
+  helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set ingress.annotations.a/b=c --set admin.ingress.annotations.x=y \
+    --set podAnnotations.p=q --set nodeSelector.n=m --set syncstorage.resources.limits.memory=1Gi --set database.resources.limits.memory=1Gi \
+    --set backup.resources.requests.memory=64Mi --set syncstorage.initResources.requests.memory=64Mi --set admin.resources.requests.memory=64Mi \
+    --set affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=1 \
+    --set affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey=kubernetes.io/hostname \
+    --set fullnameOverride=x --set nameOverride=y > /dev/null || fail "the open maps (annotations, resources, scheduling) refused"
+  if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set 'imagePullSecrets[0]=my-registry' > /dev/null 2>&1; then
+    fail "imagePullSecrets as plain names (not {name: ...}) not refused"
+  fi
+  check "the schema refuses unknown keys (admin.enable, database.bakend...), keeps annotations, resources, nodeSelector, tolerations, affinity open"
 }
 
 # the publish job's tag check (.github/scripts/chart-version.sh): the tag is chart-v<the
@@ -647,12 +736,21 @@ ingress_lint() {
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true \
     --set admin.ingress.enabled=true --set admin.ingress.host=sync.example.test 2>&1) && fail "the admin UI's Ingress on syncDomain's host renders"
   grep -q 'is the Sync server.s host' <<< "${out}" || fail "the admin UI's Ingress on syncDomain's host: not the message: ${out}"
+  # host names are case-insensitive (a trailing dot the same host)
+  for host in SYNC.Example.TEST sync.example.test.; do
+    out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true \
+      --set admin.ingress.enabled=true --set admin.ingress.host="${host}" 2>&1) && fail "the admin UI's Ingress on ${host} (syncDomain's host) renders"
+    grep -q 'is the Sync server.s host' <<< "${out}" || fail "the admin UI's Ingress on ${host}: not the message: ${out}"
+  done
+  out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set ingress.enabled=true --set ingress.host=Sync.Example.Test \
+    --set admin.enabled=true --set admin.ingress.enabled=true --set admin.ingress.host=sync.EXAMPLE.test 2>&1) \
+    && fail "the admin UI's Ingress on the Sync Ingress's host in other letters renders"
   local admin_on=(--set admin.enabled=true --set admin.ingress.enabled=true --set admin.ingress.host=admin.example.test)
   notes "${admin_on[@]}" | grep -q '^WARNING: admin.ingress.tls.enabled is false' || fail "NOTES: no warning on the admin Ingress without TLS"
   ! notes "${admin_on[@]}" --set admin.ingress.tls.enabled=true | grep -q WARNING || fail "NOTES: a warning on the admin Ingress with TLS"
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set ingress.enabled=true --set syncDomain=https:// 2>&1) \
     && fail "ingress without a host (none in syncDomain either) renders"
-  check "admin.ingress: <fullname>-admin:8080 only with admin.enabled and admin.ingress.enabled, a host of its own (required, not the Sync server's nor syncDomain's), NOTES warns without TLS"
+  check "admin.ingress: <fullname>-admin:8080 only with admin.enabled and admin.ingress.enabled, a host of its own (required, not the Sync server's nor syncDomain's, in any case), NOTES warns without TLS"
   # valid Kubernetes objects, everything on (kubeconform -strict)
   if command -v kubeconform > /dev/null; then
     helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/backup-values.yaml" --set ingress.enabled=true --set ingress.host=sync.example.test \
@@ -718,6 +816,9 @@ e2e() {
   trap 'rc=$?; if ((rc)); then diagnostics; fi; kind delete cluster --name "${CLUSTER}"' EXIT
   kind create cluster --name "${CLUSTER}" --wait 120s
   kubectl config use-context "kind-${CLUSTER}" > /dev/null
+  # the namespace at PodSecurity baseline (HELM.md#what-you-need), enforced: every pod of the
+  # chart (and of the tests) is admitted under it, a refused one fails the run
+  kubectl label ns default pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/enforce-version=latest > /dev/null
   if [[ -z "${SKIP_BUILD:-}" ]]; then
     init_tag=helm-e2e
     ADMIN_TAG=helm-e2e
@@ -784,7 +885,7 @@ e2e() {
     --set database.backend="${backend}" --set image.repository="${repository}" \
     --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}" "${db_args[@]}" --wait --timeout 10m \
     || fail "helm install did not get Ready"
-  check "helm install (${backend}${EXTERNAL:+, your own server}) Ready"
+  check "helm install (${backend}${EXTERNAL:+, your own server}) Ready, in a namespace enforcing PodSecurity baseline"
   if [[ -n "${EXTERNAL}" ]]; then
     # (the backups' PVC only)
     [[ "$(kubectl get sts,pvc,secret -l "app.kubernetes.io/instance=${REL}" -o name | paste -sd' ' -)" == "persistentvolumeclaim/${FULL}-backups" ]] \
@@ -846,9 +947,39 @@ e2e() {
   check "client flow after the upgrade passed"
 
   admin_toggle
+  reinstall
 
   echo ""
   echo "=== e2e (${backend}) passed ==="
+}
+
+# helm uninstall, then helm install with the same release name and values (HELM.md#upgrades):
+# the Secret (helm.sh/resource-policy: keep) and the PVCs (the databases', the backups') are
+# still there, the new install takes them as they are, and alice's Sync data of the client
+# flow is read back
+reinstall() {
+  local values secret_before pvcs_before
+  values=$(mktemp)
+  helm get values "${REL}" -o yaml > "${values}" || fail "helm get values ${REL}"
+  secret_before=$(kubectl get secret "${SECRET}" -o json | jq -cS '[.metadata.uid, .data]')
+  pvcs_before=$(kubectl get pvc -o json | jq -c '[.items[] | [.metadata.name, .metadata.uid]] | sort')
+  helm uninstall "${REL}" --wait --timeout 5m || fail "helm uninstall failed"
+  kubectl wait --for=delete pod -l "app.kubernetes.io/instance=${REL}" --timeout=5m > /dev/null 2>&1 || fail "the pods of ${REL} still there after helm uninstall"
+  [[ "$(kubectl get secret "${SECRET}" -o json 2> /dev/null | jq -cS '[.metadata.uid, .data]')" == "${secret_before}" ]] \
+    || fail "helm uninstall did not keep the Secret ${SECRET} as it was"
+  [[ "$(kubectl get pvc -o json | jq -c '[.items[] | [.metadata.name, .metadata.uid]] | sort')" == "${pvcs_before}" ]] \
+    || fail "helm uninstall did not keep the PVCs: $(kubectl get pvc -o name | paste -sd' ' -), before ${pvcs_before}"
+  check "helm uninstall: the Secret ${SECRET} and the PVCs kept ($(jq -r 'map(.[0]) | join(" ")' <<< "${pvcs_before}"))"
+  helm install "${REL}" "${CHART_DIR}" -f "${values}" --wait --timeout 10m || fail "helm install again (same release name) did not get Ready"
+  rm -f "${values}"
+  [[ "$(kubectl get secret "${SECRET}" -o json | jq -cS '[.metadata.uid, .data]')" == "${secret_before}" ]] \
+    || fail "helm install again changed the Secret ${SECRET}"
+  [[ "$(kubectl get pvc -o json | jq -c '[.items[] | [.metadata.name, .metadata.uid]] | sort')" == "${pvcs_before}" ]] \
+    || fail "helm install again did not reuse the PVCs: $(kubectl get pvc -o name | paste -sd' ' -)"
+  check "helm install again (same release name): the same Secret and PVCs"
+  # (alice's 5 bookmarks of flow-2, read by a second device)
+  client_flow flow-3 "-k second_device" || fail "the Sync data not there after helm uninstall and install"
+  check "alice's Sync data read back after helm uninstall and install"
 }
 
 # the admin UI on (signed in with the Secret's ADMIN_PASSWORD, the overview shows the Sync
@@ -861,6 +992,13 @@ admin_toggle() {
   helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=true --set admin.metricsToken=e2e-token \
     --set image.adminTag="${ADMIN_TAG}" "${admin_args[@]}" --wait --timeout 10m || fail "helm upgrade with the admin UI did not get Ready"
   check "admin UI on: Ready"
+  # PodSecurity restricted (a dry run of the label: the API server names the pods it would
+  # refuse): the admin UI's pod meets it, the others need baseline (HELM.md#what-you-need)
+  local restricted
+  restricted=$(kubectl label --dry-run=server --overwrite ns default pod-security.kubernetes.io/enforce=restricted 2>&1 | grep '^Warning: ' || true)
+  echo "${restricted}" | sed -E 's/^/  restricted: /; s/(.{400}).*/\1.../'
+  ! grep -qE "^Warning: ${FULL}-admin-[a-z0-9]+-[a-z0-9]+[ :]" <<< "${restricted}" || fail "the admin UI's pod violates PodSecurity restricted: ${restricted}"
+  check "PodSecurity restricted: the admin UI's pod meets it (the other pods: baseline, as above)"
   if [[ -n "${EXTERNAL}" ]]; then
     ingress_is "${FULL}-admin" none admin.example.test "${FULL}-admin" 8080
     check "Ingress ${FULL}-admin (class none): admin.example.test/ to ${FULL}-admin:8080"
@@ -1271,12 +1409,12 @@ start_extdb() {
   ts=$(rnd) st=$(rnd) pg=$(rnd) admin=$(rnd)
   EXT_SQL=$(mktemp)
   if [[ "${BACKEND}" == mysql ]]; then
-    sed -e "s|@TOKENSERVER_DATABASE@|${EXT_TS_DB}|g" -e "s|@TOKENSERVER_USER@|${EXT_TS_USER}|g" -e "s|@TOKENSERVER_PASSWORD@|${ts}|g" \
-      -e "s|@SYNCSTORAGE_DATABASE@|${EXT_ST_DB}|g" -e "s|@SYNCSTORAGE_USER@|${EXT_ST_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${st}|g" \
+    sed -e "s|@SYNC_TOKENSERVER_DATABASE@|${EXT_TS_DB}|g" -e "s|@SYNC_TOKENSERVER_USER@|${EXT_TS_USER}|g" -e "s|@SYNC_TOKENSERVER_PASSWORD@|${ts}|g" \
+      -e "s|@SYNC_STORAGE_DATABASE@|${EXT_ST_DB}|g" -e "s|@SYNC_STORAGE_USER@|${EXT_ST_USER}|g" -e "s|@SYNC_STORAGE_PASSWORD@|${st}|g" \
       -e "s|@ADMIN_DATABASE@|${EXT_ADMIN_DB}|g" -e "s|@ADMIN_USER@|${EXT_ADMIN_USER}|g" -e "s|@ADMIN_SYNC_USER@|${EXT_ADMIN_SYNC}|g" \
       -e "s|@ADMIN_PASSWORD@|${admin}|g" "${REPO_ROOT}/db/mysql/sync.sql" > "${EXT_SQL}"
   else
-    sed -e "s|@POSTGRES_DATABASE@|${EXT_PG_DB}|g" -e "s|@POSTGRES_USER@|${EXT_PG_USER}|g" -e "s|@POSTGRES_PASSWORD@|${pg}|g" \
+    sed -e "s|@SYNC_POSTGRES_DATABASE@|${EXT_PG_DB}|g" -e "s|@SYNC_POSTGRES_USER@|${EXT_PG_USER}|g" -e "s|@SYNC_POSTGRES_PASSWORD@|${pg}|g" \
       -e "s|@ADMIN_DATABASE@|${EXT_ADMIN_DB}|g" -e "s|@ADMIN_USER@|${EXT_ADMIN_USER}|g" -e "s|@ADMIN_SYNC_USER@|${EXT_ADMIN_SYNC}|g" \
       -e "s|@ADMIN_PASSWORD@|${admin}|g" "${REPO_ROOT}/db/postgres/sync.sql" > "${EXT_SQL}"
   fi

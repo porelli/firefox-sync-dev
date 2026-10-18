@@ -45,13 +45,20 @@ spec:
     metadata:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "syncstorage") | nindent 8 }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" .) }}{{ . | trim | nindent 6 }}{{ end }}
     spec:
+      {{- include "firefox-sync.podSpec" . | nindent 6 }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         # the database servers answer (up to 5 minutes), without credentials: no password
         # leaves the pod here; a refused password stops the migrate step after it
         - name: wait-db
           image: {{ include "firefox-sync.dbImage" . }}
           imagePullPolicy: IfNotPresent
+          {{- include "firefox-sync.noEscalation" . | nindent 10 }}
+          {{- with include "firefox-sync.initResources" . }}{{ . | trim | nindent 10 }}{{ end }}
           command: [/bin/sh, -c]
           args:
             - |
@@ -81,6 +88,8 @@ spec:
           image: {{ include "firefox-sync.image" (dict "root" . "name" "init") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: [sync-role]
+          {{- include "firefox-sync.noEscalation" . | nindent 10 }}
+          {{- with include "firefox-sync.initResources" . }}{{ . | trim | nindent 10 }}{{ end }}
           env:
             {{- $ts := dict "root" . "db" "tokenserver" }}
             - name: POSTGRES_SERVER
@@ -102,6 +111,7 @@ spec:
           env:
             {{- include "firefox-sync.syncstorageEnv" . | nindent 12 }}
           {{- include "firefox-sync.syncstorageSecurityContext" . | nindent 10 }}
+          {{- with include "firefox-sync.initResources" . }}{{ . | trim | nindent 10 }}{{ end }}
           # compose's script verbatim: Kubernetes, like compose, turns $$ into $
           command: ["/bin/sh", "-c"]
           # (FFS_BOTH_ENV_NAMES: compose's, of the old names of .env; never set here)
@@ -143,6 +153,8 @@ spec:
         - name: db-init
           image: {{ include "firefox-sync.image" (dict "root" . "name" "init") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- include "firefox-sync.noEscalation" . | nindent 10 }}
+          {{- with include "firefox-sync.initResources" . }}{{ . | trim | nindent 10 }}{{ end }}
           env:
             {{- if eq $backend "postgres" }}
             {{- $ts := dict "root" . "db" "tokenserver" }}
