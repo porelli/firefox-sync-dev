@@ -1,4 +1,4 @@
-# Self-hosted Mozilla accounts (FxA), on top of docker-compose.yml or docker-compose.postgres.yml
+# Self-hosted Mozilla accounts (FxA), on top of docker-compose.yml or docker-compose.sync-postgres.yml
 # Usage: docker compose -f docker-compose.yml -f docker-compose.fxa.yml up -d
 #
 # Uses amd64 and arm64 builds of Mozilla's releases (mozilla/fxa-mono). The public URLs below

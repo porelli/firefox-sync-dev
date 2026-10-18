@@ -9,14 +9,14 @@ ContainerName=firefox-sync-tokenserver-db
 Network=firefox-sync-network.network
 # MySQL must not open MariaDB's data files: its own volume
 Volume=firefox-sync-tokenserver-db-mysql.volume:/var/lib/mysql
-Volume=%SCRIPT_DIR%/config/database/admin-user.sh:/ffs-db/admin-user.sh:ro,z
+Volume=%SCRIPT_DIR%/db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro,z
 
 Environment=MYSQL_RANDOM_ROOT_PASSWORD=yes
 Environment=MYSQL_DATABASE=%MARIADB_TOKENSERVER_DATABASE%
 Environment=MYSQL_USER=%MARIADB_TOKENSERVER_USER%
 Environment=MYSQL_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%
 
-# the admin UI's users, created by config/database/admin-user.sh: ADMIN_DB_USER for its
+# the admin UI's users, created by db/mysql/admin-user.sh: ADMIN_DB_USER for its
 # own database (the event log, the audit trail...), ADMIN_DB_SYNC_USER with SELECT
 # and EXECUTE here
 Environment=ADMIN_DB_ROLE=tokenserver

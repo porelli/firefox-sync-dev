@@ -24,7 +24,7 @@
 #   SYNC_DB         mysql: the mysql backend on MySQL 8.4 containers (docker-compose.sync-mysql.yml)
 #                   instead of MariaDB (default mariadb); own project, PORT 28654 and TEST_SUBNET 10.231.4.0/24
 #   EXTERNAL_DB     set to 1 for a database server outside the stack (DB_CONTAINERS=0, DATABASES.md),
-#                   created with only the grants of config/database/: MySQL 8.4 with binary logging
+#                   created with only the grants of db/<engine>/sync.sql: MySQL 8.4 with binary logging
 #                   for mysql, a PostgreSQL 18 owner that is no superuser for postgres; on its own
 #                   network (EXTDB_SUBNET, default: 10.232.1.0/24 mysql, 10.232.2.0/24 postgres)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
@@ -48,7 +48,7 @@ ENV_FILE=${WORK}/${BACKEND}.env
 SYNC_DB=${SYNC_DB:-mariadb}
 case ${BACKEND}:${SYNC_DB} in
   mysql:mariadb)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28651}; NET=1 ;;
-  postgres:mariadb) COMPOSE=${CODE}/docker-compose.postgres.yml; PORT=${PORT:-28652}; NET=2 ;;
+  postgres:mariadb) COMPOSE=${CODE}/docker-compose.sync-postgres.yml; PORT=${PORT:-28652}; NET=2 ;;
   # (28653 is tests/e2e-fxa.sh's)
   mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-28654}; NET=4; PROJECT=${PROJECT}-mysql84 ;;
   postgres:*) echo "SYNC_DB is for the mysql backend"; exit 2 ;;
@@ -137,8 +137,12 @@ export ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
 
 # the compose files of ROOT: this tree, or UPGRADE_FROM for the install from before
 ROOT=${CODE}
+# (releases before docker-compose.sync-postgres.yml: docker-compose.postgres.yml)
 dc() {
-  docker compose -p "${PROJECT}" -f "${ROOT}/$(basename "${COMPOSE}")" -f "${ROOT}/tests/docker-compose.test.yml" \
+  local compose
+  compose=${ROOT}/$(basename "${COMPOSE}")
+  [ -e "${compose}" ] || compose=${ROOT}/docker-compose.postgres.yml
+  docker compose -p "${PROJECT}" -f "${compose}" -f "${ROOT}/tests/docker-compose.test.yml" \
     "${COMPOSE_EXTRA[@]/#"${CODE}"/${ROOT}}" --env-file "${ENV_FILE}" "$@"
 }
 FAILED=0
@@ -269,11 +273,11 @@ start_extdb() {
         -e "s|@TOKENSERVER_PASSWORD@|${MARIADB_TOKENSERVER_PASSWORD}|g" -e "s|@SYNCSTORAGE_DATABASE@|${MARIADB_SYNCSTORAGE_DATABASE}|g" \
         -e "s|@SYNCSTORAGE_USER@|${MARIADB_SYNCSTORAGE_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${MARIADB_SYNCSTORAGE_PASSWORD}|g" \
         -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_SECRET}|g" \
-        "${CODE}/config/database/sync-mariadb.sql"
+        "${CODE}/db/mysql/sync.sql"
   else
     sed -e "s|@POSTGRES_DATABASE@|${POSTGRES_DATABASE}|g" -e "s|@POSTGRES_USER@|${POSTGRES_USER}|g" \
         -e "s|@POSTGRES_PASSWORD@|${POSTGRES_PASSWORD}|g" -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" \
-        -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_SECRET}|g" "${CODE}/config/database/sync-postgres.sql"
+        -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_SECRET}|g" "${CODE}/db/postgres/sync.sql"
   fi > "${WORK}/database-setup.sql"
   check "$(grep -c '@[A-Z_]*@' "${WORK}/database-setup.sql")" 0 "external database: SQL template filled in"
   # run twice, first with other passwords: prepare_environment.sh run again makes new ones
@@ -327,7 +331,7 @@ echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 if [ -n "${EXTDB}" ]; then
   echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo mysql:8.4 || echo postgres:18))"
   start_extdb
-  check "$?" 0 "external database server with the databases and users of config/database/"
+  check "$?" 0 "external database server with the databases and users of db/${BACKEND}/sync.sql"
 fi
 
 # a stack of an earlier KEEP=1 run of this project would make the fail-closed check pass
@@ -367,8 +371,10 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   export ADMIN_IMAGE=ffs-admin:e2e-from
   ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false docker compose -p ffs-admin-build-from -f "${ROOT}/tests/docker-compose.admin-build.yml" build -q ||
     { echo "FAIL: admin UI image built from ${UPGRADE_FROM}/admin"; exit 1; }
-  docker build -q -t "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-e2e-from" \
-    "${ROOT}/syncstorage-rs-init$([ "${BACKEND}" = postgres ] && echo -postgres)" > /dev/null || { echo "FAIL: init image of ${UPGRADE_FROM}"; exit 1; }
+  # (releases before db/: syncstorage-rs-init, syncstorage-rs-init-postgres)
+  init_dir=${ROOT}/db/${BACKEND}/init
+  [ -d "${init_dir}" ] || init_dir=${ROOT}/syncstorage-rs-init$([ "${BACKEND}" = postgres ] && echo -postgres)
+  docker build -q -t "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-e2e-from" "${init_dir}" > /dev/null || { echo "FAIL: init image of ${UPGRADE_FROM}"; exit 1; }
   set_env SYNCSTORAGE_INIT_IMAGE_TAG e2e-from
 fi
 dc up -d > /dev/null 2>&1 || { dc logs; exit 1; }
@@ -392,8 +398,10 @@ sql "INSERT INTO ffs_account_notes (uid, note, updated_at, updated_by) VALUES ('
 sql "INSERT INTO ffs_backups (scope, started, finished, ok, bytes, location) VALUES ('sync', $(date +%s)000, $(date +%s)000, 1, 1, 'ffs-e2e: before the upgrade');" > /dev/null
 OLD_EVENTS=$(sql "SELECT COUNT(*) FROM ffs_events;")
 if [ -n "${UPGRADE_FROM:-}" ]; then
-  # this tree from here on
+  # this tree from here on; with PostgreSQL through docker-compose.postgres.yml, the name
+  # of then: the symlink to docker-compose.sync-postgres.yml
   ROOT=${CODE}
+  [ "${BACKEND}" = postgres ] && COMPOSE=${CODE}/docker-compose.postgres.yml
   export ADMIN_IMAGE=${ADMIN_NOW}
   set_env SYNCSTORAGE_INIT_IMAGE_TAG "${INIT_TAG}"
 fi

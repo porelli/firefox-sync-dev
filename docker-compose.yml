@@ -92,7 +92,7 @@ services:
       MARIADB_USER: ${MARIADB_SYNCSTORAGE_USER}
       MARIADB_PASSWORD: ${MARIADB_SYNCSTORAGE_PASSWORD}
       MARIADB_AUTO_UPGRADE: "true"
-      # the admin UI's reader of the Sync data, created by config/database/admin-user.sh:
+      # the admin UI's reader of the Sync data, created by db/mysql/admin-user.sh:
       # SELECT and DELETE here (sizes, purges, resets)
       ADMIN_DB_ROLE: storage
       ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
@@ -106,7 +106,7 @@ services:
       retries: 3
     volumes:
       - syncstorage-db:/var/lib/mysql
-      - ./config/database/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ./db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
     restart: unless-stopped
 
   tokenserver_db:
@@ -120,7 +120,7 @@ services:
       MARIADB_USER: ${MARIADB_TOKENSERVER_USER}
       MARIADB_PASSWORD: ${MARIADB_TOKENSERVER_PASSWORD}
       MARIADB_AUTO_UPGRADE: "true"
-      # the admin UI's users, created by config/database/admin-user.sh: ADMIN_DB_USER for its
+      # the admin UI's users, created by db/mysql/admin-user.sh: ADMIN_DB_USER for its
       # own database (the event log, the audit trail...), ADMIN_DB_SYNC_USER with SELECT
       # and EXECUTE here
       ADMIN_DB_ROLE: tokenserver
@@ -137,7 +137,7 @@ services:
       retries: 3
     volumes:
       - tokenserver-db:/var/lib/mysql
-      - ./config/database/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ./db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
     restart: unless-stopped
 
   tokenserver_db_init:

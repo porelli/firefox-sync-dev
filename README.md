@@ -69,7 +69,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - GitHub [workflow](/.github/workflows/syncstorage-rs.yml) and [logs](https://github.com/porelli/firefox-sync/actions/workflows/syncstorage-rs.yml)
     - Base image: [MariaDB's](https://github.com/MariaDB/mariadb-docker/blob/master/Dockerfile.template) container
     - Purpose: Post-migration database initialization and handling of MAX_USERS
-    - Base image differences: [added](/syncstorage-rs-init/Dockerfile) [`db_init.sh`](/syncstorage-rs-init/db_init.sh) and [`db_init.sql`](/syncstorage-rs-init/db_init.sql) scripts
+    - Base image differences: [added](/db/mysql/init/Dockerfile) [`db_init.sh`](/db/mysql/init/db_init.sh) and [`db_init.sql`](/db/mysql/init/db_init.sql) scripts
     - source code: https://github.com/MariaDB/server
         - code changes: none
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
@@ -77,7 +77,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - Base image: [PostgreSQL's](https://github.com/docker-library/postgres) container
     - Purpose: Post-migration database initialization and handling of MAX_USERS
-    - Base image differences: [added](/syncstorage-rs-init-postgres/Dockerfile) [`db_init.sh`](/syncstorage-rs-init-postgres/db_init.sh) and [`db_init.sql`](/syncstorage-rs-init-postgres/db_init.sql) scripts
+    - Base image differences: [added](/db/postgres/init/Dockerfile) [`db_init.sh`](/db/postgres/init/db_init.sh) and [`db_init.sql`](/db/postgres/init/db_init.sql) scripts
     - source code: https://github.com/postgres/postgres
         - code changes: none
 

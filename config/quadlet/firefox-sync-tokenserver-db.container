@@ -7,14 +7,14 @@ Image=docker.io/library/mariadb:lts
 ContainerName=firefox-sync-tokenserver-db
 Network=firefox-sync-network.network
 Volume=firefox-sync-tokenserver-db.volume:/var/lib/mysql
-Volume=%SCRIPT_DIR%/config/database/admin-user.sh:/ffs-db/admin-user.sh:ro,z
+Volume=%SCRIPT_DIR%/db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro,z
 
 Environment=MARIADB_RANDOM_ROOT_PASSWORD=true
 Environment=MARIADB_DATABASE=%MARIADB_TOKENSERVER_DATABASE%
 Environment=MARIADB_USER=%MARIADB_TOKENSERVER_USER%
 Environment=MARIADB_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%
 Environment=MARIADB_AUTO_UPGRADE=true
-# the admin UI's users, created by config/database/admin-user.sh: ADMIN_DB_USER for its
+# the admin UI's users, created by db/mysql/admin-user.sh: ADMIN_DB_USER for its
 # own database (the event log, the audit trail...), ADMIN_DB_SYNC_USER with SELECT
 # and EXECUTE here
 Environment=ADMIN_DB_ROLE=tokenserver

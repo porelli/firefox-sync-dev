@@ -12,7 +12,7 @@ import (
 // trail, the metrics, the notes, the schema levels seen, the daily jobs and the backup
 // runs. Only its own user (ADMIN_DB_USER) reaches it, the Sync server's database users have
 // no grant there: a compromised Sync server cannot read or rewrite the audit trail. The
-// database containers create it (config/database/admin-user.sh, the PostgreSQL init
+// database containers create it (db/mysql/admin-user.sh, the PostgreSQL init
 // container), on your own server database-setup.sql does (DATABASES.md).
 //
 // The Sync data is read by another user, ADMIN_DB_SYNC_USER (same password), which has

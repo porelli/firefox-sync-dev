@@ -1,4 +1,4 @@
-# Test-only additions, used together with docker-compose.yml or docker-compose.postgres.yml
+# Test-only additions, used together with docker-compose.yml or docker-compose.sync-postgres.yml
 # Adds upstream's mock FxA OAuth server, shipped in the syncstorage-rs image, so that the
 # tokenserver login flow can be tested without a Mozilla account.
 # Point FXA_OAUTH_SERVER_URL to http://mock_fxa:6000 in the env file.

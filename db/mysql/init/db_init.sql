@@ -93,7 +93,7 @@ DELIMITER ;
 
 -- What the admin UI changes here, with the privileges of this user: its own user
 -- (ADMIN_DB_USER) has SELECT and EXECUTE on this database, nothing that writes
--- (config/database/admin-user.sh, DATABASES.md)
+-- (db/mysql/admin-user.sh, DATABASES.md)
 
 -- max users, from the admin UI (MAX_USERS=initial:N): a number or 'unlimited', as above
 DROP PROCEDURE IF EXISTS ffs_set_max_users;

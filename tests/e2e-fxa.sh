@@ -25,7 +25,7 @@
 #   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, MySQL 8.4
 #                    (MariaDB 11.8 with FXA_DB=mariadb) (DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
 #                    DATABASES.md), container EXTDB, created with only the grants of
-#                    config/database/; kept with KEEP, reused by RERUN. fxa: only the accounts
+#                    db/mysql/; kept with KEEP, reused by RERUN. fxa: only the accounts
 #                    there, with one user for the accounts and the sign-up policy
 set -u
 
@@ -216,7 +216,7 @@ prepare_again() {
 }
 prepare_again postgres ""
 check "$?" 0 "prepare_environment.sh with PostgreSQL and self-hosted accounts"
-check "$(grep -c '^COMPOSE_FILE=docker-compose.postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
+check "$(grep -c '^COMPOSE_FILE=docker-compose.sync-postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
 check "$(setup_compose config --services | grep -cxE 'postgres_db|fxa-auth|fxa-policy|ffs-admin')" 4 "compose stack with PostgreSQL, the accounts and the admin UI"
 check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db|MAX_USERS: "?initial:2"?)$')" 3 "admin UI for PostgreSQL and the accounts, with MAX_USERS"
 # Sync on MySQL 8.4 containers (SYNC_DB=mysql), the same mysql images
@@ -376,13 +376,13 @@ if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
         -e "s|@TOKENSERVER_PASSWORD@|${MARIADB_TOKENSERVER_PASSWORD}|g" -e "s|@SYNCSTORAGE_DATABASE@|${MARIADB_SYNCSTORAGE_DATABASE}|g" \
         -e "s|@SYNCSTORAGE_USER@|${MARIADB_SYNCSTORAGE_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${MARIADB_SYNCSTORAGE_PASSWORD}|g" \
         -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_PASSWORD}|g" \
-        "${CODE}/config/database/sync-mariadb.sql"
-    fxa_template "${CODE}/config/database/fxa-${FXA_DB}.sql" | sed -e "s|@FXA_USER@|${FXA_MYSQL_USER}|g" -e "s|@FXA_PASSWORD@|${FXA_MYSQL_PASSWORD}|g" \
+        "${CODE}/db/mysql/sync.sql"
+    fxa_template "${CODE}/db/mysql/fxa-${FXA_DB}.sql" | sed -e "s|@FXA_USER@|${FXA_MYSQL_USER}|g" -e "s|@FXA_PASSWORD@|${FXA_MYSQL_PASSWORD}|g" \
         -e "s|@FXA_POLICY_USER@|${FXA_MYSQL_POLICY_USER}|g" -e "s|@FXA_POLICY_PASSWORD@|${FXA_MYSQL_POLICY_PASSWORD}|g" \
         -e "s|@FXA_ADMIN_PASSWORD@|${FXA_ADMIN_DB_PASSWORD}|g"; } > "${WORK}/database-setup.sql"
   check "$(grep -c '@[A-Z_]*@' "${WORK}/database-setup.sql")" 0 "external database: SQL templates filled in"
   extdb_admin < "${WORK}/database-setup.sql"
-  check "$?" 0 "external database server with the users of config/database/"
+  check "$?" 0 "external database server with the users of db/mysql/"
 fi
 dc up -d > "${WORK}/up.log" 2>&1 || { echo "FAIL: compose up"; grep -iE "error|fail" "${WORK}/up.log" | tail -10; }
 echo "== waiting for FxA (slow under emulation)"

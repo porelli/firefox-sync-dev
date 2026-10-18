@@ -57,12 +57,12 @@ render_sql() {
 # database-setup.sql of the Sync databases and the admin UI's (postgres, or mariadb and mysql)
 render_sync_sql() {
     if [ "${1}" = "postgres" ]; then
-        render_sql ${SCRIPT_DIR}/config/database/sync-postgres.sql ${SCRIPT_DIR}/database-setup.sql \
+        render_sql ${SCRIPT_DIR}/db/postgres/sync.sql ${SCRIPT_DIR}/database-setup.sql \
             POSTGRES_DATABASE="$(env_value POSTGRES_DATABASE)" POSTGRES_USER="$(env_value POSTGRES_USER)" \
             POSTGRES_PASSWORD="$(env_value POSTGRES_PASSWORD)" ADMIN_DATABASE="$(env_value ADMIN_DB_NAME)" \
             ADMIN_USER="$(env_value ADMIN_DB_USER)" ADMIN_SYNC_USER="$(env_value ADMIN_DB_SYNC_USER)" ADMIN_PASSWORD="$(env_value ADMIN_DB_PASSWORD)"
     else
-        render_sql ${SCRIPT_DIR}/config/database/sync-mariadb.sql ${SCRIPT_DIR}/database-setup.sql \
+        render_sql ${SCRIPT_DIR}/db/mysql/sync.sql ${SCRIPT_DIR}/database-setup.sql \
             TOKENSERVER_DATABASE="$(env_value MARIADB_TOKENSERVER_DATABASE)" TOKENSERVER_USER="$(env_value MARIADB_TOKENSERVER_USER)" \
             TOKENSERVER_PASSWORD="$(env_value MARIADB_TOKENSERVER_PASSWORD)" \
             SYNCSTORAGE_DATABASE="$(env_value MARIADB_SYNCSTORAGE_DATABASE)" SYNCSTORAGE_USER="$(env_value MARIADB_SYNCSTORAGE_USER)" \
@@ -75,7 +75,8 @@ render_sync_sql() {
 # the settings of this release that need a value of their own (MIGRATING.md), nothing else
 # changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
 # Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
-# container (POSTGRES_SYNC_USER, POSTGRES_SYNC_PASSWORD). A value already set is kept; the
+# container (POSTGRES_SYNC_USER, POSTGRES_SYNC_PASSWORD), and in COMPOSE_FILE the new name of
+# docker-compose.postgres.yml (docker-compose.sync-postgres.yml). A value already set is kept; the
 # old file is kept as .env.before-upgrade. With your own database server database-setup.sql
 # is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
 upgrade_env() {
@@ -97,6 +98,25 @@ upgrade_env() {
         grep -q "^${name}=" "${env_file}" || set_value "${name}" "$(grep "^${name}=" "${SCRIPT_DIR}/.env-example" | cut -d= -f2-)"
     done
     [ -n "$(env_value ADMIN_DB_PASSWORD)" ] || set_value ADMIN_DB_PASSWORD "$(generate_random_string 32)"
+    # docker-compose.postgres.yml is now docker-compose.sync-postgres.yml (the old name is a
+    # symlink to it for a transition period, MIGRATING.md): the new name in COMPOSE_FILE
+    local compose_file compose_new part parts=() renamed=no
+    compose_file=$(env_value COMPOSE_FILE | tail -n 1)
+    case "${compose_file}" in
+        \'*\') compose_file=${compose_file:1:${#compose_file}-2} ;;
+        \"*\") compose_file=${compose_file:1:${#compose_file}-2} ;;
+    esac
+    IFS=: read -r -a parts <<< "${compose_file}"
+    for part in "${parts[@]}"; do
+        case "${part}" in
+            docker-compose.postgres.yml|*/docker-compose.postgres.yml) part=${part%docker-compose.postgres.yml}docker-compose.sync-postgres.yml; renamed=yes ;;
+        esac
+        compose_new=${compose_new:+${compose_new}:}${part}
+    done
+    if [ "${renamed}" = yes ]; then
+        set_value COMPOSE_FILE "${compose_new}"
+        echo "COMPOSE_FILE: docker-compose.postgres.yml renamed to docker-compose.sync-postgres.yml (now ${compose_new})"
+    fi
     if [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && [ "$(env_value DB_CONTAINERS)" != 0 ] && [ -z "$(env_value POSTGRES_SYNC_PASSWORD)" ]; then
         [ -n "$(env_value POSTGRES_SYNC_USER)" ] || set_value POSTGRES_SYNC_USER syncserver_app
         set_value POSTGRES_SYNC_PASSWORD "$(generate_random_string 32)"
@@ -106,7 +126,7 @@ upgrade_env() {
         echo "Nothing to add: ${env_file} has every setting of this release."
     else
         mv "${env_file}.upgrading" "${env_file}.before-upgrade"
-        echo "Added to ${env_file} (the old one is .env.before-upgrade): ${changed[*]}"
+        echo "Updated ${env_file} (the old one is .env.before-upgrade): ${changed[*]}"
     fi
     if [ "$(env_value DB_CONTAINERS)" = 0 ]; then
         [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && render_sync_sql postgres || render_sync_sql mariadb
@@ -452,7 +472,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=.*|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true|"
     fi
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        COMPOSE_FILES=docker-compose.postgres.yml:docker-compose.fxa.yml
+        COMPOSE_FILES=docker-compose.sync-postgres.yml:docker-compose.fxa.yml
     elif [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
         COMPOSE_FILES=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml
     else
@@ -485,7 +505,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
 fi
 if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.postgres.yml|"
+    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.sync-postgres.yml|"
     apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-postgres|"
     apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-postgres-init|"
     # the database container: the Sync server gets a role of its own, POSTGRES_USER is the
@@ -499,7 +519,7 @@ fi
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
 [ "${EXTERNAL_DB}" = "yes" ] && render_sync_sql "${DATABASE_BACKEND}"
 if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
-    render_sql ${SCRIPT_DIR}/config/database/fxa-${FXA_DB}.sql ${SCRIPT_DIR}/database-setup-fxa.sql \
+    render_sql ${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql ${SCRIPT_DIR}/database-setup-fxa.sql \
         FXA_USER="$(env_value FXA_MYSQL_USER)" FXA_PASSWORD="$(env_value FXA_MYSQL_PASSWORD)" \
         FXA_POLICY_USER="$(env_value FXA_MYSQL_POLICY_USER)" FXA_POLICY_PASSWORD="$(env_value FXA_MYSQL_POLICY_PASSWORD)" \
         FXA_ADMIN_PASSWORD="$(env_value FXA_ADMIN_DB_PASSWORD)"
@@ -584,9 +604,9 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     }
 
     QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
-    # SYNC_DB=mysql: mysql/ replaces the database units of the same name (without the
+    # SYNC_DB=mysql: sync-mysql/ replaces the database units of the same name (without the
     # database containers, SKIP_UNITS leaves them out)
-    [ "${SYNC_DB:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/mysql")
+    [ "${SYNC_DB:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/sync-mysql")
     [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
     # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
     [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
@@ -602,7 +622,7 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
             target_dir=${QUADLET_DIR}
             [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
             [ "${FXA_DB:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
-            [ "${SYNC_DB:-mariadb}" = "mysql" ] && [ -f "${source}/mysql/${filename}" ] && continue
+            [ "${SYNC_DB:-mariadb}" = "mysql" ] && [ -f "${source}/sync-mysql/${filename}" ] && continue
             if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
                 # left from a setup with the database containers (the volume is kept)
                 rm -f "${QUADLET_DIR}/${filename}"
@@ -693,7 +713,7 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     echo "See PODMAN.md for detailed instructions"
 elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        COMPOSE_FILES="-f docker-compose.postgres.yml"
+        COMPOSE_FILES="-f docker-compose.sync-postgres.yml"
     else
         COMPOSE_FILES="-f docker-compose.yml -f docker-compose.podman.yml"
     fi

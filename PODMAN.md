@@ -128,7 +128,7 @@ The databases, the migrations and the auth server are started automatically as d
 
 #### MySQL instead of MariaDB
 
-Answer `mysql` to the database backend question of `prepare_environment.sh` (`SYNC_DB=mysql` in `.env`): the units of [config/quadlet/mysql/](/config/quadlet/mysql) replace `firefox-sync-syncstorage-db.container` and `firefox-sync-tokenserver-db.container`, with their own volumes (`firefox-sync-syncstorage-db-mysql`, `firefox-sync-tokenserver-db-mysql`). The MariaDB volumes are left as they are; switching an existing install starts with empty databases, see [DATABASES.md](DATABASES.md#mariadb-or-mysql-containers).
+Answer `mysql` to the database backend question of `prepare_environment.sh` (`SYNC_DB=mysql` in `.env`): the units of [config/quadlet/sync-mysql/](/config/quadlet/sync-mysql) replace `firefox-sync-syncstorage-db.container` and `firefox-sync-tokenserver-db.container`, with their own volumes (`firefox-sync-syncstorage-db-mysql`, `firefox-sync-tokenserver-db-mysql`). The MariaDB volumes are left as they are; switching an existing install starts with empty databases, see [DATABASES.md](DATABASES.md#mariadb-or-mysql-containers).
 
 #### Your own database server
 
@@ -197,7 +197,7 @@ docker compose -f docker-compose.yml -f docker-compose.podman.yml up -d
 docker compose -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml up -d
 
 # PostgreSQL
-docker compose -f docker-compose.postgres.yml up -d
+docker compose -f docker-compose.sync-postgres.yml up -d
 
 # logs / stop
 docker compose logs -f

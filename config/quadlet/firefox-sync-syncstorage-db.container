@@ -7,14 +7,14 @@ Image=docker.io/library/mariadb:lts
 ContainerName=firefox-sync-syncstorage-db
 Network=firefox-sync-network.network
 Volume=firefox-sync-syncstorage-db.volume:/var/lib/mysql
-Volume=%SCRIPT_DIR%/config/database/admin-user.sh:/ffs-db/admin-user.sh:ro,z
+Volume=%SCRIPT_DIR%/db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro,z
 
 Environment=MARIADB_RANDOM_ROOT_PASSWORD=true
 Environment=MARIADB_DATABASE=%MARIADB_SYNCSTORAGE_DATABASE%
 Environment=MARIADB_USER=%MARIADB_SYNCSTORAGE_USER%
 Environment=MARIADB_PASSWORD=%MARIADB_SYNCSTORAGE_PASSWORD%
 Environment=MARIADB_AUTO_UPGRADE=true
-# the admin UI's reader of the Sync data, created by config/database/admin-user.sh:
+# the admin UI's reader of the Sync data, created by db/mysql/admin-user.sh:
 # SELECT and DELETE here (sizes, purges, resets)
 Environment=ADMIN_DB_ROLE=storage
 Environment=ADMIN_DB_SYNC_USER=%ADMIN_DB_SYNC_USER%

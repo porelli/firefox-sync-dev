@@ -19,7 +19,7 @@ import (
 )
 
 // Tokenserver database (MariaDB or PostgreSQL), the tables of syncstorage-rs plus
-// the config table of syncstorage-rs-init (max_users), and the admin UI's own tables
+// the config table of the init container (db/<engine>/init, max_users), and the admin UI's own tables
 type SyncDB struct {
 	db       *sql.DB
 	postgres bool
@@ -255,7 +255,7 @@ func maxUsersEditable(maxUsers string) bool {
 	return limitEditable(maxUsers, false)
 }
 
-// SetMaxUsers changes the limit enforced by the tokenserver trigger (syncstorage-rs-init),
+// SetMaxUsers changes the limit enforced by the tokenserver trigger (db/<engine>/init),
 // with MAX_USERS=initial:N (see maxUsersEditable); unlimited: no limit
 func (s *SyncDB) SetMaxUsers(ctx context.Context, maxUsers int, unlimited bool) error {
 	if !unlimited && (maxUsers < 0 || maxUsers > math.MaxInt32) {

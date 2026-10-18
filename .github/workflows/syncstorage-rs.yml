@@ -153,11 +153,8 @@ jobs:
               ;;
             *)
               echo code_repository="${{ env.REPOSITORY_FULL_NAME }}" >> ${GITHUB_OUTPUT}
-              if [ "${{ matrix.database_backend }}" = "mysql" ]; then
-                echo code_dockerfile_path="./${{ env.SERVICE_NAME }}-${{ matrix.image_type }}/" >> ${GITHUB_OUTPUT}
-              else
-                echo code_dockerfile_path="./${{ env.SERVICE_NAME }}-${{ matrix.image_type }}-${{ matrix.database_backend }}/" >> ${GITHUB_OUTPUT}
-              fi
+              # db/mysql/init (MariaDB and MySQL), db/postgres/init
+              echo code_dockerfile_path="./db/${{ matrix.database_backend }}/${{ matrix.image_type }}/" >> ${GITHUB_OUTPUT}
               echo code_commit_head="${{ needs.prepare-env.outputs.internal_commit_head }}" >> ${GITHUB_OUTPUT}
               ;;
           esac

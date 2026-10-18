@@ -131,12 +131,12 @@ dst_prepare() {
   # the old stack's project name was in the environment, firefox-sync's is in its .env
   unset COMPOSE_PROJECT_NAME
   mkdir -p "${DST}/tests"
-  cp -r "${CODE}"/docker-compose*.yml "${CODE}/.env-example" "${CODE}/config" "${DST}/"
+  cp -r "${CODE}"/docker-compose*.yml "${CODE}/.env-example" "${CODE}/config" "${CODE}/db" "${DST}/"
   cp "${TESTS}/docker-compose.migrate.yml" "${DST}/tests/"
   local backend=mysql files=docker-compose.yml
   case ${DST_DB} in
     mysql) files=docker-compose.yml:docker-compose.sync-mysql.yml ;;
-    postgres) backend=postgres files=docker-compose.postgres.yml ;;
+    postgres) backend=postgres files=docker-compose.sync-postgres.yml ;;
   esac
   sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|" \
       -e "s|^MARIADB_SYNCSTORAGE_PASSWORD=.*|MARIADB_SYNCSTORAGE_PASSWORD=$(rnd)|" \
@@ -847,11 +847,13 @@ EOF
   echo "== upgrade in place (MIGRATING.md, older firefox-sync releases)"
   # "Get the new files": this tree over the old one, the .env kept
   local f
-  for f in docker-compose.yml docker-compose.postgres.yml docker-compose.sync-mysql.yml docker-compose.podman.yml docker-compose.fxa.yml docker-compose.fxa-mariadb.yml .env-example; do
-    cp "${CODE}/${f}" "${DST}/${f}"
+  # (docker-compose.postgres.yml: the symlink to docker-compose.sync-postgres.yml, as git
+  # checks it out; syncstorage-rs-init*: the init folders of the old release, now db/)
+  for f in docker-compose.yml docker-compose.sync-postgres.yml docker-compose.postgres.yml docker-compose.sync-mysql.yml docker-compose.podman.yml docker-compose.fxa.yml docker-compose.fxa-mariadb.yml .env-example; do
+    rm -f "${DST}/${f}" && cp -P "${CODE}/${f}" "${DST}/${f}"
   done
-  rm -rf "${DST}/config" "${DST}/syncstorage-rs-init" "${DST}/syncstorage-rs-init-postgres"
-  cp -r "${CODE}/config" "${CODE}/syncstorage-rs-init" "${CODE}/syncstorage-rs-init-postgres" "${DST}/"
+  rm -rf "${DST}/config" "${DST}/db" "${DST}/syncstorage-rs-init" "${DST}/syncstorage-rs-init-postgres"
+  cp -r "${CODE}/config" "${CODE}/db" "${DST}/"
   mkdir -p "${DST}/tests" && cp "${TESTS}/docker-compose.migrate.yml" "${DST}/tests/"
   # "Add the lines of .env-example that your .env lacks, with their default values"
   local key added=0

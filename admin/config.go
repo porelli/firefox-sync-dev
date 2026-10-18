@@ -348,7 +348,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	if kind == "postgres" {
 		syncGroup.Rows = append(syncGroup.Rows,
-			fact("Database", "PostgreSQL, tokenserver and storage in one database", whereDB(tsHost), "COMPOSE_FILE=docker-compose.postgres.yml"),
+			fact("Database", "PostgreSQL, tokenserver and storage in one database", whereDB(tsHost), "COMPOSE_FILE=docker-compose.sync-postgres.yml"),
 			func() configRow {
 				user, userVar := syncUser("TOKENSERVER_DB_USER", "POSTGRES_USER")
 				return fact("Server", dbAddress(user, tsHost, shown("TOKENSERVER_DB_PORT", "5432"), configLookup("TOKENSERVER_DB_NAME")), "",

@@ -125,8 +125,8 @@ jobs:
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
         run: |
-          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
-          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
       - name: End-to-end tests
         env:
@@ -183,8 +183,8 @@ jobs:
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
         run: |
-          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
-          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
+          docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
       - name: End-to-end tests with self-hosted Mozilla accounts (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }})
         env:
@@ -241,8 +241,8 @@ jobs:
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
         run: |
-          podman build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" syncstorage-rs-init
-          podman build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" syncstorage-rs-init-postgres
+          podman build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
+          podman build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
       - name: Podman tests
         env:

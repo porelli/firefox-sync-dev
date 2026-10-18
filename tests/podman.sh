@@ -11,7 +11,7 @@
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
 #   SYNC_DB     mariadb (default) or mysql: the Sync databases of the compose and quadlet phases
-#               (MySQL 8.4, docker-compose.sync-mysql.yml and config/quadlet/mysql/); the MySQL
+#               (MySQL 8.4, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/); the MySQL
 #               quadlets are rendered and checked in any case
 #   ADMIN_IMAGE     admin UI image to test, pulled and used as is (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
@@ -162,9 +162,13 @@ compose_test() {
   compose_sql "${backend}" "${sync_user}" "${sync_password}" "${sync_db}" \
     "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the upgrade by admin (password)')" > /dev/null
   check "$?" 0 "an audit event in the tokenserver database, as before (${backend})"
+  # an install from before docker-compose.sync-postgres.yml has the old name in COMPOSE_FILE
+  [ "${backend}" = postgres ] && sed -i 's|^COMPOSE_FILE=docker-compose.sync-postgres.yml$|COMPOSE_FILE=docker-compose.postgres.yml|' .env
   # the upgrade, as MIGRATING.md says: prepare_environment.sh --upgrade fills in what is missing
   ./prepare_environment.sh --upgrade > "upgrade-${backend}.log" 2>&1
   check "$?" 0 "prepare_environment.sh --upgrade (${backend})"
+  [ "${backend}" != postgres ] || check "$(grep -cx 'COMPOSE_FILE=docker-compose.sync-postgres.yml' .env) $(grep -c '^COMPOSE_FILE: docker-compose.postgres.yml renamed to docker-compose.sync-postgres.yml' "upgrade-${backend}.log")" \
+    "1 1" "--upgrade renames docker-compose.postgres.yml in COMPOSE_FILE, and says so (postgres)"
   check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $([ "${backend}" != postgres ] || env_of POSTGRES_SYNC_USER)" \
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
@@ -213,13 +217,13 @@ if [ "${SYNC_DB}" = mysql ]; then
 else
   compose_test mariadb -f docker-compose.yml -f docker-compose.podman.yml
 fi
-compose_test postgres -f docker-compose.postgres.yml
+compose_test postgres -f docker-compose.sync-postgres.yml
 
 echo "== quadlets with PostgreSQL: docker compose instead"
 rm -f .env
 setup postgres 1
 check "$?" 0 "prepare_environment.sh (postgres, quadlets)"
-check "$(grep -c 'Quadlets are only provided for MariaDB' setup-postgres-1.log) $(grep -c 'docker compose -f docker-compose.postgres.yml up -d' setup-postgres-1.log) $(ls "${QUADLET_DIR}" 2> /dev/null | wc -l)" \
+check "$(grep -c 'Quadlets are only provided for MariaDB' setup-postgres-1.log) $(grep -c 'docker compose -f docker-compose.sync-postgres.yml up -d' setup-postgres-1.log) $(ls "${QUADLET_DIR}" 2> /dev/null | wc -l)" \
   "1 1 0" "quadlets with PostgreSQL fall back to docker compose, no quadlet files"
 
 # the admin UI quadlet gets every setting of the compose ffs-admin service: the keys
@@ -242,9 +246,11 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   cp -r "${UPGRADE_FROM}" "${FROM}" && rm -f "${FROM}/.env" && example "${FROM}" || exit 1
   # that release's admin UI and init image under the names of the units, this tree's aside
   INIT_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-init-${TAG}
+  # (releases before db/: syncstorage-rs-init)
+  INIT_DIR=${FROM}/db/mysql/init; [ -d "${INIT_DIR}" ] || INIT_DIR=${FROM}/syncstorage-rs-init
   podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:upgrade-to && podman tag "${INIT_IMAGE}" localhost/ffs-init:upgrade-to &&
     podman build -q --format docker -t "${REPOSITORY}:admin-latest" "${FROM}/admin" > build-from.log 2>&1 &&
-    podman build -q -t "${INIT_IMAGE}" "${FROM}/syncstorage-rs-init" >> build-from.log 2>&1
+    podman build -q -t "${INIT_IMAGE}" "${INIT_DIR}" >> build-from.log 2>&1
   check "$?" 0 "the admin UI and init images of ${UPGRADE_FROM}"
   (cd "${FROM}" && setup mariadb 1)
   check "$?" 0 "its prepare_environment.sh (quadlets)"
