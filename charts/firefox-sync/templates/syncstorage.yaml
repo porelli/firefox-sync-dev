@@ -72,12 +72,34 @@ spec:
               {{- $d := dict "root" $ "db" . }}
               wait_db {{ include "firefox-sync.dbHost" $d | quote }} {{ $port | quote }}
               {{- end }}
+        {{- if eq $backend "postgres" }}
+        # compose's sync_role_init: the Sync server's own role (no superuser), before the
+        # migrations, which run as it; no superuser session touches what that role owns
+        - name: sync-role
+          image: {{ include "firefox-sync.image" (dict "root" . "name" "init") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [sync-role]
+          env:
+            {{- $ts := dict "root" . "db" "tokenserver" }}
+            - name: POSTGRES_SERVER
+              value: {{ include "firefox-sync.dbHost" $ts | quote }}
+            - name: POSTGRES_SERVER_PORT
+              value: {{ $port | quote }}
+            - name: POSTGRES_DATABASE
+              value: {{ include "firefox-sync.dbName" $ts | quote }}
+            - name: POSTGRES_USER
+              value: {{ include "firefox-sync.dbUser" $ts | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "POSTGRES_PASSWORD" "key" "POSTGRES_PASSWORD") | nindent 12 }}
+            {{- include "firefox-sync.postgresSyncEnv" . | nindent 12 }}
+        {{- end }}
         # compose's syncstorage_migrate: the migrations (and the Sync node) without serving
+        # (PostgreSQL: as the Sync server's own role, like the Sync server)
         - name: migrate
           image: {{ include "firefox-sync.image" (dict "root" . "name" "syncstorage") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             {{- include "firefox-sync.syncstorageEnv" . | nindent 12 }}
+          {{- include "firefox-sync.syncstorageSecurityContext" . | nindent 10 }}
           # compose's script verbatim: Kubernetes, like compose, turns $$ into $
           command: ["/bin/sh", "-c"]
           args:
@@ -104,18 +126,28 @@ spec:
           image: {{ include "firefox-sync.image" (dict "root" . "name" "init") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
+            {{- if eq $backend "postgres" }}
             {{- $ts := dict "root" . "db" "tokenserver" }}
-            {{- $prefix := ternary "POSTGRES" "MARIADB" (eq $backend "postgres") }}
-            - name: {{ $prefix }}_SERVER
+            - name: POSTGRES_SERVER
               value: {{ include "firefox-sync.dbHost" $ts | quote }}
-            - name: {{ $prefix }}_SERVER_PORT
+            - name: POSTGRES_SERVER_PORT
               value: {{ $port | quote }}
-            - name: {{ $prefix }}_DATABASE
+            - name: POSTGRES_DATABASE
               value: {{ include "firefox-sync.dbName" $ts | quote }}
-            - name: {{ $prefix }}_USER
+            - name: POSTGRES_USER
               value: {{ include "firefox-sync.dbUser" $ts | quote }}
-            {{- include "firefox-sync.secretEnv" (dict "root" . "name" (printf "%s_PASSWORD" $prefix) "key" (include "firefox-sync.dbPasswordKey" $ts)) | nindent 12 }}
-            {{- if ne $backend "postgres" }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "POSTGRES_PASSWORD" "key" "POSTGRES_PASSWORD") | nindent 12 }}
+            {{- else }}
+            {{- $ts := dict "root" . "db" "tokenserver" }}
+            - name: MARIADB_SERVER
+              value: {{ include "firefox-sync.dbHost" $ts | quote }}
+            - name: MARIADB_SERVER_PORT
+              value: {{ $port | quote }}
+            - name: MARIADB_DATABASE
+              value: {{ include "firefox-sync.dbName" $ts | quote }}
+            - name: MARIADB_USER
+              value: {{ include "firefox-sync.dbUser" $ts | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "MARIADB_PASSWORD" "key" "TOKENSERVER_DB_PASSWORD") | nindent 12 }}
             - name: MARIADB_TLS_VERIFY
               value: {{ include "firefox-sync.tlsVerify" . | quote }}
             {{- end }}
@@ -123,11 +155,22 @@ spec:
               value: {{ include "firefox-sync.maxUsers" . | quote }}
             - name: DOMAIN
               value: {{ .Values.syncDomain | quote }}
+            {{- if eq $backend "postgres" }}
+            {{- include "firefox-sync.postgresSyncEnv" . | nindent 12 }}
+            - name: ADMIN_DB_USER
+              value: {{ include "firefox-sync.adminDbUser" . }}
+            - name: ADMIN_DB_SYNC_USER
+              value: {{ include "firefox-sync.adminDbSyncUser" . }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_DB_PASSWORD" "key" "ADMIN_DB_PASSWORD") | nindent 12 }}
+            - name: ADMIN_DB_NAME
+              value: {{ include "firefox-sync.adminDbName" . }}
+            {{- end }}
       containers:
         - name: syncstorage
           image: {{ include "firefox-sync.image" (dict "root" . "name" "syncstorage") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/app/bin/syncserver"]
+          {{- include "firefox-sync.syncstorageSecurityContext" . | nindent 10 }}
           env:
             {{- include "firefox-sync.syncstorageEnv" . | nindent 12 }}
           ports:

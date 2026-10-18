@@ -188,7 +188,8 @@ Return the database user for tokenserver or storage
 Return the database URL for tokenserver or storage
 Accepts a dict with "root" (the root context) and "db" (tokenserver|storage)
 The password is read from the environment variable via Kubernetes dependent env, not inlined here:
-- Postgres: $(POSTGRES_PASSWORD) for both tokenserver and storage (single database, single password)
+- Postgres: the Sync server's own role, $(POSTGRES_SYNC_PASSWORD), for both tokenserver and storage
+  (single database); without one (firefox-sync.postgresSyncUser empty) POSTGRES_USER, $(POSTGRES_PASSWORD)
 - MySQL/MariaDB: $(TOKENSERVER_DB_PASSWORD) or $(STORAGE_DB_PASSWORD) (separate databases)
 */}}
 {{- define "firefox-sync.dbUrl" -}}
@@ -200,7 +201,12 @@ The password is read from the environment variable via Kubernetes dependent env,
 {{- $name := include "firefox-sync.dbName" (dict "root" $root "db" $db) }}
 {{- $user := include "firefox-sync.dbUser" (dict "root" $root "db" $db) }}
 {{- if eq $backend "postgres" }}
+{{- $syncUser := include "firefox-sync.postgresSyncUser" $root }}
+{{- if $syncUser }}
+{{- printf "postgres://%s:$(POSTGRES_SYNC_PASSWORD)@%s:%s/%s" $syncUser $host $port $name }}
+{{- else }}
 {{- printf "postgres://%s:$(POSTGRES_PASSWORD)@%s:%s/%s" $user $host $port $name }}
+{{- end }}
 {{- else }}
 {{- if eq $db "tokenserver" }}
 {{- printf "mysql://%s:$(TOKENSERVER_DB_PASSWORD)@%s:%s/%s" $user $host $port $name }}
@@ -234,7 +240,27 @@ maxUsers as compose's MAX_USERS: a string, also when given as a number (maxUsers
 {{- end }}
 
 {{/*
+PostgreSQL: the Sync server's own role (compose's POSTGRES_SYNC_USER), no superuser, created by
+the sync-role init container before the migrations; the name prepare_environment.sh gives it.
+Empty (compose: an install from before it, or your own server): the Sync server is POSTGRES_USER
+*/}}
+{{- define "firefox-sync.postgresSyncUser" -}}
+{{- if and (eq .Values.database.backend "postgres") .Values.database.bundled }}
+{{- print "syncserver_app" }}
+{{- end }}
+{{- end }}
+
+{{/*
+The admin UI's own database and users (compose's ADMIN_DB_NAME, ADMIN_DB_USER,
+ADMIN_DB_SYNC_USER, with their defaults), password ADMIN_DB_PASSWORD in the Secret
+*/}}
+{{- define "firefox-sync.adminDbName" -}}ffs_admin{{- end }}
+{{- define "firefox-sync.adminDbUser" -}}ffs_admin_ui{{- end }}
+{{- define "firefox-sync.adminDbSyncUser" -}}ffs_admin_sync{{- end }}
+
+{{/*
 The Secret key holding the password of the tokenserver or storage database user
+(PostgreSQL: POSTGRES_USER, the superuser of the bundled server)
 Accepts a dict with "root" and "db" (tokenserver|storage)
 */}}
 {{- define "firefox-sync.dbPasswordKey" -}}
@@ -264,7 +290,10 @@ The env vars named like the Secret keys of the database passwords, referenced as
 by firefox-sync.dbUrl: they must come before the URLs in every container
 */}}
 {{- define "firefox-sync.dbPasswordEnv" -}}
-{{- if eq .Values.database.backend "postgres" }}
+{{- if include "firefox-sync.postgresSyncUser" . }}
+{{- /* never POSTGRES_PASSWORD, the superuser's (compose: the Sync server never gets it) */ -}}
+{{- include "firefox-sync.secretEnv" (dict "root" . "name" "POSTGRES_SYNC_PASSWORD" "key" "POSTGRES_SYNC_PASSWORD") }}
+{{- else if eq .Values.database.backend "postgres" }}
 {{- include "firefox-sync.secretEnv" (dict "root" . "name" "POSTGRES_PASSWORD" "key" "POSTGRES_PASSWORD") }}
 {{- else }}
 {{- include "firefox-sync.secretEnv" (dict "root" . "name" "TOKENSERVER_DB_PASSWORD" "key" "TOKENSERVER_DB_PASSWORD") }}
@@ -274,7 +303,7 @@ by firefox-sync.dbUrl: they must come before the URLs in every container
 
 {{/*
 The env of syncstorage-rs, as compose's x-syncstorage (docker-compose.yml and
-docker-compose.postgres.yml), for the migrate init container and the server
+docker-compose.sync-postgres.yml), for the migrate init container and the server
 */}}
 {{- define "firefox-sync.syncstorageEnv" -}}
 {{- include "firefox-sync.dbPasswordEnv" . }}
@@ -333,4 +362,49 @@ server: database.external.tlsVerify
 {{- else }}
 {{- print "true" }}
 {{- end }}
+{{- end }}
+
+{{/*
+The env of db/mysql/admin-user.sh in the MariaDB and MySQL containers, as compose's
+tokenserver_db and syncstorage_db. Accepts a dict with "root" and "role" (tokenserver|storage)
+*/}}
+{{- define "firefox-sync.adminUserEnv" -}}
+- name: ADMIN_DB_ROLE
+  value: {{ .role }}
+{{- if eq .role "tokenserver" }}
+- name: ADMIN_DB_USER
+  value: {{ include "firefox-sync.adminDbUser" .root }}
+{{- end }}
+- name: ADMIN_DB_SYNC_USER
+  value: {{ include "firefox-sync.adminDbSyncUser" .root }}
+{{ include "firefox-sync.secretEnv" (dict "root" .root "name" "ADMIN_DB_PASSWORD" "key" "ADMIN_DB_PASSWORD") }}
+{{- if eq .role "tokenserver" }}
+- name: ADMIN_DB_NAME
+  value: {{ include "firefox-sync.adminDbName" .root }}
+{{- end }}
+{{- end }}
+
+{{/*
+compose's POSTGRES_SYNC_USER and POSTGRES_SYNC_PASSWORD of sync_role_init and the init
+container (empty without the Sync server's own role, as compose's ${...:-})
+*/}}
+{{- define "firefox-sync.postgresSyncEnv" -}}
+{{- $syncUser := include "firefox-sync.postgresSyncUser" . }}
+- name: POSTGRES_SYNC_USER
+  value: {{ $syncUser | quote }}
+{{- if $syncUser }}
+{{ include "firefox-sync.secretEnv" (dict "root" . "name" "POSTGRES_SYNC_PASSWORD" "key" "POSTGRES_SYNC_PASSWORD") }}
+{{- else }}
+- name: POSTGRES_SYNC_PASSWORD
+  value: ""
+{{- end }}
+{{- end }}
+
+{{/*
+compose's cap_drop: [NET_RAW] of the Sync server and its migrations: no raw sockets
+*/}}
+{{- define "firefox-sync.syncstorageSecurityContext" -}}
+securityContext:
+  capabilities:
+    drop: ["NET_RAW"]
 {{- end }}

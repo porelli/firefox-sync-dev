@@ -15,8 +15,8 @@ https://github.com/porelli/firefox-sync/blob/main/SYNC.md#firefox-setup
 The secrets were generated into the Secret {{ include "firefox-sync.fullname" . }} and are read back on
 every helm upgrade. If you render this chart with `helm template` or a GitOps tool (Argo CD...),
 set existingSecret instead: there they cannot be read back and would change on every render.
-It must hold SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD and
-{{- if eq .Values.database.backend "postgres" }} POSTGRES_PASSWORD.
+It must hold SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_PASSWORD and
+{{- if eq .Values.database.backend "postgres" }} POSTGRES_PASSWORD, POSTGRES_SYNC_PASSWORD.
 {{- else }} TOKENSERVER_DB_PASSWORD, STORAGE_DB_PASSWORD.
 {{- end }}
 {{- end }}
