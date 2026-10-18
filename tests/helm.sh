@@ -132,6 +132,38 @@ lint() {
   output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --show-only templates/syncstorage.yaml)
   [[ $(echo "${output}" | grep -c 'drop: \["NET_RAW"\]') -eq 2 ]] || fail "mariadb: NET_RAW not dropped on migrate and syncstorage"
   check "mariadb: migrate and syncstorage without NET_RAW"
+  # the migrate init container runs compose's syncstorage_migrate script, verbatim
+  for backend in mariadb postgres; do
+    compose=docker-compose.yml
+    [[ ${backend} == postgres ]] && compose=docker-compose.sync-postgres.yml
+    want=$(sed -n '/^  syncstorage_migrate:$/,/^  [a-z_-]*:$/p' "${REPO_ROOT}/${compose}" | sed -n '/^    command:$/,/^    [a-z_]*:/p' \
+      | sed '1,2d;$d' | sed 's/^        //')
+    got=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
+      --show-only templates/syncstorage.yaml | manifests | jq -r '.[] | select(.kind == "Deployment") | .spec.template.spec.initContainers[]
+      | select(.name == "migrate") | .args[0]' | sed '$ { /^$/d; }')
+    [[ -n "${want}" && "${want}" == "${got}" ]] || fail "${backend}: the migrate script differs from ${compose}'s syncstorage_migrate: $(diff <(echo "${want}") <(echo "${got}"))"
+  done
+  check "migrate: compose's syncstorage_migrate script verbatim (docker-compose.yml, docker-compose.sync-postgres.yml)"
+
+  # database.image.<backend>: the database server, wait-db, the backups and the PVC's binding
+  # Job (compose's POSTGRES_IMAGE: postgres_db and backup), postgres:18 by default
+  for backend in mariadb mysql postgres; do
+    images() {
+      helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --set backup.enabled=true "$@" \
+        | manifests | jq -r '[.[] | select(.kind == "StatefulSet" or .kind == "Job" or .kind == "CronJob" or .kind == "Deployment")
+          | (.spec.jobTemplate.spec // .spec).template.spec | (.initContainers // [])[], .containers[]
+          | select(.name == "db" or .name == "wait-db" or .name == "backup" or .name == "bind") | .image] | unique | join(" ")'
+    }
+    default=$(sed -n "s/^    ${backend}: //p" "${CHART_DIR}/values.yaml")
+    [[ "$(images)" == "${default}" ]] || fail "${backend}: the database images are not ${default}: $(images)"
+    [[ "$(images --set database.image."${backend}"=registry.example.test/db:9)" == "registry.example.test/db:9" ]] \
+      || fail "${backend}: database.image.${backend} not used everywhere: $(images --set database.image."${backend}"=registry.example.test/db:9)"
+    if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.image."${backend}"= > /dev/null 2>&1; then
+      fail "an empty database.image.${backend} not refused by the schema"
+    fi
+  done
+  [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == postgres:18 ]] || fail "database.image.postgres is not postgres:18 by default"
+  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (mariadb:lts, mysql:8.4, postgres:18), empty refused"
 
   # db/mysql/admin-user.sh: the chart's copy identical, run by the MariaDB and MySQL containers
   cmp -s "${CHART_DIR}/files/admin-user.sh" "${REPO_ROOT}/db/mysql/admin-user.sh" \
@@ -450,14 +482,26 @@ e2e() {
   kubectl config use-context "kind-${CLUSTER}" > /dev/null
   if [[ -z "${SKIP_BUILD:-}" ]]; then
     init_tag=helm-e2e
-    docker build -q -t "${repository}:syncstorage-rs-${flavor}-init-${init_tag}" "${REPO_ROOT}/${init_dir}" \
-      || fail "init image not built"
+    ADMIN_TAG=helm-e2e
+    # in the test VM its helper (vm.sh: ~/.ffs/lib.sh), which builds a folder once per content
+    # and serializes the builds of the slots; elsewhere docker
+    if ! declare -F ffs_image > /dev/null && [[ -f "${HOME}/.ffs/lib.sh" ]]; then
+      # shellcheck source=/dev/null
+      source "${HOME}/.ffs/lib.sh"
+    fi
+    if declare -F ffs_image > /dev/null; then
+      (cd "${REPO_ROOT}" && ffs_image "${init_dir}" "${repository}:syncstorage-rs-${flavor}-init-${init_tag}" > /dev/null) \
+        || fail "init image not built"
+      (cd "${REPO_ROOT}" && ffs_image admin "${repository}:admin-${ADMIN_TAG}" > /dev/null) || fail "admin image not built"
+    else
+      docker build -q -t "${repository}:syncstorage-rs-${flavor}-init-${init_tag}" "${REPO_ROOT}/${init_dir}" > /dev/null \
+        || fail "init image not built"
+      # with BuildKit (the Dockerfile's BUILDPLATFORM), as tests/e2e.sh builds it
+      ADMIN_IMAGE="${repository}:admin-${ADMIN_TAG}" COMPOSE_BAKE=false docker compose -p ffs-helm-admin-build \
+        -f "${SCRIPT_DIR}/docker-compose.admin-build.yml" build -q || fail "admin image not built"
+    fi
     kind load docker-image --name "${CLUSTER}" "${repository}:syncstorage-rs-${flavor}-init-${init_tag}"
     check "init image built from ${init_dir}"
-    ADMIN_TAG=helm-e2e
-    # with BuildKit (the Dockerfile's BUILDPLATFORM), as tests/e2e.sh builds it
-    ADMIN_IMAGE="${repository}:admin-${ADMIN_TAG}" COMPOSE_BAKE=false docker compose -p ffs-helm-admin-build \
-      -f "${SCRIPT_DIR}/docker-compose.admin-build.yml" build -q || fail "admin image not built"
     kind load docker-image --name "${CLUSTER}" "${repository}:admin-${ADMIN_TAG}"
     check "admin image built from admin/"
   fi
