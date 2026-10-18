@@ -644,6 +644,8 @@ Each run is a row of `ffs_backups` in the admin UI's database (when it started a
 - [Needs attention](#needs-attention), an event of kind `backup` and an alert when a run fails or the last good one is older than 36 hours, once, and when they work again;
 - Prometheus: `ffs_backup_age_seconds{scope}` and `ffs_backup_last_ok{scope}`.
 
+Without the admin UI, `docker compose ps` says it too: the `backup` and `backup-fxa` containers turn `unhealthy` when their loop stops, when their last run failed, or when the last good one is more than 25 hours old (`backup.sh health`, every minute, from what each run leaves in the volume: `.loop-<scope>`, `.result-<scope>`); a run going on counts as healthy. With Quadlets the backups are one-shot units of the timer, with no healthcheck: `systemctl --user status firefox-sync-backup.service` says how the last one ended.
+
 The rows are kept for `ADMIN_AUDIT_RETENTION_DAYS`.
 
 ### Copy them off the host

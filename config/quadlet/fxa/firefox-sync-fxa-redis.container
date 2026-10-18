@@ -8,8 +8,9 @@ ContainerName=firefox-sync-fxa-redis
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-redis
 HealthCmd=redis-cli ping
-HealthInterval=15s
-HealthRetries=10
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=5
 
 AutoUpdate=registry
 

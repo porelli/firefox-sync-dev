@@ -99,6 +99,9 @@ PublishPort=%ADMIN_GATE_EXPORT_PORT%:8081
 # exec form: the image has no shell for the default CMD-SHELL
 HealthCmd=["/ffs-admin", "healthcheck"]
 HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=30s
 
 AutoUpdate=registry
 

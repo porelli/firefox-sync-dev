@@ -32,6 +32,9 @@ export QUADLET_DIR=${WORK}/quadlets-unused  # replaced below for the quadlet pha
 # the backup timer: a plain systemd unit
 SYSTEMD_USER_DIR=${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user
 FAILED=0
+# compose_healthy, quadlets_healthy, health_parity: the healthchecks of the stack
+# shellcheck source=tests/healthy.sh
+source "${TESTS}/healthy.sh"
 
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
 hb() {
@@ -209,6 +212,7 @@ compose_test() {
       "the tokenserver user cannot write the event log (compose, ${backend})"
   fi
   podman logs "$(ctr tokenserver_db_init)" 2>&1 | grep -E "Max users|ERROR"
+  check "$(compose_healthy 300 docker compose "$@")" "all healthy" "every long-running container healthy, the one-shot ones exited 0 (compose, ${backend})"
   [ "${FAILED}" = 0 ] || diagnose "compose-${backend}.log"
   docker compose "$@" down -v > /dev/null 2>&1
 }
@@ -273,6 +277,10 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
 fi
 setup "${SYNC_DB}" 1
 check "$?" 0 "prepare_environment.sh (quadlets)"
+# the healthchecks of compose, those of the Quadlets (as rendered from .env)
+sync_compose=(-f docker-compose.yml)
+[ "${SYNC_DB}" = mysql ] && sync_compose+=(-f docker-compose.sync-mysql.yml)
+check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup "${sync_compose[@]}")" same "every long-running service has a healthcheck, the Quadlets compose's (${SYNC_DB})"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in quadlets"
 # with the admin UI, MAX_USERS=initial:1: the init container and the admin UI both get it
 check "$(grep -hcxF 'Environment=MAX_USERS=initial:1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container") $(grep -hcxF 'Environment="MAX_USERS=initial:1"' "${QUADLET_DIR}/firefox-sync-admin.container")" "1 1" \
@@ -431,6 +439,7 @@ check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service (restored)
 check "$(hb)" 200 "/__heartbeat__ after the restore (quadlets)"
 check "$(ts_sql "SELECT COUNT(*) FROM users WHERE email = 'restore@ffs-e2e.invalid'") $(systemctl --user is-active firefox-sync-admin.service)" "1 active" \
   "the restored user kept by the init, the admin UI started again (quadlets)"
+check "$(quadlets_healthy 300)" "all healthy" "every long-running unit has a HealthCmd and passes podman healthcheck run (quadlets)"
 
 if [ "${FAILED}" != 0 ]; then
   tail -20 quadlet-dryrun.log
@@ -468,6 +477,7 @@ fi
 echo "== quadlets with the Sync databases on MySQL (SYNC_DB=mysql): only what is installed"
 setup mysql 1
 check "$?" 0 "prepare_environment.sh (quadlets, MySQL)"
+check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup -f docker-compose.yml -f docker-compose.sync-mysql.yml)" same "the MySQL Quadlets' healthchecks are compose's"
 check "$(grep -c '^SYNC_DB=mysql$' .env) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml$' .env)" "1 1" "SYNC_DB=mysql in .env, with the compose overlay"
 check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
   "docker.io/library/mysql:8.4 docker.io/library/mysql:8.4" "MySQL 8.4 database units"
@@ -543,6 +553,8 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" \
     n n mariadb | ./prepare_environment.sh > setup-fxa-mariadb.log 2>&1
   check "$?" 0 "prepare_environment.sh (quadlets, accounts on MariaDB)"
+  check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing -f docker-compose.yml -f docker-compose.fxa.yml -f docker-compose.fxa-mariadb.yml)" same \
+    "the Quadlets' healthchecks with the accounts on MariaDB are compose's"
   check "$(fxa_db_image) $(ls "${QUADLET_DIR}"/firefox-sync-fxa-db* 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
     "docker.io/library/mariadb:11.8 firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB unit and its own volume, not MySQL's"
   "${QUADLET}" -dryrun -user > quadlet-fxa-mariadb-dryrun.log 2>&1
@@ -560,6 +572,10 @@ if [ -z "${SKIP_FXA:-}" ]; then
     "me@fxa.invalid" "" "${fxa_db_answers[@]}" \
     | ./prepare_environment.sh > setup-fxa-quadlets.log 2>&1
   check "$?" 0 "prepare_environment.sh (quadlets with accounts)"
+  fxa_compose=(-f docker-compose.yml -f docker-compose.fxa.yml)
+  [ "${FXA_DB}" = mariadb ] && fxa_compose+=(-f docker-compose.fxa-mariadb.yml)
+  check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
+    "every long-running service has a healthcheck, the Quadlets with the accounts compose's (${FXA_DB})"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
   [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:11.8 || expected_image=docker.io/library/mysql:8.4
   check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
@@ -595,7 +611,9 @@ if [ -z "${SKIP_FXA:-}" ]; then
     podman pull -q --arch "${fxa_arch}" "${fxa_image}" > /dev/null
   fi
   check "$?" 0 "pull mozilla/fxa-mono ${FXA_TEST_IMAGE:-${fxa_image}}"
-  timeout 1200 systemctl --user start firefox-sync-syncstorage.service firefox-sync-fxa-content.service firefox-sync-fxa-profile.service firefox-sync-admin.service
+  # (all of them, as at boot: WantedBy=default.target)
+  timeout 1200 systemctl --user start firefox-sync-syncstorage.service firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \
+    firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service firefox-sync-admin.service
   check "$?" 0 "systemctl --user start (syncstorage and accounts)"
   ok=""
   for _ in $(seq 1 90); do
@@ -634,6 +652,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$?" 0 "systemctl --user start firefox-sync-backup.service (quadlets with accounts)"
   check "$(admin_db_sql "SELECT DISTINCT scope FROM ffs_backups WHERE ok = 1 ORDER BY scope" | paste -sd' ')" "accounts sync" "the backups of the accounts and of Sync recorded (quadlets)"
   [ "${FAILED}" = 0 ] || journalctl --user -u 'firefox-sync-backup*' --no-pager | tail -20
+  check "$(quadlets_healthy 600)" "all healthy" "every long-running unit has a HealthCmd and passes podman healthcheck run (quadlets with accounts)"
   if [ "${FAILED}" != 0 ]; then
     journalctl --user -u 'firefox-sync-fxa-*' --no-pager | tail -40
   fi

@@ -151,6 +151,11 @@ systemctl --user status firefox-sync-syncstorage.service
 # View logs
 journalctl --user -u firefox-sync-syncstorage.service -f
 
+# Health: (healthy) next to each container that keeps running, the same checks as compose
+# (see config/quadlet/README.md); one by one
+podman ps
+podman healthcheck run firefox-sync-syncstorage; echo $?   # 0: healthy
+
 # Restart a service
 systemctl --user restart firefox-sync-syncstorage.service
 

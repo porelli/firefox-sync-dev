@@ -70,6 +70,15 @@ With `DB_CONTAINERS=0` in `.env` (`prepare_environment.sh` asks) the `firefox-sy
 systemctl --user status firefox-sync-syncstorage.service
 ```
 
+### Health
+Every unit that keeps running has the healthcheck of its compose service (`HealthCmd=` and the same timings): the databases and Redis answer, the Sync server, the admin UI and the accounts services answer their `/__heartbeat__` (the profile image worker its own, the profile images server its default avatar). `podman ps` shows `(healthy)` next to each; one by one:
+```bash
+podman healthcheck run firefox-sync-syncstorage; echo $?   # 0: healthy
+```
+The one-shot units (the migrations, the init container, `fxa-keys-owner`, `fxa-policy`, the backups of the timer) have none: `systemctl --user status <unit>` says how they ended.
+
+Podman 4.9 (Ubuntu 24.04) orders the units on the start of their container, not on its health (`Notify=healthy` needs Podman 5): where compose waits for a healthy database, the unit after it retries on its own (the migrations of the Sync server for 2 minutes, those of the accounts for 5), and `Restart=always` starts again what gave up.
+
 ### View Logs
 ```bash
 # Follow logs in real-time

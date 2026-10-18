@@ -137,6 +137,9 @@ dc() {
     -f "${CODE}/docker-compose.yml" -f "${CODE}/docker-compose.fxa.yml" -f "${TESTS}/docker-compose.fxa-test.yml" "${COMPOSE_EXTRA[@]}" "$@"
 }
 FAILED=0
+# compose_healthy, the healthchecks of the stack
+# shellcheck source=tests/healthy.sh
+source "${TESTS}/healthy.sh"
 # compose prefers the environment to --env-file: change both
 set_env() { sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"; }
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
@@ -609,6 +612,8 @@ check "$(state ffs-admin Health.Status)" healthy "admin UI container healthcheck
 admin_errors() { dc logs ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|rendering [^:]*): '; }
 check "$(admin_errors | wc -l)" 0 "no background errors in the admin UI logs"
 admin_errors | tail -5
+echo "== every container that keeps running healthy, the one-shot ones exited 0"
+check "$(compose_healthy 300 dc)" "all healthy" "every long-running container healthy (docker compose ps), the one-shot ones exited 0"
 [ "${FAILED}" = 0 ] || for s in fxa-auth syncstorage; do echo "---- ${s}"; dc logs --tail 30 "${s}" 2>&1; done
 
 [ ${FAILED} = 0 ] && echo "RESULT fxa: all checks passed" || echo "RESULT fxa: some checks FAILED"

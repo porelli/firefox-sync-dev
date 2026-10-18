@@ -10,8 +10,10 @@ PodmanArgs=--network-alias=fxa-db
 Environment="MYSQL_ROOT_PASSWORD=%FXA_MYSQL_PASSWORD%"
 Volume=firefox-sync-fxa-db.volume:/var/lib/mysql
 HealthCmd=mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p%FXA_MYSQL_PASSWORD% --silent
-HealthInterval=15s
+HealthInterval=10s
+HealthTimeout=5s
 HealthRetries=10
+HealthStartPeriod=30s
 Exec=mysqld --mysql-native-password=ON --authentication-policy=mysql_native_password --event-scheduler=ON
 
 AutoUpdate=registry

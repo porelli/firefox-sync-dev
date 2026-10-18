@@ -5,6 +5,8 @@
 #
 #   backup.sh loop    once a day at BACKUP_TIME (UTC), checked every minute (compose)
 #   backup.sh now     one run now
+#   backup.sh health  the healthcheck of the loop (compose): fails when the loop no longer
+#                     goes round, the last run failed, or the last good one is over 25 h old
 #
 # BACKUP_SCOPE=sync: the tokenserver and storage databases (TOKENSERVER_DB_*, STORAGE_DB_*;
 # with PostgreSQL one database). BACKUP_SCOPE=accounts: those of the self-hosted accounts
@@ -18,6 +20,8 @@
 # ADMIN_DB_PASSWORD, an install from before it: in the tokenserver database, as the
 # tokenserver user): the accounts scope leaves its result in BACKUP_DIR/.status (its image
 # has no PostgreSQL client), the sync scope records it on its next round.
+# For the healthcheck the loop writes BACKUP_DIR/.loop-<scope> (when it started, its last
+# round, every minute) and each run BACKUP_DIR/.result-<scope> (1 or 0, when it finished).
 set -u
 umask 077
 
@@ -37,6 +41,41 @@ fail() { log "$*" >&2; exit 2; }
 case "${SCOPE}" in sync|accounts) ;; *) fail "BACKUP_SCOPE must be sync or accounts" ;; esac
 case "${KEEP}" in ''|*[!0-9]*|0) fail "BACKUP_KEEP must be a number of 1 or more, not '${KEEP}'" ;; esac
 case "${AT}" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;; *) fail "BACKUP_TIME must be HH:MM (UTC), not '${AT}'" ;; esac
+
+# the state of the loop and of the last run, for the healthcheck (written then renamed: the
+# check never reads half a line; a run that cannot write to DIR fails its check anyway)
+state() { # file values...
+  s_file=$1
+  shift
+  { echo "$*" > "${s_file}.new" && mv "${s_file}.new" "${s_file}"; } 2> /dev/null
+}
+
+# the healthcheck: one line on what is wrong (no names, no secrets), exit 1
+health() {
+  h_now=$(date +%s)
+  { [ -f "${DIR}/.loop-${SCOPE}" ] && read -r h_since h_beat < "${DIR}/.loop-${SCOPE}"; } || { echo "the backup loop has not started"; return 1; }
+  # a run going on: its .partial directory, the loop only goes round again after it
+  h_run=$(stat -c %Y "${DIR}/${SCOPE}"/.*.partial 2> /dev/null | sort -n | head -1)
+  if [ -n "${h_run}" ]; then
+    [ $((h_now - h_run)) -le 86400 ] || { echo "a run has been going on for over a day"; return 1; }
+  elif [ $((h_now - h_beat)) -gt 300 ]; then
+    echo "the backup loop stopped going round $(((h_now - h_beat) / 60)) minutes ago"
+    return 1
+  fi
+  h_ok=1 h_last=${h_since}
+  [ -f "${DIR}/.result-${SCOPE}" ] && read -r h_ok h_last < "${DIR}/.result-${SCOPE}"
+  [ "${h_ok}" = 1 ] || { echo "the last backup failed, see the logs of this container"; return 1; }
+  # once a day: 25 h leave an hour for a run that takes longer than the one before
+  if [ -z "${h_run}" ] && [ $((h_now - h_last)) -gt 90000 ]; then
+    echo "no backup for $(((h_now - h_last) / 3600)) hours"
+    return 1
+  fi
+  echo "ok"
+}
+if [ "${1:-}" = health ]; then
+  health
+  exit
+fi
 
 # milliseconds (GNU date), or seconds * 1000
 now_ms() {
@@ -157,7 +196,7 @@ run() {
   # what a stopped (SIGKILL) run left
   rm -rf "${DIR}/${SCOPE}"/.*.partial 2> /dev/null
   PARTIAL=${DIR}/${SCOPE}/.${stamp}.partial
-  mkdir -p "${PARTIAL}" || { PARTIAL=; record "${SCOPE}" "${started}" "$(now_ms)" 0 0 "" "cannot write to ${DIR}"; return 1; }
+  mkdir -p "${PARTIAL}" || { PARTIAL=; state "${DIR}/.result-${SCOPE}" 0 "$(date +%s)"; record "${SCOPE}" "${started}" "$(now_ms)" 0 0 "" "cannot write to ${DIR}"; return 1; }
   errors=""
   if [ "${SCOPE}" = sync ] && [ "${TOKENSERVER_DB_TYPE:-mysql}" = postgres ]; then
     # tokenserver and storage share the database
@@ -199,6 +238,7 @@ run() {
     rm -rf "${PARTIAL}"
     PARTIAL=
     log "FAILED: ${errors}" >&2
+    state "${DIR}/.result-${SCOPE}" 0 "$(date +%s)"
     record "${SCOPE}" "${started}" "$(now_ms)" 0 "${bytes}" "" "$(printf '%s' "${errors}" | clean)"
     return 1
   fi
@@ -208,6 +248,7 @@ run() {
   done
   PARTIAL=
   log "ok: ${out}, ${bytes} bytes"
+  state "${DIR}/.result-${SCOPE}" 1 "$(date +%s)"
   record "${SCOPE}" "${started}" "$(now_ms)" 1 "${bytes}" "${out}" ""
 }
 
@@ -229,7 +270,9 @@ case "${1:-}" in
   loop)
     mkdir -p "${DIR}"
     log "every day at ${AT} UTC, keeping ${KEEP}"
+    since=$(date +%s)
     while :; do
+      state "${DIR}/.loop-${SCOPE}" "${since}" "$(date +%s)"
       [ "${SCOPE}" = sync ] && import
       today=$(date -u +%F)
       # once a day from BACKUP_TIME on: a container started later that day runs at once
@@ -242,5 +285,5 @@ case "${1:-}" in
       wait $!
     done
     ;;
-  *) fail "usage: backup.sh now | loop" ;;
+  *) fail "usage: backup.sh now | loop | health" ;;
 esac

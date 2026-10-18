@@ -1,7 +1,10 @@
 [Unit]
 Description=Firefox Sync - Mozilla accounts - Accounts web pages
-After=firefox-sync-network.service firefox-sync-fxa-auth.service
+After=firefox-sync-network.service firefox-sync-fxa-auth.service firefox-sync-fxa-profile.service
 Requires=firefox-sync-fxa-auth.service
+# its pages read the names and avatars from the profile server (compose waits until it is
+# healthy; here, as for fxa-auth, it is started first, see README.md)
+Wants=firefox-sync-fxa-profile.service
 
 [Container]
 Image=%FXA_IMAGE%:%FXA_VERSION%
@@ -29,7 +32,9 @@ Volume=%SCRIPT_DIR%/config/fxa:/fxa-config:ro,z
 PublishPort=%FXA_CONTENT_EXPORT_PORT%:3030
 HealthCmd=node -e "fetch('http://localhost:3030/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
 HealthInterval=15s
-HealthRetries=10
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=300s
 Exec=sh -c 'cd /fxa/packages/fxa-content-server && node /fxa-config/content-server.js /tmp/content-server.json && exec node server/bin/fxa-content-server.js'
 
 AutoUpdate=registry

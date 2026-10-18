@@ -56,6 +56,8 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # (the one-shot services, restart: "no", have no healthcheck: their exit status counts,
+  # see docker-compose.yml)
   # the image runs as app (10001), new volumes are created as root
   fxa-keys-owner:
     <<: *fxa
@@ -268,6 +270,9 @@ services:
     depends_on:
       fxa-auth:
         condition: service_healthy
+      # its pages read the names and avatars from the profile server: up when they answer
+      fxa-profile:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3030/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       start_period: 300s
@@ -303,6 +308,14 @@ services:
         condition: service_completed_successfully
       fxa-redis:
         condition: service_healthy
+    # /__heartbeat__ also asks the accounts database (/__lbheartbeat__ only the process); as slow
+    # to start as fxa-auth under emulation
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:1111/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
     ports:
       - ${FXA_PROFILE_EXPORT_PORT:-127.0.0.1:1111}:1111
 
@@ -316,6 +329,13 @@ services:
       IMG: local
     volumes:
       - fxa-profile-images:/fxa/packages/fxa-profile-server/var/public
+    # its own HTTP server, where fxa-profile sends the uploaded avatars (port 1113, not published)
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
   fxa-profile-static:
     <<: *fxa
@@ -327,6 +347,13 @@ services:
       IMG: local
     volumes:
       - fxa-profile-images:/fxa/packages/fxa-profile-server/var/public:ro
+    # the default avatar, a file it serves like the uploaded ones
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:1112/a/00000000000000000000000000000000').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      start_period: 300s
+      interval: 15s
+      timeout: 10s
+      retries: 5
     ports:
       - ${FXA_PROFILE_STATIC_EXPORT_PORT:-127.0.0.1:1112}:1112
 
@@ -341,6 +368,13 @@ services:
       PAIR_HUMAN_LOGS: "true"
       # the reverse proxy, so that X-Forwarded-For is used for the per client limits
       PAIR_TRUSTED_PROXY_LIST: ${FXA_PAIRING_TRUSTED_PROXIES:-127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+    # its /__heartbeat__; the image (debian slim) has no curl or wget: bash's /dev/tcp
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /__heartbeat__ HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
     ports:
       - ${FXA_PAIRING_EXPORT_PORT:-127.0.0.1:8058}:8000
     restart: unless-stopped
@@ -397,6 +431,13 @@ services:
       FXA_DB_PORT: ${FXA_MYSQL_PORT:-3306}
       FXA_DB_USER: ${FXA_MYSQL_USER:-root}
       FXA_DB_PASSWORD: ${FXA_MYSQL_PASSWORD}
+    # as the backup service's (docker-compose.yml): backup.sh health
+    healthcheck:
+      test: ["CMD", "sh", "/ffs-backup/backup.sh", "health"]
+      start_period: 1m
+      interval: 1m
+      timeout: 10s
+      retries: 2
     volumes:
       - ./config/backup:/ffs-backup:ro
       - backups:/backups

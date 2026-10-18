@@ -146,6 +146,9 @@ dc() {
     "${COMPOSE_EXTRA[@]/#"${CODE}"/${ROOT}}" --env-file "${ENV_FILE}" "$@"
 }
 FAILED=0
+# compose_healthy, the healthchecks of the stack
+# shellcheck source=tests/healthy.sh
+source "${TESTS}/healthy.sh"
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 hb() {
@@ -972,6 +975,11 @@ if [ -z "${EXTDB}" ]; then
   check "$?" 0 "the same accounts, uids and items after the restore"
   check "$(admin_healthy)" healthy "admin UI healthy after the restore"
 fi
+
+echo "== every container that keeps running healthy, the one-shot ones exited 0"
+# (your own server: no restore above, the admin UI is still removed)
+[ -z "${EXTDB}" ] || dc up -d > /dev/null 2>&1
+check "$(compose_healthy 300 dc)" "all healthy" "every long-running container healthy (docker compose ps), the one-shot ones exited 0"
 
 RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL 8.4)")
 [ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"

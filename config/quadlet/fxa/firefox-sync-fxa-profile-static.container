@@ -14,6 +14,12 @@ Environment="HOST=0.0.0.0"
 Environment="IMG=local"
 Volume=firefox-sync-fxa-profile-images.volume:/fxa/packages/fxa-profile-server/var/public:ro
 PublishPort=%FXA_PROFILE_STATIC_EXPORT_PORT%:1112
+# the default avatar, a file it serves like the uploaded ones
+HealthCmd=node -e "fetch('http://localhost:1112/a/00000000000000000000000000000000').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+HealthInterval=15s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=300s
 Exec=sh -c 'cd /fxa/packages/fxa-profile-server && exec node bin/_static.js'
 
 AutoUpdate=registry

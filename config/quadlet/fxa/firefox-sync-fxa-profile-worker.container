@@ -13,6 +13,12 @@ Environment="NODE_ENV=production"
 Environment="WORKER_HOST=0.0.0.0"
 Environment="IMG=local"
 Volume=firefox-sync-fxa-profile-images.volume:/fxa/packages/fxa-profile-server/var/public
+# its own HTTP server, where fxa-profile sends the uploaded avatars
+HealthCmd=node -e "fetch('http://localhost:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+HealthInterval=15s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=300s
 Exec=sh -c 'cd /fxa/packages/fxa-profile-server && exec node bin/worker.js'
 
 AutoUpdate=registry

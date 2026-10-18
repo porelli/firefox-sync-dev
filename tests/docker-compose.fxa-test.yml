@@ -13,6 +13,13 @@ services:
     volumes:
       - ./tests/Caddyfile.fxa:/etc/caddy/Caddyfile:ro
       - caddy-data:/data/caddy
+    # its admin API (only inside the container): Caddy runs with its configuration loaded; the
+    # sites themselves answer only once what they proxy to does
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       default:
         aliases: [accounts.fxa.test, api.fxa.test, admin.fxa.test, profile.fxa.test, pairing.fxa.test, sync.fxa.test]
@@ -32,6 +39,12 @@ services:
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    # the image's own check, explicit
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   # the admin UI and sign-up policy under test
   fxa-policy:

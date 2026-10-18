@@ -93,7 +93,9 @@ Volume=%SCRIPT_DIR%/config/fxa:/fxa-config:ro,z
 PublishPort=%FXA_AUTH_EXPORT_PORT%:9000
 HealthCmd=node -e "fetch('http://localhost:9000/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
 HealthInterval=15s
-HealthRetries=10
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=300s
 Exec=sh -c 'cd /fxa/packages/fxa-auth-server/dist/packages/fxa-auth-server && node scripts/gen_keys.js && node scripts/oauth_gen_keys.js && node scripts/gen_vapid_keys.js && node /fxa-config/oauth-clients.js /fxa-keys/oauth-clients.json && exec node bin/key_server.js'
 
 AutoUpdate=registry

@@ -17,8 +17,10 @@ Environment="MARIADB_AUTO_UPGRADE=true"
 # MariaDB cannot open MySQL's data files: its own volume
 Volume=firefox-sync-fxa-db-mariadb.volume:/var/lib/mysql
 HealthCmd=healthcheck.sh --connect --innodb_initialized
-HealthInterval=15s
+HealthInterval=10s
+HealthTimeout=5s
 HealthRetries=10
+HealthStartPeriod=30s
 # the default authentication is already mysql_native_password, the only one FxA's driver supports
 Exec=mariadbd --event-scheduler=ON
 
