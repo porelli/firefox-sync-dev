@@ -619,6 +619,29 @@ def test_alert_emails():
     raise AssertionError(f"alerts missing: {text[:2000]}")
 
 
+def test_alert_notifications():
+    # the same alerts, also to ADMIN_NOTIFY (a webhook to tests/notify_sink.py), besides the
+    # email: with the accounts the SMTP server stays, it sends their codes
+    deadline, events = time.time() + 60, []
+    while time.time() < deadline:
+        hooks = [r for r in requests.get("http://notify-sink:8000/_received", timeout=10).json() if r["path"] == "/fxa-hook/ffs-test-fxa-secret"]
+        events = [e for r in hooks for e in json.loads(r["body"])["events"]]
+        kinds = {e["kind"] for e in events}
+        if {"sign-up refused", "admin", "health"} <= kinds and any(e["text"].startswith(f"Disabled {INVITED}") for e in events):
+            break
+        time.sleep(3)
+    else:
+        raise AssertionError(f"notifications missing: {events[:50]}")
+    payload = json.loads(hooks[-1]["body"])
+    # the link of the admin UI, from its public callback (ADMIN_OIDC_REDIRECT_URL)
+    assert payload["source"] == "firefox-sync" and payload["link"] == "https://admin.fxa.test/activity", payload
+    # the SMTP server is still checked and needed: a setup check says why
+    page = requests.Session()
+    res = page.post(f"{ADMIN}/login", data={"password": os.environ["ADMIN_PASSWORD"]}, timeout=30)
+    assert "Email of the accounts (FXA_SMTP_HOST)" in res.text and "codes of new accounts and new sign-ins" in res.text, res.text[:3000]
+    assert "ffs-test-fxa-secret" not in res.text and "ffs-test-fxa-secret" not in page.get(f"{ADMIN}/config", timeout=30).text
+
+
 def test_prometheus():
     assert requests.get(f"{ADMIN}/metrics", timeout=30).status_code == 404
     res = requests.get(f"{ADMIN}/metrics", headers={"Authorization": "Bearer ffs-test-metrics-token"}, timeout=30)

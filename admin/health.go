@@ -234,6 +234,9 @@ func newHealth(app *App) *Health {
 		h.checks = append(h.checks, check{name: "Email (SMTP)", every: time.Hour, retry: 10 * time.Minute,
 			run: func(context.Context) (string, error) { return detail, m.check(10 * time.Second) }})
 	}
+	if app.alerter != nil && len(app.alerter.notifiers) > 0 {
+		h.checks = append(h.checks, check{name: notifyCheckName, run: app.alerter.notifyCheck})
+	}
 	h.checks = append(h.checks, h.publicChecksOf(app)...)
 	// this program, at the top of the list
 	h.checks = append([]check{{name: "Admin UI", health: func(context.Context) error { return nil },

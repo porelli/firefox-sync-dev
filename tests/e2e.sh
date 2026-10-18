@@ -809,6 +809,10 @@ echo "== admin UI"
 check "$(admin_healthy)" healthy "admin UI container healthcheck"
 check "$(admin_errors | wc -l)" 0 "no background errors in the admin UI logs"
 admin_errors | tail -5
+# ADMIN_NOTIFY of the test stack: said at the start as scheme://host, its tokens never logged
+admin_logs=$(dc logs ffs-admin 2>&1)
+check "$(grep -qF 'alerts also to webhook+http://notify-sink:8000, slack+http://notify-sink:8000 (ADMIN_NOTIFY)' <<< "${admin_logs}" && echo named) $(grep -c 'ffs-test-hook-secret\|ffs-test-hook-token\|ffs-test-slack-secret' <<< "${admin_logs}")" \
+  "named 0" "the admin UI names the destinations of the alerts, never their tokens"
 
 echo "== the Sync server without the admin UI (ADMIN_UI=n: no ffs-admin to resolve)"
 dc stop ffs-admin > /dev/null 2>&1 && dc rm -f ffs-admin > /dev/null 2>&1

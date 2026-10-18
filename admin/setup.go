@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 )
@@ -107,6 +108,9 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 		}
 		checks = append(checks, c)
 	}
+	if a.fxa != nil {
+		checks = append(checks, accountsSMTPCheck(smtpServer()))
+	}
 	if a.emailDomain != "" {
 		if counts, err := a.sync.EmailDomains(ctx); err != nil {
 			checks = append(checks, setupCheck{Name: "Account emails (FXA_EMAIL_DOMAIN)", Text: "Could not read the accounts of the tokenserver: " + err.Error()})
@@ -115,4 +119,16 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 		}
 	}
 	return checks
+}
+
+// accountsSMTPCheck: the self-hosted accounts need an SMTP server whatever the admin UI's
+// alerts use (ADMIN_NOTIFY replaces email for the alerts only)
+func accountsSMTPCheck(m *Mailer) setupCheck {
+	c := setupCheck{Name: "Email of the accounts (FXA_SMTP_HOST)", OK: m != nil}
+	if c.OK {
+		c.Text = "The accounts service emails the codes of new accounts and new sign-ins, and the password resets, through " + net.JoinHostPort(m.host, m.port) + "."
+	} else {
+		c.Text = "FXA_SMTP_HOST is not set (or still the placeholder of .env-example): the self-hosted accounts email a code for every new account and every sign-in on a new device, and the password resets, so nobody can sign up or sign in. ADMIN_NOTIFY only replaces email for the admin UI's alerts, not for the accounts."
+	}
+	return c
 }

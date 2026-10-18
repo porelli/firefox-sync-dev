@@ -105,7 +105,7 @@ type App struct {
 	fxa     *FxaDB     // nil without self-hosted accounts
 	rec     *Recorder
 	health  *Health
-	alerter *Alerter // nil without ALERT_EMAIL and SMTP_HOST
+	alerter *Alerter // nil without email alerts (ALERT_EMAIL and SMTP_HOST) and ADMIN_NOTIFY
 	mailer  *Mailer  // notices to account owners, nil without SMTP_HOST
 	// FXA_CONTENT_URL: the accounts pages, for the links shown and sent
 	contentURL string
@@ -148,6 +148,11 @@ func serve(ctx context.Context) error {
 		if envInt(name, 1) < 1 {
 			return fmt.Errorf("%s must be 1 or more", name)
 		}
+	}
+	// the destinations of the alerts besides email: a wrong one stops here, never with its token
+	notifyTargets, err := parseNotify(env("ADMIN_NOTIFY", ""))
+	if err != nil {
+		return err
 	}
 	staleDays, unconfirmedHours := envInt("ADMIN_STALE_DAYS", 90), envInt("ADMIN_UNCONFIRMED_HOURS", 72)
 	unconfirmedDays, signupBurst := 0, envInt("ADMIN_SIGNUP_BURST", 10)
@@ -206,7 +211,13 @@ func serve(ctx context.Context) error {
 		emailDomain: strings.ToLower(env("FXA_EMAIL_DOMAIN", "")), pairingURL: env("FXA_PAIRING_URL", ""),
 		autoPurge: autoPurge, unconfirmedDays: unconfirmedDays, signupBurst: signupBurst,
 		accountEvents: fxaDB != nil && accountEventsOn(eventsSetting, eventsSet)}
-	app.alerter = newAlerter()
+	app.alerter = newAlerter(notifyTargets)
+	if names := app.alerter.NotifyNames(); len(names) > 0 {
+		log.Printf("alerts also to %s (ADMIN_NOTIFY)", strings.Join(names, ", "))
+	}
+	for _, name := range app.alerter.InsecureNames() {
+		log.Printf("ADMIN_NOTIFY: %s sends its token over plain http to a host outside the local network: use https", name)
+	}
 	fallbackSender := ""
 	if to := env("ALERT_EMAIL", ""); to != "" {
 		fallbackSender = "firefox-sync admin <" + to + ">"
@@ -289,6 +300,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /accounts/{uid}/confirm-email", a.authenticated(a.confirmEmail))
 	mux.HandleFunc("POST /users/{uid}/note", a.authenticated(a.setNote))
 	mux.HandleFunc("POST /alerts/test", a.authenticated(a.testEmail))
+	mux.HandleFunc("POST /alerts/test-notification", a.authenticated(a.testNotify))
 	mux.HandleFunc("POST "+invitePath, a.authenticated(a.invite))
 	mux.HandleFunc("POST /accounts/allowlist/remove", a.authenticated(a.removeFromAllowlist))
 	mux.HandleFunc("GET /connect", a.authenticated(a.connectPage))
@@ -558,13 +570,14 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 		data["BackupState"], data["BackupText"] = backupTile(backups, now)
 	}
 	var alerts *SendStatus
-	if a.alerter != nil {
+	if a.alerter.emails() {
 		st := a.alerter.Status()
 		alerts = &st
 		data["Alerts"] = map[string]any{"To": a.alerter.to, "Status": st, "Waiting": a.alerter.Waiting()}
 	}
+	data["Notify"] = a.alerter.NotifyStatuses()
 	// a test email goes to ADMIN_ALERT_EMAIL, or to the admin of single sign-on
-	data["TestEmail"] = a.mailer != nil && (a.alerter != nil || s.method == "oidc")
+	data["TestEmail"] = a.mailer != nil && (a.alerter.emails() || s.method == "oidc")
 	setup := a.setupChecks(ctx, status, components)
 	// the checks fold to a line while they all pass, open with a failing one
 	warnings := 0

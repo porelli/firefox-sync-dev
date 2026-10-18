@@ -362,7 +362,9 @@ func TestConfigPage(t *testing.T) {
 		}
 	}
 	hints := page[strings.Index(page, `<section id="hints">`):strings.Index(page, `<nav class="chips"`)]
-	for _, want := range []string{"7 settings to check",
+	for _, want := range []string{"8 settings to check",
+		// the accounts need their SMTP server, whatever the alerts use
+		"Email of the accounts (FXA_SMTP_HOST): FXA_SMTP_HOST is not set",
 		"FXA_CONTENT_URL is http://accounts.example.com, not an https:// URL",
 		"FXA_PAIRING_URL is https://pairing.example.com, not a wss:// URL",
 		"FXA_EMAIL_DOMAIN is accounts.example.com, but the accounts API (FXA_AUTH_URL) is api.example.com",

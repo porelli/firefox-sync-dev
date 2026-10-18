@@ -19,8 +19,9 @@ import (
 	"unicode/utf8"
 )
 
-// Email alerts to ADMIN_ALERT_EMAIL, through the SMTP server of the stack: what
-// happened, collected and sent at most every ALERT_INTERVAL_SECONDS (10 minutes)
+// Email alerts to ADMIN_ALERT_EMAIL, through the SMTP server of the stack, and the
+// notifications of ADMIN_NOTIFY (notify.go): what happened, collected and sent at most
+// every ALERT_INTERVAL_SECONDS (10 minutes)
 
 // event kinds worth an email. admin: sign-ins to the admin UI and every change made
 // in it, so that the other admins (and you, from a stolen session) hear of it.
@@ -48,21 +49,47 @@ type Mailer struct {
 	rootCAs                *x509.CertPool // nil: the system's (the tests set their own)
 }
 
+// Alerter collects the alerts and sends them every interval: by email to ADMIN_ALERT_EMAIL
+// (its own queue, embedded) and to each destination of ADMIN_NOTIFY (notify.go)
 type Alerter struct {
 	Mailer
 	to       string
 	interval time.Duration
-
-	mu      sync.Mutex
-	pending []pendingAlert
-	perKind map[string]int // lines of each kind added since the last take
-	dropped map[string]int // and those left out, by kind
-	taken   []pendingAlert // the batch being sent, for requeue
-	tDrops  map[string]int // and its counts
-	status  SendStatus
+	// the email's queue: unused with notifiers and no email (emails)
+	alertQueue
+	notifiers []*notifyOutlet
+	// the Activity page of the admin UI in the notifications (adminLink), "" when not known
+	link string
 }
 
-type pendingAlert struct{ kind, line string }
+// alertQueue: the alerts waiting for one destination, at most maxAlertsPerKind of each
+// kind, and the result of its last send
+type alertQueue struct {
+	mu       sync.Mutex
+	pending  []pendingAlert
+	perKind  map[string]int // lines of each kind added since the last take
+	dropped  map[string]int // and those left out, by kind
+	taken    []pendingAlert // the batch being sent, for requeue
+	tDrops   map[string]int // and its counts
+	status   SendStatus
+	failures int64 // sends that failed since the start
+	lost     int64 // alerts the destination refused as they were (lostPayload), not sent again
+}
+
+// lose: the batch of the last take, refused as it was: counted, not requeued
+func (q *alertQueue) lose(n int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.lost += int64(n)
+	q.taken, q.tDrops = nil, nil
+}
+
+type pendingAlert struct {
+	kind, line string
+	// for the notifications: when, and the detail as one line
+	at   time.Time
+	text string
+}
 
 // SendStatus is the result of the last alert email, kept in memory: shown on the
 // overview and in Prometheus
@@ -72,56 +99,63 @@ type SendStatus struct {
 	LastOK time.Time // last email sent
 }
 
-func (al *Alerter) Status() SendStatus {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-	return al.status
+// emails: alerts go out by email (ADMIN_ALERT_EMAIL with an SMTP server); an Alerter
+// without notifiers is the email's
+func (al *Alerter) emails() bool {
+	return al != nil && (al.to != "" || len(al.notifiers) == 0)
 }
 
-func (al *Alerter) record(err error) {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-	al.status.At, al.status.Err = time.Now(), ""
+func (q *alertQueue) Status() SendStatus {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.status
+}
+
+func (q *alertQueue) record(err error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.status.At, q.status.Err = time.Now(), ""
 	if err != nil {
-		al.status.Err = err.Error()
+		q.status.Err = err.Error()
+		q.failures++
 	} else {
-		al.status.LastOK = al.status.At
+		q.status.LastOK = q.status.At
 	}
 }
 
 // Waiting: alerts not sent yet
-func (al *Alerter) Waiting() int {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-	return len(al.pending)
+func (q *alertQueue) Waiting() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.pending)
 }
 
 // requeue puts back the batch of the last take, which was not sent, before the new
 // alerts: it goes out once the SMTP server works again. Of each kind the newest
 // maxAlertsPerKind lines wait, at most maxAlerts in all; the rest are counted by kind
-func (al *Alerter) requeue() {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-	if al.perKind == nil {
-		al.perKind, al.dropped = map[string]int{}, map[string]int{}
+func (q *alertQueue) requeue() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.perKind == nil {
+		q.perKind, q.dropped = map[string]int{}, map[string]int{}
 	}
-	for kind, n := range al.tDrops {
-		al.dropped[kind] += n
+	for kind, n := range q.tDrops {
+		q.dropped[kind] += n
 	}
-	all := append(al.taken, al.pending...)
+	all := append(q.taken, q.pending...)
 	kept := map[string]int{}
 	var keep []pendingAlert
 	for i := len(all) - 1; i >= 0; i-- {
 		a := all[i]
 		if kept[a.kind] >= maxAlertsPerKind || len(keep) >= maxAlerts {
-			al.dropped[a.kind]++
+			q.dropped[a.kind]++
 			continue
 		}
 		kept[a.kind]++
 		keep = append(keep, a)
 	}
 	slices.Reverse(keep)
-	al.pending, al.taken, al.tDrops = keep, nil, nil
+	q.pending, q.taken, q.tDrops = keep, nil, nil
 }
 
 // smtpServer: the SMTP server of the stack (SMTP_*), nil without SMTP_HOST. The
@@ -149,16 +183,22 @@ func newMailer(fallback string) *Mailer {
 	return m
 }
 
-func newAlerter() *Alerter {
-	to := env("ALERT_EMAIL", "")
-	if to == "" {
+// newAlerter: nil without email (ALERT_EMAIL and an SMTP server) and without notifiers
+func newAlerter(targets []notifyTarget) *Alerter {
+	al := &Alerter{}
+	if to := env("ALERT_EMAIL", ""); to != "" {
+		if m := newMailer("firefox-sync admin <" + to + ">"); m != nil {
+			al.Mailer, al.to = *m, to
+		}
+	}
+	for _, t := range targets {
+		al.notifiers = append(al.notifiers, &notifyOutlet{name: t.name, n: t.n, insecure: t.insecure})
+	}
+	if al.to == "" && len(al.notifiers) == 0 {
 		return nil
 	}
-	m := newMailer("firefox-sync admin <" + to + ">")
-	if m == nil {
-		return nil
-	}
-	return &Alerter{Mailer: *m, to: to, interval: time.Duration(envInt("ALERT_INTERVAL_SECONDS", 600)) * time.Second}
+	al.interval, al.link = time.Duration(envInt("ALERT_INTERVAL_SECONDS", 600))*time.Second, adminLink()
+	return al
 }
 
 func (a *App) alert(kind, detail string) {
@@ -167,38 +207,56 @@ func (a *App) alert(kind, detail string) {
 	}
 }
 
+// add: the alert to the email's queue and to each destination's
 func (al *Alerter) add(kind, detail string) {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-	if al.perKind == nil {
-		al.perKind, al.dropped = map[string]int{}, map[string]int{}
+	now := time.Now()
+	if al.emails() {
+		al.alertQueue.add(kind, detail, now)
 	}
-	if al.perKind[kind] >= maxAlertsPerKind || len(al.pending) >= maxAlerts {
-		al.dropped[kind]++
-		return
+	for _, o := range al.notifiers {
+		o.add(kind, detail, now)
 	}
-	al.perKind[kind]++
-	al.pending = append(al.pending, pendingAlert{kind, formatTime(time.Now(), adminZone) + "  " + alertText(kind+": "+detail)})
 }
 
-// take empties the batch, with a count of what was left out
-func (al *Alerter) take() []string {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-	lines := make([]string, 0, len(al.pending)+len(al.dropped))
-	for _, a := range al.pending {
+func (q *alertQueue) add(kind, detail string, at time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.perKind == nil {
+		q.perKind, q.dropped = map[string]int{}, map[string]int{}
+	}
+	if q.perKind[kind] >= maxAlertsPerKind || len(q.pending) >= maxAlerts {
+		q.dropped[kind]++
+		return
+	}
+	q.perKind[kind]++
+	q.pending = append(q.pending, pendingAlert{kind: kind, line: formatTime(at, adminZone) + "  " + alertText(kind+": "+detail), at: at, text: alertText(detail)})
+}
+
+// takeBatch empties the batch: its alerts, and the counts of what was left out by kind
+func (q *alertQueue) takeBatch() ([]pendingAlert, map[string]int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	events, dropped := q.pending, q.dropped
+	q.taken, q.tDrops = q.pending, q.dropped
+	q.pending, q.perKind, q.dropped = nil, nil, nil
+	return events, dropped
+}
+
+// take empties the batch as the lines of an email, with a count of what was left out
+func (q *alertQueue) take() []string {
+	events, dropped := q.takeBatch()
+	lines := make([]string, 0, len(events)+len(dropped))
+	for _, a := range events {
 		lines = append(lines, a.line)
 	}
-	kinds := make([]string, 0, len(al.dropped))
-	for kind := range al.dropped {
+	kinds := make([]string, 0, len(dropped))
+	for kind := range dropped {
 		kinds = append(kinds, kind)
 	}
 	sort.Strings(kinds)
 	for _, kind := range kinds {
-		lines = append(lines, fmt.Sprintf("%s  %d more %s", formatTime(time.Now(), adminZone), al.dropped[kind], alertText(kind)))
+		lines = append(lines, fmt.Sprintf("%s  %d more %s", formatTime(time.Now(), adminZone), dropped[kind], alertText(kind)))
 	}
-	al.taken, al.tDrops = al.pending, al.dropped
-	al.pending, al.perKind, al.dropped = nil, nil, nil
 	return lines
 }
 
@@ -230,16 +288,32 @@ func (al *Alerter) run(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
-		lines := al.take()
-		if len(lines) == 0 {
-			continue
+		// each destination on its own: a slow one does not hold up the others
+		var wg sync.WaitGroup
+		if al.emails() {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				lines := al.take()
+				if len(lines) == 0 {
+					return
+				}
+				err := al.send(lines)
+				al.record(err)
+				if err != nil {
+					log.Printf("alert email: %v", err)
+					al.requeue()
+				}
+			}()
 		}
-		err := al.send(lines)
-		al.record(err)
-		if err != nil {
-			log.Printf("alert email: %v", err)
-			al.requeue()
+		for _, o := range al.notifiers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				o.flush(ctx, al.link)
+			}()
 		}
+		wg.Wait()
 	}
 }
 
@@ -377,7 +451,7 @@ func (a *App) sendMail(to, subject, body string) error {
 // with single sign-on: never to an address typed in the form
 func (a *App) testEmail(w http.ResponseWriter, r *http.Request, s *session) {
 	to := ""
-	if a.alerter != nil {
+	if a.alerter.emails() {
 		to = a.alerter.to
 	} else if s.method == "oidc" {
 		to = s.user
@@ -389,7 +463,7 @@ func (a *App) testEmail(w http.ResponseWriter, r *http.Request, s *session) {
 	body := "This is a test email of the admin UI of your firefox-sync server, sent by " + auditWho(s) + " on " +
 		formatTime(time.Now(), adminZone) + " (" + adminZone.String() + ").\r\n\r\nAlerts reach you this way.\r\n"
 	err := a.sendMail(to, "firefox-sync: test email", body)
-	if a.alerter != nil && to == a.alerter.to {
+	if a.alerter.emails() && to == a.alerter.to {
 		a.alerter.record(err)
 	}
 	if err != nil {

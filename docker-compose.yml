@@ -198,6 +198,8 @@ services:
       # every hour the public https URLs, their certificates (and the sign-up gate); false: never
       ADMIN_PUBLIC_CHECK: ${ADMIN_PUBLIC_CHECK:-true}
       ALERT_EMAIL: ${ADMIN_ALERT_EMAIL:-}
+      # alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (ADMIN.md#alerts)
+      ADMIN_NOTIFY: ${ADMIN_NOTIFY:-}
       SMTP_HOST: ${FXA_SMTP_HOST:-}
       SMTP_PORT: ${FXA_SMTP_PORT:-587}
       SMTP_USER: ${FXA_SMTP_USER:-}

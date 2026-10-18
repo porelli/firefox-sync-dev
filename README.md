@@ -18,7 +18,7 @@ Self-host Firefox Sync with Docker or Podman: your bookmarks, passwords, history
 | Signing in | your Mozilla account, at `accounts.firefox.com` | accounts created on your server |
 | Stored on your server | the Sync data (encrypted by Firefox) | the Sync data, the accounts and their keys |
 | Who can use it | anybody with a Mozilla account who points Firefox to it, up to `MAX_USERS` | who you allow to sign up: everybody, an allowlist of emails and domains, or nobody |
-| Needs | a host name with HTTPS | four host names with HTTPS, 3-4 GB of RAM, an SMTP server |
+| Needs | a host name with HTTPS | four host names with HTTPS, 3-4 GB of RAM, an SMTP server (the accounts email their codes) |
 | Guide | [SYNC.md](SYNC.md) | [SYNC.md](SYNC.md), then [FXA.md](FXA.md) |
 
 Both are set up by `./prepare_environment.sh`, which asks the questions and writes `.env`:
@@ -36,7 +36,7 @@ Then point your reverse proxy to it and set up Firefox: [for the Sync server onl
 
 - [SYNC.md](SYNC.md): the Sync server: setup, who can use it (`MAX_USERS`), Firefox on desktop, Android and iOS, backups and upgrades
 - [FXA.md](FXA.md): self-hosted Mozilla accounts (experimental): setup, who can sign up, Firefox setup, upgrades
-- [ADMIN.md](ADMIN.md): the optional admin UI: max users, sign-ups and accounts, storage, health, alerts, backups, Prometheus, signing in with OpenID Connect or a trusted header
+- [ADMIN.md](ADMIN.md): the optional admin UI: max users, sign-ups and accounts, storage, health, alerts (by email, or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or any webhook: no SMTP server needed for them), backups, Prometheus, signing in with OpenID Connect or a trusted header
 - [DATABASES.md](DATABASES.md): MariaDB, MySQL or PostgreSQL, in containers or on a database server you already run
 - [PODMAN.md](PODMAN.md): rootless Podman, with Quadlets or `docker compose` on the Podman socket
 - [MIGRATING.md](MIGRATING.md): coming from another self-hosted Sync server, or an older firefox-sync

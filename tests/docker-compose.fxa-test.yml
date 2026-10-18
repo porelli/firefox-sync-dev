@@ -46,6 +46,20 @@ services:
       timeout: 5s
       retries: 3
 
+  # the destinations of ADMIN_NOTIFY: records what it gets (tests/notify_sink.py), in the
+  # Python of the Sync server's image
+  notify-sink:
+    image: ${REPOSITORY}:${SYNCSTORAGE_IMAGE}-${SYNCSTORAGE_IMAGE_TAG}
+    entrypoint: ["python3", "/notify_sink.py"]
+    volumes:
+      - ./tests/notify_sink.py:/notify_sink.py:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/_received"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+    restart: "no"
+
   # the admin UI and sign-up policy under test
   fxa-policy:
     pull_policy: missing
@@ -58,6 +72,8 @@ services:
       HEALTH_CHECK_SECONDS: 5
       ALERT_INTERVAL_SECONDS: 5
       ALERT_EMAIL: admin@fxa.test
+      # and to a webhook, besides the email (tests/test_fxa_admin.py)
+      ADMIN_NOTIFY: webhook+http://notify-sink:8000/fxa-hook/ffs-test-fxa-secret
       SMTP_INSECURE_AUTH: 1
       METRICS_TOKEN: ffs-test-metrics-token
       ADMIN_UPDATE_CHECK: "false"

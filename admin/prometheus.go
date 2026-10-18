@@ -112,10 +112,32 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&b, "ffs_cert_expiry_seconds{host=\"%s\"} %d\n", promLabel(h), int64(time.Until(certs[h]).Seconds()))
 		}
 	}
-	if a.alerter != nil {
+	if a.alerter.emails() {
 		st := a.alerter.Status()
 		gauge("ffs_alert_last_success_timestamp_seconds", "When the last alert email was sent (Unix time, 0: none since the start)", unixOrZero(st.LastOK))
 		gauge("ffs_alert_send_failing", "1 when the last alert email could not be sent", flag(alertsFailing(&st)))
+	}
+	if statuses := a.alerter.NotifyStatuses(); len(statuses) > 0 {
+		b.WriteString("# HELP ffs_notify_failures_total Alerts to a destination of ADMIN_NOTIFY that could not be sent (after the retry), since the start\n# TYPE ffs_notify_failures_total counter\n")
+		for _, st := range statuses {
+			fmt.Fprintf(&b, "ffs_notify_failures_total{destination=\"%s\"} %d\n", promLabel(st.Name), st.Failures)
+		}
+		b.WriteString("# HELP ffs_notify_last_success_timestamp_seconds When the last alert went out to a destination of ADMIN_NOTIFY (Unix time, 0: none since the start)\n# TYPE ffs_notify_last_success_timestamp_seconds gauge\n")
+		for _, st := range statuses {
+			fmt.Fprintf(&b, "ffs_notify_last_success_timestamp_seconds{destination=\"%s\"} %d\n", promLabel(st.Name), unixOrZero(st.Status.LastOK))
+		}
+		b.WriteString("# HELP ffs_notify_alerts_lost_total Alerts a destination of ADMIN_NOTIFY refused as they were (400, 413, 422), not sent again\n# TYPE ffs_notify_alerts_lost_total counter\n")
+		for _, st := range statuses {
+			fmt.Fprintf(&b, "ffs_notify_alerts_lost_total{destination=\"%s\"} %d\n", promLabel(st.Name), st.Lost)
+		}
+		b.WriteString("# HELP ffs_notify_test_failures_total Test notifications to a destination of ADMIN_NOTIFY that could not be sent, since the start\n# TYPE ffs_notify_test_failures_total counter\n")
+		for _, st := range statuses {
+			fmt.Fprintf(&b, "ffs_notify_test_failures_total{destination=\"%s\"} %d\n", promLabel(st.Name), st.TestFailures)
+		}
+		b.WriteString("# HELP ffs_notify_send_failing 1 when the last alert to a destination of ADMIN_NOTIFY could not be sent\n# TYPE ffs_notify_send_failing gauge\n")
+		for _, st := range statuses {
+			fmt.Fprintf(&b, "ffs_notify_send_failing{destination=\"%s\"} %d\n", promLabel(st.Name), flag(st.Status.Err != ""))
+		}
 	}
 	if a.health != nil {
 		_, silent := a.metrics()

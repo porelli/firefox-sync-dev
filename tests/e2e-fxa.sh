@@ -189,8 +189,24 @@ check "$(cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DO
 rm -f "${SETUP}/.env"
 printf '%s\n' "${answers[@]}" "" "" "" lots | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-bad-max.log" 2>&1
 check "$? $(grep -c "max accounts must be a number or unlimited, got 'lots'" "${WORK}/setup-bad-max.log")" "1 1" "prepare_environment.sh refuses max accounts lots"
-printf '%s\n' "${answers[@]}" "" "" "" 5 y | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
+# and the last question, a destination of the alerts: written as given, said without its token
+# (separated by a space; Slack's https:// URL as pasted, turned into slack://)
+printf '%s\n' "${answers[@]}" "" "" "" 5 y 'ntfy://tk_ffsSECRET@ntfy.example.org/ffs-topic https://hooks.slack.com/services/T0/B0/ffsSECRET2' | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
 check "$(grep -c '^FXA_ACCOUNT_EVENTS=true$' "${SETUP}/.env")" 1 "security history turned on (y)"
+check "$(grep -cxF "ADMIN_NOTIFY='ntfy://tk_ffsSECRET@ntfy.example.org/ffs-topic,slack://hooks.slack.com/services/T0/B0/ffsSECRET2'" "${SETUP}/.env") $(grep -c 'tk_ffsSECRET\|ffsSECRET2\|ffs-topic' "${WORK}/setup.log") $(grep -c '^Alerts also to ntfy://ntfy.example.org, slack://hooks.slack.com ' "${WORK}/setup.log")" \
+  "1 0 1" "ADMIN_NOTIFY written as pasted, shown as scheme://host only"
+check "$(cd "${SETUP}" && env -u ADMIN_NOTIFY docker compose config 2> /dev/null | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE 'ADMIN_NOTIFY: "?ntfy://tk_ffsSECRET@ntfy.example.org/ffs-topic,slack://')" 1 \
+  "the admin UI gets ADMIN_NOTIFY"
+# a user or password with / ? # in it: refused, nothing after the scheme said (the .env
+# of the run above kept for the checks below)
+cp "${SETUP}/.env" "${WORK}/setup.env"
+for notify in 'webhook://bot:ffs1234#abcd@example.com/x' 'webhook://alice:ffss3cr/et@example.com/hook' 'ntfy://user:ffspa?ss@host.example.org/topic'; do
+  rm -f "${SETUP}/.env"
+  printf '%s\n' "${answers[@]}" "" "" "" 5 y "${notify}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-notify.log" 2>&1
+  check "$? $(grep -c '://…: an @ after the host, percent-encode / ? # in the user or password' "${WORK}/setup-notify.log") $(grep -c 'ffs1234\|ffss3cr\|ffspa\|abcd' "${WORK}/setup-notify.log")" "1 1 0" \
+    "prepare_environment.sh refuses ${notify%%:*}:// with an @ after the host, without naming it"
+done
+cp "${WORK}/setup.env" "${SETUP}/.env"
 check "$(cd "${SETUP}" && env -u FXA_ACCOUNT_EVENTS docker compose config 2> /dev/null | sed -n '/^  fxa-auth:/,/^  [a-z]/p' | grep -cE '^ +(ACCOUNT_EVENTS_ENABLED: "?true"?|IP_PROFILING_RECENCY: "?0"?)$') $(cd "${SETUP}" && env -u FXA_ACCOUNT_EVENTS docker compose config 2> /dev/null | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +FXA_ACCOUNT_EVENTS: "?true"?$')" \
   "2 1" "the accounts record the security history, never skip the sign-in code for a known IP address, the admin UI shows it"
 check "$(grep -c 'server_name accounts.example.org;' "${SETUP}/config/nginx/fxa.conf")" 1 "nginx example for the accounts"

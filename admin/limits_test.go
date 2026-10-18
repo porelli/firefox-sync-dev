@@ -22,6 +22,8 @@ func limitsApp(t *testing.T, fake *fakeFxa) (*App, http.Handler, *http.Cookie, *
 	// its own database: the setup checks all pass (owndb.go)
 	app.fxa, app.sync, app.alerter = fake.db(redis), &SyncDB{db: sql.OpenDB(fake), own: sql.OpenDB(fake), ownName: "ffs_admin"}, &Alerter{}
 	app.health = newHealth(app)
+	// the accounts' SMTP server, after newHealth: no SMTP check to run
+	t.Setenv("SMTP_HOST", "smtp.example.com")
 	h := app.routes()
 	c, s := passwordSession(t, app, h)
 	app.alerter.take()
@@ -350,12 +352,15 @@ func TestFormsOfThePages(t *testing.T) {
 		!strings.Contains(list, `href="/accounts/allowlist/remove?entry=bob%40example.net"`) || !strings.Contains(list, `href="/accounts/allowlist/remove?entry=%40example.com"`) {
 		t.Error("allowlist: Remove in one click")
 	}
+	if !strings.Contains(p["dashboard.html"], `action="/alerts/test-notification"`) {
+		t.Error("no Send a test notification")
+	}
 	if activity := p["activity.html"]; strings.Contains(activity, `action="/maintenance/prune"`) || !strings.Contains(activity, `<a href="/maintenance/prune" class="button secondary" id="prune">`) {
 		t.Error("prune in one click")
 	}
 	// every other form posts one of these: not destructive, one click (ADMIN.md)
 	oneClick := map[string]bool{"/logout": true, "/login": true, "/accounts/signups": true, "/accounts/invite": true, "/alerts/test": true,
-		"/sync/max-users": true, "/accounts/max-accounts": true, "/security/unblock": true, "/x": true}
+		"/alerts/test-notification": true, "/sync/max-users": true, "/accounts/max-accounts": true, "/security/unblock": true, "/x": true}
 	action := regexp.MustCompile(`<form method="post" action="([^"]+)"`)
 	for name, page := range p {
 		for _, m := range action.FindAllStringSubmatch(page, -1) {

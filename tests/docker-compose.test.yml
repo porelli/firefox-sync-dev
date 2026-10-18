@@ -36,6 +36,20 @@ services:
       retries: 3
     restart: "no"
 
+  # the destinations of ADMIN_NOTIFY: records what it gets (tests/notify_sink.py), in the
+  # Python of the Sync server's image
+  notify-sink:
+    image: ${REPOSITORY}:${SYNCSTORAGE_IMAGE}-${SYNCSTORAGE_IMAGE_TAG}
+    entrypoint: ["python3", "/notify_sink.py"]
+    volumes:
+      - ./tests/notify_sink.py:/notify_sink.py:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/_received"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+    restart: "no"
+
   # ADMIN_IMAGE, built from admin/ by tests/e2e.sh unless given
   ffs-admin:
     pull_policy: missing
@@ -45,6 +59,9 @@ services:
       # everything faster
       METRICS_FLUSH_SECONDS: 5
       HEALTH_CHECK_SECONDS: 5
+      ALERT_INTERVAL_SECONDS: 5
+      # alerts without email: a webhook (its token in a header) and a Slack-style one, see tests/test_admin_sync.py
+      ADMIN_NOTIFY: "webhook+http://notify-sink:8000/hook/ffs-test-hook-secret?@Authorization=Bearer%20ffs-test-hook-token,slack+http://notify-sink:8000/services/T0/B0/ffs-test-slack-secret"
       METRICS_TOKEN: ffs-test-metrics-token
       ADMIN_UPDATE_CHECK: "false"
       # nothing public here (https://ffs-e2e.invalid): the opt-out, see tests/test_admin_sync.py

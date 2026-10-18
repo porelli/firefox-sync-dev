@@ -30,7 +30,7 @@
     - **Docker**: see [firefox-sync.service](/config/systemd/syncstorage-rs-example.service)
     - **Podman**: see [PODMAN.md](PODMAN.md#method-1-using-quadlets) for the Quadlets (recommended)
     - all containers restart automatically
-1. OPTIONAL: the [admin UI](ADMIN.md), enabled by `prepare_environment.sh` by default: max users without a restart, storage per account, health, alerts
+1. OPTIONAL: the [admin UI](ADMIN.md), enabled by `prepare_environment.sh` by default: max users without a restart, storage per account, health, alerts (by email, or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook without any SMTP server, see [Alerts](ADMIN.md#alerts))
 1. [set up Firefox](#firefox-setup)
 
 ### Podman with Quadlets (recommended for Podman)

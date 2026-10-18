@@ -367,6 +367,63 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     case "${FXA_ACCOUNT_EVENTS}" in y|Y|yes) FXA_ACCOUNT_EVENTS=true ;; *) FXA_ACCOUNT_EVENTS=false ;; esac
 fi
 
+# the alerts of the admin UI to other destinations than email (ADMIN.md#alerts), asked last
+# for the same reason. Not shown as typed: the URLs hold tokens
+ADMIN_NOTIFY=""
+if [ "${ADMIN_UI}" = "yes" ]; then
+    echo "Alerts of the admin UI: by email (ADMIN_ALERT_EMAIL in .env, with an SMTP server), and/or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (ADMIN.md#alerts)."
+    read -r -s -p "Also send alerts to Slack, Discord, ntfy...? Paste a destination URL (e.g. ntfy://ntfy.sh/<topic>, slack://hooks.slack.com/services/...) or leave empty: " ADMIN_NOTIFY
+    echo ""
+    # scheme://host of a destination, … for what cannot be named safely (an @ after the
+    # host is the end of a user or password with / ? # in it, not the host)
+    notify_name() {
+        local scheme rest host tail
+        scheme=$(printf '%s' "${1%%://*}" | tr '[:upper:]' '[:lower:]'); rest=${1#*://}
+        [[ "${scheme}" =~ ^[a-z][a-z0-9+]*$ ]] || { printf '…'; return; }
+        case "${scheme}" in telegram*) printf '%s://api.telegram.org' "${scheme}"; return ;; esac
+        host=${rest%%[/?#]*}; tail=${rest#"${host}"}
+        tail=${tail//\?@/}; tail=${tail//&@/}
+        case "${tail}" in *@*) printf '%s://…' "${scheme}"; return ;; esac
+        host=${host##*@}
+        [[ "${host}" =~ ^[A-Za-z0-9.:-]+$ ]] || { printf '%s://…' "${scheme}"; return; }
+        printf '%s://%s' "${scheme}" "${host}"
+    }
+    notify_in=${ADMIN_NOTIFY}; ADMIN_NOTIFY=""; notify_names=""
+    # separated by commas or spaces
+    IFS=$', \t\r' read -r -a notify_entries <<< "${notify_in}"
+    for notify_entry in "${notify_entries[@]}"; do
+        [ -n "${notify_entry}" ] || continue
+        case "${notify_entry}" in *"'"*) echo "ERROR: a destination URL cannot contain a single quote, set ADMIN_NOTIFY in .env by hand"; exit 1 ;; esac
+        # the webhook URL of Slack or Discord as they give it: their scheme instead of https://
+        notify_kind=""
+        case "${notify_entry}" in
+            https://hooks.slack.com/*) notify_kind=slack ;;
+            https://discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*) notify_kind=discord ;;
+        esac
+        if [ -n "${notify_kind}" ]; then
+            read -r -e -p "That is a ${notify_kind} webhook URL: use it as ${notify_kind}://... (Y/n): " notify_convert
+            case "${notify_convert}" in n|N|no) echo "ERROR: https:// is no destination of ADMIN_NOTIFY, see ADMIN.md#alerts"; exit 1 ;; esac
+            notify_entry="${notify_kind}://${notify_entry#https://}"
+        fi
+        notify_base="" notify_shown="…"
+        if [[ "${notify_entry}" == *://* ]]; then
+            notify_base=$(printf '%s' "${notify_entry%%://*}" | tr '[:upper:]' '[:lower:]'); notify_base=${notify_base%+http}; notify_base=${notify_base%+https}
+            notify_shown=$(notify_name "${notify_entry}")
+        fi
+        if ! [[ "${notify_base}" =~ ^(slack|discord|teams|ntfy|gotify|telegram|matrix|webhook)$ ]]; then
+            echo "ERROR: ${notify_shown} is no destination of ADMIN_NOTIFY: slack://, discord://, teams://, ntfy://, gotify://, telegram://, matrix:// or webhook://, see ADMIN.md#alerts"
+            exit 1
+        fi
+        if [ "${notify_base}" != telegram ] && [ "${notify_shown}" = "${notify_shown%://…}://…" ]; then
+            echo "ERROR: ${notify_shown}: an @ after the host, percent-encode / ? # in the user or password (%2F %3F %23)"
+            exit 1
+        fi
+        ADMIN_NOTIFY="${ADMIN_NOTIFY:+${ADMIN_NOTIFY},}${notify_entry}"
+        notify_names="${notify_names:+${notify_names}, }$(notify_name "${notify_entry}")"
+    done
+    [ -z "${ADMIN_NOTIFY}" ] || echo "Alerts also to ${notify_names} (ADMIN_NOTIFY in .env; more destinations there, separated by commas)"
+fi
+
 # SYNC_DB=mysql: the Sync databases in MySQL containers; with your own server there are none,
 # SYNC_DB then only says what it is
 [ "${SYNC_DB}" = "mysql" ] && [ "${EXTERNAL_DB}" != "yes" ] && SYNC_COMPOSE_MYSQL=yes || SYNC_COMPOSE_MYSQL=no
@@ -395,6 +452,7 @@ apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWO
 # the admin UI's database user, also for the backups: with or without the admin UI
 apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=${ADMIN_DB_PASSWORD}|"
 [ "${ADMIN_UI}" = "yes" ] && apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
+[ -n "${ADMIN_NOTIFY}" ] && apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_NOTIFY=.*|ADMIN_NOTIFY='$(sed_escape "${ADMIN_NOTIFY}")'|"
 apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
 if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
     # MySQL's certificate is self-signed: the init container's client does not check it

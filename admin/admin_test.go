@@ -721,6 +721,7 @@ func pages(t *testing.T) map[string]string {
 			"Health": []Component{{Name: "Sync server", Up: true}, {Name: "Public Sync URL", Warn: true, Error: "certificate expires in 3 days"}},
 			"Schema": []SchemaLevel{{Database: "fxa", Level: "201"}}, "Setup": []setupCheck{{Name: "Sync node", Text: "x"}},
 			"Alerts": map[string]any{"To": "admin@example.com", "Status": SendStatus{}, "Waiting": 0}, "TestEmail": true, "Mailer": true,
+			"Notify": []NotifyStatus{{Name: "slack://hooks.slack.com"}},
 			"Backup": map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": false}, "AccountLimit": Limit{Count: 1, Max: 10}, "MaxAccountsEditable": true,
 			"Invited": []allowRow{{Email: "bob@example.net"}}, "Domains": []string{"@example.com"},
 			"Policy": &SignupPolicy{Mode: "open"}, "Accounts": []accountRow{{UID: fakeUID, Email: fakeEmail}, {UID: "ff" + fakeUID[2:], Email: "bob@example.com", Disabled: true}},

@@ -158,7 +158,8 @@ def test_forms_refuse_other_sites_and_missing_tokens(admin):
 def test_health(admin):
     page = admin.get("/")
     health = page.split('<table id="health"')[1].split("</table>")[0]
-    components = ["Admin UI", "Sync server", "Tokenserver database", "Admin UI database"] + (["Storage database"] if MYSQL else [])
+    # Notifications: ADMIN_NOTIFY of the test stack (tests/notify_sink.py answers)
+    components = ["Admin UI", "Sync server", "Tokenserver database", "Admin UI database", "Notifications"] + (["Storage database"] if MYSQL else [])
     for component in components:
         row = re.search(r"<td>" + re.escape(component) + r"</td><td>(.*?)</td>", health)
         assert row and '<span class="ok">up</span>' in row.group(1), (component, health)
@@ -179,11 +180,72 @@ def test_health(admin):
         row = re.search(r"<td>" + name + r"</td><td>(.*?)</td>", health)
         assert row and '<span class="ok">up</span>' in row.group(1) and detail in row.group(1), (name, health)
     # without self-hosted accounts there is nothing else to check; no SMTP server
-    # (FXA_SMTP_HOST empty), no public checks (ADMIN_PUBLIC_CHECK=false in the test stack)
+    # (FXA_SMTP_HOST empty: the alerts go to ADMIN_NOTIFY), no public checks
+    # (ADMIN_PUBLIC_CHECK=false in the test stack)
     assert len(re.findall(r"<tr><td>", health)) == len(components) + 3, health
     assert "Accounts" not in health and "Email (SMTP)" not in health and "Public" not in health
+    # and nothing to say about the missing SMTP server
+    assert "SMTP" not in page.split('id="attention"')[1].split("</section>")[0]
     assert 'action="/alerts/test"' not in page and "ffs_cert_expiry_seconds" not in requests.get(
         f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
+
+
+# ADMIN_NOTIFY of the test stack (tests/docker-compose.test.yml): a webhook and a Slack-style
+# one, both to tests/notify_sink.py
+SINK = "http://notify-sink:8000"
+SINK_NAMES = "webhook+http://notify-sink:8000, slack+http://notify-sink:8000"
+NOTIFY_SECRETS = ("ffs-test-hook-secret", "ffs-test-hook-token", "ffs-test-slack-secret")
+
+
+def received(path, until=lambda r: True, timeout=30):
+    """The requests the sink got under path, once one of them is until (ALERT_INTERVAL_SECONDS is 5)"""
+    deadline = time.time() + timeout
+    while True:
+        got = [r for r in requests.get(f"{SINK}/_received", timeout=10).json() if r["path"].startswith(path)]
+        if any(until(r) for r in got) or time.time() > deadline:
+            return got
+        time.sleep(1)
+
+
+def test_notifications(admin):
+    # a sign-in: an alert of kind admin, without email (no SMTP server in the test stack)
+    Admin()
+    def signed_in(r):
+        return any(e["kind"] == "admin" and e["text"].startswith("signed in") for e in json.loads(r["body"])["events"])
+    hooks = received("/hook/ffs-test-hook-secret", signed_in)
+    assert hooks and any(signed_in(r) for r in hooks), hooks
+    hook = next(r for r in hooks if signed_in(r))
+    payload = json.loads(hook["body"])
+    # the documented schema (ADMIN.md#alerts), the token in its header, not in the URL
+    assert set(payload) == {"source", "kind", "severity", "title", "text", "link", "events", "dropped"}, payload
+    assert payload["source"] == "firefox-sync" and payload["severity"] in ("info", "warning") and payload["title"].startswith("firefox-sync: "), payload
+    assert payload["link"] == "http://ffs-admin:8080/activity" and "Details: http://ffs-admin:8080/activity" in payload["text"], payload
+    assert all(re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", e["time"]) for e in payload["events"]), payload
+    assert hook["method"] == "POST" and hook["path"] == "/hook/ffs-test-hook-secret" and hook["headers"]["Authorization"] == "Bearer ffs-test-hook-token", hook
+    assert hook["headers"]["Content-Type"] == "application/json" and hook["headers"]["User-Agent"].startswith("firefox-sync-admin/"), hook
+    # the same alerts, in Slack's format
+    slack = received("/services/T0/B0/ffs-test-slack-secret", lambda r: "signed in" in json.loads(r["body"])["text"])
+    text = json.loads(slack[-1]["body"])["text"]
+    assert text.startswith("*firefox-sync: ") and "<http://ffs-admin:8080/activity|Open the admin UI>" in text, text
+    # the test button: one click, sent right away to both
+    requests.delete(f"{SINK}/_received", timeout=10)
+    page = admin.post("/alerts/test-notification")
+    assert f"Sent a test notification to {SINK_NAMES}" in html.unescape(page), page[:3000]
+    tests = [r for r in requests.get(f"{SINK}/_received", timeout=10).json() if '"kind": "test"' in r["body"] or "test notification" in r["body"]]
+    assert {r["path"].split("/")[1] for r in tests} == {"hook", "services"}, tests
+    assert "sent by admin (password)" in json.loads(next(r for r in tests if r["path"].startswith("/hook/"))["body"])["text"]
+    # its status on the overview and in Prometheus, in the audit trail; no secret anywhere
+    page = admin.get("/")
+    status = html.unescape(page.split('id="notify-status"')[1].split("</div>")[0])
+    assert "Notifications to webhook+http://notify-sink:8000: last sent" in status and "Notifications to slack+http://notify-sink:8000: last sent" in status, status
+    assert 'action="/alerts/test-notification"' in page and all(secret not in page for secret in NOTIFY_SECRETS)
+    assert "Sent a test notification to" in admin.get("/activity?kind=admin")
+    metrics = requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
+    for name in SINK_NAMES.split(", "):
+        assert re.search(r'^ffs_notify_failures_total\{destination="' + re.escape(name) + r'"\} \d+$', metrics, re.M) and f'ffs_notify_send_failing{{destination="{name}"}} 0\n' in metrics, metrics
+    assert "ffs_alert_send_failing" not in metrics and all(secret not in metrics for secret in NOTIFY_SECRETS)
+    # and the audit event of the test reaches the webhook as an alert
+    assert received("/hook/", lambda r: "Sent a test notification" in r["body"])
 
 
 def table(page, name):
@@ -278,7 +340,9 @@ def test_configuration_page(admin):
     row = config_row(page, "Admin UI database")
     assert row.startswith(f"{own.username} on ") and f"database {own.path.lstrip('/')}" in row, row
     assert config_row(page, "Admin UI database password").startswith("set ADMIN_DB_PASSWORD")
-    secrets = [os.environ["ADMIN_PASSWORD"], METRICS_TOKEN, "ffs-test-dex-client-secret", os.environ["SYNC_MASTER_SECRET"],
+    # ADMIN_NOTIFY: the destinations as scheme://host, never their paths and tokens
+    assert config_row(page, "Notifications to").startswith(f"{SINK_NAMES} ADMIN_NOTIFY shown without"), config_row(page, "Notifications to")
+    secrets = [os.environ["ADMIN_PASSWORD"], METRICS_TOKEN, "ffs-test-dex-client-secret", os.environ["SYNC_MASTER_SECRET"], *NOTIFY_SECRETS,
                urlsplit(os.environ["SYNC_SYNCSTORAGE__DATABASE_URL"]).password, own.password]
     for secret in secrets:
         assert secret and secret not in page

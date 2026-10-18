@@ -35,6 +35,8 @@ Environment="FXA_EMAIL_DOMAIN=%FXA_EMAIL_DOMAIN%"
 # every hour the public https URLs and their certificates; false: never
 Environment="ADMIN_PUBLIC_CHECK=%ADMIN_PUBLIC_CHECK%"
 Environment="ALERT_EMAIL=%ADMIN_ALERT_EMAIL%"
+# alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (ADMIN.md#alerts)
+Environment="ADMIN_NOTIFY=%ADMIN_NOTIFY%"
 Environment="SMTP_HOST=%FXA_SMTP_HOST%"
 Environment="SMTP_PORT=%FXA_SMTP_PORT%"
 Environment="SMTP_USER=%FXA_SMTP_USER%"

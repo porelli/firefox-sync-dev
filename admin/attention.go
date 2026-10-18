@@ -117,6 +117,8 @@ func needsAttention(in attentionInput) []attention {
 		switch {
 		case c.Name == "Email (SMTP)" && !c.Up:
 			add("#health", "Health", "The SMTP server does not work (%s): no alerts, invitations or notices go out.", c.Error)
+		case c.Name == notifyCheckName && !c.Up:
+			add("#notify-status", "Alerts", "Notifications fail (%s): the alerts wait for the next try.", c.Error)
 		case c.Name == metricsCheck && c.Warn:
 			add("/activity", "Activity", "%s: %s.", c.Error, restartSync)
 		case c.Name == errorRateCheck && c.Warn:
@@ -309,7 +311,7 @@ func (h *Health) watchThresholds(ctx context.Context) {
 	}
 	h.setLimits(syncLimit, accounts)
 	var alerts *SendStatus
-	if h.app.alerter != nil {
+	if h.app.alerter.emails() {
 		s := h.app.alerter.Status()
 		alerts = &s
 	}

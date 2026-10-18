@@ -29,6 +29,8 @@ var configVars = map[string]bool{
 	"STORAGE_DB_PASSWORD":      true,
 	"FXA_DB_PASSWORD":          true,
 	"ADMIN_DB_PASSWORD":        true,
+	// the destinations of the alerts: URLs with their tokens, shown as scheme://host
+	"ADMIN_NOTIFY": true,
 	// fxa-init (the fxa-policy container)
 	"FXA_ADMIN_DB_PASSWORD": true,
 	"FXA_DB_ROOT_PASSWORD":  true,
@@ -493,7 +495,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		fact("Version", version, "of the admin UI"))
 
 	// email
-	email := configGroup{ID: "email", Title: "Email (SMTP)", Intro: "The SMTP server of the stack: the accounts' emails, and the admin UI's alerts, invitations and notices to account owners."}
+	email := configGroup{ID: "email", Title: "Email (SMTP)", Intro: "The SMTP server of the stack: the accounts' emails (codes, password resets), the admin UI's invitations and notices to account owners, and its alert emails (alerts can go to ADMIN_NOTIFY instead)."}
 	smtp := setting("SMTP server", "SMTP_HOST", "FXA_SMTP_HOST", "", "")
 	if smtpServer() == nil {
 		smtp.Value, smtp.Default, smtp.Note = "", true, "no emails from the admin UI"
@@ -531,18 +533,29 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	// alerts
 	alerts := configGroup{ID: "alerts", Title: "Alerts"}
 	to := setting("Alerts to", "ALERT_EMAIL", "ADMIN_ALERT_EMAIL", "nobody", "")
-	switch {
-	case a.alerter != nil:
-		to.Note = "collected and sent at most every " + plural(int(a.alerter.interval/time.Minute), "minute")
+	every := ""
+	if a.alerter != nil {
+		every = "collected and sent at most every " + plural(int(a.alerter.interval/time.Minute), "minute")
 		if a.alerter.interval < time.Minute {
-			to.Note = "collected and sent at most every " + a.alerter.interval.String()
+			every = "collected and sent at most every " + a.alerter.interval.String()
 		}
+	}
+	switch {
+	case a.alerter.emails():
+		to.Note = every
 	case configLookup("ALERT_EMAIL") != "":
 		to.Note = "not sent: no SMTP server (FXA_SMTP_HOST)"
 	default:
 		to.Note = "no alert emails"
 	}
 	alerts.Rows = append(alerts.Rows, to)
+	// the destinations as scheme://host: their URLs hold tokens
+	if names := a.alerter.NotifyNames(); len(names) > 0 {
+		alerts.Rows = append(alerts.Rows, fact("Notifications to", strings.Join(names, ", "), "shown without their paths and tokens; "+every, "ADMIN_NOTIFY"))
+	} else {
+		alerts.Rows = append(alerts.Rows, configRow{Setting: "Notifications to", Value: "nowhere", Vars: []string{"ADMIN_NOTIFY"}, Default: true, Fact: true,
+			Note: "Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook, see ADMIN.md#alerts"})
+	}
 	if fxa {
 		burst := strconv.Itoa(a.signupBurst) + " accounts in an hour"
 		if a.signupBurst == 0 {
@@ -692,8 +705,15 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 	if a.auth.insecureCookie {
 		hints = append(hints, attention{Text: "ADMIN_INSECURE_COOKIE is set: the session cookie also goes over plain HTTP, where anybody on the way can take it.", Href: "#admin-settings", Link: "Admin UI"})
 	}
-	if configLookup("ALERT_EMAIL") != "" && a.alerter == nil {
-		hints = append(hints, attention{Text: "ADMIN_ALERT_EMAIL is set, but there is no SMTP server (FXA_SMTP_HOST): no alert is sent.", Href: "#email-settings", Link: "Email"})
+	if configLookup("ALERT_EMAIL") != "" && !a.alerter.emails() {
+		text := "ADMIN_ALERT_EMAIL is set, but there is no SMTP server (FXA_SMTP_HOST): no alert is sent."
+		if a.alerter != nil {
+			text = "ADMIN_ALERT_EMAIL is set, but there is no SMTP server (FXA_SMTP_HOST): no alert email is sent, the alerts go to ADMIN_NOTIFY only."
+		}
+		hints = append(hints, attention{Text: text, Href: "#email-settings", Link: "Email"})
+	}
+	for _, name := range a.alerter.InsecureNames() {
+		hints = append(hints, attention{Text: "ADMIN_NOTIFY sends " + name + " its token over plain http (+http) to a host outside the local network: anybody on the way can read it and post there. Use https (the scheme without +http).", Href: "#alerts-settings", Link: "Alerts"})
 	}
 	if state, text := backupTile(backups, time.Now()); a.health != nil && state != "ok" {
 		hints = append(hints, attention{Text: "Backups: " + strings.ToLower(text[:1]) + text[1:] + ".", Href: "/#backups-card", Link: "Backups"})
