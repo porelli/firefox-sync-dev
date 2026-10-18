@@ -3,6 +3,9 @@ syncDomain: https://sync.example.test
 admin:
   enabled: true
   metricsToken: ci-token
+  notify:
+    - ntfy://ntfy.sh/ci-topic
+    - webhook://hooks.example.test/ci
   smtp:
     host: smtp.example.test
     password: ci-smtp

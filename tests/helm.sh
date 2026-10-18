@@ -199,21 +199,29 @@ lint() {
   output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true --set existingSecret=my-secret)
   optional=$(echo "${output}" | manifests | jq -r '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
     | .spec.template.spec.containers[0].env[] | select(.valueFrom.secretKeyRef.optional == true) | .valueFrom.secretKeyRef.key' | sort | paste -sd' ' -)
-  [[ "${optional}" == "ADMIN_METRICS_TOKEN ADMIN_OIDC_CLIENT_SECRET ADMIN_PASSWORD FXA_SMTP_PASS" ]] || fail "optional keys of an existingSecret: ${optional}"
+  [[ "${optional}" == "ADMIN_METRICS_TOKEN ADMIN_NOTIFY ADMIN_OIDC_CLIENT_SECRET ADMIN_PASSWORD FXA_SMTP_PASS" ]] || fail "optional keys of an existingSecret: ${optional}"
   refs=$(echo "${output}" | grep -A1 'secretKeyRef:' | grep 'name:' | sort -u)
   [[ "${refs}" =~ ^[[:space:]]*name:\ my-secret$ ]] || fail "admin UI on, secretKeyRefs not all to my-secret: ${refs}"
   check "admin secrets: values into the Secret; FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_PASSWORD optional in an existingSecret"
   # the three optional ones are the values' alone: an empty value an empty key, never what a
   # lookup of the Secret found (helm template has no cluster: the template must not read them)
   data=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" --set admin.metricsToken= \
-    --set admin.smtp.password= --set admin.oidc.clientSecret= | manifests | jq -c '.[] | select(.kind == "Secret") | .data
-    | [.ADMIN_METRICS_TOKEN, .FXA_SMTP_PASS, .ADMIN_OIDC_CLIENT_SECRET]')
-  [[ "${data}" == '["","",""]' ]] || fail "empty admin secrets of the values not empty in the Secret: ${data}"
-  for key in FXA_SMTP_PASS ADMIN_OIDC_CLIENT_SECRET ADMIN_METRICS_TOKEN; do
-    grep -qE '^\{\{- \$_ := set \$data "'"${key}"'" \(\.Values\.admin\.' "${CHART_DIR}/templates/_helpers.tpl" \
+    --set admin.smtp.password= --set admin.oidc.clientSecret= --set admin.notify= | manifests | jq -c '.[] | select(.kind == "Secret") | .data
+    | [.ADMIN_METRICS_TOKEN, .FXA_SMTP_PASS, .ADMIN_OIDC_CLIENT_SECRET, .ADMIN_NOTIFY]')
+  [[ "${data}" == '["","","",""]' ]] || fail "empty admin secrets of the values not empty in the Secret: ${data}"
+  for key in FXA_SMTP_PASS ADMIN_OIDC_CLIENT_SECRET ADMIN_METRICS_TOKEN ADMIN_NOTIFY; do
+    grep -qE '^\{\{- \$_ := set \$data "'"${key}"'" \((\.Values\.admin\.|include "firefox-sync\.adminNotify")' "${CHART_DIR}/templates/_helpers.tpl" \
       || fail "${key} not set from the values alone in firefox-sync.secretData"
   done
-  check "FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN from the values alone (empty: empty)"
+  check "FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_NOTIFY from the values alone (empty: empty)"
+  # admin.notify: a list joined by commas, or a string as it is
+  notify() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests \
+      | jq -r '.[] | select(.kind == "Secret") | .data.ADMIN_NOTIFY | @base64d'
+  }
+  [[ "$(notify)" == "ntfy://ntfy.sh/ci-topic,webhook://hooks.example.test/ci" ]] || fail "admin.notify as a list: $(notify)"
+  [[ "$(notify --set-string admin.notify='ntfy://a.test/x\,slack://b.test/y')" == "ntfy://a.test/x,slack://b.test/y" ]] || fail "admin.notify as a string"
+  check "admin.notify: a list joined by commas, or a string, into ADMIN_NOTIFY"
   # a new admin pod when the chart's Secret changes: the checksum is over all of its data,
   # the generated secrets with it (helm template generates new ones on every render), not
   # over the secrets of the values alone, which the pod spec would give away

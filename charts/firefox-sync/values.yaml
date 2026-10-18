@@ -66,9 +66,10 @@ database:
 # database users) and TOKENSERVER_DB_PASSWORD + STORAGE_DB_PASSWORD (mariadb, mysql) or
 # POSTGRES_PASSWORD (the superuser) + POSTGRES_SYNC_PASSWORD (the Sync server's role) (postgres);
 # optional, for the admin UI (missing or empty: that feature off): FXA_SMTP_PASS,
-# ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN. The admin.password, admin.smtp.password,
-# admin.oidc.clientSecret and admin.metricsToken values are ignored then.
-# Without existingSecret those three are managed by the values alone: written into the
+# ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_NOTIFY. The admin.password,
+# admin.smtp.password, admin.oidc.clientSecret, admin.metricsToken and admin.notify values
+# are ignored then.
+# Without existingSecret those four are managed by the values alone: written into the
 # chart's Secret on every install and upgrade, an empty value is an empty key (the feature
 # off), whatever was set in the Secret by hand. Manage them out of band with existingSecret.
 # If not set, a secret named like the release (<release>-firefox-sync) is generated on the
@@ -148,6 +149,12 @@ admin:
   allowed:
     users: ""
     groups: ""
+  # ADMIN_NOTIFY: alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or
+  # a webhook (ADMIN.md#alerts): a list of URLs, one per destination (or one string, the
+  # URLs separated by commas, as in .env), e.g.
+  #   notify: ["ntfy://ntfy.sh/my-secret-topic", "slack://hooks.slack.com/services/T000/B000/XXXX"]
+  # They hold tokens: into the Secret as the values say (empty: off, see existingSecret)
+  notify: []
   # ADMIN_METRICS_TOKEN: Prometheus metrics at /metrics with this bearer token (empty:
   # off), into the Secret as the values say
   metricsToken: ""

@@ -30,6 +30,7 @@ It must hold SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_P
 {{- if eq .Values.database.backend "postgres" }} POSTGRES_PASSWORD, POSTGRES_SYNC_PASSWORD.
 {{- else }} TOKENSERVER_DB_PASSWORD, STORAGE_DB_PASSWORD.
 {{- end }} The admin UI also reads, when there: FXA_SMTP_PASS,
-ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN; without existingSecret these three are those of
-admin.smtp.password, admin.oidc.clientSecret and admin.metricsToken (empty: off).
+ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_NOTIFY; without existingSecret these four
+are those of admin.smtp.password, admin.oidc.clientSecret, admin.metricsToken and admin.notify
+(empty: off).
 {{- end }}
