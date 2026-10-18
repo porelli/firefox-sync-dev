@@ -209,6 +209,20 @@ admin_sync_sql() { db_as "${ADMIN_DB_SYNC_USER}" "${ADMIN_DB_SECRET}" "${2:-${SY
 admin_storage_sql() { db_as "${ADMIN_DB_SYNC_USER}" "${ADMIN_DB_SECRET}" "${MARIADB_SYNCSTORAGE_DATABASE}" "$1" storage; }
 # the Sync server's own role in the PostgreSQL container (POSTGRES_SYNC_USER), or POSTGRES_USER
 sync_role_sql() { db_as "${SYNC_ROLE:-${POSTGRES_USER}}" "${SYNC_ROLE_SECRET:-${POSTGRES_PASSWORD}}" "${2:-${POSTGRES_DATABASE}}" "$1"; }
+# no account and no Sync data, a new server: where tests/test_client_flow.py starts. Without
+# the Sync data too, a new account can find someone else's: upstream's storage tests sign
+# their own tokens for random uids (1 to 100000) and leave what they wrote, and the
+# tokenserver's uids count up from 1 (DELETE does not reset them), so a later sign-in can be
+# given one of them
+new_server() {
+  sql "DELETE FROM users;" > /dev/null
+  if [ "${BACKEND}" = mysql ]; then
+    db_as "${MARIADB_SYNCSTORAGE_USER}" "${MARIADB_SYNCSTORAGE_PASSWORD}" "${MARIADB_SYNCSTORAGE_DATABASE}" \
+      "DELETE FROM batch_upload_items; DELETE FROM batch_uploads; DELETE FROM bso; DELETE FROM user_collections;" storage > /dev/null
+  else
+    sync_role_sql "DELETE FROM batch_bsos; DELETE FROM batches; DELETE FROM bsos; DELETE FROM user_collections;" > /dev/null
+  fi
+}
 # the admin UI's tables left in the tokenserver database
 old_tables() {
   if [ "${BACKEND}" = mysql ]; then
@@ -672,7 +686,8 @@ redeploy "${OLD_DOMAIN}"
 check "$(active_nodes)" "${OLD_DOMAIN} " "switching back re-enables the old node"
 check "$(node_of_user)" "${OLD_DOMAIN}" "users moved back"
 check "$(hb)" 200 "/__heartbeat__ after redeploy"
-sql "DELETE FROM users;" > /dev/null
+new_server
+check "$?" 0 "no account and no Sync data before the client flow"
 
 echo "== client flow through the tokenserver (mock FxA), MAX_USERS=1"
 pytest_in_app /tests/test_client_flow.py
@@ -832,7 +847,9 @@ fi
 dc up -d --no-deps --force-recreate syncstorage > /dev/null 2>&1
 check "$(hb)" 200 "/__heartbeat__ without the admin UI"
 check "$(dc logs syncstorage 2>&1 | grep -c 'Sending metrics to the admin UI')" 0 "no metrics host without the admin UI"
-sql "DELETE FROM users;" > /dev/null
+# (the upstream tests ran since the last new_server)
+new_server
+check "$?" 0 "no account and no Sync data before the first sign-in without the admin UI"
 pytest_in_app "/tests/test_client_flow.py -k first_sign_in"
 check "$?" 0 "a first sign-in and sync without the admin UI"
 
