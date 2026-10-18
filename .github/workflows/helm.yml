@@ -1,0 +1,211 @@
+name: helm
+
+# The Helm chart (charts/firefox-sync): lint, parity with compose, and an install on a
+# throwaway kind cluster per database backend, on its own database server too (tests/helm.sh).
+# The init and admin images are built from this commit (tests/helm.sh does it, and kind loads
+# them), the syncstorage images are this repository's published ones.
+# Publishing: on a tag chart-v<version> (the version of Chart.yaml), after every test passed,
+# the chart is pushed to oci://ghcr.io/<owner>/charts/firefox-sync (not oci://ghcr.io/<owner>:
+# that would be the firefox-sync image package). A stable version only from a commit of the
+# default branch; a pre-release (x.y.z-<suffix>, e.g. 0.1.0-dev.1) from any branch, to test
+# the publishing (helm install without --version or --devel never picks a pre-release).
+# Branch pushes and the weekly run build and test only.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 8 * * 1' # every Monday, after the syncstorage-rs and fxa-mono builds
+  push:
+    branches:
+      - '**'
+    # (path filters do not apply to tags: a chart-v tag always runs)
+    tags:
+      - 'chart-v*'
+    paths:
+      - charts/**
+      - tests/helm*
+      - tests/helm/**
+      - tests/test_client_flow.py
+      - tests/docker-compose.admin-build.yml
+      - docker-compose*.yml
+      - db/**
+      - config/backup/**
+      - admin/**
+      - .github/workflows/helm.yml
+
+# one run at a time per branch (and tag): a branch never cancels or waits for main's runs
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REPOSITORY_REGISTRY: ghcr.io
+  REPOSITORY_FULL_NAME: ${{ github.repository }}
+  CHART_DIR: charts/firefox-sync
+  HELM_VERSION: v3.22.1
+  KIND_VERSION: v0.33.0
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+
+jobs:
+  ## ct lint, kubeconform, tests/helm.sh lint (its template checks, then parity with compose) ##
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@v2.9.0
+        with:
+          version: 3.15.0
+          yamllint_version: 1.33.0
+          yamale_version: 6.0.0
+
+      - name: Install kubeconform and PyYAML
+        # (python3 is now the venv of chart-testing, VIRTUAL_ENV: PyYAML for tests/helm.sh in it)
+        run: |
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf /tmp/kubeconform.tar.gz -C "${RUNNER_TEMP}/bin" kubeconform
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          uv pip install pyyaml==6.0.3
+          python3 -I -c 'import yaml'
+          docker compose version
+
+      - name: ct lint
+        # the version is checked when publishing (a run on main would compare the chart with
+        # itself); the maintainers are not GitHub user names
+        run: ct lint --charts "${CHART_DIR}" --check-version-increment=false --validate-maintainers=false
+
+      - name: kubeconform (ci/*.yaml)
+        run: |
+          for values in "${CHART_DIR}"/ci/*.yaml; do
+            echo "== ${values}"
+            helm template test-release "${CHART_DIR}" -f "${values}" | kubeconform -strict -summary -kubernetes-version 1.29.0
+          done
+
+      - name: tests/helm.sh lint (and parity)
+        run: ./tests/helm.sh lint
+
+  ## the chart on kind: mock FxA, a Firefox client's flow, upgrades, backups, the admin UI ##
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # this repository's syncstorage images (private ones too)
+      packages: read
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [mariadb, mysql, postgres]
+        # 1: on a database server of its own in the cluster (database.bundled=false)
+        external_db: ["", "1"]
+        exclude:
+          # (EXTERNAL_DB=1: MySQL 8.4 or PostgreSQL 18, as tests/e2e.sh)
+          - backend: mariadb
+            external_db: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up kind and kubectl
+        # (tests/helm.sh creates and deletes its cluster)
+        uses: helm/kind-action@v1.15.1
+        with:
+          version: ${{ env.KIND_VERSION }}
+          install_only: true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REPOSITORY_REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: End-to-end on kind (${{ matrix.backend }}${{ matrix.external_db && ', your own database server' || '' }})
+        # the init image (db/<engine>/init) and the admin UI (admin/) are built from this
+        # commit on every run (whatever changed) and kind-loaded by tests/helm.sh; the
+        # syncstorage image is REPOSITORY's, pulled here and imported into the cluster
+        env:
+          REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
+          TAG: latest
+          BACKEND: ${{ matrix.backend }}
+          EXTERNAL_DB: ${{ matrix.external_db }}
+        run: ./tests/helm.sh e2e "${BACKEND}"
+
+  ## oci://ghcr.io/<owner>/charts/firefox-sync:<version>, on chart-v<version> tags ##
+  publish:
+    needs: [lint, e2e]
+    if: startsWith(github.ref, 'refs/tags/chart-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # the default branch's history: is the tagged commit on it
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: The tag is chart-v and Chart.yaml's version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          version=$(helm show chart "${CHART_DIR}" | sed -n 's/^version: //p')
+          if [[ "${TAG}" != "chart-v${version}" ]]; then
+            echo "::error::tag ${TAG} is not chart-v${version} (the version of ${CHART_DIR}/Chart.yaml)"
+            exit 1
+          fi
+          # a stable version only from the default branch; a pre-release from anywhere
+          if [[ "${version}" != *-* ]] && ! git merge-base --is-ancestor "${GITHUB_SHA}" "origin/${DEFAULT_BRANCH}"; then
+            echo "::error::${version} is a stable version: tag a commit of ${DEFAULT_BRANCH} (or use a pre-release version, e.g. ${version}-rc.1)"
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Package
+        run: helm package "${CHART_DIR}"
+
+      - name: Push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          helm registry login "${REPOSITORY_REGISTRY}" -u "${ACTOR}" --password-stdin <<< "${TOKEN}"
+          helm push "firefox-sync-${VERSION}.tgz" "oci://${REPOSITORY_REGISTRY}/${OWNER,,}/charts"
+          helm show chart "oci://${REPOSITORY_REGISTRY}/${OWNER,,}/charts/firefox-sync" --version "${VERSION}"
