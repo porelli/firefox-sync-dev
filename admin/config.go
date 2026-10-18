@@ -38,6 +38,8 @@ var configVars = map[string]bool{
 
 	// the Sync server and its databases
 	"SYNCSTORAGE_DOMAIN": false, "SYNCSTORAGE_URL": false, "SYNC_DB": false, "MAX_USERS": false,
+	// the old names of the Sync settings in .env (compose, setup.go)
+	"FFS_OLD_ENV_NAMES":   false,
 	"TOKENSERVER_DB_TYPE": false, "TOKENSERVER_DB_HOST": false, "TOKENSERVER_DB_PORT": false, "TOKENSERVER_DB_NAME": false,
 	"TOKENSERVER_DB_USER": false, "TOKENSERVER_DB_SSLMODE": false,
 	"STORAGE_DB_HOST": false, "STORAGE_DB_PORT": false, "STORAGE_DB_NAME": false, "STORAGE_DB_USER": false,
@@ -134,6 +136,15 @@ func setting(label, name, dotenv, fallback, note string) configRow {
 	return r
 }
 
+// dotenvName: the name in .env of a variable of the container (SYNCSTORAGE_DOMAIN is
+// SYNC_PUBLIC_URL there, the others have the same name)
+func dotenvName(name string) string {
+	if name == "SYNCSTORAGE_DOMAIN" {
+		return "SYNC_PUBLIC_URL"
+	}
+	return name
+}
+
 // fact: a row of what the admin UI found (the databases, the other settings), from vars
 func fact(label, value, note string, vars ...string) configRow {
 	return configRow{Setting: label, Value: value, Vars: vars, Note: note, Fact: true}
@@ -220,7 +231,7 @@ func loopbackURL(raw string) bool {
 	return err == nil && addr.IsLoopback()
 }
 
-// limitNote: where a limit comes from, MAX_USERS or FXA_MAX_ACCOUNTS as in .env
+// limitNote: where a limit comes from, SYNC_MAX_USERS or FXA_MAX_ACCOUNTS as in .env
 func limitNote(name, raw, empty, managed string) string {
 	value, fixed, err := parseLimitSetting(raw, empty)
 	shown := strings.TrimSpace(raw)
@@ -303,7 +314,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 
 	// public URLs: what Firefox and the people reach
 	public := configGroup{ID: "public", Title: "Public URLs", Intro: "What Firefox and the people of this server reach, through your reverse proxy."}
-	public.Rows = append(public.Rows, setting("Sync server", "SYNCSTORAGE_DOMAIN", "", "", "the Sync node the init container sets in the tokenserver"))
+	public.Rows = append(public.Rows, setting("Sync server", "SYNCSTORAGE_DOMAIN", "SYNC_PUBLIC_URL", "", "the Sync node the init container sets in the tokenserver"))
 	if status != nil {
 		var nodes []string
 		for _, n := range status.Nodes {
@@ -315,7 +326,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		if node == "" {
 			node = "none"
 		}
-		public.Rows = append(public.Rows, fact("Sync node handed out", node, "the nodes table of the tokenserver: where Firefox syncs", "SYNCSTORAGE_DOMAIN"))
+		public.Rows = append(public.Rows, fact("Sync node handed out", node, "the nodes table of the tokenserver: where Firefox syncs", "SYNC_PUBLIC_URL"))
 	}
 	if fxa {
 		public.Rows = append(public.Rows,
@@ -352,31 +363,31 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		syncGroup.Rows = append(syncGroup.Rows,
 			fact("Database", "PostgreSQL, tokenserver and storage in one database", whereDB(tsHost), "COMPOSE_FILE=docker-compose.sync-postgres.yml"),
 			func() configRow {
-				user, userVar := syncUser("TOKENSERVER_DB_USER", "POSTGRES_USER")
+				user, userVar := syncUser("TOKENSERVER_DB_USER", "SYNC_POSTGRES_USER")
 				return fact("Server", dbAddress(user, tsHost, shown("TOKENSERVER_DB_PORT", "5432"), configLookup("TOKENSERVER_DB_NAME")), "",
-					"POSTGRES_SERVER", "POSTGRES_SERVER_PORT", userVar, "POSTGRES_DATABASE")
+					"SYNC_POSTGRES_HOST", "SYNC_POSTGRES_PORT", userVar, "SYNC_POSTGRES_NAME")
 			}(),
-			syncPassword("Database password", "TOKENSERVER_DB_PASSWORD", "POSTGRES_PASSWORD"),
+			syncPassword("Database password", "TOKENSERVER_DB_PASSWORD", "SYNC_POSTGRES_PASSWORD"),
 			setting("TLS", "TOKENSERVER_DB_SSLMODE", "", "disable", "sslmode of the connection"))
 	} else {
 		name := dbServer(components, "Tokenserver database", "MariaDB", "MariaDB", tsHost)
 		if configLookup("SYNC_DB") == "mysql" {
 			name = dbServer(components, "Tokenserver database", "MySQL", "MySQL 8.4", tsHost)
 		}
-		user, userVar := syncUser("TOKENSERVER_DB_USER", "MARIADB_TOKENSERVER_USER")
+		user, userVar := syncUser("TOKENSERVER_DB_USER", "SYNC_TOKENSERVER_DB_USER")
 		syncGroup.Rows = append(syncGroup.Rows,
 			fact("Databases", name, "the tokenserver and the storage databases, on "+whereDB(tsHost), "SYNC_DB"),
 			fact("Tokenserver database", dbAddress(user, tsHost, shown("TOKENSERVER_DB_PORT", "3306"), configLookup("TOKENSERVER_DB_NAME")), "",
-				"MARIADB_TOKENSERVER_SERVER", "MARIADB_TOKENSERVER_SERVER_PORT", userVar, "MARIADB_TOKENSERVER_DATABASE"),
-			syncPassword("Tokenserver password", "TOKENSERVER_DB_PASSWORD", "MARIADB_TOKENSERVER_PASSWORD"))
+				"SYNC_TOKENSERVER_DB_HOST", "SYNC_TOKENSERVER_DB_PORT", userVar, "SYNC_TOKENSERVER_DB_NAME"),
+			syncPassword("Tokenserver password", "TOKENSERVER_DB_PASSWORD", "SYNC_TOKENSERVER_DB_PASSWORD"))
 		if host := configLookup("STORAGE_DB_HOST"); host != "" {
-			user, userVar := syncUser("STORAGE_DB_USER", "MARIADB_SYNCSTORAGE_USER")
+			user, userVar := syncUser("STORAGE_DB_USER", "SYNC_STORAGE_DB_USER")
 			syncGroup.Rows = append(syncGroup.Rows,
 				fact("Storage database", dbAddress(user, host, shown("STORAGE_DB_PORT", "3306"), configLookup("STORAGE_DB_NAME")), "what each account stores (sizes only)",
-					"MARIADB_SYNCSTORAGE_SERVER", "MARIADB_SYNCSTORAGE_SERVER_PORT", userVar, "MARIADB_SYNCSTORAGE_DATABASE"),
-				syncPassword("Storage password", "STORAGE_DB_PASSWORD", "MARIADB_SYNCSTORAGE_PASSWORD"))
+					"SYNC_STORAGE_DB_HOST", "SYNC_STORAGE_DB_PORT", userVar, "SYNC_STORAGE_DB_NAME"),
+				syncPassword("Storage password", "STORAGE_DB_PASSWORD", "SYNC_STORAGE_DB_PASSWORD"))
 		} else {
-			syncGroup.Rows = append(syncGroup.Rows, fact("Storage database", "not given to the admin UI", "no sizes, no purge", "MARIADB_SYNCSTORAGE_SERVER"))
+			syncGroup.Rows = append(syncGroup.Rows, fact("Storage database", "not given to the admin UI", "no sizes, no purge", "SYNC_STORAGE_DB_HOST"))
 		}
 	}
 	if ownDB {
@@ -433,7 +444,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	// the limits of accounts
 	limits := configGroup{ID: "limits", Title: "Limits", Intro: "In force now, as the databases have them."}
 	limits.Rows = append(limits.Rows, fact("Max users", limitValue(syncLimit),
-		limitNote("MAX_USERS", configLookup("MAX_USERS"), "", "on the overview"), "MAX_USERS"))
+		limitNote("SYNC_MAX_USERS", configLookup("MAX_USERS"), "", "on the overview"), "SYNC_MAX_USERS"))
 	if fxa {
 		limits.Rows = append(limits.Rows, fact("Max accounts", limitValue(accountLimit),
 			limitNote("FXA_MAX_ACCOUNTS", configLookup("FXA_MAX_ACCOUNTS"), "initial:unlimited", "on the overview"), "FXA_MAX_ACCOUNTS"))
@@ -660,7 +671,7 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 	}
 	for _, name := range urls {
 		if v := configLookup(name); v != "" && httpsURL(v) == nil && !loopbackURL(v) {
-			hints = append(hints, attention{Text: fmt.Sprintf("%s is %s, not an https:// URL: Firefox needs https (other than on localhost), and the public checks skip it.", name, v), Href: "#public-settings", Link: "Public URLs"})
+			hints = append(hints, attention{Text: fmt.Sprintf("%s is %s, not an https:// URL: Firefox needs https (other than on localhost), and the public checks skip it.", dotenvName(name), v), Href: "#public-settings", Link: "Public URLs"})
 		}
 	}
 	// FXA.md: one host name each, the proxy sends each of them to another port
@@ -672,9 +683,9 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 		}
 		host := strings.ToLower(u.Host)
 		if other, ok := hosts[host]; ok {
-			hints = append(hints, attention{Text: fmt.Sprintf("%s and %s are both on %s: the Sync server, the accounts pages, the accounts API and the profile server need a host name each, the reverse proxy sends each to another port.", other, name, u.Host), Href: "#public-settings", Link: "Public URLs"})
+			hints = append(hints, attention{Text: fmt.Sprintf("%s and %s are both on %s: the Sync server, the accounts pages, the accounts API and the profile server need a host name each, the reverse proxy sends each to another port.", other, dotenvName(name), u.Host), Href: "#public-settings", Link: "Public URLs"})
 		} else {
-			hosts[host] = name
+			hosts[host] = dotenvName(name)
 		}
 	}
 	if v := configLookup("FXA_PAIRING_URL"); fxa && v != "" && !strings.HasPrefix(v, "wss://") {

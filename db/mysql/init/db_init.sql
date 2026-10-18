@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS config (
 -- itself (tokenserver migrations and SYNC_TOKENSERVER__INIT_NODE_URL).
 -- Do not hardcode their ids here: on fresh databases sync-1.5 is not id 1.
 
--- Keep a single sync node. If SYNCSTORAGE_DOMAIN changed, syncstorage-rs added a
+-- Keep a single sync node. If SYNC_PUBLIC_URL changed, syncstorage-rs added a
 -- node for the new domain but the old one is still in rotation and its users still
 -- point to it: move them to the current node and take the old nodes out
 UPDATE nodes n

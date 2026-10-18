@@ -6,7 +6,7 @@ Runs inside the syncstorage-rs image, which ships PyFxA (Mozilla's FxA client).
 
 Environment:
   FXA_CONTENT_URL, FXA_AUTH_URL  public URLs of the accounts web pages and API
-  SYNCSTORAGE_DOMAIN             public URL of the sync server (node URL)
+  SYNC_PUBLIC_URL             public URL of the sync server (node URL)
   MAILPIT_URL                    mail catcher API, e.g. http://mailpit:8025
   REQUESTS_CA_BUNDLE             CA of the test reverse proxy
 """
@@ -29,7 +29,7 @@ from webob import Request
 
 CONTENT = os.environ["FXA_CONTENT_URL"].rstrip("/")
 AUTH = os.environ["FXA_AUTH_URL"].rstrip("/")
-SYNC = os.environ["SYNCSTORAGE_DOMAIN"].rstrip("/")
+SYNC = os.environ["SYNC_PUBLIC_URL"].rstrip("/")
 MAILPIT = os.environ.get("MAILPIT_URL", "http://mailpit:8025").rstrip("/")
 FIREFOX_CLIENT_ID = "5882386c6d801776"
 SYNC_SCOPE = "https://identity.mozilla.com/apps/oldsync"

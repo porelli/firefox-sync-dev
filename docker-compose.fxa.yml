@@ -7,7 +7,7 @@
 #   FXA_AUTH_URL     -> fxa-auth:9000    (accounts API and OAuth; with the admin UI,
 #                       POST /v1/account/create -> ffs-admin:8081, the sign-up gate)
 #   FXA_PROFILE_URL  -> fxa-profile:1111 (and /img/ -> fxa-profile-static:1112)
-#   SYNCSTORAGE_DOMAIN -> syncstorage   (as without FxA)
+#   SYNC_PUBLIC_URL -> syncstorage   (as without FxA)
 #   host of ADMIN_OIDC_REDIRECT_URL -> ffs-admin:8080 (optional: sign in to the admin UI with these accounts)
 # In .env, point the tokenserver to this FxA: FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1
 # and FXA_EMAIL_DOMAIN to the host name of FXA_AUTH_URL.
@@ -97,7 +97,7 @@ services:
   # who can create an account (FXA_SIGNUPS, FXA_SIGNUP_ALLOWLIST, FXA_MAX_ACCOUNTS), enforced by the
   # accounts database itself; also the database user of the admin UI. See ADMIN.md
   fxa-policy:
-    image: ${ADMIN_IMAGE:-${REPOSITORY}:admin-latest}
+    image: ${ADMIN_IMAGE:-${IMAGE_REPOSITORY:-${REPOSITORY:-}}:admin-latest}
     command: [fxa-init]
     environment:
       FXA_DB_HOST: ${FXA_MYSQL_HOST:-fxa-db}
@@ -142,7 +142,7 @@ services:
       # must be the host of FXA_AUTH_URL, it signs and checks the OAuth assertions
       ISSUER: ${FXA_EMAIL_DOMAIN}
       PROFILE_SERVER_URL: http://fxa-profile:1111
-      SYNC_TOKENSERVER_URL: ${SYNCSTORAGE_DOMAIN}
+      SYNC_TOKENSERVER_URL: ${SYNC_PUBLIC_URL:-${SYNCSTORAGE_DOMAIN:-}}
       CORS_ORIGIN: ${FXA_CONTENT_URL}
       # the client IP for the rate limits is this far from the end of X-Forwarded-For:
       # 2 = one reverse proxy in front (Mozilla's default, 3, lets clients pick their IP)
@@ -256,7 +256,7 @@ services:
       FXA_OAUTH_URL: ${FXA_AUTH_URL}
       FXA_PROFILE_URL: ${FXA_PROFILE_URL}
       FXA_PROFILE_IMAGES_URL: ${FXA_PROFILE_URL}/img
-      SYNC_TOKENSERVER_URL: ${SYNCSTORAGE_DOMAIN}
+      SYNC_TOKENSERVER_URL: ${SYNC_PUBLIC_URL:-${SYNCSTORAGE_DOMAIN:-}}
       # QR code pairing with phones: Mozilla's server unless the pairing profile runs one here
       PAIRING_SERVER_BASE_URI: ${FXA_PAIRING_URL:-wss://channelserver.services.mozilla.com}
       # as in fxa-auth: the admin UI never skips the sign-in code (Mozilla's default + the admin UI)

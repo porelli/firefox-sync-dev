@@ -1,19 +1,19 @@
 -- The Sync server on your PostgreSQL 11+ server (DATABASES.md).
 -- Run as a superuser (or a role with CREATEROLE and CREATEDB). prepare_environment.sh
 -- fills in the placeholders from .env and writes the result to database-setup.sql.
-CREATE ROLE @POSTGRES_USER@ LOGIN PASSWORD '@POSTGRES_PASSWORD@';
+CREATE ROLE @SYNC_POSTGRES_USER@ LOGIN PASSWORD '@SYNC_POSTGRES_PASSWORD@';
 -- (again, when the role exists: a new password after prepare_environment.sh ran again)
-ALTER ROLE @POSTGRES_USER@ PASSWORD '@POSTGRES_PASSWORD@';
+ALTER ROLE @SYNC_POSTGRES_USER@ PASSWORD '@SYNC_POSTGRES_PASSWORD@';
 -- CREATE DATABASE ... OWNER needs the role's membership, which a CREATEROLE role
 -- does not get by itself on PostgreSQL 16+
-GRANT @POSTGRES_USER@ TO CURRENT_USER;
+GRANT @SYNC_POSTGRES_USER@ TO CURRENT_USER;
 -- the owner creates the tables (migrations), the post_bso type, check_user_limit() and
 -- its trigger (MAX_USERS), and gives the admin UI's role its grants on them. No superuser
 -- needed.
--- An existing database: ALTER DATABASE @POSTGRES_DATABASE@ OWNER TO @POSTGRES_USER@;
-CREATE DATABASE @POSTGRES_DATABASE@ OWNER @POSTGRES_USER@;
+-- An existing database: ALTER DATABASE @SYNC_POSTGRES_DATABASE@ OWNER TO @SYNC_POSTGRES_USER@;
+CREATE DATABASE @SYNC_POSTGRES_DATABASE@ OWNER @SYNC_POSTGRES_USER@;
 -- other roles of a shared server: no connections, no temporary tables
-REVOKE ALL ON DATABASE @POSTGRES_DATABASE@ FROM PUBLIC;
+REVOKE ALL ON DATABASE @SYNC_POSTGRES_DATABASE@ FROM PUBLIC;
 -- The admin UI: its own database (the event log, the audit trail, notes, metrics, backup
 -- runs), owned by @ADMIN_USER@ and closed to the other roles, the one above too; and
 -- @ADMIN_SYNC_USER@, which reads the Sync tables and has nothing on the admin UI's database

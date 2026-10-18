@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS config (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Keep a single sync node. If SYNCSTORAGE_DOMAIN changed, syncstorage-rs added a
+-- Keep a single sync node. If SYNC_PUBLIC_URL changed, syncstorage-rs added a
 -- node for the new domain but the old one is still in rotation and its users still
 -- point to it: move them to the current node and take the old nodes out
 UPDATE nodes n

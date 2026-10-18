@@ -43,8 +43,78 @@ sed_escape() {
     printf '%s' "${1}" | sed -e 's/[\\/&|]/\\&/g'
 }
 
+# The Sync server's settings, renamed to the SYNC_ prefix (MIGRATING.md#renamed-settings):
+# new=old. The old names still work, compose and the Quadlets read them when the new one is
+# not set, and will be removed in a later release; --upgrade renames them in .env
+RENAMED_SETTINGS=(
+    SYNC_TOKENSERVER_DB_NAME=MARIADB_TOKENSERVER_DATABASE
+    SYNC_TOKENSERVER_DB_USER=MARIADB_TOKENSERVER_USER
+    SYNC_TOKENSERVER_DB_PASSWORD=MARIADB_TOKENSERVER_PASSWORD
+    SYNC_TOKENSERVER_DB_HOST=MARIADB_TOKENSERVER_SERVER
+    SYNC_TOKENSERVER_DB_PORT=MARIADB_TOKENSERVER_SERVER_PORT
+    SYNC_STORAGE_DB_NAME=MARIADB_SYNCSTORAGE_DATABASE
+    SYNC_STORAGE_DB_USER=MARIADB_SYNCSTORAGE_USER
+    SYNC_STORAGE_DB_PASSWORD=MARIADB_SYNCSTORAGE_PASSWORD
+    SYNC_STORAGE_DB_HOST=MARIADB_SYNCSTORAGE_SERVER
+    SYNC_STORAGE_DB_PORT=MARIADB_SYNCSTORAGE_SERVER_PORT
+    SYNC_POSTGRES_NAME=POSTGRES_DATABASE
+    SYNC_POSTGRES_USER=POSTGRES_USER
+    SYNC_POSTGRES_PASSWORD=POSTGRES_PASSWORD
+    SYNC_POSTGRES_HOST=POSTGRES_SERVER
+    SYNC_POSTGRES_PORT=POSTGRES_SERVER_PORT
+    SYNC_POSTGRES_APP_USER=POSTGRES_SYNC_USER
+    SYNC_POSTGRES_APP_PASSWORD=POSTGRES_SYNC_PASSWORD
+    SYNC_POSTGRES_IMAGE=POSTGRES_IMAGE
+    SYNC_DB_TLS_VERIFY=MARIADB_TLS_VERIFY
+    SYNC_DB_CONTAINERS=DB_CONTAINERS
+    SYNC_MAX_USERS=MAX_USERS
+    SYNC_EXPORT_PORT=CONTAINER_EXPORT_PORT
+    SYNC_PUBLIC_URL=SYNCSTORAGE_DOMAIN
+    SYNC_METRICS_HASH_SECRET=METRICS_HASH_SECRET
+    IMAGE_REPOSITORY=REPOSITORY
+    SYNC_IMAGE=SYNCSTORAGE_IMAGE
+    SYNC_IMAGE_TAG=SYNCSTORAGE_IMAGE_TAG
+    SYNC_INIT_IMAGE=SYNCSTORAGE_INIT_IMAGE
+    SYNC_INIT_IMAGE_TAG=SYNCSTORAGE_INIT_IMAGE_TAG
+)
+# the old name of a renamed setting ("" for the others)
+old_name() {
+    local pair
+    for pair in "${RENAMED_SETTINGS[@]}"; do
+        [ "${pair%%=*}" = "${1}" ] && { printf '%s' "${pair#*=}"; return; }
+    done
+}
+
+# a value of .env, as it is written (not with `source`: it is no shell script); env_value
+# of a renamed setting reads the old name when the new one is not set, as compose does
+# (a line of compose's .env may be indented or start with export; CRLF line ends)
+ENV_LEAD='[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}'
+env_line() { grep "^${ENV_LEAD}${1}=" ${SCRIPT_DIR}/.env | sed -e "s/^[^=]*=//" | tr -d '\r'; }
+env_has() { grep -q "^${ENV_LEAD}${1}=" ${SCRIPT_DIR}/.env; }
+# the value as compose reads it: the last line; quoted, what is between the quotes (a
+# comment after them dropped), otherwise without a comment ( # ...) and the spaces around
+env_plain() {
+    local v q
+    v=$(env_line "${1}" | tail -n 1)
+    v=${v#"${v%%[![:space:]]*}"}
+    case "${v}" in
+        \'*|\"*)
+            q=${v:0:1} v=${v:1}
+            case "${v}" in *"${q}"*) v=${v%%"${q}"*} ;; esac ;;
+        *)
+            v=$(printf '%s' "${v}" | sed -e 's/[[:space:]]#.*$//')
+            v=${v%"${v##*[![:space:]]}"} ;;
+    esac
+    printf '%s' "${v}"
+}
+env_value() {
+    local value old
+    value=$(env_line "${1}")
+    old=$(old_name "${1}")
+    [ -z "$(env_plain "${1}")" ] && [ -n "${old}" ] && value=$(env_line "${old}")
+    printf '%s\n' "${value}"
+}
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
-env_value() { grep "^${1}=" ${SCRIPT_DIR}/.env | cut -d= -f2-; }
 render_sql() {
     local template=${1} out=${2} pair expressions=()
     shift 2
@@ -58,15 +128,15 @@ render_sql() {
 render_sync_sql() {
     if [ "${1}" = "postgres" ]; then
         render_sql ${SCRIPT_DIR}/db/postgres/sync.sql ${SCRIPT_DIR}/database-setup.sql \
-            POSTGRES_DATABASE="$(env_value POSTGRES_DATABASE)" POSTGRES_USER="$(env_value POSTGRES_USER)" \
-            POSTGRES_PASSWORD="$(env_value POSTGRES_PASSWORD)" ADMIN_DATABASE="$(env_value ADMIN_DB_NAME)" \
+            SYNC_POSTGRES_DATABASE="$(env_value SYNC_POSTGRES_NAME)" SYNC_POSTGRES_USER="$(env_value SYNC_POSTGRES_USER)" \
+            SYNC_POSTGRES_PASSWORD="$(env_value SYNC_POSTGRES_PASSWORD)" ADMIN_DATABASE="$(env_value ADMIN_DB_NAME)" \
             ADMIN_USER="$(env_value ADMIN_DB_USER)" ADMIN_SYNC_USER="$(env_value ADMIN_DB_SYNC_USER)" ADMIN_PASSWORD="$(env_value ADMIN_DB_PASSWORD)"
     else
         render_sql ${SCRIPT_DIR}/db/mysql/sync.sql ${SCRIPT_DIR}/database-setup.sql \
-            TOKENSERVER_DATABASE="$(env_value MARIADB_TOKENSERVER_DATABASE)" TOKENSERVER_USER="$(env_value MARIADB_TOKENSERVER_USER)" \
-            TOKENSERVER_PASSWORD="$(env_value MARIADB_TOKENSERVER_PASSWORD)" \
-            SYNCSTORAGE_DATABASE="$(env_value MARIADB_SYNCSTORAGE_DATABASE)" SYNCSTORAGE_USER="$(env_value MARIADB_SYNCSTORAGE_USER)" \
-            SYNCSTORAGE_PASSWORD="$(env_value MARIADB_SYNCSTORAGE_PASSWORD)" ADMIN_DATABASE="$(env_value ADMIN_DB_NAME)" \
+            SYNC_TOKENSERVER_DATABASE="$(env_value SYNC_TOKENSERVER_DB_NAME)" SYNC_TOKENSERVER_USER="$(env_value SYNC_TOKENSERVER_DB_USER)" \
+            SYNC_TOKENSERVER_PASSWORD="$(env_value SYNC_TOKENSERVER_DB_PASSWORD)" \
+            SYNC_STORAGE_DATABASE="$(env_value SYNC_STORAGE_DB_NAME)" SYNC_STORAGE_USER="$(env_value SYNC_STORAGE_DB_USER)" \
+            SYNC_STORAGE_PASSWORD="$(env_value SYNC_STORAGE_DB_PASSWORD)" ADMIN_DATABASE="$(env_value ADMIN_DB_NAME)" \
             ADMIN_USER="$(env_value ADMIN_DB_USER)" ADMIN_SYNC_USER="$(env_value ADMIN_DB_SYNC_USER)" ADMIN_PASSWORD="$(env_value ADMIN_DB_PASSWORD)"
     fi
 }
@@ -137,17 +207,83 @@ fxa_mariadb_image_check() {
 # the settings of this release that need a value of their own (MIGRATING.md), nothing else
 # changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
 # Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
-# container (POSTGRES_SYNC_USER, POSTGRES_SYNC_PASSWORD), and in COMPOSE_FILE the new name of
+# container (SYNC_POSTGRES_APP_USER, SYNC_POSTGRES_APP_PASSWORD), and in COMPOSE_FILE the new name of
 # docker-compose.postgres.yml (docker-compose.sync-postgres.yml), and with the accounts on
 # MariaDB FXA_MARIADB_IMAGE=mariadb:11.8, the version they run (also the compose default:
 # written out, it stays so; new installs get mariadb:12.3, a move to it is up to the admin, FXA.md). A value already set is kept; the
 # old file is kept as .env.before-upgrade. With your own database server database-setup.sql
 # is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
+# First the settings of RENAMED_SETTINGS get their new names, their values as they are.
 upgrade_env() {
     local env_file name changed=()
     SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
     env_file=${SCRIPT_DIR}/.env
     [ -f "${env_file}" ] || { echo "ERROR: no ${env_file} to upgrade: run ./prepare_environment.sh"; exit 1; }
+    # the old names of RENAMED_SETTINGS: the line renamed where it is (indented or with
+    # export, as compose reads it too), the rest of it as it is written. Both names there:
+    # the new one is kept, unless it has no value of its own (empty, a placeholder or the
+    # default of .env-example, e.g. added from it: then the old one's value); the old line
+    # goes. A WARNING when what compose runs with changes; every value of before stays in
+    # .env.before-upgrade
+    rename_settings() {
+        local pair new old new_value old_value example effective after kind moved=() notes=() warnings=()
+        for pair in "${RENAMED_SETTINGS[@]}"; do
+            new=${pair%%=*} old=${pair#*=}
+            env_has "${old}" || continue
+            old_value=$(env_plain "${old}")
+            if env_has "${new}"; then
+                new_value=$(env_plain "${new}")
+                example=$(grep "^${new}=" "${SCRIPT_DIR}/.env-example" | cut -d= -f2- | tr -d '\r')
+                # what compose runs with now: the new name, the old one when it is empty
+                effective=${new_value:-${old_value}}
+                if [ "${new_value}" = "${old_value}" ]; then
+                    apply_sed "${env_file}" "/^${ENV_LEAD}${old}=/d"
+                    notes+=("${old}: removed, ${new} has the same value")
+                elif [ -z "${new_value}" ] || [[ "${new_value}" == *"<REPLACE_WITH_"* ]] || [ "${new_value}" = "${example}" ]; then
+                    apply_sed "${env_file}" "/^${ENV_LEAD}${new}=/d"
+                    apply_sed "${env_file}" "s/^\(${ENV_LEAD}\)${old}=/\1${new}=/"
+                    if [ -z "${new_value}" ]; then kind="no value"; elif [[ "${new_value}" == *"<REPLACE_WITH_"* ]]; then kind="the placeholder of .env-example"; else kind="the default of .env-example"; fi
+                    notes+=("${new}: had ${kind}, now the value of ${old}")
+                else
+                    apply_sed "${env_file}" "/^${ENV_LEAD}${old}=/d"
+                    notes+=("${old}: removed, its value differs from that of ${new}, which is kept")
+                fi
+                after=$(env_plain "${new}")
+                if [ "${effective}" != "${after}" ]; then
+                    case "${new}" in
+                        *PASSWORD*|*SECRET*) warnings+=("${new}: effective value changed (a secret, not shown): that of ${old}") ;;
+                        *) warnings+=("${new}: effective value '${effective}' -> '${after}' (that of ${old})") ;;
+                    esac
+                fi
+            else
+                apply_sed "${env_file}" "s/^\(${ENV_LEAD}\)${old}=/\1${new}=/"
+            fi
+            moved+=("${old} -> ${new}")
+            changed+=("${new}")
+        done
+        [ "${#moved[@]}" = 0 ] && return
+        echo "Renamed in .env, the values as they were (MIGRATING.md#renamed-settings):"
+        printf '  %s\n' "${moved[@]}"
+        [ "${#notes[@]}" = 0 ] || printf '  NOTE: %s\n' "${notes[@]}"
+        if [ "${#warnings[@]}" != 0 ]; then
+            printf 'WARNING: %s\n' "${warnings[@]}"
+            echo "  Check them before starting: .env.before-upgrade has the previous file."
+        fi
+        echo "  Rename them in your own scripts too (docker compose run -e, systemd units...)."
+    }
+    # old names exported where this runs: docker compose run from here would get both names
+    # and refuse to start, which no change of .env clears
+    old_names_in_environment() {
+        local pair old found=()
+        for pair in "${RENAMED_SETTINGS[@]}"; do
+            old=${pair#*=}
+            [ -n "$(printenv "${old}")" ] && found+=("${old} (${pair%%=*} in .env)")
+        done
+        [ "${#found[@]}" = 0 ] && return
+        echo "WARNING: old setting names in the environment of this shell, which docker compose would also"
+        echo "  see next to the new names of .env, and refuse to start: unset them in your shell (and CI):"
+        printf '  %s\n' "${found[@]}"
+    }
     set_value() {
         if grep -q "^${1}=" "${env_file}"; then
             apply_sed "${env_file}" "s|^${1}=.*|${1}=$(sed_escape "${2}")|"
@@ -157,6 +293,7 @@ upgrade_env() {
         changed+=("${1}")
     }
     cp -p "${env_file}" "${env_file}.upgrading" || exit 1
+    rename_settings
     # the names: those of .env-example
     for name in ADMIN_DB_NAME ADMIN_DB_USER ADMIN_DB_SYNC_USER; do
         grep -q "^${name}=" "${env_file}" || set_value "${name}" "$(grep "^${name}=" "${SCRIPT_DIR}/.env-example" | cut -d= -f2-)"
@@ -181,15 +318,15 @@ upgrade_env() {
         set_value COMPOSE_FILE "${compose_new}"
         echo "COMPOSE_FILE: docker-compose.postgres.yml renamed to docker-compose.sync-postgres.yml (now ${compose_new})"
     fi
-    if [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && [ "$(env_value DB_CONTAINERS)" != 0 ] && [ -z "$(env_value POSTGRES_SYNC_PASSWORD)" ]; then
-        [ -n "$(env_value POSTGRES_SYNC_USER)" ] || set_value POSTGRES_SYNC_USER syncserver_app
-        set_value POSTGRES_SYNC_PASSWORD "$(generate_random_string 32)"
+    if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && [ -z "$(env_value SYNC_POSTGRES_APP_PASSWORD)" ]; then
+        [ -n "$(env_value SYNC_POSTGRES_APP_USER)" ] || set_value SYNC_POSTGRES_APP_USER syncserver_app
+        set_value SYNC_POSTGRES_APP_PASSWORD "$(generate_random_string 32)"
     fi
-    # Sync on PostgreSQL, from before POSTGRES_IMAGE: postgres:18, the major it runs (every
+    # Sync on PostgreSQL, from before SYNC_POSTGRES_IMAGE: postgres:18, the major it runs (every
     # release so far used 18, git log -- docker-compose.sync-postgres.yml confirms it)
-    if [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && ! grep -q '^POSTGRES_IMAGE=' "${env_file}"; then
-        set_value POSTGRES_IMAGE postgres:18
-        echo "POSTGRES_IMAGE=postgres:18: the Sync database stays on PostgreSQL 18. To move it to"
+    if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && ! grep -q '^SYNC_POSTGRES_IMAGE=' "${env_file}"; then
+        set_value SYNC_POSTGRES_IMAGE postgres:18
+        echo "SYNC_POSTGRES_IMAGE=postgres:18: the Sync database stays on PostgreSQL 18. To move it to"
         echo "  a newer major: a dump and restore (ADMIN.md#restoring) or pg_upgrade (DATABASES.md#another-postgresql-major)"
     fi
     # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11.8, they stay there
@@ -198,6 +335,7 @@ upgrade_env() {
         echo "FXA_MARIADB_IMAGE=mariadb:11.8: the accounts database stays on MariaDB 11.8. To move it to"
         echo "  MariaDB 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
     fi
+    old_names_in_environment
     if [ "${#changed[@]}" = 0 ]; then
         rm -f "${env_file}.upgrading"
         echo "Nothing to add: ${env_file} has every setting of this release."
@@ -205,8 +343,8 @@ upgrade_env() {
         mv "${env_file}.upgrading" "${env_file}.before-upgrade"
         echo "Updated ${env_file} (the old one is .env.before-upgrade): ${changed[*]}"
     fi
-    if [ "$(env_value DB_CONTAINERS)" = 0 ]; then
-        [ "$(env_value SYNCSTORAGE_IMAGE)" = "syncstorage-rs-postgres" ] && render_sync_sql postgres || render_sync_sql mariadb
+    if [ "$(env_value SYNC_DB_CONTAINERS)" = 0 ]; then
+        [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && render_sync_sql postgres || render_sync_sql mariadb
         echo "Your own database server: run database-setup.sql there first, as its administrator (DATABASES.md)."
     fi
     fxa_mariadb_image_check
@@ -217,8 +355,8 @@ upgrade_env() {
 
 # domain
 DOMAIN_EXAMPLE='firefox-sync.example.com'
-read -e -p "Enter FQDN for your Firefox sync server [${DOMAIN_EXAMPLE}]: " SYNCSTORAGE_DOMAIN
-SYNCSTORAGE_DOMAIN=${SYNCSTORAGE_DOMAIN:-${DOMAIN_EXAMPLE}}
+read -e -p "Enter FQDN for your Firefox sync server [${DOMAIN_EXAMPLE}]: " SYNC_FQDN
+SYNC_FQDN=${SYNC_FQDN:-${DOMAIN_EXAMPLE}}
 
 # compose dir
 CURRENT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -227,8 +365,8 @@ SCRIPT_DIR=${SCRIPT_DIR:-${CURRENT_DIR}}
 
 # listening port
 DEFAULT_CONTAINER_EXPORT_PORT=5000
-read -e -p "Listening port for syncstorage-rs [${DEFAULT_CONTAINER_EXPORT_PORT}]: " CONTAINER_EXPORT_PORT
-CONTAINER_EXPORT_PORT=${CONTAINER_EXPORT_PORT:-${DEFAULT_CONTAINER_EXPORT_PORT}}
+read -e -p "Listening port for syncstorage-rs [${DEFAULT_CONTAINER_EXPORT_PORT}]: " SYNC_EXPORT_PORT
+SYNC_EXPORT_PORT=${SYNC_EXPORT_PORT:-${DEFAULT_CONTAINER_EXPORT_PORT}}
 
 # a limit of accounts: a number (0: nobody new) or unlimited
 valid_limit() {
@@ -241,9 +379,9 @@ valid_limit() {
 
 # max users
 DEFAULT_MAX_USERS=1
-read -e -p "Max allowed users, a number or unlimited [${DEFAULT_MAX_USERS}]: " MAX_USERS
-MAX_USERS=${MAX_USERS:-${DEFAULT_MAX_USERS}}
-valid_limit "max users" "${MAX_USERS}"
+read -e -p "Max allowed users, a number or unlimited [${DEFAULT_MAX_USERS}]: " SYNC_MAX_USERS
+SYNC_MAX_USERS=${SYNC_MAX_USERS:-${DEFAULT_MAX_USERS}}
+valid_limit "max users" "${SYNC_MAX_USERS}"
 
 # database backend
 DEFAULT_DATABASE_BACKEND=mariadb
@@ -297,15 +435,15 @@ CONTAINER_USER=${CONTAINER_USER:-${DEFAULT_CONTAINER_USER}}
 
 # syncstorage image tag
 DEFAULT_SYNCSTORAGE_IMAGE_TAG=latest
-read -e -p "Syncstorage image tag [latest/<tag>] [${DEFAULT_SYNCSTORAGE_IMAGE_TAG}]: " SYNCSTORAGE_IMAGE_TAG
-SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG:-${DEFAULT_SYNCSTORAGE_IMAGE_TAG}}
+read -e -p "Syncstorage image tag [latest/<tag>] [${DEFAULT_SYNCSTORAGE_IMAGE_TAG}]: " SYNC_IMAGE_TAG
+SYNC_IMAGE_TAG=${SYNC_IMAGE_TAG:-${DEFAULT_SYNCSTORAGE_IMAGE_TAG}}
 
 # admin UI
 read -r -e -p "Enable the admin UI? Max users, and sign-ups and accounts with self-hosted accounts, see ADMIN.md (Y/n): " ADMIN_UI
 case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
-# with the admin UI, max users is managed there: MAX_USERS=initial:N sets it only on the
+# with the admin UI, max users is managed there: SYNC_MAX_USERS=initial:N sets it only on the
 # first start. A plain number is set again on every start (read-only in the admin UI)
-[ "${ADMIN_UI}" = "yes" ] && MAX_USERS=initial:${MAX_USERS}
+[ "${ADMIN_UI}" = "yes" ] && SYNC_MAX_USERS=initial:${SYNC_MAX_USERS}
 
 # admin sign-in with the self-hosted accounts, asked below
 ADMIN_ALLOWED_USERS=""
@@ -315,7 +453,7 @@ ADMIN_HOST=""
 read -r -e -p "Also self-host Mozilla accounts? See FXA.md (y/N): " SELF_HOST_FXA
 case "${SELF_HOST_FXA}" in y|Y|yes) SELF_HOST_FXA=yes ;; *) SELF_HOST_FXA=no ;; esac
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    DEFAULT_FXA_DOMAIN=${SYNCSTORAGE_DOMAIN#*.}
+    DEFAULT_FXA_DOMAIN=${SYNC_FQDN#*.}
     read -r -e -p "Domain for the accounts host names (accounts., api. and profile. are prepended) [${DEFAULT_FXA_DOMAIN}]: " FXA_DOMAIN
     FXA_DOMAIN=${FXA_DOMAIN:-${DEFAULT_FXA_DOMAIN}}
     read -r -e -p "SMTP server for the confirmation emails: " FXA_SMTP_HOST
@@ -378,24 +516,24 @@ if [ "${EXTERNAL_DB}" = "yes" ]; then
     DB_PORT=${DB_PORT:-${DEFAULT_DB_PORT}}
     valid_port "${DB_PORT}"
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        read -r -e -p "Database [syncserver]: " POSTGRES_DATABASE
-        POSTGRES_DATABASE=${POSTGRES_DATABASE:-syncserver}
-        read -r -e -p "Database user [syncserver]: " POSTGRES_USER
-        POSTGRES_USER=${POSTGRES_USER:-syncserver}
-        valid_name "${POSTGRES_DATABASE}"; valid_name "${POSTGRES_USER}"
+        read -r -e -p "Database [syncserver]: " SYNC_POSTGRES_NAME
+        SYNC_POSTGRES_NAME=${SYNC_POSTGRES_NAME:-syncserver}
+        read -r -e -p "Database user [syncserver]: " SYNC_POSTGRES_USER
+        SYNC_POSTGRES_USER=${SYNC_POSTGRES_USER:-syncserver}
+        valid_name "${SYNC_POSTGRES_NAME}"; valid_name "${SYNC_POSTGRES_USER}"
     else
-        read -r -e -p "Tokenserver database [tokenserver]: " MARIADB_TOKENSERVER_DATABASE
-        MARIADB_TOKENSERVER_DATABASE=${MARIADB_TOKENSERVER_DATABASE:-tokenserver}
-        read -r -e -p "Tokenserver database user [tokenserver]: " MARIADB_TOKENSERVER_USER
-        MARIADB_TOKENSERVER_USER=${MARIADB_TOKENSERVER_USER:-tokenserver}
-        read -r -e -p "Storage database [syncstorage]: " MARIADB_SYNCSTORAGE_DATABASE
-        MARIADB_SYNCSTORAGE_DATABASE=${MARIADB_SYNCSTORAGE_DATABASE:-syncstorage}
-        read -r -e -p "Storage database user [syncstorage]: " MARIADB_SYNCSTORAGE_USER
-        MARIADB_SYNCSTORAGE_USER=${MARIADB_SYNCSTORAGE_USER:-syncstorage}
-        for name in "${MARIADB_TOKENSERVER_DATABASE}" "${MARIADB_TOKENSERVER_USER}" "${MARIADB_SYNCSTORAGE_DATABASE}" "${MARIADB_SYNCSTORAGE_USER}"; do
+        read -r -e -p "Tokenserver database [tokenserver]: " SYNC_TOKENSERVER_DB_NAME
+        SYNC_TOKENSERVER_DB_NAME=${SYNC_TOKENSERVER_DB_NAME:-tokenserver}
+        read -r -e -p "Tokenserver database user [tokenserver]: " SYNC_TOKENSERVER_DB_USER
+        SYNC_TOKENSERVER_DB_USER=${SYNC_TOKENSERVER_DB_USER:-tokenserver}
+        read -r -e -p "Storage database [syncstorage]: " SYNC_STORAGE_DB_NAME
+        SYNC_STORAGE_DB_NAME=${SYNC_STORAGE_DB_NAME:-syncstorage}
+        read -r -e -p "Storage database user [syncstorage]: " SYNC_STORAGE_DB_USER
+        SYNC_STORAGE_DB_USER=${SYNC_STORAGE_DB_USER:-syncstorage}
+        for name in "${SYNC_TOKENSERVER_DB_NAME}" "${SYNC_TOKENSERVER_DB_USER}" "${SYNC_STORAGE_DB_NAME}" "${SYNC_STORAGE_DB_USER}"; do
             valid_name "${name}"
         done
-        [ "${MARIADB_TOKENSERVER_DATABASE}" != "${MARIADB_SYNCSTORAGE_DATABASE}" ] || { echo "ERROR: the tokenserver and the storage need two databases"; exit 1; }
+        [ "${SYNC_TOKENSERVER_DB_NAME}" != "${SYNC_STORAGE_DB_NAME}" ] || { echo "ERROR: the tokenserver and the storage need two databases"; exit 1; }
     fi
 fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
@@ -507,11 +645,11 @@ fi
 [ "${SYNC_DB}" = "mysql" ] && [ "${EXTERNAL_DB}" != "yes" ] && SYNC_COMPOSE_MYSQL=yes || SYNC_COMPOSE_MYSQL=no
 
 # random passwords
-MARIADB_TOKENSERVER_PASSWORD=$(generate_random_string 24)
-MARIADB_SYNCSTORAGE_PASSWORD=$(generate_random_string 24)
-POSTGRES_PASSWORD=$(generate_random_string 24)
+SYNC_TOKENSERVER_DB_PASSWORD=$(generate_random_string 24)
+SYNC_STORAGE_DB_PASSWORD=$(generate_random_string 24)
+SYNC_POSTGRES_PASSWORD=$(generate_random_string 24)
 SYNC_MASTER_SECRET=$(generate_random_string 24)
-METRICS_HASH_SECRET=$(generate_random_string 24)
+SYNC_METRICS_HASH_SECRET=$(generate_random_string 24)
 ADMIN_PASSWORD=$(generate_random_string 24)
 ADMIN_DB_PASSWORD=$(generate_random_string 32)
 
@@ -533,23 +671,23 @@ fxa_mariadb_volume() {
 PREVIOUS_SYNCSTORAGE_IMAGE="" PREVIOUS_POSTGRES_IMAGE=""
 PREVIOUS_FXA_DB="" PREVIOUS_FXA_MARIADB_IMAGE=""
 if [ -f "${SCRIPT_DIR}/.env" ]; then
-    PREVIOUS_SYNCSTORAGE_IMAGE=$(env_value SYNCSTORAGE_IMAGE)
-    PREVIOUS_POSTGRES_IMAGE=$(env_value POSTGRES_IMAGE)
+    PREVIOUS_SYNCSTORAGE_IMAGE=$(env_value SYNC_IMAGE)
+    PREVIOUS_POSTGRES_IMAGE=$(env_value SYNC_POSTGRES_IMAGE)
     PREVIOUS_FXA_DB=$(env_value FXA_DB)
     PREVIOUS_FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
 fi
 
 # prepare .env file
 cp ${SCRIPT_DIR}/.env-example ${SCRIPT_DIR}/.env
-apply_sed ${SCRIPT_DIR}/.env "s|MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=${MARIADB_TOKENSERVER_PASSWORD}|"
-apply_sed ${SCRIPT_DIR}/.env "s|MARIADB_SYNCSTORAGE_PASSWORD=.*|MARIADB_SYNCSTORAGE_PASSWORD=${MARIADB_SYNCSTORAGE_PASSWORD}|"
-apply_sed ${SCRIPT_DIR}/.env "s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${SYNC_TOKENSERVER_DB_PASSWORD}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=${SYNC_STORAGE_DB_PASSWORD}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_PASSWORD=.*|SYNC_POSTGRES_PASSWORD=${SYNC_POSTGRES_PASSWORD}|"
 apply_sed ${SCRIPT_DIR}/.env "s|SYNC_MASTER_SECRET=.*|SYNC_MASTER_SECRET=${SYNC_MASTER_SECRET}|"
-apply_sed ${SCRIPT_DIR}/.env "s|METRICS_HASH_SECRET=.*|METRICS_HASH_SECRET=${METRICS_HASH_SECRET}|"
-apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://${SYNCSTORAGE_DOMAIN}|"
-apply_sed ${SCRIPT_DIR}/.env "s|CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=${CONTAINER_EXPORT_PORT}|"
-apply_sed ${SCRIPT_DIR}/.env "s|MAX_USERS=.*|MAX_USERS=${MAX_USERS}|"
-apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${SYNCSTORAGE_IMAGE_TAG}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_METRICS_HASH_SECRET=.*|SYNC_METRICS_HASH_SECRET=${SYNC_METRICS_HASH_SECRET}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://${SYNC_FQDN}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=${SYNC_EXPORT_PORT}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=${SYNC_MAX_USERS}|"
+apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${SYNC_IMAGE_TAG}|"
 apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
 # the admin UI's database user, also for the backups: with or without the admin UI
 apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=${ADMIN_DB_PASSWORD}|"
@@ -559,27 +697,27 @@ apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
 if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
     # MySQL's certificate is self-signed: the init container's client does not check it
     # (docker-compose.sync-mysql.yml does the same, this is for the Quadlets)
-    apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_TLS_VERIFY=.*|MARIADB_TLS_VERIFY=false|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
     # with the accounts, set below with theirs
     [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml|"
 fi
 if [ "${EXTERNAL_DB}" = "yes" ]; then
-    apply_sed ${SCRIPT_DIR}/.env "s|^DB_CONTAINERS=.*|DB_CONTAINERS=0|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|"
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        for name in POSTGRES_DATABASE POSTGRES_USER; do
+        for name in SYNC_POSTGRES_NAME SYNC_POSTGRES_USER; do
             apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
         done
-        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SERVER=.*|POSTGRES_SERVER=${DB_HOST}|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SERVER_PORT=.*|POSTGRES_SERVER_PORT=${DB_PORT}|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_HOST=.*|SYNC_POSTGRES_HOST=${DB_HOST}|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_PORT=.*|SYNC_POSTGRES_PORT=${DB_PORT}|"
     else
         # the init container's client checks the certificate by default, MySQL's is self-signed
-        apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_TLS_VERIFY=.*|MARIADB_TLS_VERIFY=false|"
-        for name in MARIADB_TOKENSERVER_DATABASE MARIADB_TOKENSERVER_USER MARIADB_SYNCSTORAGE_DATABASE MARIADB_SYNCSTORAGE_USER; do
+        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
+        for name in SYNC_TOKENSERVER_DB_NAME SYNC_TOKENSERVER_DB_USER SYNC_STORAGE_DB_NAME SYNC_STORAGE_DB_USER; do
             apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
         done
-        for part in TOKENSERVER SYNCSTORAGE; do
-            apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_${part}_SERVER=.*|MARIADB_${part}_SERVER=${DB_HOST}|"
-            apply_sed ${SCRIPT_DIR}/.env "s|^MARIADB_${part}_SERVER_PORT=.*|MARIADB_${part}_SERVER_PORT=${DB_PORT}|"
+        for part in TOKENSERVER STORAGE; do
+            apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_${part}_DB_HOST=.*|SYNC_${part}_DB_HOST=${DB_HOST}|"
+            apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_${part}_DB_PORT=.*|SYNC_${part}_DB_PORT=${DB_PORT}|"
         done
     fi
 fi
@@ -588,7 +726,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=$(generate_random_string 32)|"
     done
     # the accounts images come from the same registry as the sync images, for this host's architecture
-    FXA_REGISTRY=$(grep '^REPOSITORY=' ${SCRIPT_DIR}/.env | cut -d= -f2)
+    FXA_REGISTRY=$(grep '^IMAGE_REPOSITORY=' ${SCRIPT_DIR}/.env | cut -d= -f2)
     case "$(uname -m)" in aarch64|arm64) FXA_ARCH=arm64 ;; *) FXA_ARCH=amd64 ;; esac
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_IMAGE=.*|FXA_IMAGE=${FXA_REGISTRY}|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${FXA_REGISTRY}:fxa-channelserver-latest|"
@@ -679,23 +817,23 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
 fi
 if [ "${DATABASE_BACKEND}" = "postgres" ]; then
     [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.sync-postgres.yml|"
-    apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-postgres|"
-    apply_sed ${SCRIPT_DIR}/.env "s|SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-postgres-init|"
-    # the database container: the Sync server gets a role of its own, POSTGRES_USER is the
-    # container's superuser (your own server: POSTGRES_USER is the plain owner, DATABASES.md)
+    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-postgres|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-postgres-init|"
+    # the database container: the Sync server gets a role of its own, SYNC_POSTGRES_USER is the
+    # container's superuser (your own server: SYNC_POSTGRES_USER is the plain owner, DATABASES.md)
     if [ "${EXTERNAL_DB}" != "yes" ]; then
-        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SYNC_USER=.*|POSTGRES_SYNC_USER=syncserver_app|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^POSTGRES_SYNC_PASSWORD=.*|POSTGRES_SYNC_PASSWORD=$(generate_random_string 32)|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|"
+        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(generate_random_string 32)|"
     fi
     # PostgreSQL 18 for new installs, written out (unset it is postgres:18; not lts: no install
-    # moves to a new major by itself). One that ran PostgreSQL before POSTGRES_IMAGE, or whose
+    # moves to a new major by itself). One that ran PostgreSQL before SYNC_POSTGRES_IMAGE, or whose
     # PostgreSQL volume is still there, runs postgres:18 (every release so far used 18, git log
     # -- docker-compose.sync-postgres.yml confirms it)
-    POSTGRES_IMAGE=postgres:18
+    SYNC_POSTGRES_IMAGE=postgres:18
     if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
-        POSTGRES_IMAGE=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
+        SYNC_POSTGRES_IMAGE=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
     fi
-    apply_sed ${SCRIPT_DIR}/.env "s|^# POSTGRES_IMAGE=.*|POSTGRES_IMAGE=$(sed_escape "${POSTGRES_IMAGE}")|"
+    apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_IMAGE}")|"
 fi
 
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
@@ -709,8 +847,8 @@ fi
 
 # prepare nginx example
 cp ${SCRIPT_DIR}/config/nginx/syncstorage-rs-example.conf ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf
-apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s/firefox-sync.example.com/${SYNCSTORAGE_DOMAIN}/g"
-apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s|<CONTAINER_EXPORT_PORT>|${CONTAINER_EXPORT_PORT}|"
+apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s/firefox-sync.example.com/${SYNC_FQDN}/g"
+apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s|<SYNC_EXPORT_PORT>|${SYNC_EXPORT_PORT}|"
 
 # prepare systemd example (for docker compose; with Podman, Quadlets start at boot instead)
 cp ${SCRIPT_DIR}/config/systemd/syncstorage-rs-example.service ${SCRIPT_DIR}/config/systemd/syncstorage-rs.service
@@ -758,17 +896,17 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     # containers are reached by their names. Your own server: none of them
     SKIP_UNITS=""
     DROP_DEPS=""
-    if [ "${DB_CONTAINERS:-1}" = 0 ]; then
+    if [ "${SYNC_DB_CONTAINERS:-1}" = 0 ]; then
         SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
         DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
     else
-        export MARIADB_SYNCSTORAGE_SERVER=firefox-sync-syncstorage-db MARIADB_SYNCSTORAGE_SERVER_PORT=3306
-        export MARIADB_TOKENSERVER_SERVER=firefox-sync-tokenserver-db MARIADB_TOKENSERVER_SERVER_PORT=3306
+        export SYNC_STORAGE_DB_HOST=firefox-sync-syncstorage-db SYNC_STORAGE_DB_PORT=3306
+        export SYNC_TOKENSERVER_DB_HOST=firefox-sync-tokenserver-db SYNC_TOKENSERVER_DB_PORT=3306
         if [ "${SYNC_DB:-mariadb}" = "mysql" ]; then
             # MariaDB's volumes, unused (the volumes themselves are kept); MySQL's certificate
             # is self-signed, the init container's client does not check it
             SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.volume$'
-            export MARIADB_TLS_VERIFY=false
+            export SYNC_DB_TLS_VERIFY=false
         fi
     fi
     if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then

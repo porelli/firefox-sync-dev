@@ -4,19 +4,19 @@ After=firefox-sync-network.service firefox-sync-tokenserver-db.service firefox-s
 Requires=firefox-sync-tokenserver-db.service firefox-sync-syncstorage-migrate.service
 
 [Container]
-Image=%REPOSITORY%:%SYNCSTORAGE_INIT_IMAGE%-%SYNCSTORAGE_INIT_IMAGE_TAG%
+Image=%IMAGE_REPOSITORY%:%SYNC_INIT_IMAGE%-%SYNC_INIT_IMAGE_TAG%
 ContainerName=firefox-sync-tokenserver-db-init
 Network=firefox-sync-network.network
 
-Environment=MARIADB_SERVER=%MARIADB_TOKENSERVER_SERVER%
-Environment=MARIADB_SERVER_PORT=%MARIADB_TOKENSERVER_SERVER_PORT%
+Environment=MARIADB_SERVER=%SYNC_TOKENSERVER_DB_HOST%
+Environment=MARIADB_SERVER_PORT=%SYNC_TOKENSERVER_DB_PORT%
 # false with your own MySQL server: its certificate is self-signed
-Environment=MARIADB_TLS_VERIFY=%MARIADB_TLS_VERIFY%
-Environment=MARIADB_DATABASE=%MARIADB_TOKENSERVER_DATABASE%
-Environment=MARIADB_USER=%MARIADB_TOKENSERVER_USER%
-Environment=MARIADB_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%
-Environment=MAX_USERS=%MAX_USERS%
-Environment=DOMAIN=%SYNCSTORAGE_DOMAIN%
+Environment=MARIADB_TLS_VERIFY=%SYNC_DB_TLS_VERIFY%
+Environment=MARIADB_DATABASE=%SYNC_TOKENSERVER_DB_NAME%
+Environment=MARIADB_USER=%SYNC_TOKENSERVER_DB_USER%
+Environment=MARIADB_PASSWORD=%SYNC_TOKENSERVER_DB_PASSWORD%
+Environment=MAX_USERS=%SYNC_MAX_USERS%
+Environment=DOMAIN=%SYNC_PUBLIC_URL%
 
 AutoUpdate=registry
 

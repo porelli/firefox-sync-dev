@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strings"
 )
@@ -18,7 +19,7 @@ type setupCheck struct {
 }
 
 // nodeCheck: the tokenserver hands out its nodes in use, Firefox syncs there; the init
-// container sets the node from SYNCSTORAGE_DOMAIN on every start
+// container sets the node from SYNC_PUBLIC_URL (SYNCSTORAGE_DOMAIN in its environment) on every start
 func nodeCheck(domain string, nodes []SyncNode) setupCheck {
 	c := setupCheck{Name: "Sync node"}
 	var inUse []string
@@ -34,11 +35,11 @@ func nodeCheck(domain string, nodes []SyncNode) setupCheck {
 	}
 	switch {
 	case c.OK:
-		c.Text = "The tokenserver hands out " + domain + ", the public Sync URL (SYNCSTORAGE_DOMAIN)."
+		c.Text = "The tokenserver hands out " + domain + ", the public Sync URL (SYNC_PUBLIC_URL)."
 	case len(inUse) == 0:
-		c.Text = "The tokenserver has no Sync node in use, SYNCSTORAGE_DOMAIN is " + domain + ": nobody can sync. The init container adds it when it starts: docker compose up -d (or restart the Quadlets)."
+		c.Text = "The tokenserver has no Sync node in use, SYNC_PUBLIC_URL is " + domain + ": nobody can sync. The init container adds it when it starts: docker compose up -d (or restart the Quadlets)."
 	default:
-		c.Text = fmt.Sprintf("The tokenserver hands out %s, but SYNCSTORAGE_DOMAIN is %s: Firefox syncs with %s. The init container sets the node from SYNCSTORAGE_DOMAIN when it starts: docker compose up -d (or restart the Quadlets).",
+		c.Text = fmt.Sprintf("The tokenserver hands out %s, but SYNC_PUBLIC_URL is %s: Firefox syncs with %s. The init container sets the node from SYNC_PUBLIC_URL when it starts: docker compose up -d (or restart the Quadlets).",
 			strings.Join(inUse, ", "), domain, inUse[0])
 	}
 	return c
@@ -98,6 +99,9 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 	if a.syncDomain != "" && status != nil {
 		checks = append(checks, nodeCheck(a.syncDomain, status.Nodes))
 	}
+	if c, ok := oldNamesCheck(os.Getenv("FFS_OLD_ENV_NAMES")); ok {
+		checks = append(checks, c)
+	}
 	for _, comp := range components {
 		if comp.Name != oauthKeysCheck {
 			continue
@@ -119,6 +123,18 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 		}
 	}
 	return checks
+}
+
+// oldNamesCheck: the Sync settings that .env (or compose's environment) still has under their old names
+// (MIGRATING.md#renamed-settings), from compose (FFS_OLD_ENV_NAMES): they still work, a
+// later release removes them. No check without them (the Quadlets have the new names)
+func oldNamesCheck(names string) (setupCheck, bool) {
+	old := strings.Fields(names)
+	if len(old) == 0 {
+		return setupCheck{}, false
+	}
+	return setupCheck{Name: "Old setting names (.env, environment)", Text: "Settings under their old names, in .env or in the environment docker compose runs in, which still work but will be removed in a later release: " +
+		strings.Join(old, ", ") + ". Run ./prepare_environment.sh --upgrade, which renames them (MIGRATING.md), then docker compose up -d."}, true
 }
 
 // accountsSMTPCheck: the self-hosted accounts need an SMTP server whatever the admin UI's

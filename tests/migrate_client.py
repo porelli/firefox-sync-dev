@@ -8,15 +8,15 @@ stack pointing to it), like tests/test_client_flow.py whose helpers it uses.
                      keys_changed_at, client_state), store meta/global, 50 bookmarks and 20
                      passwords, and their uids and /info/collections go to STATE
   check              on firefox-sync after the move: the same keys get the same uids, on the
-                     new node (SYNCSTORAGE_DOMAIN), and read back exactly what was written;
+                     new node (SYNC_PUBLIC_URL), and read back exactly what was written;
                      the moved data can be written to (one more bookmark)
-  new <name> <ok|refused>   a new account, let in or refused by MAX_USERS
+  new <name> <ok|refused>   a new account, let in or refused by SYNC_MAX_USERS
   admin <n>          the admin UI's first page (trusted header) lists alice and bob with
                      what they store, and counts n accounts
 
 Environment:
   SYNC_SERVER_URL       where the server listens (http://syncstorage:8000)
-  SYNCSTORAGE_DOMAIN    its public URL, the node URL
+  SYNC_PUBLIC_URL    its public URL, the node URL
   STATE                 the JSON file written by write, read by check (default /state/state.json)
   ADMIN_URL             the admin UI (admin)
 """
@@ -124,7 +124,7 @@ def new(user, outcome):
         expect(res.json()["api_endpoint"].startswith(f"{DOMAIN}/1.5/"), f"new account {user} on {res.json()['api_endpoint']}")
         print(f"{user}: new account let in, uid {res.json()['uid']}")
     else:
-        expect(res.status_code != 200, f"new account {user} let in, MAX_USERS should refuse it")
+        expect(res.status_code != 200, f"new account {user} let in, SYNC_MAX_USERS should refuse it")
         print(f"{user}: new account refused ({res.status_code})")
 
 

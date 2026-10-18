@@ -31,7 +31,7 @@
   {{with .Sync}}{{$state := .Limit.State}}<li><a class="stat{{if ne $state "ok"}} is-warn{{end}}" href="#sync">
     <span class="label">{{template "icon" "users"}}Using Sync</span>
     {{if .Unlimited}}<span class="value"><strong id="sync-users">{{.Users}}</strong> <small>accounts, no limit</small></span>
-    <span class="sub">MAX_USERS=<span id="sync-max-users">unlimited</span></span>
+    <span class="sub">SYNC_MAX_USERS=<span id="sync-max-users">unlimited</span></span>
     {{else}}<span class="value"><strong id="sync-users">{{.Users}}</strong> <small>of <span id="sync-max-users">{{.MaxUsers}}</span> places taken</small></span>
     <meter min="0" max="{{.MaxUsers}}" value="{{.Users}}" aria-label="Places taken">{{.Users}} of {{.MaxUsers}}</meter>
     {{if eq $state "full"}}<span class="sub" id="sync-limit-state">full: new accounts are refused</span>{{else if eq $state "near"}}<span class="sub" id="sync-limit-state">near the limit: 90% or more taken</span>{{end}}{{end}}</a></li>{{end}}
@@ -279,7 +279,7 @@
 <section class="card" aria-labelledby="sync-title" id="sync">
   <h2 id="sync-title">Sync</h2>
   {{with .Sync}}{{$state := .Limit.State}}
-  {{if .Unlimited}}<p>{{.Users}} accounts use this Sync server, with no limit (<code>MAX_USERS=unlimited</code>): every new account gets in.</p>
+  {{if .Unlimited}}<p>{{.Users}} accounts use this Sync server, with no limit (<code>SYNC_MAX_USERS=unlimited</code>): every new account gets in.</p>
   {{else}}<p>{{.Users}} of {{.MaxUsers}} places on this Sync server are taken.{{if eq $state "full"}} <span class="pill warn">full</span>{{else if eq $state "near"}} <span class="pill warn">near the limit</span>{{end}}
     {{if eq .MaxUsers 0}}No new account gets in (max users 0); accounts already here keep working.{{else if eq $state "full"}}New accounts are refused now; raise the limit to let more in. Accounts already here keep working.{{else}}New accounts are refused once all are; accounts already here keep working.{{end}}</p>{{end}}
   <details class="fold"{{if $.NearMaxUsers}} open{{end}}>
@@ -292,9 +292,9 @@
     <button type="submit"{{if not $.MaxUsersEditable}} disabled{{end}}>Save</button>
   </form>
   {{if $.MaxUsersEditable}}
-  <p class="hint" id="max-users-mode">Managed here (MAX_USERS=initial:N in .env applies only to a new database). A plain MAX_USERS=N in .env would set it on every start instead. "No limit" wins over the number.</p>
+  <p class="hint" id="max-users-mode">Managed here (SYNC_MAX_USERS=initial:N in .env applies only to a new database). A plain SYNC_MAX_USERS=N in .env would set it on every start instead. "No limit" wins over the number.</p>
   {{else}}
-  <p class="hint" id="max-users-mode">Read-only: managed by MAX_USERS in .env; set MAX_USERS=initial:{{.Limit.Setting}} to manage it here.</p>
+  <p class="hint" id="max-users-mode">Read-only: managed by SYNC_MAX_USERS in .env; set SYNC_MAX_USERS=initial:{{.Limit.Setting}} to manage it here.</p>
   {{end}}
   </details>
   {{end}}

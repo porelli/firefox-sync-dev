@@ -9,7 +9,7 @@ x-sync-mysql: &sync-mysql
   image: mysql:8.4
   # no binary logging, like the MariaDB containers: no replica reads it, and it would keep
   # 30 days of every change (binlog_expire_logs_seconds). With it on, the init container's
-  # MAX_USERS procedure and trigger would also need log_bin_trust_function_creators (ERROR 1419)
+  # max users procedure and trigger would also need log_bin_trust_function_creators (ERROR 1419)
   # (through db/mysql/admin-user.sh, the admin UI's user, see docker-compose.yml)
   command: [sh, /ffs-db/admin-user.sh, mysqld, --disable-log-bin]
   healthcheck:
@@ -26,9 +26,9 @@ services:
     <<: *sync-mysql
     environment:
       MYSQL_RANDOM_ROOT_PASSWORD: "yes"
-      MYSQL_DATABASE: ${MARIADB_SYNCSTORAGE_DATABASE}
-      MYSQL_USER: ${MARIADB_SYNCSTORAGE_USER}
-      MYSQL_PASSWORD: ${MARIADB_SYNCSTORAGE_PASSWORD}
+      MYSQL_DATABASE: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+      MYSQL_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
+      MYSQL_PASSWORD: ${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}
     # replaces the syncstorage-db volume (same path): MySQL must not open MariaDB's data
     # files, an existing syncstorage-db volume is left as it is
     volumes:
@@ -38,9 +38,9 @@ services:
     <<: *sync-mysql
     environment:
       MYSQL_RANDOM_ROOT_PASSWORD: "yes"
-      MYSQL_DATABASE: ${MARIADB_TOKENSERVER_DATABASE}
-      MYSQL_USER: ${MARIADB_TOKENSERVER_USER}
-      MYSQL_PASSWORD: ${MARIADB_TOKENSERVER_PASSWORD}
+      MYSQL_DATABASE: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      MYSQL_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      MYSQL_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
     volumes:
       - tokenserver-db-mysql:/var/lib/mysql
 

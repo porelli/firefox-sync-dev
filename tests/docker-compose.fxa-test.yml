@@ -56,7 +56,7 @@ services:
   # the destinations of ADMIN_NOTIFY: records what it gets (tests/notify_sink.py), in the
   # Python of the Sync server's image
   notify-sink:
-    image: ${REPOSITORY}:${SYNCSTORAGE_IMAGE}-${SYNCSTORAGE_IMAGE_TAG}
+    image: ${IMAGE_REPOSITORY:-${REPOSITORY:-}}:${SYNC_IMAGE:-${SYNCSTORAGE_IMAGE:-}}-${SYNC_IMAGE_TAG:-${SYNCSTORAGE_IMAGE_TAG:-}}
     entrypoint: ["python3", "/notify_sink.py"]
     volumes:
       - ./tests/notify_sink.py:/notify_sink.py:ro

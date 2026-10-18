@@ -14,7 +14,7 @@ import (
 )
 
 // The storage database of syncstorage-rs: what each account keeps on the server.
-// MariaDB has its own database (MARIADB_SYNCSTORAGE_*), PostgreSQL shares the one
+// MariaDB has its own database (SYNC_STORAGE_DB_* in .env), PostgreSQL shares the one
 // of the tokenserver. The user id is the tokenserver uid.
 type StorageDB struct {
 	db       *sql.DB

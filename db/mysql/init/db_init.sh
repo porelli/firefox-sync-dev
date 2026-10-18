@@ -9,6 +9,25 @@ readonly REQUIRED_TABLES=("users" "services" "nodes")
 readonly SQL_TEMPLATE="/scripts/db_init.sql"
 readonly SQL_FILE="/tmp/db_init_processed.sql"
 
+# fail closed (the Sync server does not start without this container): a setting under both
+# names (FFS_BOTH_ENV_NAMES, compose; the new one wins, often a line added from
+# .env-example), and placeholders or empty values where the stack needs real ones
+if [ -n "${FFS_BOTH_ENV_NAMES:-}" ]; then
+  for pair in ${FFS_BOTH_ENV_NAMES}; do
+    echo "✗ ERROR: ${pair%%/*} and ${pair#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset ${pair#*/} in your shell (MIGRATING.md#renamed-settings)"
+  done
+  exit 1
+fi
+# not_placeholder <what> <value>: not empty, no <REPLACE_WITH_...> of .env-example
+not_placeholder() {
+  case "$2" in
+    "") echo "✗ ERROR: $1 is empty: set it in .env"; exit 1 ;;
+    *"<REPLACE_WITH_"*) echo "✗ ERROR: $1 is still the placeholder of .env-example ($2): set it in .env"; exit 1 ;;
+  esac
+}
+not_placeholder "the public Sync URL (SYNC_PUBLIC_URL)" "${DOMAIN:-}"
+not_placeholder "the tokenserver database password (SYNC_TOKENSERVER_DB_PASSWORD)" "${MARIADB_PASSWORD:-}"
+
 echo "=========================================="
 echo "Firefox Sync Database Initialization"
 echo "=========================================="
@@ -16,6 +35,16 @@ echo "Domain: ${DOMAIN}"
 echo "Max Users: ${MAX_USERS:-}"
 echo "Database: ${MARIADB_DATABASE}"
 echo "=========================================="
+
+# the old names of the settings (MIGRATING.md#renamed-settings) compose found in .env or in
+# its environment (FFS_OLD_ENV_NAMES): they still work, a later release removes them
+if [ -n "${FFS_OLD_ENV_NAMES:-}" ]; then
+  read -r -a old_names <<< "${FFS_OLD_ENV_NAMES}"
+  echo "WARNING: settings under their old names, in .env or in the environment docker compose runs in,"
+  echo "  which still work but will be removed in a later release: ${old_names[*]}"
+  echo "  ./prepare_environment.sh --upgrade renames them (MIGRATING.md#renamed-settings)"
+  echo "=========================================="
+fi
 
 # MAX_USERS: N or fixed:N is applied on every start (the admin UI shows it read-only),
 # initial:N only when there is no limit yet (first start), then it is managed in the
@@ -41,7 +70,7 @@ parse_max_users() {
 }
 
 if ! parse_max_users "${MAX_USERS:-}"; then
-  echo "✗ ERROR: MAX_USERS='${MAX_USERS:-}' is not valid: use a number from 0 to 2147483647"
+  echo "✗ ERROR: SYNC_MAX_USERS='${MAX_USERS:-}' is not valid: use a number from 0 to 2147483647"
   echo "  or unlimited, optionally prefixed with fixed: (the default, applied on every start) or"
   echo "  initial: (applied on the first start only, then managed in the admin UI)"
   exit 1
@@ -156,14 +185,14 @@ echo "Max users (configured): ${max_users_in_db}"
 echo "Domain: ${DOMAIN}"
 echo ""
 if [ "${MAX_USERS_MODE}" = fixed ]; then
-  echo "MAX_USERS=${MAX_USERS}: applied on every start, read-only in the admin UI."
-  echo "  To manage it in the admin UI (ADMIN.md) set MAX_USERS=initial:${MAX_USERS_VALUE} in .env."
+  echo "SYNC_MAX_USERS=${MAX_USERS}: applied on every start, read-only in the admin UI."
+  echo "  To manage it in the admin UI (ADMIN.md) set SYNC_MAX_USERS=initial:${MAX_USERS_VALUE} in .env."
 else
-  echo "MAX_USERS=${MAX_USERS}: applied only when there was no limit yet (first start),"
-  echo "  change it in the admin UI (ADMIN.md). A plain MAX_USERS=N in .env sets it on every start."
+  echo "SYNC_MAX_USERS=${MAX_USERS}: applied only when there was no limit yet (first start),"
+  echo "  change it in the admin UI (ADMIN.md). A plain SYNC_MAX_USERS=N in .env sets it on every start."
 fi
 [ "${max_users_in_db}" = "${MAX_USERS_VALUE}" ] || echo "  Kept the value in the database, set in the admin UI."
-echo "After changing MAX_USERS in .env:"
+echo "After changing SYNC_MAX_USERS in .env:"
 echo "  docker compose up -d   (the init container and the admin UI)"
 echo "  (Quadlets: systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-admin.service)"
 echo "=========================================="

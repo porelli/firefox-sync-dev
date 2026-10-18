@@ -4,13 +4,13 @@ After=firefox-sync-network.service firefox-sync-tokenserver-db-init.service fire
 Requires=firefox-sync-tokenserver-db-init.service firefox-sync-fxa-policy.service
 
 [Container]
-Image=%REPOSITORY%:admin-latest
+Image=%IMAGE_REPOSITORY%:admin-latest
 ContainerName=firefox-sync-admin
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=ffs-admin
 Environment="ADMIN_PASSWORD=%ADMIN_PASSWORD%"
 # initial:N: the admin UI manages max users, otherwise .env does (read-only)
-Environment="MAX_USERS=%MAX_USERS%"
+Environment="MAX_USERS=%SYNC_MAX_USERS%"
 # its own users and database, out of the Sync server's reach (DATABASES.md): one for its
 # database, one that reads the Sync data. It gets no password of the Sync users
 Environment="ADMIN_DB_USER=%ADMIN_DB_USER%"
@@ -18,17 +18,17 @@ Environment="ADMIN_DB_SYNC_USER=%ADMIN_DB_SYNC_USER%"
 Environment="ADMIN_DB_PASSWORD=%ADMIN_DB_PASSWORD%"
 Environment="ADMIN_DB_NAME=%ADMIN_DB_NAME%"
 Environment="TOKENSERVER_DB_TYPE=mysql"
-Environment="TOKENSERVER_DB_HOST=%MARIADB_TOKENSERVER_SERVER%"
-Environment="TOKENSERVER_DB_PORT=%MARIADB_TOKENSERVER_SERVER_PORT%"
-Environment="TOKENSERVER_DB_NAME=%MARIADB_TOKENSERVER_DATABASE%"
-Environment="TOKENSERVER_DB_USER=%MARIADB_TOKENSERVER_USER%"
-Environment="STORAGE_DB_HOST=%MARIADB_SYNCSTORAGE_SERVER%"
-Environment="STORAGE_DB_PORT=%MARIADB_SYNCSTORAGE_SERVER_PORT%"
-Environment="STORAGE_DB_NAME=%MARIADB_SYNCSTORAGE_DATABASE%"
-Environment="STORAGE_DB_USER=%MARIADB_SYNCSTORAGE_USER%"
+Environment="TOKENSERVER_DB_HOST=%SYNC_TOKENSERVER_DB_HOST%"
+Environment="TOKENSERVER_DB_PORT=%SYNC_TOKENSERVER_DB_PORT%"
+Environment="TOKENSERVER_DB_NAME=%SYNC_TOKENSERVER_DB_NAME%"
+Environment="TOKENSERVER_DB_USER=%SYNC_TOKENSERVER_DB_USER%"
+Environment="STORAGE_DB_HOST=%SYNC_STORAGE_DB_HOST%"
+Environment="STORAGE_DB_PORT=%SYNC_STORAGE_DB_PORT%"
+Environment="STORAGE_DB_NAME=%SYNC_STORAGE_DB_NAME%"
+Environment="STORAGE_DB_USER=%SYNC_STORAGE_DB_USER%"
 Environment="SYNCSTORAGE_URL=http://firefox-sync-syncstorage:8000"
 # the setup checks: the Sync node, the keys of the sign-ins, the accounts' email domain
-Environment="SYNCSTORAGE_DOMAIN=%SYNCSTORAGE_DOMAIN%"
+Environment="SYNCSTORAGE_DOMAIN=%SYNC_PUBLIC_URL%"
 Environment="FXA_OAUTH_SERVER_URL=%FXA_OAUTH_SERVER_URL%"
 Environment="FXA_EMAIL_DOMAIN=%FXA_EMAIL_DOMAIN%"
 # every hour the public https URLs and their certificates; false: never

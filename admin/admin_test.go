@@ -445,7 +445,7 @@ func TestMaxUsersReadOnly(t *testing.T) {
 	}
 	// refused before the database: there is none here, SetMaxUsers would panic
 	w := post(h, "/sync/max-users", url.Values{"csrf": {s.csrf}, "max_users": {"5"}}, c, nil)
-	if w.Code != http.StatusSeeOther || !strings.Contains(s.failed, "managed by MAX_USERS in .env") || s.message != "" {
+	if w.Code != http.StatusSeeOther || !strings.Contains(s.failed, "managed by SYNC_MAX_USERS in .env") || s.message != "" {
 		t.Errorf("status %d, failed %q, message %q", w.Code, s.failed, s.message)
 	}
 
@@ -458,13 +458,13 @@ func TestMaxUsersReadOnly(t *testing.T) {
 		return b.String()
 	}
 	page := render(false)
-	for _, want := range []string{`value="5" required disabled>`, `<button type="submit" disabled>Save</button>`, "managed by MAX_USERS in .env; set MAX_USERS=initial:5 to manage it here"} {
+	for _, want := range []string{`value="5" required disabled>`, `<button type="submit" disabled>Save</button>`, "managed by SYNC_MAX_USERS in .env; set SYNC_MAX_USERS=initial:5 to manage it here"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("read-only page without %q", want)
 		}
 	}
 	page = render(true)
-	if strings.Contains(page, "disabled>") || strings.Contains(page, "set MAX_USERS=initial:5") {
+	if strings.Contains(page, "disabled>") || strings.Contains(page, "set SYNC_MAX_USERS=initial:5") {
 		t.Error("editable page has a disabled form")
 	}
 }

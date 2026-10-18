@@ -261,7 +261,7 @@ func TestLimitsAlertOncePerState(t *testing.T) {
 		// near, then full, then raised: one event each
 		{sync(9, 10), acc(5, 10, false), []string{"9 of 10 accounts are taken (90% or more): new accounts are refused by the Sync server once all are"}},
 		{sync(9, 10), acc(5, 10, false), nil},
-		{sync(10, 10), acc(5, 10, false), []string{"10 of 10 accounts are taken (MAX_USERS): new accounts are refused by the Sync server until it is raised"}},
+		{sync(10, 10), acc(5, 10, false), []string{"10 of 10 accounts are taken (SYNC_MAX_USERS): new accounts are refused by the Sync server until it is raised"}},
 		{sync(10, 20), acc(5, 10, false), []string{"10 of 20 accounts are taken, under 90% again"}},
 		// the accounts: full, then no limit
 		{sync(10, 20), acc(10, 10, false), []string{"10 of 10 accounts are created (FXA_MAX_ACCOUNTS): sign-ups are refused until it is raised"}},

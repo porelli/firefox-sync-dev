@@ -26,7 +26,7 @@
 #                    has mozilla/fxa#21494 in its label org.firefox-sync.upstream-patches (upstream-patches.yml);
 #                    else mariadb:11.8, as for the installs from before, e.g. with Mozilla's images)
 #   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, MySQL 8.4
-#                    (FXA_MARIADB_IMAGE with FXA_DB=mariadb) (DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
+#                    (FXA_MARIADB_IMAGE with FXA_DB=mariadb) (SYNC_DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
 #                    DATABASES.md), container EXTDB, created with only the grants of
 #                    db/mysql/; kept with KEEP, reused by RERUN. fxa: only the accounts
 #                    there, with one user for the accounts and the sign-up policy
@@ -57,12 +57,12 @@ rnd() { tr -dc '[:alnum:]' < /dev/urandom 2> /dev/null | head -c 32; }
 ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee
 sed -e "s|<REPLACE_WITH_SOMETHING_SECURE>|RANDOM|" "${CODE}/.env-example" | while IFS= read -r line; do
   case "${line}" in *=RANDOM) echo "${line%RANDOM}$(rnd)" ;; *) echo "${line}" ;; esac
-done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test|" \
-    -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:$((28653 + SLOT_PORTS))|" \
-    -e "s|^MAX_USERS=.*|MAX_USERS=initial:10|" \
-    -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
-    -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${INIT_TAG}|" \
+done | sed -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.fxa.test|" \
+    -e "s|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=127.0.0.1:$((28653 + SLOT_PORTS))|" \
+    -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=initial:10|" \
+    -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=${REPOSITORY}|" \
+    -e "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${TAG}|" \
+    -e "s|^SYNC_INIT_IMAGE_TAG=.*|SYNC_INIT_IMAGE_TAG=${INIT_TAG}|" \
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.fxa.test|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1|" \
     -e "s|^FXA_CONTENT_URL=.*|FXA_CONTENT_URL=https://accounts.fxa.test|" \
@@ -123,9 +123,9 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
     # one user for both (DATABASES.md): a policy password left in .env must not be used
     sed -i "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=unused|" "${ENV_FILE}"
   else
-    sed -i -e "s|^DB_CONTAINERS=.*|DB_CONTAINERS=0|" -e "s|^MARIADB_TLS_VERIFY=.*|MARIADB_TLS_VERIFY=false|" \
-        -e "s|^MARIADB_TOKENSERVER_SERVER=.*|MARIADB_TOKENSERVER_SERVER=${EXTDB}|" \
-        -e "s|^MARIADB_SYNCSTORAGE_SERVER=.*|MARIADB_SYNCSTORAGE_SERVER=${EXTDB}|" \
+    sed -i -e "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|" -e "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|" \
+        -e "s|^SYNC_TOKENSERVER_DB_HOST=.*|SYNC_TOKENSERVER_DB_HOST=${EXTDB}|" \
+        -e "s|^SYNC_STORAGE_DB_HOST=.*|SYNC_STORAGE_DB_HOST=${EXTDB}|" \
         -e "s|^FXA_MYSQL_POLICY_USER=.*|FXA_MYSQL_POLICY_USER=ffs_policy|" \
         -e "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=$(rnd)|" "${ENV_FILE}"
   fi
@@ -145,7 +145,7 @@ COMPOSE_EXTRA=()
 if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   export EXTDB_NETWORK=${EXTDB}
   COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.external-db-fxa-test.yml")
-  [ "${DB_CONTAINERS:-1}" = 0 ] && COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.external-db-test.yml")
+  [ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.external-db-test.yml")
 fi
 # the server's name and version as the admin UI shows them, its client
 if [ "${FXA_DB}" = mariadb ]; then
@@ -213,7 +213,7 @@ check "$(grep -cxF "FXA_SMTP_PASS='${password}'" "${SETUP}/.env")" 1 "SMTP passw
 check "$(sed -n '/SELF-HOSTED MOZILLA ACCOUNTS/,$p' "${SETUP}/.env" | grep -v '^#' | grep -c REPLACE)" 0 "no placeholders left for the accounts"
 check "$(cd "${SETUP}" && docker compose config --services 2> /dev/null | grep -c '^fxa-')" 11 "compose stack with the accounts services (and the optional pairing server)"
 check "$(grep -c '^COMPOSE_PROFILES=admin$' "${SETUP}/.env")" 1 "admin UI enabled"
-check "$(grep -c '^MAX_USERS=initial:2$' "${SETUP}/.env")" 1 "max users managed in the admin UI (MAX_USERS=initial:2)"
+check "$(grep -c '^SYNC_MAX_USERS=initial:2$' "${SETUP}/.env")" 1 "max users managed in the admin UI (SYNC_MAX_USERS=initial:2)"
 check "$(grep -c '^FXA_SIGNUPS=allowlist$' "${SETUP}/.env") $(grep -c '^FXA_SIGNUP_ALLOWLIST=alice@example.org,@example.net$' "${SETUP}/.env")" "1 1" "sign-up allowlist"
 check "$(grep -c '^FXA_MAX_ACCOUNTS=initial:5$' "${SETUP}/.env")" 1 "max accounts managed in the admin UI (FXA_MAX_ACCOUNTS=initial:5)"
 # the security history, the last question: not answered, off
@@ -272,11 +272,11 @@ prepare_again postgres ""
 check "$?" 0 "prepare_environment.sh with PostgreSQL and self-hosted accounts"
 check "$(grep -c '^COMPOSE_FILE=docker-compose.sync-postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
 check "$(setup_compose config --services | grep -cxE 'postgres_db|fxa-auth|fxa-policy|ffs-admin')" 4 "compose stack with PostgreSQL, the accounts and the admin UI"
-check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db|MAX_USERS: "?initial:2"?)$')" 3 "admin UI for PostgreSQL and the accounts, with MAX_USERS"
+check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db|MAX_USERS: "?initial:2"?)$')" 3 "admin UI for PostgreSQL and the accounts, with SYNC_MAX_USERS"
 # Sync on MySQL 8.4 containers (SYNC_DB=mysql), the same mysql images
 prepare_again mysql ""
 check "$?" 0 "prepare_environment.sh with MySQL for Sync and self-hosted accounts"
-check "$(env_value SYNC_DB) $(env_value MARIADB_TLS_VERIFY) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" \
+check "$(env_value SYNC_DB) $(env_value SYNC_DB_TLS_VERIFY) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" \
   "mysql false 1" "Sync on MySQL 8.4 in .env, with the accounts"
 check "$(setup_compose config | sed -n '/^  tokenserver_db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:8\.4|source: tokenserver-db-mysql|- --disable-log-bin)$')" 3 \
   "tokenserver_db on MySQL 8.4 without binary logging, in its own volume"
@@ -294,7 +294,7 @@ check "$?" 0 "prepare_environment.sh with self-hosted accounts, without the admi
 check "$(grep -cE 'ADMIN_GATE_EXPORT_PORT|8091' "${SETUP}/config/nginx/fxa.conf")" 0 "no sign-up gate in the nginx example without the admin UI"
 check "$(grep -cE 'server_name admin\.|<ADMIN_' "${SETUP}/config/nginx/fxa.conf") [$(env_value ADMIN_FXA_CLIENT_ID)]" "0 []" "no admin UI sign-in without the admin UI"
 check "$(grep -c '^COMPOSE_PROFILES=' "${SETUP}/.env")" 0 "no compose profile without the admin UI"
-check "$(grep -c '^MAX_USERS=2$' "${SETUP}/.env")" 1 "plain MAX_USERS=2 without the admin UI"
+check "$(grep -c '^SYNC_MAX_USERS=2$' "${SETUP}/.env")" 1 "plain SYNC_MAX_USERS=2 without the admin UI"
 check "$(grep -c '^FXA_MAX_ACCOUNTS=unlimited$' "${SETUP}/.env")" 1 "max accounts unlimited by default, plain without the admin UI"
 check "$(setup_compose config --services | grep -cxE 'fxa-policy|ffs-admin')" 1 "sign-up policy without the admin UI"
 check "$(setup_compose config --services | grep -cx ffs-admin)" 0 "no admin UI service"
@@ -306,14 +306,14 @@ external_answers=("${answers[@]}" y db.example.org "" "" "" sync_storage "" y ""
 rm -f "${SETUP}/.env"
 printf '%s\n' "${external_answers[@]}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-external.log" 2>&1
 check "$?" 0 "prepare_environment.sh with your own database servers"
-check "$(env_value DB_CONTAINERS) $(env_value MARIADB_TLS_VERIFY) $(env_value MARIADB_TOKENSERVER_SERVER):$(env_value MARIADB_TOKENSERVER_SERVER_PORT) $(env_value MARIADB_SYNCSTORAGE_SERVER) $(env_value MARIADB_SYNCSTORAGE_DATABASE)" \
+check "$(env_value SYNC_DB_CONTAINERS) $(env_value SYNC_DB_TLS_VERIFY) $(env_value SYNC_TOKENSERVER_DB_HOST):$(env_value SYNC_TOKENSERVER_DB_PORT) $(env_value SYNC_STORAGE_DB_HOST) $(env_value SYNC_STORAGE_DB_NAME)" \
   "0 false db.example.org:3306 db.example.org sync_storage" "Sync on your own server in .env"
 check "$(env_value FXA_DB_CONTAINERS) $(env_value FXA_MYSQL_HOST):$(env_value FXA_MYSQL_PORT) $(env_value FXA_MYSQL_USER) $(env_value FXA_MYSQL_POLICY_USER) $(env_value FXA_MYSQL_POLICY_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$')" \
   "0 db.example.org:3307 fxa ffs_policy 1" "the accounts on your own server in .env"
 for f in database-setup.sql database-setup-fxa.sql; do
   check "$(stat -c %a "${SETUP}/${f}" 2> /dev/null) $(grep -c '@[A-Z_]*@' "${SETUP}/${f}")" "600 0" "${f}: for this user only, filled in"
 done
-check "$(grep -c "'tokenserver'@'%' IDENTIFIED BY '$(env_value MARIADB_TOKENSERVER_PASSWORD)'" "${SETUP}/database-setup.sql") $(grep -c 'ON `sync_storage`.\* TO' "${SETUP}/database-setup.sql")" \
+check "$(grep -c "'tokenserver'@'%' IDENTIFIED BY '$(env_value SYNC_TOKENSERVER_DB_PASSWORD)'" "${SETUP}/database-setup.sql") $(grep -c 'ON `sync_storage`.\* TO' "${SETUP}/database-setup.sql")" \
   "2 3" "database-setup.sql with the generated password (created, set again) and the names given"
 # the admin UI's own users and database, out of the Sync users' reach (the storage: the names
 # given; with the storage on another server, the commented statements for it)
@@ -383,9 +383,9 @@ answers[4]=postgres
 rm -f "${SETUP}/.env" "${SETUP}"/database-setup*.sql
 printf '%s\n' "${answers[@]}" y db.example.org "" "" "" n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-external-postgres.log" 2>&1
 check "$?" 0 "prepare_environment.sh with your own PostgreSQL server"
-check "$(env_value DB_CONTAINERS) $(env_value POSTGRES_SERVER):$(env_value POSTGRES_SERVER_PORT) $(env_value POSTGRES_DATABASE) $(env_value POSTGRES_USER) $(env_value FXA_DB_CONTAINERS)" \
+check "$(env_value SYNC_DB_CONTAINERS) $(env_value SYNC_POSTGRES_HOST):$(env_value SYNC_POSTGRES_PORT) $(env_value SYNC_POSTGRES_NAME) $(env_value SYNC_POSTGRES_USER) $(env_value FXA_DB_CONTAINERS)" \
   "0 db.example.org:5432 syncserver syncserver 1" "Sync on your own PostgreSQL server in .env"
-check "$(stat -c %a "${SETUP}/database-setup.sql" 2> /dev/null) $(grep -c '@[A-Z_]*@' "${SETUP}/database-setup.sql") $(grep -c "ROLE syncserver .*PASSWORD '$(env_value POSTGRES_PASSWORD)'" "${SETUP}/database-setup.sql") [$(ls "${SETUP}/database-setup-fxa.sql" 2> /dev/null)]" \
+check "$(stat -c %a "${SETUP}/database-setup.sql" 2> /dev/null) $(grep -c '@[A-Z_]*@' "${SETUP}/database-setup.sql") $(grep -c "ROLE syncserver .*PASSWORD '$(env_value SYNC_POSTGRES_PASSWORD)'" "${SETUP}/database-setup.sql") [$(ls "${SETUP}/database-setup-fxa.sql" 2> /dev/null)]" \
   "600 0 2 []" "database-setup.sql for PostgreSQL with the generated password, none for the built-in accounts"
 check "$(grep -c "ROLE ffs_admin_\(ui\|sync\) .*PASSWORD '$(env_value ADMIN_DB_PASSWORD)'" "${SETUP}/database-setup.sql") $(grep -cxE '(CREATE DATABASE ffs_admin OWNER ffs_admin_ui TEMPLATE template0 ALLOW_CONNECTIONS false|REVOKE ALL ON DATABASE ffs_admin FROM PUBLIC|ALTER DATABASE ffs_admin ALLOW_CONNECTIONS true|REVOKE CREATE ON SCHEMA public FROM PUBLIC);' "${SETUP}/database-setup.sql")" \
   "4 4" "database-setup.sql for PostgreSQL with the admin UI's roles and its own database, from template0"
@@ -442,10 +442,10 @@ dc down -v --remove-orphans > /dev/null 2>&1
 docker rm -f "${EXTDB}" > /dev/null 2>&1
 docker network rm "${EXTDB}" > /dev/null 2>&1
 if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
-  echo "== external database server ${EXTDB} (${EXTDB_IMAGE}) for $([ "${DB_CONTAINERS:-1}" = 0 ] && echo "Sync and ")the accounts"
+  echo "== external database server ${EXTDB} (${EXTDB_IMAGE}) for $([ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && echo "Sync and ")the accounts"
   docker network create "${EXTDB}" > /dev/null
   # as DATABASES.md says: native passwords for the accounts' driver, binary logging
-  # with the trigger and function of the sign-up policy and of MAX_USERS
+  # with the trigger and function of the sign-up policy and of SYNC_MAX_USERS
   docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/mysql -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" \
     "${EXTDB_IMAGE}" "${EXTDB_ARGS[@]}" > /dev/null
   extdb_admin() { docker exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" "${DB_CLIENT}" -uroot -h 127.0.0.1 --protocol=tcp -sN "$@"; }
@@ -456,9 +456,9 @@ if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   else
     fxa_template() { cat "$1"; }
   fi
-  { [ "${DB_CONTAINERS:-1}" = 0 ] && sed -e "s|@TOKENSERVER_DATABASE@|${MARIADB_TOKENSERVER_DATABASE}|g" -e "s|@TOKENSERVER_USER@|${MARIADB_TOKENSERVER_USER}|g" \
-        -e "s|@TOKENSERVER_PASSWORD@|${MARIADB_TOKENSERVER_PASSWORD}|g" -e "s|@SYNCSTORAGE_DATABASE@|${MARIADB_SYNCSTORAGE_DATABASE}|g" \
-        -e "s|@SYNCSTORAGE_USER@|${MARIADB_SYNCSTORAGE_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${MARIADB_SYNCSTORAGE_PASSWORD}|g" \
+  { [ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && sed -e "s|@SYNC_TOKENSERVER_DATABASE@|${SYNC_TOKENSERVER_DB_NAME}|g" -e "s|@SYNC_TOKENSERVER_USER@|${SYNC_TOKENSERVER_DB_USER}|g" \
+        -e "s|@SYNC_TOKENSERVER_PASSWORD@|${SYNC_TOKENSERVER_DB_PASSWORD}|g" -e "s|@SYNC_STORAGE_DATABASE@|${SYNC_STORAGE_DB_NAME}|g" \
+        -e "s|@SYNC_STORAGE_USER@|${SYNC_STORAGE_DB_USER}|g" -e "s|@SYNC_STORAGE_PASSWORD@|${SYNC_STORAGE_DB_PASSWORD}|g" \
         -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_PASSWORD}|g" \
         "${CODE}/db/mysql/sync.sql"
     fxa_template "${CODE}/db/mysql/fxa-${FXA_DB}.sql" | sed -e "s|@FXA_USER@|${FXA_MYSQL_USER}|g" -e "s|@FXA_PASSWORD@|${FXA_MYSQL_PASSWORD}|g" \
@@ -496,7 +496,7 @@ echo "== sign-up, OAuth and sync through self-hosted FxA"
 dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
   -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
-  -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e FXA_PAIRING_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
+  -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e FXA_PAIRING_URL -e SYNC_PUBLIC_URL -e MAILPIT_URL=http://mailpit:8025 \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD \
   -e PYTHONPATH=/app:/app/tools -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint /bin/sh syncstorage \
@@ -509,11 +509,11 @@ admin_tests() {
 dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
   -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
-  -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
+  -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNC_PUBLIC_URL -e MAILPIT_URL=http://mailpit:8025 \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_DIRECT_URL=http://fxa-auth:9000 -e ADMIN_FXA_CLIENT_ID \
   -e FXA_DB_SERVER="${FXA_DB_SERVER}" -e FXA_ACCOUNT_EVENTS -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
   -e FXA_TEST_DB_URL="mysql://${FXA_MYSQL_USER}:${FXA_MYSQL_PASSWORD}@${FXA_MYSQL_HOST}:${FXA_MYSQL_PORT}/fxa" \
-  -e ADMIN_DB_URL="mysql://${ADMIN_DB_USER}:${ADMIN_DB_PASSWORD}@${MARIADB_TOKENSERVER_SERVER}:${MARIADB_TOKENSERVER_SERVER_PORT}/${ADMIN_DB_NAME}" \
+  -e ADMIN_DB_URL="mysql://${ADMIN_DB_USER}:${ADMIN_DB_PASSWORD}@${SYNC_TOKENSERVER_DB_HOST}:${SYNC_TOKENSERVER_DB_PORT}/${ADMIN_DB_NAME}" \
   --entrypoint /bin/sh syncstorage \
   -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py $1 > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
 }
@@ -524,26 +524,26 @@ check "$?" 0 "sign-up policy and admin UI tests"
 fi
 
 if [ -z "${RERUN:-}" ]; then
-echo "== settings from the admin UI survive a restart, .env changes replace them (MAX_USERS: a plain number)"
+echo "== settings from the admin UI survive a restart, .env changes replace them (SYNC_MAX_USERS: a plain number)"
 if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   fxa_sql() { docker exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" "${DB_CLIENT}" -uroot -sN -e "$1" < /dev/null 2> /dev/null; }
   echo "== external database server: nothing more than the documented grants"
-  sync_external=$([ "${DB_CONTAINERS:-1}" = 0 ] && echo 1 || echo 0)
+  sync_external=$([ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && echo 1 || echo 0)
   check "$(dc ps -a --format '{{.Service}}' | grep -cxE 'syncstorage_db|tokenserver_db') $(dc ps -a --format '{{.Service}}' | grep -cx fxa-db)" \
     "$([ "${sync_external}" = 1 ] && echo 0 || echo 2) 0" "no database container in the project for what is on your server"
-  check "$(fxa_sql "SELECT COUNT(*) FROM mysql.user WHERE (Super_priv = 'Y' OR Create_user_priv = 'Y') AND user IN ('fxa', 'ffs_policy', 'ffs_admin', '${MARIADB_TOKENSERVER_USER}', '${MARIADB_SYNCSTORAGE_USER}')")" 0 "no SUPER or CREATE USER for the stack's users"
-  check "$(fxa_sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name IN ('BeforeInsertUser', 'ffs_signup_policy')")" $((sync_external + 1)) "sign-up (and MAX_USERS) triggers on your server"
+  check "$(fxa_sql "SELECT COUNT(*) FROM mysql.user WHERE (Super_priv = 'Y' OR Create_user_priv = 'Y') AND user IN ('fxa', 'ffs_policy', 'ffs_admin', '${SYNC_TOKENSERVER_DB_USER}', '${SYNC_STORAGE_DB_USER}')")" 0 "no SUPER or CREATE USER for the stack's users"
+  check "$(fxa_sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name IN ('BeforeInsertUser', 'ffs_signup_policy')")" $((sync_external + 1)) "sign-up (and SYNC_MAX_USERS) triggers on your server"
   check "$(fxa_sql "SELECT DEFINER FROM information_schema.triggers WHERE trigger_name = 'ffs_signup_policy'")" "${FXA_MYSQL_POLICY_USER:-${FXA_MYSQL_USER}}@%" "sign-up policy installed by ${FXA_MYSQL_POLICY_USER:-${FXA_MYSQL_USER}}"
   # the view runs as the policy user: all 5 databases only with its SELECT on them
   check "$(fxa_sql "SELECT COUNT(*) FROM ffs.database_sizes")" 5 "the admin UI sees the sizes of all the accounts databases"
 else
   fxa_sql() { dc exec -T fxa-db "${DB_CLIENT}" -uroot -p"${FXA_MYSQL_PASSWORD}" -sN -e "$1" 2> /dev/null; }
 fi
-if [ "${DB_CONTAINERS:-1}" = 0 ]; then
-  ts_sql() { docker exec -i -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null 2> /dev/null; }
+if [ "${SYNC_DB_CONTAINERS:-1}" = 0 ]; then
+  ts_sql() { docker exec -i -e MYSQL_PWD="${SYNC_TOKENSERVER_DB_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -u"${SYNC_TOKENSERVER_DB_USER}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" < /dev/null 2> /dev/null; }
   admin_sql() { docker exec -i -e MYSQL_PWD="${ADMIN_DB_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -u"${ADMIN_DB_USER}" "${ADMIN_DB_NAME}" -sN -e "$1" < /dev/null 2> /dev/null; }
 else
-  ts_sql() { dc exec -T tokenserver_db mariadb -u"${MARIADB_TOKENSERVER_USER}" -p"${MARIADB_TOKENSERVER_PASSWORD}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" 2> /dev/null; }
+  ts_sql() { dc exec -T tokenserver_db mariadb -u"${SYNC_TOKENSERVER_DB_USER}" -p"${SYNC_TOKENSERVER_DB_PASSWORD}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" 2> /dev/null; }
   # the admin UI's own database (the event log, the backup runs), as its user
   admin_sql() { dc exec -T tokenserver_db mariadb -u"${ADMIN_DB_USER}" -p"${ADMIN_DB_PASSWORD}" "${ADMIN_DB_NAME}" -sN -e "$1" 2> /dev/null; }
 fi
@@ -587,16 +587,16 @@ dc run --rm --no-deps fxa-policy > /dev/null 2>&1
 check "$?" 0 "sign-up policy restarted"
 check "$(fxa_sql "SELECT COUNT(*) FROM ffs.signup_allowlist WHERE entry = 'kept@example.net'")" 1 "allowlist set in the admin UI kept"
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
-check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 7 "max users set in the admin UI kept (MAX_USERS=initial:10)"
+check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 7 "max users set in the admin UI kept (SYNC_MAX_USERS=initial:10)"
 set_env FXA_SIGNUP_ALLOWLIST @example.com
 dc run --rm --no-deps fxa-policy > /dev/null 2>&1
 check "$(fxa_sql "SELECT GROUP_CONCAT(entry) FROM ffs.signup_allowlist")" "@example.com" "allowlist changed in .env applied"
-set_env MAX_USERS 11
+set_env SYNC_MAX_USERS 11
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
-check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "plain MAX_USERS=11 in .env applied over the admin UI"
-set_env MAX_USERS initial:12
+check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "plain SYNC_MAX_USERS=11 in .env applied over the admin UI"
+set_env SYNC_MAX_USERS initial:12
 dc run --rm --no-deps tokenserver_db_init > /dev/null 2>&1
-check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "MAX_USERS=initial:12 keeps the value in the database"
+check "$(ts_sql "SELECT config_value FROM config WHERE config_key = 'max_users'")" 11 "SYNC_MAX_USERS=initial:12 keeps the value in the database"
 # FXA_MAX_ACCOUNTS the same way (not set here: initial:unlimited); test_fxa_admin.py set it to unlimited on the page
 fxa_max() { fxa_sql "SELECT value FROM ffs.settings WHERE name = 'max_accounts'"; }
 check "$(fxa_max)" unlimited "max accounts set in the admin UI kept (FXA_MAX_ACCOUNTS not set)"
@@ -631,7 +631,7 @@ if [ "${FXA_ACCOUNT_EVENTS}" = true ]; then
 fi
 fi
 
-if [ -z "${RERUN:-}" ] && [ "${FXA_DB_CONTAINERS:-1}" = 1 ] && [ "${DB_CONTAINERS:-1}" = 1 ]; then
+if [ -z "${RERUN:-}" ] && [ "${FXA_DB_CONTAINERS:-1}" = 1 ] && [ "${SYNC_DB_CONTAINERS:-1}" = 1 ]; then
   echo "== backups of the accounts and of Sync, the accounts restored into a scratch database"
   dc exec -T backup-fxa sh /ffs-backup/backup.sh now > "${WORK}/backup.log" 2>&1
   check "$?" 0 "a backup of the accounts databases"

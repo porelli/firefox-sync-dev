@@ -116,7 +116,7 @@ type limitKind struct {
 }
 
 var (
-	syncLimit = limitKind{name: "Max users", key: "near-max-users", setting: "MAX_USERS", href: "#sync", link: "Max users",
+	syncLimit = limitKind{name: "Max users", key: "near-max-users", setting: "SYNC_MAX_USERS", href: "#sync", link: "Max users",
 		noun: "accounts", verb: "taken", refused: "new accounts are refused by the Sync server"}
 	accountsLimit = limitKind{name: "Max accounts", key: "max-accounts", setting: "FXA_MAX_ACCOUNTS", href: "#signups", link: "Max accounts",
 		noun: "accounts", verb: "created", refused: "sign-ups are refused"}

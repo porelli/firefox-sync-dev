@@ -875,7 +875,7 @@ func (a *App) account(r *http.Request, uid string) *FxaAccount {
 	return acc
 }
 
-var errMaxUsersReadOnly = errors.New("max users is managed by MAX_USERS in .env: set MAX_USERS=initial:N there to manage it here")
+var errMaxUsersReadOnly = errors.New("max users is managed by SYNC_MAX_USERS in .env: set SYNC_MAX_USERS=initial:N there to manage it here")
 
 func (a *App) setMaxUsers(w http.ResponseWriter, r *http.Request, s *session) {
 	if !a.maxUsersEditable {

@@ -52,7 +52,7 @@ func (a *App) prometheus(w http.ResponseWriter, r *http.Request) {
 		gauge("ffs_sync_accounts", "Accounts using this Sync server", int64(st.Users))
 		// MAX_USERS=unlimited: no limit to compare with
 		if !st.Unlimited {
-			gauge("ffs_sync_max_users", "Maximum accounts (MAX_USERS)", int64(st.MaxUsers))
+			gauge("ffs_sync_max_users", "Maximum accounts (SYNC_MAX_USERS)", int64(st.MaxUsers))
 		}
 		gauge("ffs_sync_near_max_users", "1 when 90% of max users or more are taken", flag(nearMaxUsers(st)))
 		gauge("ffs_sync_full", "1 when every place of max users is taken: new accounts are refused", flag(st.Limit().State() == limitFull))

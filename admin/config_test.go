@@ -91,7 +91,10 @@ func secretName(name string) bool {
 // the secrets of .env the admin UI needs, and nothing else: no SYNC_MASTER_SECRET, no
 // keys of the accounts service
 var adminSecrets = map[string]bool{"ADMIN_PASSWORD": true, "ADMIN_OIDC_CLIENT_SECRET": true, "ADMIN_FXA_CLIENT_SECRET": true, "ADMIN_METRICS_TOKEN": true,
-	"FXA_SMTP_PASS": true, "ADMIN_DB_PASSWORD": true, "MARIADB_TOKENSERVER_PASSWORD": true, "MARIADB_SYNCSTORAGE_PASSWORD": true, "POSTGRES_PASSWORD": true, "POSTGRES_SYNC_PASSWORD": true, "FXA_ADMIN_DB_PASSWORD": true}
+	"FXA_SMTP_PASS": true, "ADMIN_DB_PASSWORD": true, "FXA_ADMIN_DB_PASSWORD": true,
+	"SYNC_TOKENSERVER_DB_PASSWORD": true, "SYNC_STORAGE_DB_PASSWORD": true, "SYNC_POSTGRES_PASSWORD": true, "SYNC_POSTGRES_APP_PASSWORD": true,
+	// their old names, still read when the new ones are not set (MIGRATING.md#renamed-settings)
+	"MARIADB_TOKENSERVER_PASSWORD": true, "MARIADB_SYNCSTORAGE_PASSWORD": true, "POSTGRES_PASSWORD": true, "POSTGRES_SYNC_PASSWORD": true}
 
 func TestConfigVarsClassified(t *testing.T) {
 	// what the code reads
@@ -276,7 +279,7 @@ func TestConfigPage(t *testing.T) {
 		app.health.backups = []BackupStatus{{Scope: "sync", Last: BackupRun{OK: true, Finished: time.Now()}, LastOK: BackupRun{OK: true, Finished: time.Now()}}}
 	})
 	for setting, want := range map[string]string{
-		"Max users":                  "5 (1 used) MAX_USERS MAX_USERS=initial:3: set to 3 on a new database only, then on the overview",
+		"Max users":                  "5 (1 used) SYNC_MAX_USERS SYNC_MAX_USERS=initial:3: set to 3 on a new database only, then on the overview",
 		"Databases":                  "MySQL 8.4 SYNC_DB the tokenserver and the storage databases, on a container of the stack",
 		"Tokenserver database":       "ffs_admin_sync on tokenserver_db:3306, database tokenserver",
 		"Tokenserver password":       "set ADMIN_DB_PASSWORD of ffs_admin_sync",
@@ -284,7 +287,7 @@ func TestConfigPage(t *testing.T) {
 		"Admin UI database password": "set ADMIN_DB_PASSWORD of ffs_admin_ui and ffs_admin_sync",
 		"Spike of Sync errors":       "10% of the requests in 15 minutes, 20 errors at least (default)",
 		"A database growing fast":    "over 1024 MB a day (default) ADMIN_DB_GROWTH_MB , ADMIN_DB_GROWTH_FACTOR",
-		"Sync node handed out":       "https://sync.example.com SYNCSTORAGE_DOMAIN",
+		"Sync node handed out":       "https://sync.example.com SYNC_PUBLIC_URL",
 		"Inactive after":             "90 days (default) ADMIN_STALE_DAYS",
 		"Password":                   "not set ADMIN_PASSWORD password sign-in off",
 		"Trusted header":             "off (default) ADMIN_AUTH_HEADER",
@@ -312,7 +315,7 @@ func TestConfigPage(t *testing.T) {
 	page = configPage(t, false, func(app *App, _ *fakeFxa) { app.sync.own = nil })
 	for setting, want := range map[string]string{
 		"Tokenserver database": "tokenserver on tokenserver_db:3306, database tokenserver",
-		"Tokenserver password": "set MARIADB_TOKENSERVER_PASSWORD",
+		"Tokenserver password": "set SYNC_TOKENSERVER_DB_PASSWORD",
 		"Admin UI database":    "the tokenserver database, as the Sync server&#39;s user ADMIN_DB_PASSWORD an install from before",
 	} {
 		if got := configRowOf(page, setting); !strings.HasPrefix(got, want) {
@@ -452,7 +455,7 @@ func TestConfigPageReadsLikeTheProgram(t *testing.T) {
 		t.Errorf("no hint of ADMIN_INSECURE_COOKIE=false: %s", hints)
 	}
 	// http://localhost is fine for Firefox; two parts on one host name are not
-	if strings.Contains(hints, "SYNCSTORAGE_DOMAIN is http://localhost:8000") {
+	if strings.Contains(hints, "SYNC_PUBLIC_URL is http://localhost:8000") {
 		t.Errorf("a hint of http://localhost: %s", hints)
 	}
 	if !strings.Contains(hints, "FXA_AUTH_URL and FXA_PROFILE_URL are both on API.example.com") {

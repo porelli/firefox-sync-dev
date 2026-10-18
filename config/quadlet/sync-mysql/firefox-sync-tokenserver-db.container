@@ -12,9 +12,9 @@ Volume=firefox-sync-tokenserver-db-mysql.volume:/var/lib/mysql
 Volume=%SCRIPT_DIR%/db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro,z
 
 Environment=MYSQL_RANDOM_ROOT_PASSWORD=yes
-Environment=MYSQL_DATABASE=%MARIADB_TOKENSERVER_DATABASE%
-Environment=MYSQL_USER=%MARIADB_TOKENSERVER_USER%
-Environment=MYSQL_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%
+Environment=MYSQL_DATABASE=%SYNC_TOKENSERVER_DB_NAME%
+Environment=MYSQL_USER=%SYNC_TOKENSERVER_DB_USER%
+Environment=MYSQL_PASSWORD=%SYNC_TOKENSERVER_DB_PASSWORD%
 
 # the admin UI's users, created by db/mysql/admin-user.sh: ADMIN_DB_USER for its
 # own database (the event log, the audit trail...), ADMIN_DB_SYNC_USER with SELECT
@@ -26,11 +26,11 @@ Environment=ADMIN_DB_PASSWORD=%ADMIN_DB_PASSWORD%
 Environment=ADMIN_DB_NAME=%ADMIN_DB_NAME%
 
 # no binary logging, like MariaDB: no replica reads it, it would keep 30 days of every
-# change, and the init container's MAX_USERS trigger would need log_bin_trust_function_creators
+# change, and the init container's max users trigger would need log_bin_trust_function_creators
 Exec=sh /ffs-db/admin-user.sh mysqld --disable-log-bin
 
 # over TCP: during the first start the image runs a temporary server on the socket only
-HealthCmd=mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%MARIADB_TOKENSERVER_USER% -p%MARIADB_TOKENSERVER_PASSWORD% --silent
+HealthCmd=mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%SYNC_TOKENSERVER_DB_USER% -p%SYNC_TOKENSERVER_DB_PASSWORD% --silent
 HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=10

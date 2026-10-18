@@ -38,7 +38,7 @@ func TestLimitsOnTheOverview(t *testing.T) {
 	page := getPage(h, "/", c).Body.String()
 	for _, want := range []string{
 		// the tiles
-		`<strong id="sync-users">4</strong> <small>accounts, no limit</small>`, `MAX_USERS=<span id="sync-max-users">unlimited</span>`,
+		`<strong id="sync-users">4</strong> <small>accounts, no limit</small>`, `SYNC_MAX_USERS=<span id="sync-max-users">unlimited</span>`,
 		`<span class="value">1 <small>of 1 allowed</small></span>`, "full: sign-ups are refused",
 		// the Sync card and its form: no number required, the box checked
 		"4 accounts use this Sync server, with no limit", `<input id="max_users" name="max_users" type="number" min="0" max="2147483647" disabled>`,
@@ -113,7 +113,7 @@ func TestLimitRowsCountOnlyWhenNearOrFull(t *testing.T) {
 		t.Errorf("rows: %+v", rows)
 	}
 	// max users 0: nobody new on purpose, fine
-	if row := syncLimit.row(Limit{Count: 3}); !row.Up || row.Detail != "3 accounts, no new ones (MAX_USERS 0)" {
+	if row := syncLimit.row(Limit{Count: 3}); !row.Up || row.Detail != "3 accounts, no new ones (SYNC_MAX_USERS 0)" {
 		t.Errorf("0: %+v", row)
 	}
 }
@@ -125,7 +125,7 @@ func TestNeedsAttentionLimits(t *testing.T) {
 		change     func(*attentionInput)
 		href, text string
 	}{
-		{"max users full", func(in *attentionInput) { in.status.Users = 10 }, "#sync", "10 of 10 accounts are taken (MAX_USERS): new accounts are refused by the Sync server until it is raised."},
+		{"max users full", func(in *attentionInput) { in.status.Users = 10 }, "#sync", "10 of 10 accounts are taken (SYNC_MAX_USERS): new accounts are refused by the Sync server until it is raised."},
 		{"max accounts near", func(in *attentionInput) { in.accountLimit = &Limit{Count: 45, Max: 50} }, "#signups", "45 of 50 accounts are created (90% or more): sign-ups are refused once all are."},
 		{"max accounts full", func(in *attentionInput) { in.accountLimit = &Limit{Count: 50, Max: 50} }, "#signups", "50 of 50 accounts are created (FXA_MAX_ACCOUNTS)"},
 	} {

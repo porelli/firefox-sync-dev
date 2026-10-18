@@ -7,9 +7,9 @@ public URL, so tokens and hawk signatures are the ones a real client gets.
 
 Environment:
   SYNC_SERVER_URL                  where syncstorage listens (http://syncstorage:8000)
-  SYNCSTORAGE_DOMAIN               public URL (the node URL), e.g. https://sync.example.com
+  SYNC_PUBLIC_URL               public URL (the node URL), e.g. https://sync.example.com
   SYNC_TOKENSERVER__DATABASE_URL   tokenserver database, to check what got stored
-  MAX_USERS                        must be 1 for the user limit tests
+  SYNC_MAX_USERS                        must be 1 for the user limit tests
 """
 
 import json
@@ -27,7 +27,7 @@ from webob import Request
 from integration_tests.tokenserver.helpers import build_oauth_headers
 
 SERVER = os.environ.get("SYNC_SERVER_URL", "http://syncstorage:8000")
-DOMAIN = os.environ["SYNCSTORAGE_DOMAIN"].rstrip("/")
+DOMAIN = os.environ["SYNC_PUBLIC_URL"].rstrip("/")
 PUBLIC = urlparse.urlparse(DOMAIN)
 PROXY_HEADERS = {"Host": PUBLIC.netloc, "X-Forwarded-Proto": PUBLIC.scheme}
 EMAIL_DOMAIN = "api-accounts.stage.mozaws.net"
@@ -132,7 +132,7 @@ def test_second_device_same_account(db):
 
 
 def test_max_users_rejects_new_account(db):
-    assert os.environ.get("MAX_USERS") == "1"
+    assert os.environ.get("SYNC_MAX_USERS") == "1"
     res = login("bob")
     assert res.status_code != 200, res.text
     assert accounts(db) == 1

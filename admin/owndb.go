@@ -376,8 +376,8 @@ func copiedSummary(copied map[string]int64) string {
 }
 
 // superuserOwner: the owner of the Sync tables when it is a superuser, "" otherwise. The
-// PostgreSQL container of the stack makes POSTGRES_USER one (the image does); without
-// POSTGRES_SYNC_USER it is also the Sync server's role, the owner of the tables, and then
+// PostgreSQL container of the stack makes SYNC_POSTGRES_USER one (the image does); without
+// SYNC_POSTGRES_APP_USER it is also the Sync server's role, the owner of the tables, and then
 // reaches every database of the server. With it the init container gives the tables to
 // that role.
 func (s *SyncDB) superuserOwner(ctx context.Context) string {
@@ -432,8 +432,8 @@ func ownDBCheck(s *SyncDB, st moveState, quadlets bool) setupCheck {
 		c.Text = fmt.Sprintf("The event log is in %s, out of the Sync server's reach, and the tokenserver database has admin UI tables again (%s), from a backup of before or from the Sync server's user: they were not copied. "+
 			"Look at them, then drop them as the tokenserver user.", s.ownName, strings.Join(st.Left, ", "))
 	case st.Superuser != "":
-		c.Text = fmt.Sprintf("The event log is in its own database %s, but the Sync tables belong to %s, a superuser of the PostgreSQL server (the stack's database container makes POSTGRES_USER one): the Sync server connects as it and can still read and change the event log. "+
-			"Run ./prepare_environment.sh --upgrade (it sets POSTGRES_SYNC_USER and POSTGRES_SYNC_PASSWORD) and docker compose up -d: the Sync server gets a role of its own, no superuser (DATABASES.md).", s.ownName, st.Superuser)
+		c.Text = fmt.Sprintf("The event log is in its own database %s, but the Sync tables belong to %s, a superuser of the PostgreSQL server (the stack's database container makes SYNC_POSTGRES_USER one): the Sync server connects as it and can still read and change the event log. "+
+			"Run ./prepare_environment.sh --upgrade (it sets SYNC_POSTGRES_APP_USER and SYNC_POSTGRES_APP_PASSWORD) and docker compose up -d: the Sync server gets a role of its own, no superuser (DATABASES.md).", s.ownName, st.Superuser)
 	default:
 		c.OK = true
 		c.Text = fmt.Sprintf("The event log, the audit trail and the notes are in %s, which only the admin UI's database user reaches: the Sync server's users cannot read or change them.", s.ownName)

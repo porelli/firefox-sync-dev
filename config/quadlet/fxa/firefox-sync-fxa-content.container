@@ -21,7 +21,7 @@ Environment="FXA_URL=%FXA_AUTH_URL%"
 Environment="FXA_OAUTH_URL=%FXA_AUTH_URL%"
 Environment="FXA_PROFILE_URL=%FXA_PROFILE_URL%"
 Environment="FXA_PROFILE_IMAGES_URL=%FXA_PROFILE_URL%/img"
-Environment="SYNC_TOKENSERVER_URL=%SYNCSTORAGE_DOMAIN%"
+Environment="SYNC_TOKENSERVER_URL=%SYNC_PUBLIC_URL%"
 # as in fxa-auth: the admin UI never skips the sign-in code (Mozilla's default + the admin UI)
 Environment="SERVICES_WITH_EMAIL_VERIFICATION=32aaeb6f1c21316a,%ADMIN_FXA_CLIENT_ID%"
 Environment="FLOW_ID_KEY=%FXA_FLOW_ID_KEY%"

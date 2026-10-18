@@ -10,9 +10,9 @@ Volume=firefox-sync-tokenserver-db.volume:/var/lib/mysql
 Volume=%SCRIPT_DIR%/db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro,z
 
 Environment=MARIADB_RANDOM_ROOT_PASSWORD=true
-Environment=MARIADB_DATABASE=%MARIADB_TOKENSERVER_DATABASE%
-Environment=MARIADB_USER=%MARIADB_TOKENSERVER_USER%
-Environment=MARIADB_PASSWORD=%MARIADB_TOKENSERVER_PASSWORD%
+Environment=MARIADB_DATABASE=%SYNC_TOKENSERVER_DB_NAME%
+Environment=MARIADB_USER=%SYNC_TOKENSERVER_DB_USER%
+Environment=MARIADB_PASSWORD=%SYNC_TOKENSERVER_DB_PASSWORD%
 Environment=MARIADB_AUTO_UPGRADE=true
 # the admin UI's users, created by db/mysql/admin-user.sh: ADMIN_DB_USER for its
 # own database (the event log, the audit trail...), ADMIN_DB_SYNC_USER with SELECT

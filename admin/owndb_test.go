@@ -234,9 +234,9 @@ func TestMoveOwnTables(t *testing.T) {
 	if compose, quadlets := ownDBHint(false), ownDBHint(true); !strings.Contains(compose, "--upgrade") || strings.Contains(quadlets, "--upgrade") || !strings.Contains(quadlets, "Quadlets") {
 		t.Errorf("the line of the log: %q, %q", compose, quadlets)
 	}
-	// PostgreSQL's container without POSTGRES_SYNC_USER: the Sync server's role is a superuser
+	// PostgreSQL's container without SYNC_POSTGRES_APP_USER: the Sync server's role is a superuser
 	s = &SyncDB{own: sql.OpenDB(&fakeFxa{}), ownName: "ffs_admin", postgres: true}
-	if c := ownDBCheck(s, moveState{Superuser: "syncserver"}, false); c.OK || !strings.Contains(c.Text, "belong to syncserver, a superuser") || !strings.Contains(c.Text, "POSTGRES_SYNC_USER") {
+	if c := ownDBCheck(s, moveState{Superuser: "syncserver"}, false); c.OK || !strings.Contains(c.Text, "belong to syncserver, a superuser") || !strings.Contains(c.Text, "SYNC_POSTGRES_APP_USER") {
 		t.Errorf("check with a superuser: %+v", c)
 	}
 }

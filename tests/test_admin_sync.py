@@ -1,9 +1,9 @@
 """The admin UI with Mozilla's accounts: the Sync part only (no FxA database).
 
 Runs after test_client_flow.py in the syncstorage-rs image, see tests/e2e.sh: the
-account "alice" of the mock FxA syncs, MAX_USERS is 1 (MAX_USERS=initial:1 in .env, so
+account "alice" of the mock FxA syncs, SYNC_MAX_USERS is 1 (SYNC_MAX_USERS=initial:1 in .env, so
 that the page manages it). tests/e2e.sh also runs the read-only test (-k read_only) while
-the stack has a plain MAX_USERS=1. The test stack sets
+the stack has a plain SYNC_MAX_USERS=1. The test stack sets
 ADMIN_STALE_DAYS=0, METRICS_FLUSH_SECONDS=5, HEALTH_CHECK_SECONDS=5 and METRICS_TOKEN
 (tests/docker-compose.test.yml).
 
@@ -11,7 +11,7 @@ Environment (besides those of test_client_flow.py):
   ADMIN_URL       the admin UI inside the stack's network (http://ffs-admin:8080)
   ADMIN_PASSWORD  its password
   BACKEND         mysql or postgres
-  MAX_USERS_SETTING  MAX_USERS of the stack as in .env (initial:1 or 1), MAX_USERS the number
+  MAX_USERS_SETTING  SYNC_MAX_USERS of the stack as in .env (initial:1 or 1), SYNC_MAX_USERS the number
   ADMIN_DB_URL    the admin UI's own database (the event log, the notes), as its user
 """
 
@@ -33,9 +33,9 @@ from test_client_flow import EMAIL_DOMAIN, PROXY_HEADERS, SERVER, Storage, db, l
 ADMIN = os.environ["ADMIN_URL"].rstrip("/")
 MYSQL = os.environ["BACKEND"] == "mysql"
 METRICS_TOKEN = "ffs-test-metrics-token"
-# MAX_USERS=initial:N: max users is changed on the page, otherwise it is read-only there
+# SYNC_MAX_USERS=initial:N: max users is changed on the page, otherwise it is read-only there
 EDITABLE = os.environ.get("MAX_USERS_SETTING", "").startswith("initial:")
-editable = pytest.mark.skipif(not EDITABLE, reason="needs MAX_USERS=initial:N")
+editable = pytest.mark.skipif(not EDITABLE, reason="needs SYNC_MAX_USERS=initial:N")
 # PostgreSQL keeps the storage in the tokenserver database; the admin UI has its own
 DB_SIZES = (("Tokenserver", "Sync storage") if MYSQL else ("Sync (tokenserver and storage)",)) + ("Admin UI",)
 
@@ -171,7 +171,7 @@ def test_health(admin):
     limit = re.search(r"<td>Max users</td><td>(.*?)</td>", health)
     assert limit, health
     if users >= max_users:
-        assert '<span class="pill warn">full</span>' in limit.group(1) and f"{users} of {max_users} accounts are taken (MAX_USERS)" in limit.group(1), limit.group(1)
+        assert '<span class="pill warn">full</span>' in limit.group(1) and f"{users} of {max_users} accounts are taken (SYNC_MAX_USERS)" in limit.group(1), limit.group(1)
     else:
         assert f"{users} of {max_users} taken" in limit.group(1), limit.group(1)
     # the thresholds of the errors and of the growth of the databases (too little history
@@ -265,13 +265,13 @@ def test_schema_levels(admin):
 def test_setup_checks_and_nodes(admin):
     page = admin.get("/")
     checks = {row[0]: row for row in table(page, "setup")}
-    domain = os.environ["SYNCSTORAGE_DOMAIN"].rstrip("/")
+    domain = os.environ["SYNC_PUBLIC_URL"].rstrip("/")
     assert checks["Sync node"][1] == "ok" and domain in checks["Sync node"][2], checks
     # the mock FxA serves the keys of the sign-ins (FXA_OAUTH_SERVER_URL=http://mock_fxa:6000)
     assert checks["Sign-in keys (FXA_OAUTH_SERVER_URL)"][1] == "ok" and "http://mock_fxa:6000/v1/jwks answers" in checks["Sign-in keys (FXA_OAUTH_SERVER_URL)"][2], checks
     assert checks["Account emails (FXA_EMAIL_DOMAIN)"][1] == "ok", checks
     # the event log in its own database: out of the Sync server's reach (in the stack's
-    # PostgreSQL container the Sync server has its own role, POSTGRES_SYNC_USER, no superuser)
+    # PostgreSQL container the Sync server has its own role, SYNC_POSTGRES_APP_USER, no superuser)
     log = checks["Event log (ADMIN_DB_PASSWORD)"]
     assert log[1] == "ok" and "users cannot read or change them" in log[2], log
     # users per node, with its capacity, load, places and backoff
@@ -301,7 +301,7 @@ def test_email_domain_mismatch(admin, db):
 def test_connect_a_device(admin):
     # Mozilla's accounts: Firefox is pointed to this tokenserver
     page = admin.get("/connect")
-    domain = os.environ["SYNCSTORAGE_DOMAIN"].rstrip("/")
+    domain = os.environ["SYNC_PUBLIC_URL"].rstrip("/")
     steps = page.split('id="device-steps"')[1]
     assert f"identity.sync.tokenserver.uri and set it to {domain}/1.0/sync/1.5" in steps, steps[:2000]
     assert "Custom Sync Token Server URI" in steps and "autoconfig" not in steps
@@ -316,12 +316,12 @@ def config_row(page, setting):
 
 def test_configuration_page(admin):
     page = admin.get("/config")
-    domain = os.environ["SYNCSTORAGE_DOMAIN"].rstrip("/")
-    assert config_row(page, "Sync server").startswith(f"{domain} SYNCSTORAGE_DOMAIN"), config_row(page, "Sync server")
+    domain = os.environ["SYNC_PUBLIC_URL"].rstrip("/")
+    assert config_row(page, "Sync server").startswith(f"{domain} SYNC_PUBLIC_URL"), config_row(page, "Sync server")
     assert config_row(page, "Sync node handed out").startswith(domain)
     # where max users comes from: initial:N is managed on the overview, N is fixed
     row = config_row(page, "Max users")
-    assert f"MAX_USERS={os.environ['MAX_USERS_SETTING']}:" in row and ("then on the overview" in row) == EDITABLE, row
+    assert f"SYNC_MAX_USERS={os.environ['MAX_USERS_SETTING']}:" in row and ("then on the overview" in row) == EDITABLE, row
     # the Sync databases, the settings of the test stack (tests/docker-compose.test.yml)
     assert ("Databases" in page) == MYSQL and ("PostgreSQL, tokenserver and storage in one database" in page) == (not MYSQL)
     if MYSQL:
@@ -401,17 +401,17 @@ def test_prometheus(admin):
     assert re.search(r'^ffs_statsd_total\{name="syncstorage_request_[^"]*"\} [1-9]', metrics, re.M), metrics[-3000:]
 
 
-@pytest.mark.skipif(EDITABLE, reason="MAX_USERS=initial:N, the page manages max users")
+@pytest.mark.skipif(EDITABLE, reason="SYNC_MAX_USERS=initial:N, the page manages max users")
 def test_max_users_read_only(db):
     # not the admin fixture: this runs before test_client_flow.py, without alice
     admin = Admin()
     page = admin.get("/")
     before = re.search(r'id="sync-max-users">(\d+)<', page).group(1)
     assert re.search(r'<input id="max_users" [^>]*required disabled>', page), page[:3000]
-    assert f"managed by MAX_USERS in .env; set MAX_USERS=initial:{before} to manage it here" in page
+    assert f"managed by SYNC_MAX_USERS in .env; set SYNC_MAX_USERS=initial:{before} to manage it here" in page
     csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
     res = admin.http.post(f"{ADMIN}/sync/max-users", data={"csrf": csrf, "max_users": str(int(before) + 1)}, timeout=30)
-    assert res.status_code == 200 and "managed by MAX_USERS in .env" in res.text, res.text[:3000]
+    assert res.status_code == 200 and "managed by SYNC_MAX_USERS in .env" in res.text, res.text[:3000]
     assert "Max users set" not in res.text
     assert db.execute(sqltext("SELECT config_value FROM config WHERE config_key = 'max_users'")).scalar() == before
     assert re.search(r'id="sync-max-users">' + before + "<", admin.get("/"))
@@ -800,14 +800,14 @@ def test_near_max_users_line(admin, db, admin_db):
         # every place taken: a line, a link to the form, the health row (counted by the
         # light), gauges, an event (and alert) once
         page = admin.post("/sync/max-users", max_users=str(users))
-        line = f"{users} of {users} accounts are taken (MAX_USERS): new accounts are refused by the Sync server until it is raised."
+        line = f"{users} of {users} accounts are taken (SYNC_MAX_USERS): new accounts are refused by the Sync server until it is raised."
         assert (line, "#sync") in attention_of(page), attention_of(page)
         assert 'id="sync">' in page and 'id="sync-limit-state">full: new accounts are refused<' in page
         health = page.split('<table id="health"')[1].split("</table>")[0]
         assert re.search(r'<td>Max users</td><td><span class="pill warn">full</span>', health), health
         assert re.search(r'id="health-light">.*?<span class="n">\d+</span><span class="word"><span class="part"> parts?</span> to check', page, re.S), page[:2000]
         assert "ffs_sync_near_max_users 1\n" in metrics() and "ffs_sync_full 1\n" in metrics()
-        query = sqltext("SELECT COUNT(*) FROM ffs_events WHERE kind = 'attention' AND detail LIKE '%accounts are taken (MAX_USERS)%'")
+        query = sqltext("SELECT COUNT(*) FROM ffs_events WHERE kind = 'attention' AND detail LIKE '%accounts are taken (SYNC_MAX_USERS)%'")
         deadline = time.time() + 30
         while admin_db.execute(query).scalar() == 0 and time.time() < deadline:
             time.sleep(1)
@@ -823,13 +823,13 @@ def test_near_max_users_line(admin, db, admin_db):
 
 @editable
 def test_unlimited_max_users(admin, db):
-    """No limit (MAX_USERS=initial:unlimited, or "No limit" on the page): the trigger lets everybody in"""
+    """No limit (SYNC_MAX_USERS=initial:unlimited, or "No limit" on the page): the trigger lets everybody in"""
     before = re.search(r'id="sync-max-users">(\d+)<', admin.get("/")).group(1)
     bob = f"bob-unlimited@{EMAIL_DOMAIN}"
     try:
         page = admin.post("/sync/max-users", max_users=before, unlimited="1")
         assert "Max users set to unlimited" in page and 'id="sync-max-users">unlimited<' in page, page[:3000]
-        assert "with no limit (<code>MAX_USERS=unlimited</code>)" in page
+        assert "with no limit (<code>SYNC_MAX_USERS=unlimited</code>)" in page
         assert re.search(r'<input type="checkbox" name="unlimited" value="1" checked>', page)
         assert db.execute(sqltext("SELECT config_value FROM config WHERE config_key = 'max_users'")).scalar() == "unlimited"
         # a new account: let in, not counted against anything

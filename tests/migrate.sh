@@ -30,8 +30,8 @@
 # there: each one must be found, verbatim, in MIGRATING.md (guide()), so a command changed
 # in the guide must be changed here too.
 # The new stack is a copy of this tree set up like a user's install (.env, COMPOSE_FILE),
-# with MAX_USERS=2 and the admin UI; checked: the init container, the SQL of "Checking the
-# result", the client (same uids, on the new node, the data as written, writable), MAX_USERS
+# with SYNC_MAX_USERS=2 and the admin UI; checked: the init container, the SQL of "Checking the
+# result", the client (same uids, on the new node, the data as written, writable), max users
 # (a third account refused at 2, let in at 3), the admin UI's first page, a restart.
 #
 # Runs on Docker (amd64 images run emulated elsewhere: binfmt). Own compose projects
@@ -108,7 +108,7 @@ client() {
   local net=$1 server=$2 domain=$3; shift 3
   docker run --rm --network "${net}" --user root --entrypoint sh \
     -v "${TESTS}:/tests:ro" -v "${STATE}:/state" \
-    -e SYNC_SERVER_URL="${server}" -e SYNCSTORAGE_DOMAIN="${domain}" -e ADMIN_URL=http://ffs-admin:8080 \
+    -e SYNC_SERVER_URL="${server}" -e SYNC_PUBLIC_URL="${domain}" -e ADMIN_URL=http://ffs-admin:8080 \
     -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
     "${TEST_IMAGE}" -c "cd /app && python3 /tests/migrate_client.py $*" < /dev/null
 }
@@ -142,32 +142,32 @@ dst_prepare() {
     mysql) files=docker-compose.yml:docker-compose.sync-mysql.yml ;;
     postgres) backend=postgres files=docker-compose.sync-postgres.yml ;;
   esac
-  sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|" \
-      -e "s|^MARIADB_SYNCSTORAGE_PASSWORD=.*|MARIADB_SYNCSTORAGE_PASSWORD=$(rnd)|" \
-      -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(rnd)|" \
+  sed -e "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=$(rnd)|" \
+      -e "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=$(rnd)|" \
+      -e "s|^SYNC_POSTGRES_PASSWORD=.*|SYNC_POSTGRES_PASSWORD=$(rnd)|" \
       -e "s|^SYNC_MASTER_SECRET=.*|SYNC_MASTER_SECRET=$(rnd)|" \
-      -e "s|^METRICS_HASH_SECRET=.*|METRICS_HASH_SECRET=$(rnd)|" \
+      -e "s|^SYNC_METRICS_HASH_SECRET=.*|SYNC_METRICS_HASH_SECRET=$(rnd)|" \
       -e "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$(rnd)|" \
       -e "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=$(rnd)|" \
-      -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=${NEW_DOMAIN}|" \
-      -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:${PORT}|" \
+      -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=${NEW_DOMAIN}|" \
+      -e "s|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=127.0.0.1:${PORT}|" \
       -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:$((PORT + 20))|" \
-      -e "s|^MAX_USERS=.*|MAX_USERS=2|" \
+      -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=2|" \
       -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|" \
       -e "s|^SYNC_DB=.*|SYNC_DB=$([ "${DST_DB}" = mysql ] && echo mysql || echo mariadb)|" \
-      -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
-      -e "s|^SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-${backend}|" \
-      -e "s|^SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-${backend}-init|" \
-      -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-      -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
+      -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=${REPOSITORY}|" \
+      -e "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-${backend}|" \
+      -e "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-${backend}-init|" \
+      -e "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${TAG}|" \
+      -e "s|^SYNC_INIT_IMAGE_TAG=.*|SYNC_INIT_IMAGE_TAG=${TAG}|" \
       -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" \
       -e "/^# COMPOSE_FILE=/d" \
       -e "s|<REPLACE_WITH_SOMETHING_SECURE>|$(rnd)|" \
       -e "s|<REPLACE_WITH_[A-Z_]*>|placeholder.invalid|g" \
       "${CODE}/.env-example" > "${DST}/.env"
   # the PostgreSQL container: the Sync server's own role, as prepare_environment.sh sets it
-  [ "${DST_DB}" = postgres ] && sed -i -e "s|^POSTGRES_SYNC_USER=.*|POSTGRES_SYNC_USER=syncserver_app|" \
-    -e "s|^POSTGRES_SYNC_PASSWORD=.*|POSTGRES_SYNC_PASSWORD=$(rnd)|" "${DST}/.env"
+  [ "${DST_DB}" = postgres ] && sed -i -e "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|" \
+    -e "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(rnd)|" "${DST}/.env"
   dst_test_env "${files}"
 }
 
@@ -192,7 +192,7 @@ dst_sql() {
     mysql) dst exec -T tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -sN -e "$0"' "$1" ;;
     # as the Sync server's role, the owner of the tables (never the superuser, DATABASES.md)
     postgres) dst exec -T postgres_db sh -c 'PGPASSWORD="$1" psql -h 127.0.0.1 -U "$2" -d "$POSTGRES_DB" -tA -F "	" -c "$0"' "$1" \
-      "$(grep '^POSTGRES_SYNC_PASSWORD=' "${DST}/.env" | cut -d= -f2)" "$(grep '^POSTGRES_SYNC_USER=' "${DST}/.env" | cut -d= -f2)" ;;
+      "$(grep '^SYNC_POSTGRES_APP_PASSWORD=' "${DST}/.env" | cut -d= -f2)" "$(grep '^SYNC_POSTGRES_APP_USER=' "${DST}/.env" | cut -d= -f2)" ;;
   esac < /dev/null 2> /dev/null
 }
 wait_init() { timeout 600 docker wait "$(dst ps -a -q tokenserver_db_init)"; }
@@ -279,16 +279,16 @@ dst_verify() {
   client "$(dst_net)" http://syncstorage:8000 "${domain}" check
   check "$?" 0 "the client reads its data back through firefox-sync"
   client "$(dst_net)" http://syncstorage:8000 "${domain}" new carol refused
-  check "$?" 0 "MAX_USERS=2 counts the moved accounts: a third one is refused"
+  check "$?" 0 "SYNC_MAX_USERS=2 counts the moved accounts: a third one is refused"
   client "$(dst_net)" http://syncstorage:8000 "${domain}" admin 2
   check "$?" 0 "the admin UI lists the moved accounts"
-  echo "== MAX_USERS=3, restart"
-  sed -i 's/^MAX_USERS=.*/MAX_USERS=3/' "${DST}/.env"
+  echo "== SYNC_MAX_USERS=3, restart"
+  sed -i 's/^SYNC_MAX_USERS=.*/SYNC_MAX_USERS=3/' "${DST}/.env"
   dst up -d > /dev/null 2>&1
   check "$(wait_init)" 0 "init container exit code (restart)"
   check "$(hb)" 200 "/__heartbeat__ after the restart"
   client "$(dst_net)" http://syncstorage:8000 "${domain}" new carol ok
-  check "$?" 0 "MAX_USERS=3: the third account is let in"
+  check "$?" 0 "SYNC_MAX_USERS=3: the third account is let in"
   client "$(dst_net)" http://syncstorage:8000 "${domain}" check
   check "$?" 0 "the client reads its data back after the restart"
   check "$(dst logs syncstorage 2>&1 | grep -ciE 'panicked|"status":5[0-9][0-9]')" 0 "no panics or 5xx in the Sync server's logs"
@@ -859,6 +859,16 @@ EOF
   rm -rf "${DST}/config" "${DST}/db" "${DST}/syncstorage-rs-init" "${DST}/syncstorage-rs-init-postgres"
   cp -r "${CODE}/config" "${CODE}/db" "${DST}/"
   mkdir -p "${DST}/tests" && cp "${TESTS}/docker-compose.migrate.yml" "${DST}/tests/"
+  # "./prepare_environment.sh --upgrade": the old names of the settings renamed (the values
+  # as they are), the passwords of the admin UI's database users. Before the lines of
+  # .env-example: added first, their new names would hide the values under the old ones
+  local renamed
+  renamed=$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" "${DST}/.env")
+  cp "${CODE}/prepare_environment.sh" "${DST}/"
+  (cd "${DST}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
+  check "$? $(grep -cE '^ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}$' "${DST}/.env")" "0 1" "./prepare_environment.sh --upgrade sets ADMIN_DB_PASSWORD" || cat "${WORK}/upgrade.log"
+  check "$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" "${DST}/.env") $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log")" "0 ${renamed}" \
+    "./prepare_environment.sh --upgrade renames the ${renamed} old setting names of that .env" || cat "${WORK}/upgrade.log"
   # "Add the lines of .env-example that your .env lacks, with their default values"
   local key added=0
   while IFS= read -r line; do
@@ -866,21 +876,17 @@ EOF
     grep -q "^${key}=" "${DST}/.env" || { echo "${line}" >> "${DST}/.env"; added=$((added + 1)); }
   done < <(grep -E '^[A-Z_]+=' "${CODE}/.env-example")
   echo "  ${added} lines added from .env-example"
-  # "./prepare_environment.sh --upgrade": the passwords of the admin UI's database users
-  cp "${CODE}/prepare_environment.sh" "${DST}/"
-  (cd "${DST}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
-  check "$? $(grep -cE '^ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}$' "${DST}/.env")" "0 1" "./prepare_environment.sh --upgrade sets ADMIN_DB_PASSWORD" || cat "${WORK}/upgrade.log"
   if [ "${kind}" = first ]; then
     # the first release: one user and password for both databases, no MAX_USERS
     local user pass
     user=$(sed -n 's/^MARIADB_USER=//p' "${DST}/.env") pass=$(sed -n 's/^MARIADB_PASSWORD=//p' "${DST}/.env")
-    sed -i -e "s|^MARIADB_TOKENSERVER_USER=.*|MARIADB_TOKENSERVER_USER=${user}|" -e "s|^MARIADB_SYNCSTORAGE_USER=.*|MARIADB_SYNCSTORAGE_USER=${user}|" \
-        -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=${pass}|" -e "s|^MARIADB_SYNCSTORAGE_PASSWORD=.*|MARIADB_SYNCSTORAGE_PASSWORD=${pass}|" \
-        -e "s|^MAX_USERS=.*|MAX_USERS=2|" "${DST}/.env"
+    sed -i -e "s|^SYNC_TOKENSERVER_DB_USER=.*|SYNC_TOKENSERVER_DB_USER=${user}|" -e "s|^SYNC_STORAGE_DB_USER=.*|SYNC_STORAGE_DB_USER=${user}|" \
+        -e "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${pass}|" -e "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=${pass}|" \
+        -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=2|" "${DST}/.env"
   fi
   # the images under test instead of the published ones, the admin UI, the mock FxA
-  sed -i -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-      -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${TAG}|" \
+  sed -i -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=${REPOSITORY}|" -e "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${TAG}|" \
+      -e "s|^SYNC_INIT_IMAGE_TAG=.*|SYNC_INIT_IMAGE_TAG=${TAG}|" \
       -e "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$(rnd)|" -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:$((PORT + 20))|" \
       -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" -e "/^COMPOSE_FILE=/d" -e "/^# tests\/migrate.sh/d" "${DST}/.env"
   sed -i "/^FXA_OAUTH_SERVER_URL=/d" "${DST}/.env"

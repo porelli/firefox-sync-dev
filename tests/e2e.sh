@@ -27,17 +27,19 @@
 #                   gateway (the host) at .1 is not
 #   SYNC_DB         mysql: the mysql backend on MySQL 8.4 containers (docker-compose.sync-mysql.yml)
 #                   instead of MariaDB (default mariadb); own project, PORT 28654 and TEST_SUBNET 10.231.4.0/24
-#   EXTERNAL_DB     set to 1 for a database server outside the stack (DB_CONTAINERS=0, DATABASES.md),
+#   EXTERNAL_DB     set to 1 for a database server outside the stack (SYNC_DB_CONTAINERS=0, DATABASES.md),
 #                   created with only the grants of db/<engine>/sync.sql: MySQL 8.4 with binary logging
 #                   for mysql, a PostgreSQL 18 owner that is no superuser for postgres; on its own
 #                   network (EXTDB_SUBNET, default: 10.232.1.0/24 mysql, 10.232.2.0/24 postgres)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the install from before below runs its compose files, its admin UI and its
 #                   init image (built from it), then upgrades to this tree. Default: this tree
-#                   without ADMIN_DB_PASSWORD (and POSTGRES_SYNC_USER), the same layout
+#                   without ADMIN_DB_PASSWORD (and SYNC_POSTGRES_APP_USER), the same layout
 # The stack starts as an install from before ADMIN_DB_PASSWORD (the admin UI's tables in the
 # tokenserver database, as the Sync server's user), then is upgraded: they move into the admin
-# UI's own database, which the Sync server's users cannot read or change.
+# UI's own database, which the Sync server's users cannot read or change. That install's .env
+# has the old names of the Sync settings (MIGRATING.md#renamed-settings), which compose still
+# reads; the upgrade renames them with ./prepare_environment.sh --upgrade.
 set -u
 
 BACKEND=${1:?usage: $0 <mysql|postgres>}
@@ -78,23 +80,23 @@ PROFILES=admin,backup
 MASTER_SECRET=$(rnd)
 # upstream's tokenserver tests expect the stage FxA email domain, the mock FxA
 # server and the metrics hash secret to be the master secret
-sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|" \
-    -e "s|^MARIADB_SYNCSTORAGE_PASSWORD=.*|MARIADB_SYNCSTORAGE_PASSWORD=$(rnd)|" \
-    -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(rnd)|" \
+sed -e "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=$(rnd)|" \
+    -e "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=$(rnd)|" \
+    -e "s|^SYNC_POSTGRES_PASSWORD=.*|SYNC_POSTGRES_PASSWORD=$(rnd)|" \
     -e "s|^SYNC_MASTER_SECRET=.*|SYNC_MASTER_SECRET=${MASTER_SECRET}|" \
-    -e "s|^METRICS_HASH_SECRET=.*|METRICS_HASH_SECRET=${MASTER_SECRET}|" \
-    -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://ffs-e2e.invalid|" \
-    -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:${PORT}|" \
-    -e "s|^MAX_USERS=.*|MAX_USERS=1|" \
+    -e "s|^SYNC_METRICS_HASH_SECRET=.*|SYNC_METRICS_HASH_SECRET=${MASTER_SECRET}|" \
+    -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://ffs-e2e.invalid|" \
+    -e "s|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=127.0.0.1:${PORT}|" \
+    -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=1|" \
     -e "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=${PROFILES}|" \
     -e "s|^BACKUP_KEEP=.*|BACKUP_KEEP=1|" \
     -e "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=$(rnd)|" \
     -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:$((PORT + 20))|" \
-    -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
-    -e "s|^SYNCSTORAGE_IMAGE=.*|SYNCSTORAGE_IMAGE=syncstorage-rs-${BACKEND}|" \
-    -e "s|^SYNCSTORAGE_INIT_IMAGE=.*|SYNCSTORAGE_INIT_IMAGE=syncstorage-rs-${BACKEND}-init|" \
-    -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${INIT_TAG}|" \
+    -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=${REPOSITORY}|" \
+    -e "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-${BACKEND}|" \
+    -e "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-${BACKEND}-init|" \
+    -e "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${TAG}|" \
+    -e "s|^SYNC_INIT_IMAGE_TAG=.*|SYNC_INIT_IMAGE_TAG=${INIT_TAG}|" \
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api-accounts.stage.mozaws.net|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://mock_fxa:6000|" \
     -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" \
@@ -105,7 +107,7 @@ sed -e "s|^MARIADB_TOKENSERVER_PASSWORD=.*|MARIADB_TOKENSERVER_PASSWORD=$(rnd)|"
     "${CODE}/.env-example" > "${ENV_FILE}"
 # the stack's PostgreSQL container: the Sync server's own role, no superuser (DATABASES.md)
 if [ "${BACKEND}" = postgres ] && [ -z "${EXTERNAL_DB:-}" ]; then
-  sed -i -e "s|^POSTGRES_SYNC_USER=.*|POSTGRES_SYNC_USER=syncserver_app|" -e "s|^POSTGRES_SYNC_PASSWORD=.*|POSTGRES_SYNC_PASSWORD=$(rnd)|" "${ENV_FILE}"
+  sed -i -e "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|" -e "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(rnd)|" "${ENV_FILE}"
 fi
 EXTDB=
 COMPOSE_EXTRA=()
@@ -125,19 +127,19 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
   export TEST_TRUSTED_PROXIES=${TEST_TRUSTED},${EXTDB_SUBNET%.0/24}.128/25
   COMPOSE_EXTRA=(-f "${TESTS}/docker-compose.external-db-test.yml")
   [ "${BACKEND}" = mysql ] && DATABASE_SERVER=MySQL
-  sed -i -e "s|^DB_CONTAINERS=.*|DB_CONTAINERS=0|" -e "s|^MARIADB_TLS_VERIFY=.*|MARIADB_TLS_VERIFY=false|" \
-      -e "s|^MARIADB_TOKENSERVER_SERVER=.*|MARIADB_TOKENSERVER_SERVER=${EXTDB}|" \
-      -e "s|^MARIADB_SYNCSTORAGE_SERVER=.*|MARIADB_SYNCSTORAGE_SERVER=${EXTDB}|" \
-      -e "s|^POSTGRES_SERVER=.*|POSTGRES_SERVER=${EXTDB}|" "${ENV_FILE}"
+  sed -i -e "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|" -e "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|" \
+      -e "s|^SYNC_TOKENSERVER_DB_HOST=.*|SYNC_TOKENSERVER_DB_HOST=${EXTDB}|" \
+      -e "s|^SYNC_STORAGE_DB_HOST=.*|SYNC_STORAGE_DB_HOST=${EXTDB}|" \
+      -e "s|^SYNC_POSTGRES_HOST=.*|SYNC_POSTGRES_HOST=${EXTDB}|" "${ENV_FILE}"
 fi
 set -a; source "${ENV_FILE}"; set +a
 # the admin UI's own database users, the Sync server's role in the PostgreSQL container
 # (set_env empties them until the upgrade)
-ADMIN_DB_SECRET=${ADMIN_DB_PASSWORD} SYNC_ROLE=${POSTGRES_SYNC_USER} SYNC_ROLE_SECRET=${POSTGRES_SYNC_PASSWORD}
+ADMIN_DB_SECRET=${ADMIN_DB_PASSWORD} SYNC_ROLE=${SYNC_POSTGRES_APP_USER} SYNC_ROLE_SECRET=${SYNC_POSTGRES_APP_PASSWORD}
 if [ "${BACKEND}" = mysql ]; then
-  ADMIN_DB_URL=mysql://${ADMIN_DB_USER}:${ADMIN_DB_SECRET}@${MARIADB_TOKENSERVER_SERVER}:${MARIADB_TOKENSERVER_SERVER_PORT}/${ADMIN_DB_NAME}
+  ADMIN_DB_URL=mysql://${ADMIN_DB_USER}:${ADMIN_DB_SECRET}@${SYNC_TOKENSERVER_DB_HOST}:${SYNC_TOKENSERVER_DB_PORT}/${ADMIN_DB_NAME}
 else
-  ADMIN_DB_URL=postgres://${ADMIN_DB_USER}:${ADMIN_DB_SECRET}@${POSTGRES_SERVER}:${POSTGRES_SERVER_PORT}/${ADMIN_DB_NAME}
+  ADMIN_DB_URL=postgres://${ADMIN_DB_USER}:${ADMIN_DB_SECRET}@${SYNC_POSTGRES_HOST}:${SYNC_POSTGRES_PORT}/${ADMIN_DB_NAME}
 fi
 # the admin UI under test: ADMIN_IMAGE as is (pulled when missing), or built from admin/
 ADMIN_GIVEN=${ADMIN_IMAGE:-}
@@ -190,17 +192,45 @@ admin_healthy() {
   state ffs-admin Health.Status
 }
 # set a value in the env file and in this shell (the shell environment wins over --env-file)
-set_env() { sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"; }
+# the lines of .env of the renamed settings: under their new names, under their old ones
+NEW_RE="^($(IFS='|'; echo "${RENAMED_SETTINGS[*]%%=*}"))="
+OLD_RE="^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))="
+# (with OLD_NAMES=1, a renamed setting under its old name: the shell keeps the new one, not
+# exported)
+set_env() {
+  local pair
+  if [ -n "${OLD_NAMES:-}" ]; then
+    for pair in "${RENAMED_SETTINGS[@]}"; do
+      [ "${pair%%=*}" = "$1" ] || continue
+      sed -i "s|^${pair#*=}=.*|${pair#*=}=$2|" "${ENV_FILE}"; export "${pair#*=}=$2"
+      printf -v "$1" '%s' "$2"
+      return
+    done
+  fi
+  sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"
+}
+# the .env of an install from before the SYNC_ names: the old names in the env file and in
+# compose's environment (not the new ones, which the shell keeps for the checks)
+use_old_names() {
+  local pair new old
+  for pair in "${RENAMED_SETTINGS[@]}"; do
+    new=${pair%%=*} old=${pair#*=}
+    sed -i "s|^${new}=|${old}=|" "${ENV_FILE}"
+    # shellcheck disable=SC2163 # (the variable named by new)
+    export "${old}=${!new-}"; export -n "${new}"
+  done
+  OLD_NAMES=1
+}
 
 sql() {
   if [ -n "${EXTDB}" ] && [ "${BACKEND}" = mysql ]; then
-    docker exec -i -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" "${EXTDB}" mysql -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null
+    docker exec -i -e MYSQL_PWD="${SYNC_TOKENSERVER_DB_PASSWORD}" "${EXTDB}" mysql -u"${SYNC_TOKENSERVER_DB_USER}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" < /dev/null
   elif [ -n "${EXTDB}" ]; then
-    docker exec -i -e PGPASSWORD="${POSTGRES_PASSWORD}" "${EXTDB}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DATABASE}" -tA -c "$1" < /dev/null
+    docker exec -i -e PGPASSWORD="${SYNC_POSTGRES_PASSWORD}" "${EXTDB}" psql -h 127.0.0.1 -U "${SYNC_POSTGRES_USER}" -d "${SYNC_POSTGRES_NAME}" -tA -c "$1" < /dev/null
   elif [ "${BACKEND}" = mysql ]; then
-    dc exec -T -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" tokenserver_db "${DB_CLIENT}" -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" -sN -e "$1" < /dev/null
+    dc exec -T -e MYSQL_PWD="${SYNC_TOKENSERVER_DB_PASSWORD}" tokenserver_db "${DB_CLIENT}" -u"${SYNC_TOKENSERVER_DB_USER}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" < /dev/null
   else
-    dc exec -T postgres_db psql -U "${POSTGRES_USER}" -d "${POSTGRES_DATABASE}" -tA -c "$1" < /dev/null
+    dc exec -T postgres_db psql -U "${SYNC_POSTGRES_USER}" -d "${SYNC_POSTGRES_NAME}" -tA -c "$1" < /dev/null
   fi
 }
 
@@ -217,14 +247,14 @@ db_as() { # user password database query [storage]
     dc exec -T -e PGPASSWORD="$2" postgres_db psql -h 127.0.0.1 -U "$1" -d "$3" -tA -c "$4" < /dev/null
   fi
 }
-SYNC_DB_NAME=$([ "${BACKEND}" = mysql ] && echo "${MARIADB_TOKENSERVER_DATABASE}" || echo "${POSTGRES_DATABASE}")
+SYNC_DB_NAME=$([ "${BACKEND}" = mysql ] && echo "${SYNC_TOKENSERVER_DB_NAME}" || echo "${SYNC_POSTGRES_NAME}")
 admin_sql() { db_as "${ADMIN_DB_USER}" "${ADMIN_DB_SECRET}" "${2:-${ADMIN_DB_NAME}}" "$1"; }
 # the admin UI's reader of the Sync data (ADMIN_DB_SYNC_USER), on the Sync database and on
 # the storage (MariaDB and MySQL)
 admin_sync_sql() { db_as "${ADMIN_DB_SYNC_USER}" "${ADMIN_DB_SECRET}" "${2:-${SYNC_DB_NAME}}" "$1"; }
-admin_storage_sql() { db_as "${ADMIN_DB_SYNC_USER}" "${ADMIN_DB_SECRET}" "${MARIADB_SYNCSTORAGE_DATABASE}" "$1" storage; }
-# the Sync server's own role in the PostgreSQL container (POSTGRES_SYNC_USER), or POSTGRES_USER
-sync_role_sql() { db_as "${SYNC_ROLE:-${POSTGRES_USER}}" "${SYNC_ROLE_SECRET:-${POSTGRES_PASSWORD}}" "${2:-${POSTGRES_DATABASE}}" "$1"; }
+admin_storage_sql() { db_as "${ADMIN_DB_SYNC_USER}" "${ADMIN_DB_SECRET}" "${SYNC_STORAGE_DB_NAME}" "$1" storage; }
+# the Sync server's own role in the PostgreSQL container (SYNC_POSTGRES_APP_USER), or SYNC_POSTGRES_USER
+sync_role_sql() { db_as "${SYNC_ROLE:-${SYNC_POSTGRES_USER}}" "${SYNC_ROLE_SECRET:-${SYNC_POSTGRES_PASSWORD}}" "${2:-${SYNC_POSTGRES_NAME}}" "$1"; }
 # no account and no Sync data, a new server: where tests/test_client_flow.py starts. Without
 # the Sync data too, a new account can find someone else's: upstream's storage tests sign
 # their own tokens for random uids (1 to 100000) and leave what they wrote, and the
@@ -233,7 +263,7 @@ sync_role_sql() { db_as "${SYNC_ROLE:-${POSTGRES_USER}}" "${SYNC_ROLE_SECRET:-${
 new_server() {
   sql "DELETE FROM users;" > /dev/null
   if [ "${BACKEND}" = mysql ]; then
-    db_as "${MARIADB_SYNCSTORAGE_USER}" "${MARIADB_SYNCSTORAGE_PASSWORD}" "${MARIADB_SYNCSTORAGE_DATABASE}" \
+    db_as "${SYNC_STORAGE_DB_USER}" "${SYNC_STORAGE_DB_PASSWORD}" "${SYNC_STORAGE_DB_NAME}" \
       "DELETE FROM batch_upload_items; DELETE FROM batch_uploads; DELETE FROM bso; DELETE FROM user_collections;" storage > /dev/null
   else
     sync_role_sql "DELETE FROM batch_bsos; DELETE FROM batches; DELETE FROM bsos; DELETE FROM user_collections;" > /dev/null
@@ -255,9 +285,9 @@ in_app() {
     -e SYNC_SERVER_URL=http://syncstorage:8000 \
     -e TOKENSERVER_HOST=http://syncstorage:8000 \
     -e SYNC_MASTER_SECRET="${MASTER_SECRET}" \
-    -e SYNCSTORAGE_DOMAIN="${SYNCSTORAGE_DOMAIN}" \
-    -e MAX_USERS="${MAX_USERS#*:}" \
-    -e MAX_USERS_SETTING="${MAX_USERS}" \
+    -e SYNC_PUBLIC_URL="${SYNC_PUBLIC_URL}" \
+    -e SYNC_MAX_USERS="${SYNC_MAX_USERS#*:}" \
+    -e MAX_USERS_SETTING="${SYNC_MAX_USERS}" \
     -e ADMIN_URL=http://ffs-admin:8080 \
     -e ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
     -e BACKEND="${BACKEND}" \
@@ -302,14 +332,14 @@ start_extdb() {
     sleep 2
   done
   if [ "${BACKEND}" = mysql ]; then
-    sed -e "s|@TOKENSERVER_DATABASE@|${MARIADB_TOKENSERVER_DATABASE}|g" -e "s|@TOKENSERVER_USER@|${MARIADB_TOKENSERVER_USER}|g" \
-        -e "s|@TOKENSERVER_PASSWORD@|${MARIADB_TOKENSERVER_PASSWORD}|g" -e "s|@SYNCSTORAGE_DATABASE@|${MARIADB_SYNCSTORAGE_DATABASE}|g" \
-        -e "s|@SYNCSTORAGE_USER@|${MARIADB_SYNCSTORAGE_USER}|g" -e "s|@SYNCSTORAGE_PASSWORD@|${MARIADB_SYNCSTORAGE_PASSWORD}|g" \
+    sed -e "s|@SYNC_TOKENSERVER_DATABASE@|${SYNC_TOKENSERVER_DB_NAME}|g" -e "s|@SYNC_TOKENSERVER_USER@|${SYNC_TOKENSERVER_DB_USER}|g" \
+        -e "s|@SYNC_TOKENSERVER_PASSWORD@|${SYNC_TOKENSERVER_DB_PASSWORD}|g" -e "s|@SYNC_STORAGE_DATABASE@|${SYNC_STORAGE_DB_NAME}|g" \
+        -e "s|@SYNC_STORAGE_USER@|${SYNC_STORAGE_DB_USER}|g" -e "s|@SYNC_STORAGE_PASSWORD@|${SYNC_STORAGE_DB_PASSWORD}|g" \
         -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_SECRET}|g" \
         "${CODE}/db/mysql/sync.sql"
   else
-    sed -e "s|@POSTGRES_DATABASE@|${POSTGRES_DATABASE}|g" -e "s|@POSTGRES_USER@|${POSTGRES_USER}|g" \
-        -e "s|@POSTGRES_PASSWORD@|${POSTGRES_PASSWORD}|g" -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" \
+    sed -e "s|@SYNC_POSTGRES_DATABASE@|${SYNC_POSTGRES_NAME}|g" -e "s|@SYNC_POSTGRES_USER@|${SYNC_POSTGRES_USER}|g" \
+        -e "s|@SYNC_POSTGRES_PASSWORD@|${SYNC_POSTGRES_PASSWORD}|g" -e "s|@ADMIN_DATABASE@|${ADMIN_DB_NAME}|g" \
         -e "s|@ADMIN_USER@|${ADMIN_DB_USER}|g" -e "s|@ADMIN_SYNC_USER@|${ADMIN_DB_SYNC_USER}|g" -e "s|@ADMIN_PASSWORD@|${ADMIN_DB_SECRET}|g" "${CODE}/db/postgres/sync.sql"
   fi > "${WORK}/database-setup.sql"
   check "$(grep -c '@[A-Z_]*@' "${WORK}/database-setup.sql")" 0 "external database: SQL template filled in"
@@ -392,16 +422,17 @@ elif [ -z "${EXTDB}" ]; then
 fi
 dc down -v > /dev/null 2>&1
 
-echo "== starting, as an install from before ADMIN_DB_PASSWORD${UPGRADE_FROM:+ (${UPGRADE_FROM})}"
+echo "== starting, as an install from before ADMIN_DB_PASSWORD${UPGRADE_FROM:+ (${UPGRADE_FROM})}, with the old setting names"
+use_old_names
 # its layout: the admin UI connects as the Sync server's users, its tables in the tokenserver
-# database; with PostgreSQL the Sync server connects as POSTGRES_USER, the superuser
+# database; with PostgreSQL the Sync server connects as SYNC_POSTGRES_USER, the superuser
 set_env ADMIN_DB_PASSWORD ""
-set_env POSTGRES_SYNC_USER ""
-set_env POSTGRES_SYNC_PASSWORD ""
+set_env SYNC_POSTGRES_APP_USER ""
+set_env SYNC_POSTGRES_APP_PASSWORD ""
 if [ -n "${UPGRADE_FROM:-}" ]; then
   # that release itself: its compose files, its admin UI and its init container
   ROOT=$(cd -- "${UPGRADE_FROM}" && pwd) || exit 1
-  ADMIN_NOW=${ADMIN_IMAGE} INIT_NOW=${SYNCSTORAGE_INIT_IMAGE_TAG}
+  ADMIN_NOW=${ADMIN_IMAGE} INIT_NOW=${SYNC_INIT_IMAGE_TAG}
   export ADMIN_IMAGE=ffs-admin:e2e-from${SLOT_SUFFIX}
   ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build-from -f "${ROOT}/tests/docker-compose.admin-build.yml" build -q ||
     { echo "FAIL: admin UI image built from ${UPGRADE_FROM}/admin"; exit 1; }
@@ -409,7 +440,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   init_dir=${ROOT}/db/${BACKEND}/init
   [ -d "${init_dir}" ] || init_dir=${ROOT}/syncstorage-rs-init$([ "${BACKEND}" = postgres ] && echo -postgres)
   docker build -q -t "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-e2e-from${SLOT_SUFFIX}" "${init_dir}" > /dev/null || { echo "FAIL: init image of ${UPGRADE_FROM}"; exit 1; }
-  set_env SYNCSTORAGE_INIT_IMAGE_TAG "e2e-from${SLOT_SUFFIX}"
+  set_env SYNC_INIT_IMAGE_TAG "e2e-from${SLOT_SUFFIX}"
 fi
 dc up -d > /dev/null 2>&1 || { dc logs; exit 1; }
 check "$(wait_init)" 0 "init container exit code"
@@ -419,6 +450,14 @@ APP_START=$(date -d "$(state syncstorage StartedAt)" +%s%N)
 check "$([ "${APP_START}" -gt "${INIT_END}" ] && echo yes)" yes "syncstorage started only after the init finished"
 check "$(hb)" 200 "/__heartbeat__"
 dc logs syncstorage 2>&1 | grep -m1 "Server running"
+check "$(grep -cE "${NEW_RE}" "${ENV_FILE}") $(grep -cE "${OLD_RE}" "${ENV_FILE}")" "0 $(grep -cE "${NEW_RE}" "${CODE}/.env-example")" \
+  "the install of before runs with only the old setting names in .env"
+if [ -z "${UPGRADE_FROM:-}" ]; then
+  check "$(dc logs tokenserver_db_init 2>&1 | grep -c 'WARNING: settings under their old names, in .env or in the environment docker compose runs in') $(dc logs tokenserver_db_init 2>&1 | grep -c 'in a later release: .*MARIADB_TOKENSERVER_PASSWORD.* MAX_USERS ')" "1 1" \
+    "the init container warns of the old setting names, and names them"
+  check "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(dc ps -q ffs-admin)" | grep -c '^FFS_OLD_ENV_NAMES=.*SYNCSTORAGE_DOMAIN ')" 1 \
+    "the admin UI gets the old setting names, for its setup check"
+fi
 
 echo "== the event log of before, then the upgrade: ADMIN_DB_PASSWORD set"
 check "$(admin_healthy)" healthy "admin UI up, without ADMIN_DB_PASSWORD"
@@ -437,13 +476,55 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   ROOT=${CODE}
   [ "${BACKEND}" = postgres ] && COMPOSE=${CODE}/docker-compose.postgres.yml
   export ADMIN_IMAGE=${ADMIN_NOW}
-  set_env SYNCSTORAGE_INIT_IMAGE_TAG "${INIT_NOW}"
+  set_env SYNC_INIT_IMAGE_TAG "${INIT_NOW}"
 fi
+echo "== the lines of .env-example added before --upgrade: both names, the migrations refuse to start"
+# (MIGRATING.md: --upgrade first) the new names with their placeholders and defaults would
+# win over the values of the old ones: a new server on empty databases, or none at all
+grep -E "${NEW_RE}" "${CODE}/.env-example" >> "${ENV_FILE}"
+# but the images under test (the defaults of .env-example are the published MySQL ones): as
+# with the images of this release, whose init containers refuse to start
+sed -i -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=${REPOSITORY}|" -e "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-${BACKEND}|" \
+  -e "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-${BACKEND}-init|" -e "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${TAG}|" \
+  -e "s|^SYNC_INIT_IMAGE_TAG=.*|SYNC_INIT_IMAGE_TAG=${SYNCSTORAGE_INIT_IMAGE_TAG}|" "${ENV_FILE}"
+dc stop > /dev/null 2>&1
+dc up -d > "${WORK}/both.log" 2>&1
+check "$([ $? != 0 ] && echo failed) $(state syncstorage Running || echo false) $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/__heartbeat__")" "failed false 000" \
+  "with both names: docker compose up fails, the Sync server stays down"
+# (PostgreSQL: sync_role_init, which runs first)
+both=$([ "${BACKEND}" = mysql ] && echo "SYNC_TOKENSERVER_DB_PASSWORD and MARIADB_TOKENSERVER_PASSWORD" || echo "SYNC_POSTGRES_PASSWORD and POSTGRES_PASSWORD")
+both_logs=$(dc logs "$([ "${BACKEND}" = postgres ] && echo sync_role_init || echo syncstorage_migrate)" 2>&1)
+both_said=$(grep -c "ERROR: ${both} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset ${both##* } in your shell (MIGRATING.md#renamed-settings)" <<< "${both_logs}")
+check "${both_said}" 1 "it names them, and what to run"
+[ "${both_said}" = 1 ] || { tail -5 <<< "${both_logs}"; tail -5 "${WORK}/both.log"; }
+echo "== ./prepare_environment.sh --upgrade renames the old setting names"
+UP=${WORK}/upgrade
+mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
+(cd "${UP}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
+check "$?" 0 "./prepare_environment.sh --upgrade" || cat "${WORK}/upgrade.log"
+# each value under its new name, as it was under the old one (the empty ones it may fill in)
+moved=all
+for pair in "${RENAMED_SETTINGS[@]}"; do
+  [ -n "$(grep "^${pair#*=}=" "${ENV_FILE}" | cut -d= -f2-)" ] || continue
+  [ "$(grep "^${pair%%=*}=" "${UP}/.env" | cut -d= -f2-)" = "$(grep "^${pair#*=}=" "${ENV_FILE}" | cut -d= -f2-)" ] || moved=${pair}
+done
+check "$(grep -cE "${OLD_RE}" "${UP}/.env") ${moved} $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log") $(cmp -s "${ENV_FILE}" "${UP}/.env.before-upgrade" && echo kept)" \
+  "0 all $(grep -cE "${OLD_RE}" "${ENV_FILE}") kept" "--upgrade: no old name left, every value under its new name, each rename said, the old .env kept"
+cp "${UP}/.env" "${ENV_FILE}"
+# the old names gone from this shell too (REPOSITORY and POSTGRES_IMAGE are the test's own,
+# kept but not exported, tests/slot.sh)
+for pair in "${RENAMED_SETTINGS[@]}"; do
+  case "${pair#*=}" in REPOSITORY|POSTGRES_IMAGE) export -n "${pair#*=}" ;; *) unset "${pair#*=}" ;; esac
+done
+OLD_NAMES=
+set -a; source "${ENV_FILE}"; set +a
 set_env ADMIN_DB_PASSWORD "${ADMIN_DB_SECRET}"
-set_env POSTGRES_SYNC_USER "${SYNC_ROLE}"
-set_env POSTGRES_SYNC_PASSWORD "${SYNC_ROLE_SECRET}"
+set_env SYNC_POSTGRES_APP_USER "${SYNC_ROLE}"
+set_env SYNC_POSTGRES_APP_PASSWORD "${SYNC_ROLE_SECRET}"
 dc up -d > /dev/null 2>&1 || { dc logs; exit 1; }
 check "$(wait_init)" 0 "init container exit code (ADMIN_DB_PASSWORD set)"
+check "$(dc logs tokenserver_db_init 2>&1 | grep -c 'old names') $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(dc ps -q ffs-admin)" | grep -cx 'FFS_OLD_ENV_NAMES=')" "0 1" \
+  "the new setting names: no warning of the init container, no old names for the admin UI"
 check "$(admin_healthy)" healthy "admin UI up with its own database"
 for _ in $(seq 1 30); do [ "$(old_tables)" = 0 ] && break; sleep 1; done
 check "$(old_tables)" 0 "the admin UI's tables gone from the tokenserver database"
@@ -462,14 +543,14 @@ check "$(hb)" 200 "/__heartbeat__ after the upgrade"
 check "$(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -q syncstorage)") $(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -a -q syncstorage_migrate)")" \
   "[CAP_NET_RAW] [CAP_NET_RAW]" "the Sync server and its migrations without raw sockets (cap_drop)"
 if [ "${BACKEND}" = postgres ] && [ -z "${EXTERNAL_DB:-}" ]; then
-  # postgres_db and backup use POSTGRES_IMAGE from .env (postgres:18 by default)
-  POSTGRES_IMAGE=$(grep "^POSTGRES_IMAGE=" "${ENV_FILE}" | cut -d= -f2)
-  POSTGRES_IMAGE=${POSTGRES_IMAGE:-postgres:18}
+  # postgres_db and backup use SYNC_POSTGRES_IMAGE from .env (postgres:18 by default)
+  pg_image=$(grep "^SYNC_POSTGRES_IMAGE=" "${ENV_FILE}" | cut -d= -f2)
+  pg_image=${pg_image:-postgres:18}
   check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -q postgres_db)")" \
-    "${POSTGRES_IMAGE}" "postgres_db uses POSTGRES_IMAGE from .env"
+    "${pg_image}" "postgres_db uses SYNC_POSTGRES_IMAGE from .env"
   # backup service: check the compose config (not running unless COMPOSE_PROFILES=backup was used)
   check "$(dc config | sed -n '/^  backup:/,/^  [a-z]/p' | grep "image:" | awk '{print $2}')" \
-    "${POSTGRES_IMAGE}" "backup service configured with POSTGRES_IMAGE from .env"
+    "${pg_image}" "backup service configured with SYNC_POSTGRES_IMAGE from .env"
 fi
 
 echo "== the migrations step ends when syncstorage-rs does not stop on SIGTERM"
@@ -494,7 +575,7 @@ if [ "${BACKEND}" = mysql ]; then
   check "$(denied "$(sql "CREATE TABLE ${ADMIN_DB_NAME}.forged (id INT);" 2>&1)")" denied "the tokenserver user cannot create tables there"
   if [ -n "${EXTDB}" ]; then
     # the storage user, on the same server here
-    check "$(denied "$(docker exec -i -e MYSQL_PWD="${MARIADB_SYNCSTORAGE_PASSWORD}" "${EXTDB}" mysql -u"${MARIADB_SYNCSTORAGE_USER}" -sN \
+    check "$(denied "$(docker exec -i -e MYSQL_PWD="${SYNC_STORAGE_DB_PASSWORD}" "${EXTDB}" mysql -u"${SYNC_STORAGE_DB_USER}" -sN \
       -e "SELECT COUNT(*) FROM ${ADMIN_DB_NAME}.ffs_events;" < /dev/null 2>&1)")" denied "the storage user cannot read the event log"
   fi
   # the admin UI's two users: the reader of the Sync data writes the Sync tables only through
@@ -503,7 +584,7 @@ if [ "${BACKEND}" = mysql ]; then
   check "$(denied "$(admin_sync_sql "UPDATE nodes SET capacity = capacity;" 2>&1)")" denied "the admin UI's reader cannot change the tokenserver's tables"
   check "$(denied "$(admin_sync_sql "CREATE TABLE forged (id INT);" 2>&1)")" denied "the admin UI's reader cannot create tables in the tokenserver database"
   check "$(denied "$(admin_sync_sql "SELECT COUNT(*) FROM ${ADMIN_DB_NAME}.ffs_events;" 2>&1)")" denied "the admin UI's reader cannot read the event log"
-  check "$(denied "$(admin_sql "SELECT COUNT(*) FROM ${MARIADB_TOKENSERVER_DATABASE}.users;" 2>&1)") $(denied "$(admin_sql "SELECT COUNT(*) FROM ${MARIADB_SYNCSTORAGE_DATABASE}.bso;" 2>&1)")" \
+  check "$(denied "$(admin_sql "SELECT COUNT(*) FROM ${SYNC_TOKENSERVER_DB_NAME}.users;" 2>&1)") $(denied "$(admin_sql "SELECT COUNT(*) FROM ${SYNC_STORAGE_DB_NAME}.bso;" 2>&1)")" \
     "denied denied" "the admin UI's own user cannot read the Sync databases"
   check "$(admin_sync_sql "SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema = DATABASE() AND routine_name IN ('ffs_set_max_users', 'ffs_delete_user_row', 'ffs_drop_admin_tables');")" 3 \
     "the init container's procedures for the admin UI"
@@ -520,14 +601,14 @@ if [ "${BACKEND}" = mysql ]; then
     "the init container puts its procedure back"
 else
   check "$(sync_role_sql "SELECT rolsuper OR rolcreaterole OR rolcreatedb FROM pg_roles WHERE rolname = current_user;") $(sync_role_sql "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'users' AND relnamespace = 'public'::regnamespace;")" \
-    "f ${SYNC_ROLE:-${POSTGRES_USER}}" "the Sync server's role is no superuser, and owns the Sync tables"
+    "f ${SYNC_ROLE:-${SYNC_POSTGRES_USER}}" "the Sync server's role is no superuser, and owns the Sync tables"
   check "$(denied "$(sync_role_sql "SELECT COUNT(*) FROM ffs_events;" "${ADMIN_DB_NAME}" 2>&1)")" denied "the Sync server's role cannot connect to the admin UI's database"
-  check "$(admin_sql "SELECT pg_get_userbyid(datdba), has_database_privilege('public', datname, 'CONNECT'), has_database_privilege('${SYNC_ROLE:-${POSTGRES_USER}}', datname, 'CONNECT'), has_database_privilege('${ADMIN_DB_SYNC_USER}', datname, 'CONNECT') FROM pg_database WHERE datname = current_database();")" \
+  check "$(admin_sql "SELECT pg_get_userbyid(datdba), has_database_privilege('public', datname, 'CONNECT'), has_database_privilege('${SYNC_ROLE:-${SYNC_POSTGRES_USER}}', datname, 'CONNECT'), has_database_privilege('${ADMIN_DB_SYNC_USER}', datname, 'CONNECT') FROM pg_database WHERE datname = current_database();")" \
     "${ADMIN_DB_USER}|f|f|f" "the admin UI's database is its role's, closed to the others"
   check "$(admin_sql "SELECT rolsuper FROM pg_roles WHERE rolname = current_user;") $(admin_sync_sql "SELECT rolsuper FROM pg_roles WHERE rolname = current_user;")" "f f" "the admin UI's roles are no superusers"
   check "$(denied "$(admin_sync_sql "UPDATE nodes SET capacity = capacity;" 2>&1)")" denied "the admin UI's reader cannot change the tokenserver's nodes"
   check "$(denied "$(admin_sync_sql "CREATE TABLE forged (id INT);" 2>&1)")" denied "the admin UI's reader cannot create tables in the Sync database"
-  check "$(denied "$(admin_sql "SELECT COUNT(*) FROM users;" "${POSTGRES_DATABASE}" 2>&1)")" denied "the admin UI's own role cannot read the Sync database"
+  check "$(denied "$(admin_sql "SELECT COUNT(*) FROM users;" "${SYNC_POSTGRES_NAME}" 2>&1)")" denied "the admin UI's own role cannot read the Sync database"
   # the owner of the Sync tables replaces the function the admin UI calls with its own, which
   # runs as the caller (SECURITY INVOKER) and opens the admin UI's database: its reader cannot
   sync_role_sql "CREATE OR REPLACE FUNCTION ffs_drop_admin_tables() RETURNS void LANGUAGE plpgsql SECURITY INVOKER AS \$f\$ BEGIN EXECUTE 'GRANT ALL ON DATABASE ${ADMIN_DB_NAME} TO PUBLIC'; END \$f\$;" > /dev/null
@@ -539,7 +620,7 @@ else
     # the Sync server's role plants code that would make it a superuser if a superuser ran
     # it (also after SET ROLE: RESET ROLE goes back), each run recorded with who ran it and
     # how: triggers on the tables the init container (config: max users) and the migrations
-    # (nodes: the node of SYNCSTORAGE_DOMAIN) write; config itself becomes a view over the
+    # (nodes: the node of SYNC_PUBLIC_URL) write; config itself becomes a view over the
     # table, which calls it on every read and write (the init's upsert, the counts); and an
     # operator <> (oid, regrole) in public, which a superuser statement with public in its
     # search path would pick over pg_catalog's (sync_owner.sql compares relowner <> the role)
@@ -586,9 +667,9 @@ else
   # operator >= (oid, integer) of that role in public, which would answer false to the
   # check's "oid >= 16384" were it not run with pg_catalog alone in its search path
   pg_super() { # database query, as a superuser of the server
-    if [ -n "${EXTDB}" ]; then extdb_admin -d "$1" -c "$2" < /dev/null; else dc exec -T postgres_db psql -U "${POSTGRES_USER}" -d "$1" -v ON_ERROR_STOP=1 -tA -c "$2" < /dev/null; fi
+    if [ -n "${EXTDB}" ]; then extdb_admin -d "$1" -c "$2" < /dev/null; else dc exec -T postgres_db psql -U "${SYNC_POSTGRES_USER}" -d "$1" -v ON_ERROR_STOP=1 -tA -c "$2" < /dev/null; fi
   }
-  OTHER=${SYNC_ROLE:-${POSTGRES_USER}}
+  OTHER=${SYNC_ROLE:-${SYNC_POSTGRES_USER}}
   pg_super "${ADMIN_DB_NAME}" "CREATE SCHEMA ${ADMIN_DB_USER} AUTHORIZATION ${OTHER};
     CREATE TABLE ${ADMIN_DB_USER}.ffs_events (id BIGINT, at BIGINT, kind TEXT, detail TEXT); ALTER TABLE ${ADMIN_DB_USER}.ffs_events OWNER TO ${OTHER};
     CREATE FUNCTION public.ffs_e2e_ge(oid, integer) RETURNS boolean LANGUAGE sql AS 'SELECT false';
@@ -609,7 +690,7 @@ if [ -n "${EXTDB}" ]; then
   echo "== external database server: nothing more than the documented grants"
   check "$(dc ps -a --format '{{.Service}}' | grep -cxE 'syncstorage_db|tokenserver_db|postgres_db')" 0 "no database container in the project"
   if [ "${BACKEND}" = mysql ]; then
-    grants=$(echo "SHOW GRANTS FOR '${MARIADB_TOKENSERVER_USER}'@'%'; SHOW GRANTS FOR '${MARIADB_SYNCSTORAGE_USER}'@'%';" | extdb_admin)
+    grants=$(echo "SHOW GRANTS FOR '${SYNC_TOKENSERVER_DB_USER}'@'%'; SHOW GRANTS FOR '${SYNC_STORAGE_DB_USER}'@'%';" | extdb_admin)
     echo "${grants}" | sed 's/^/  /'
     check "$(echo "${grants}" | grep -cE 'ALL PRIVILEGES|SUPER')" 0 "no ALL PRIVILEGES or SUPER for the Sync users"
     check "$(echo "${grants}" | grep -c "${ADMIN_DB_NAME}")" 0 "no grant for the Sync users on the admin UI's database"
@@ -620,13 +701,13 @@ if [ -n "${EXTDB}" ]; then
     check "$(echo "${admin_grants}" | grep -cF "\`${ADMIN_DB_NAME}\`.") $(echo "${admin_grants}" | grep -F "\`${ADMIN_DB_NAME}\`." | grep -cF "TO \`${ADMIN_DB_USER}\`@")" "1 1" \
       "only the admin UI's own user has a grant on its database"
     # what the test is about: binary logging (triggers), caching_sha2_password without TLS
-    check "$(echo "SELECT @@log_bin, (SELECT GROUP_CONCAT(DISTINCT plugin) FROM mysql.user WHERE user IN ('${MARIADB_TOKENSERVER_USER}', '${MARIADB_SYNCSTORAGE_USER}'));" | extdb_admin)" \
+    check "$(echo "SELECT @@log_bin, (SELECT GROUP_CONCAT(DISTINCT plugin) FROM mysql.user WHERE user IN ('${SYNC_TOKENSERVER_DB_USER}', '${SYNC_STORAGE_DB_USER}'));" | extdb_admin)" \
       "$(printf '1\tcaching_sha2_password')" "binary logging on, users with caching_sha2_password"
-    check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "MAX_USERS trigger created by the init container"
+    check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "SYNC_MAX_USERS trigger created by the init container"
   else
-    check "$(echo "SELECT rolsuper, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = '${POSTGRES_USER}';" | extdb_admin)" "f|f|f" \
+    check "$(echo "SELECT rolsuper, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = '${SYNC_POSTGRES_USER}';" | extdb_admin)" "f|f|f" \
       "the database owner is no superuser"
-    check "$(echo "SELECT has_database_privilege('dbadmin', '${POSTGRES_DATABASE}', 'TEMP'), has_database_privilege('public', '${POSTGRES_DATABASE}', 'CONNECT');" | extdb_admin)" "t|f" \
+    check "$(echo "SELECT has_database_privilege('dbadmin', '${SYNC_POSTGRES_NAME}', 'TEMP'), has_database_privilege('public', '${SYNC_POSTGRES_NAME}', 'CONNECT');" | extdb_admin)" "t|f" \
       "database created by a CREATEROLE CREATEDB role, closed to PUBLIC"
   fi
 fi
@@ -640,39 +721,39 @@ if [ "${SYNC_DB}" = mysql ]; then
   done
   # no binary logging (docker-compose.sync-mysql.yml), the trigger without log_bin_trust_function_creators
   check "$(sql "SELECT VERSION() LIKE '8.4.%', @@log_bin, @@log_bin_trust_function_creators;")" "$(printf '1\t0\t0')" "MySQL 8.4 without binary logging"
-  check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "MAX_USERS trigger created by the init container"
+  check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "SYNC_MAX_USERS trigger created by the init container"
 fi
 
 echo "== tokenserver node"
 SVC=$(sql "SELECT id FROM services WHERE service='sync-1.5';")
 echo "sync-1.5 service id: ${SVC}"
-check "$(sql "SELECT COUNT(*) FROM nodes WHERE service=${SVC} AND node='${SYNCSTORAGE_DOMAIN}' AND available>0 AND downed=0;")" 1 "node for ${SYNCSTORAGE_DOMAIN} attached to sync-1.5"
-NODE=$(sql "SELECT id FROM nodes WHERE service=${SVC} AND node='${SYNCSTORAGE_DOMAIN}';")
+check "$(sql "SELECT COUNT(*) FROM nodes WHERE service=${SVC} AND node='${SYNC_PUBLIC_URL}' AND available>0 AND downed=0;")" 1 "node for ${SYNC_PUBLIC_URL} attached to sync-1.5"
+NODE=$(sql "SELECT id FROM nodes WHERE service=${SVC} AND node='${SYNC_PUBLIC_URL}';")
 
-echo "== MAX_USERS=1 trigger (database level)"
+echo "== SYNC_MAX_USERS=1 trigger (database level)"
 ins() { sql "INSERT INTO users (service, email, generation, client_state, created_at, nodeid) VALUES (${SVC}, '$1', $2, '$3', 1, ${NODE});" > /dev/null 2>&1 && echo ok || echo rejected; }
 check "$(ins a@ffs-e2e.invalid 1 aa)" ok "first account allowed"
 check "$(ins a@ffs-e2e.invalid 2 bb)" ok "same account with new client state allowed"
 check "$(ins b@ffs-e2e.invalid 1 aa)" rejected "second account rejected"
 
-echo "== MAX_USERS=1 (plain): set again on every start, read-only in the admin UI"
+echo "== SYNC_MAX_USERS=1 (plain): set again on every start, read-only in the admin UI"
 max_users() { sql "SELECT config_value FROM config WHERE config_key = 'max_users';"; }
 rerun_init() { dc up -d --no-deps --force-recreate tokenserver_db_init > /dev/null 2>&1; wait_init; }
-# the whole stack with a new MAX_USERS: the init container and the admin UI
-# not in $(...): set_env must change this shell's MAX_USERS (compose prefers it to the
+# the whole stack with a new SYNC_MAX_USERS: the init container and the admin UI
+# not in $(...): set_env must change this shell's SYNC_MAX_USERS (compose prefers it to the
 # env file), the exit code of the init container is in INIT_CODE
-redeploy_max_users() { set_env MAX_USERS "$1"; dc up -d > /dev/null 2>&1; INIT_CODE=$(wait_init); }
+redeploy_max_users() { set_env SYNC_MAX_USERS "$1"; dc up -d > /dev/null 2>&1; INIT_CODE=$(wait_init); }
 sql "UPDATE config SET config_value = '3' WHERE config_key = 'max_users';" > /dev/null
 check "$(rerun_init)" 0 "init container exit code (rerun)"
-check "$(max_users)" 1 "MAX_USERS=1 set again over a value changed in the database"
+check "$(max_users)" 1 "SYNC_MAX_USERS=1 set again over a value changed in the database"
 check "$(sql "SELECT COUNT(*) FROM config WHERE config_key = 'max_users_env';")" 0 "no max_users_env bookkeeping"
 pytest_in_app "/tests/test_admin_sync.py -k read_only"
-check "$?" 0 "admin UI: max users read-only with MAX_USERS=1"
+check "$?" 0 "admin UI: max users read-only with SYNC_MAX_USERS=1"
 check "$(max_users)" 1 "max users unchanged by the refused form"
 
-echo "== MAX_USERS=initial:N: set only when there is none, then managed in the admin UI"
+echo "== SYNC_MAX_USERS=initial:N: set only when there is none, then managed in the admin UI"
 redeploy_max_users initial:2
-check "${INIT_CODE}" 0 "init container exit code (MAX_USERS=initial:2)"
+check "${INIT_CODE}" 0 "init container exit code (SYNC_MAX_USERS=initial:2)"
 check "$(max_users)" 1 "switching to initial:2 keeps the value in the database"
 sql "UPDATE config SET config_value = '3' WHERE config_key = 'max_users';" > /dev/null
 rerun_init > /dev/null
@@ -681,41 +762,41 @@ sql "DELETE FROM config WHERE config_key = 'max_users';" > /dev/null
 rerun_init > /dev/null
 check "$(max_users)" 2 "initial:2 sets it when there is none (new database)"
 redeploy_max_users 1
-check "${INIT_CODE}" 0 "init container exit code (back to MAX_USERS=1)"
-check "$(max_users)" 1 "switching back to a plain MAX_USERS=1 takes over"
+check "${INIT_CODE}" 0 "init container exit code (back to SYNC_MAX_USERS=1)"
+check "$(max_users)" 1 "switching back to a plain SYNC_MAX_USERS=1 takes over"
 
-echo "== MAX_USERS not valid: the init container fails, nothing changes"
+echo "== SYNC_MAX_USERS not valid: the init container fails, nothing changes"
 for bad in lots initial: fixed:-1 infinite initial:Unlimited 2147483648; do
-  set_env MAX_USERS "${bad}"
-  check "$(rerun_init)" 1 "init container fails with MAX_USERS=${bad}"
+  set_env SYNC_MAX_USERS "${bad}"
+  check "$(rerun_init)" 1 "init container fails with SYNC_MAX_USERS=${bad}"
 done
-check "$(dc logs tokenserver_db_init 2>&1 | grep -c "MAX_USERS='2147483648' is not valid")" 1 "init container says why"
-check "$(max_users)" 1 "max users unchanged by a MAX_USERS not valid"
+check "$(dc logs tokenserver_db_init 2>&1 | grep -c "SYNC_MAX_USERS='2147483648' is not valid")" 1 "init container says why"
+check "$(max_users)" 1 "max users unchanged by a SYNC_MAX_USERS not valid"
 
-echo "== MAX_USERS=unlimited: no limit, by the trigger itself; 0: no new account at all"
+echo "== SYNC_MAX_USERS=unlimited: no limit, by the trigger itself; 0: no new account at all"
 redeploy_max_users unlimited
-check "${INIT_CODE}" 0 "init container exit code (MAX_USERS=unlimited)"
-check "$(max_users)" unlimited "MAX_USERS=unlimited in the database"
+check "${INIT_CODE}" 0 "init container exit code (SYNC_MAX_USERS=unlimited)"
+check "$(max_users)" unlimited "SYNC_MAX_USERS=unlimited in the database"
 check "$(ins c@ffs-e2e.invalid 1 aa) $(ins d@ffs-e2e.invalid 1 aa)" "ok ok" "new accounts allowed with no limit"
 sql "DELETE FROM users WHERE email IN ('c@ffs-e2e.invalid', 'd@ffs-e2e.invalid');" > /dev/null
 redeploy_max_users initial:5
-check "$(max_users)" unlimited "MAX_USERS=initial:5 keeps unlimited in the database"
+check "$(max_users)" unlimited "SYNC_MAX_USERS=initial:5 keeps unlimited in the database"
 redeploy_max_users fixed:0
-check "$(max_users) $(ins e@ffs-e2e.invalid 1 aa) $(ins a@ffs-e2e.invalid 3 cc)" "0 rejected ok" "MAX_USERS=0: no new account, the existing one still changes its keys"
+check "$(max_users) $(ins e@ffs-e2e.invalid 1 aa) $(ins a@ffs-e2e.invalid 3 cc)" "0 rejected ok" "SYNC_MAX_USERS=0: no new account, the existing one still changes its keys"
 redeploy_max_users 1
-check "$(max_users)" 1 "back to MAX_USERS=1"
+check "$(max_users)" 1 "back to SYNC_MAX_USERS=1"
 
 # the admin UI tests change max users on the page: initial:1 for the rest, until the
 # upstream tokenserver tests (the Python tests get the number, see in_app)
 redeploy_max_users initial:1
-check "${INIT_CODE}" 0 "init container exit code (MAX_USERS=initial:1)"
+check "${INIT_CODE}" 0 "init container exit code (SYNC_MAX_USERS=initial:1)"
 check "$(max_users)" 1 "max users 1 for the following tests"
-check "$(hb)" 200 "/__heartbeat__ after the MAX_USERS changes"
+check "$(hb)" 200 "/__heartbeat__ after the SYNC_MAX_USERS changes"
 
 echo "== domain change"
-OLD_DOMAIN=${SYNCSTORAGE_DOMAIN}
+OLD_DOMAIN=${SYNC_PUBLIC_URL}
 NEW_DOMAIN=https://ffs-e2e-new.invalid
-redeploy() { set_env SYNCSTORAGE_DOMAIN "$1"; dc up -d > /dev/null 2>&1; wait_init > /dev/null; }
+redeploy() { set_env SYNC_PUBLIC_URL "$1"; dc up -d > /dev/null 2>&1; wait_init > /dev/null; }
 node_of_user() { sql "SELECT DISTINCT n.node FROM users u JOIN nodes n ON u.nodeid = n.id WHERE u.email = 'a@ffs-e2e.invalid';"; }
 active_nodes() { sql "SELECT node FROM nodes WHERE service=${SVC} AND downed=0 AND available>0 ORDER BY node;" | tr '\n' ' '; }
 redeploy "${NEW_DOMAIN}"
@@ -725,10 +806,30 @@ redeploy "${OLD_DOMAIN}"
 check "$(active_nodes)" "${OLD_DOMAIN} " "switching back re-enables the old node"
 check "$(node_of_user)" "${OLD_DOMAIN}" "users moved back"
 check "$(hb)" 200 "/__heartbeat__ after redeploy"
+
+echo "== placeholders and empty values: the init container refuses them, the Sync server stays down"
+set_env SYNC_PUBLIC_URL "https://<REPLACE_WITH_YOUR_DOMAIN>"
+dc up -d > /dev/null 2>&1
+check "$(state syncstorage_migrate ExitCode) $(state syncstorage Running || echo false) $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/__heartbeat__")" "1 false 000" \
+  "the public URL still the placeholder of .env-example: the migrations stop first, nothing answers"
+check "$(dc logs syncstorage_migrate 2>&1 | grep -c 'ERROR: the public Sync URL (SYNC_PUBLIC_URL) is empty or still the placeholder of .env-example')" 1 "the migrations say why"
+# the init container refuses it too (the Quadlets, a stack without these migrations): a run of its own
+out=$(dc run --rm --no-deps -T -e DOMAIN="https://<REPLACE_WITH_YOUR_DOMAIN>" tokenserver_db_init 2>&1); rc=$?
+check "${rc} $(grep -c 'ERROR: the public Sync URL (SYNC_PUBLIC_URL) is still the placeholder of .env-example' <<< "${out}")" "1 1" "the init container refuses the placeholder"
+[ "${rc}" = 1 ] || tail -5 <<< "${out}"
+# an empty password of the Sync database: the migrations cannot connect either, the init
+# container alone says it (a run of its own, the stack as it is)
+if [ "${BACKEND}" = mysql ]; then empty=(-e MARIADB_PASSWORD=) what="the tokenserver database password (SYNC_TOKENSERVER_DB_PASSWORD)"
+else empty=(-e POSTGRES_PASSWORD=) what="the PostgreSQL password (SYNC_POSTGRES_PASSWORD)"; fi
+out=$(dc run --rm --no-deps -T -e DOMAIN="${OLD_DOMAIN}" "${empty[@]}" tokenserver_db_init 2>&1); rc=$?
+check "${rc} $(grep -c "ERROR: ${what} is empty: set it in .env" <<< "${out}")" "1 1" "an empty Sync database password: the init container refuses it"
+grep -q "ERROR: ${what} is empty" <<< "${out}" || tail -5 <<< "${out}"
+redeploy "${OLD_DOMAIN}"
+check "$(state tokenserver_db_init ExitCode) $(hb)" "0 200" "the public URL set again: the init container and the Sync server run"
 new_server
 check "$?" 0 "no account and no Sync data before the client flow"
 
-echo "== client flow through the tokenserver (mock FxA), MAX_USERS=1"
+echo "== client flow through the tokenserver (mock FxA), SYNC_MAX_USERS=1"
 pytest_in_app /tests/test_client_flow.py
 check "$?" 0 "client flow tests"
 
@@ -778,7 +879,7 @@ if [ -z "${EXTDB}" ]; then
   check "$(backups_of "ok = 1 AND bytes > 0 AND location LIKE '/backups/sync/%'")" $((good + 2)) "each run recorded in ffs_backups, with its size and place"
   check "$(dc exec -T backup sh -c 'ls /backups/sync | wc -l')" 1 "BACKUP_KEEP=1: older copies removed"
   # with the admin UI's own database (the event log), dumped as its user
-  [ "${BACKEND}" = mysql ] && expected="${ADMIN_DB_NAME}.sql.gz ${MARIADB_SYNCSTORAGE_DATABASE}.sql.gz ${MARIADB_TOKENSERVER_DATABASE}.sql.gz" || expected="${ADMIN_DB_NAME}.sql.gz ${POSTGRES_DATABASE}.sql.gz"
+  [ "${BACKEND}" = mysql ] && expected="${ADMIN_DB_NAME}.sql.gz ${SYNC_STORAGE_DB_NAME}.sql.gz ${SYNC_TOKENSERVER_DB_NAME}.sql.gz" || expected="${ADMIN_DB_NAME}.sql.gz ${SYNC_POSTGRES_NAME}.sql.gz"
   check "$(dc exec -T backup sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" && basename "$f"; done' | LC_ALL=C sort | paste -sd' ')" "${expected}" "the dumps pass gzip -t"
   check "$(dc exec -T backup sh -c 'stat -c %a /backups/sync/*/*.sql.gz' | sort -u)" 600 "the dumps are for root only (0600)"
   check "$(dc exec -T backup sh -c 'gunzip -c /backups/sync/*/*.sql.gz' | grep -cE 'CREATE TABLE [`"]?(public\.)?users[`"]? ')" 1 "the dump has the tokenserver's users table"
@@ -852,7 +953,7 @@ if [ -z "${EXTDB}" ]; then
   wait ${B}; RB=$?
   RUNS=$(sed -n 's|.*ok: /backups/sync/\([0-9TZ]*\),.*|\1|p' "${WORK}/run-a.log" "${WORK}/run-b.log" | sort -u)
   check "${RA} ${RB} $(wc -w <<< "${RUNS}") $(($(backups_of "ok = 1") - BEFORE_OK))" "0 0 2 2" "two runs at once: both work, in two folders, both recorded"
-  [ "${BACKEND}" = mysql ] && expected="${ADMIN_DB_NAME}.sql.gz ${MARIADB_SYNCSTORAGE_DATABASE}.sql.gz ${MARIADB_TOKENSERVER_DATABASE}.sql.gz" || expected="${ADMIN_DB_NAME}.sql.gz ${POSTGRES_DATABASE}.sql.gz"
+  [ "${BACKEND}" = mysql ] && expected="${ADMIN_DB_NAME}.sql.gz ${SYNC_STORAGE_DB_NAME}.sql.gz ${SYNC_TOKENSERVER_DB_NAME}.sql.gz" || expected="${ADMIN_DB_NAME}.sql.gz ${SYNC_POSTGRES_NAME}.sql.gz"
   for r in ${RUNS}; do
     check "$(dc exec -T backup sh -c "for f in /backups/sync/${r}/*.sql.gz; do gzip -t \"\$f\" && basename \"\$f\"; done" | LC_ALL=C sort | paste -sd' ')" "${expected}" "every dump of ${r} there and passing gzip -t"
   done
@@ -882,12 +983,12 @@ if [ -z "${EXTDB}" ]; then
   if [ "${BACKEND}" = postgres ]; then
     # no owner and no grant in the dump of the Sync database: they name roles a new server
     # has only after the init container (it gives them again at every start)
-    check "$(dump "${POSTGRES_DATABASE}" | grep -cE '^(GRANT|REVOKE|ALTER .* OWNER TO) ')" 0 "the dump of the Sync database names no role"
+    check "$(dump "${SYNC_POSTGRES_NAME}" | grep -cE '^(GRANT|REVOKE|ALTER .* OWNER TO) ')" 0 "the dump of the Sync database names no role"
     # as the Sync server's role, the owner of what the dump holds (ADMIN.md#restoring), never
     # the superuser: into a database of its own
     check "$(dc exec -T backup printenv TOKENSERVER_DB_USER)" "${SYNC_ROLE}" "the backups dump the Sync database as the Sync server's role"
     sql "DROP DATABASE IF EXISTS ffs_restore_test;" > /dev/null 2>&1 && sql "CREATE DATABASE ffs_restore_test OWNER ${SYNC_ROLE} TEMPLATE template0;" > /dev/null
-    dump "${POSTGRES_DATABASE}" | dc exec -T -e PGPASSWORD="${SYNC_ROLE_SECRET}" postgres_db psql -q -h 127.0.0.1 -U "${SYNC_ROLE}" -d ffs_restore_test -v ON_ERROR_STOP=1 > /dev/null
+    dump "${SYNC_POSTGRES_NAME}" | dc exec -T -e PGPASSWORD="${SYNC_ROLE_SECRET}" postgres_db psql -q -h 127.0.0.1 -U "${SYNC_ROLE}" -d ffs_restore_test -v ON_ERROR_STOP=1 > /dev/null
     check "$?" 0 "the dump of the Sync database restores into an empty database (ON_ERROR_STOP)"
     check "$(sql "SELECT COUNT(*) FROM users;")" "$(sync_role_sql 'SELECT COUNT(*) FROM users;' ffs_restore_test)" "every row of users restored"
     sql "DROP DATABASE ffs_restore_test;" > /dev/null
@@ -901,7 +1002,7 @@ else
     BACKUP_IMAGE="mysql:8.4"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   else
-    BACKUP_IMAGE="${POSTGRES_IMAGE:-postgres:18}"
+    BACKUP_IMAGE="${SYNC_POSTGRES_IMAGE:-postgres:18}"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   fi
   docker volume create "${BACKUP_VOL}" > /dev/null
@@ -910,15 +1011,15 @@ else
     local db_port db_user db_password db_name storage_host
     if [ "${BACKEND}" = postgres ]; then
       db_port=5432
-      db_user="${POSTGRES_USER}"
-      db_password="${POSTGRES_PASSWORD}"
-      db_name="${POSTGRES_DATABASE}"
+      db_user="${SYNC_POSTGRES_USER}"
+      db_password="${SYNC_POSTGRES_PASSWORD}"
+      db_name="${SYNC_POSTGRES_NAME}"
       storage_host=""
     else
       db_port=3306
-      db_user="${MARIADB_TOKENSERVER_USER}"
-      db_password="${MARIADB_TOKENSERVER_PASSWORD}"
-      db_name="${MARIADB_TOKENSERVER_DATABASE}"
+      db_user="${SYNC_TOKENSERVER_DB_USER}"
+      db_password="${SYNC_TOKENSERVER_DB_PASSWORD}"
+      db_name="${SYNC_TOKENSERVER_DB_NAME}"
       storage_host="${EXTDB}"
     fi
     docker run --rm --network "${EXTDB}" \
@@ -934,9 +1035,9 @@ else
       -e TOKENSERVER_DB_PASSWORD="${db_password}" \
       -e TOKENSERVER_DB_NAME="${db_name}" \
       -e STORAGE_DB_HOST="${storage_host}" \
-      -e STORAGE_DB_USER="${MARIADB_SYNCSTORAGE_USER:-}" \
-      -e STORAGE_DB_PASSWORD="${MARIADB_SYNCSTORAGE_PASSWORD:-}" \
-      -e STORAGE_DB_NAME="${MARIADB_SYNCSTORAGE_DATABASE:-}" \
+      -e STORAGE_DB_USER="${SYNC_STORAGE_DB_USER:-}" \
+      -e STORAGE_DB_PASSWORD="${SYNC_STORAGE_DB_PASSWORD:-}" \
+      -e STORAGE_DB_NAME="${SYNC_STORAGE_DB_NAME:-}" \
       -e ADMIN_DB_PASSWORD="${ADMIN_DB_SECRET}" \
       -e ADMIN_DB_USER="${ADMIN_DB_USER}" \
       -e ADMIN_DB_NAME="${ADMIN_DB_NAME}" \
@@ -946,9 +1047,9 @@ else
   check "$?" 0 "a backup run with EXTERNAL_DB (as database client)"
   # check the dumps exist and pass gzip -t
   if [ "${BACKEND}" = mysql ]; then
-    expected="${ADMIN_DB_NAME}.sql.gz ${MARIADB_SYNCSTORAGE_DATABASE}.sql.gz ${MARIADB_TOKENSERVER_DATABASE}.sql.gz"
+    expected="${ADMIN_DB_NAME}.sql.gz ${SYNC_STORAGE_DB_NAME}.sql.gz ${SYNC_TOKENSERVER_DB_NAME}.sql.gz"
   else
-    expected="${ADMIN_DB_NAME}.sql.gz ${POSTGRES_DATABASE}.sql.gz"
+    expected="${ADMIN_DB_NAME}.sql.gz ${SYNC_POSTGRES_NAME}.sql.gz"
   fi
   DUMPS=$(docker run --rm -v "${BACKUP_VOL}:/backups:ro" "${BACKUP_IMAGE}" sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" 2>/dev/null && basename "$f"; done' | LC_ALL=C sort | paste -sd' ')
   check "${DUMPS}" "${expected}" "the dumps of EXTERNAL_DB pass gzip -t"
@@ -958,8 +1059,8 @@ else
   if [ "${BACKEND}" = postgres ]; then
     # PostgreSQL: test restoring as the Sync role (documented grants) into a scratch database
     extdb_admin -c "DROP DATABASE IF EXISTS ffs_restore_test" > /dev/null 2>&1
-    extdb_admin -c "CREATE DATABASE ffs_restore_test OWNER ${POSTGRES_USER} TEMPLATE template0" > /dev/null
-    dump_extdb "${POSTGRES_DATABASE}" | docker exec -i -e PGPASSWORD="${POSTGRES_PASSWORD}" "${EXTDB}" psql -q -h 127.0.0.1 -U "${POSTGRES_USER}" -d ffs_restore_test -v ON_ERROR_STOP=1 > /dev/null 2>&1
+    extdb_admin -c "CREATE DATABASE ffs_restore_test OWNER ${SYNC_POSTGRES_USER} TEMPLATE template0" > /dev/null
+    dump_extdb "${SYNC_POSTGRES_NAME}" | docker exec -i -e PGPASSWORD="${SYNC_POSTGRES_PASSWORD}" "${EXTDB}" psql -q -h 127.0.0.1 -U "${SYNC_POSTGRES_USER}" -d ffs_restore_test -v ON_ERROR_STOP=1 > /dev/null 2>&1
     check "$?" 0 "the dump of the Sync database restores with documented grants (PostgreSQL, ON_ERROR_STOP)"
     check "$(sql "SELECT COUNT(*) FROM users;")" "$(extdb_admin -d ffs_restore_test -c "SELECT COUNT(*) FROM users;")" "every row of users restored"
     extdb_admin -c "DROP DATABASE ffs_restore_test" > /dev/null
@@ -968,13 +1069,13 @@ else
     # grants, no LOCK TABLES needed). The dumps DROP and CREATE each table, so clear the database
     # first (a row added after the dump: it goes), then restore over it
     USERS_BEFORE=$(sql "SELECT COUNT(*) FROM users;")
-    extdb_admin -D "${MARIADB_TOKENSERVER_DATABASE}" -e "DROP TABLE IF EXISTS users;" > /dev/null
-    dump_extdb "${MARIADB_TOKENSERVER_DATABASE}" | docker exec -i -e MYSQL_PWD="${MARIADB_TOKENSERVER_PASSWORD}" "${EXTDB}" mysql -h 127.0.0.1 -u"${MARIADB_TOKENSERVER_USER}" "${MARIADB_TOKENSERVER_DATABASE}" > /dev/null 2>&1
+    extdb_admin -D "${SYNC_TOKENSERVER_DB_NAME}" -e "DROP TABLE IF EXISTS users;" > /dev/null
+    dump_extdb "${SYNC_TOKENSERVER_DB_NAME}" | docker exec -i -e MYSQL_PWD="${SYNC_TOKENSERVER_DB_PASSWORD}" "${EXTDB}" mysql -h 127.0.0.1 -u"${SYNC_TOKENSERVER_DB_USER}" "${SYNC_TOKENSERVER_DB_NAME}" > /dev/null 2>&1
     check "$?" 0 "the tokenserver dump restores with documented grants (no LOCK TABLES needed)"
     check "$(sql "SELECT COUNT(*) FROM users;")" "${USERS_BEFORE}" "every row of tokenserver users restored"
-    if [ -n "${MARIADB_SYNCSTORAGE_DATABASE:-}" ]; then
+    if [ -n "${SYNC_STORAGE_DB_NAME:-}" ]; then
       # storage database exists: test it too (typically empty in these tests, check it restores)
-      dump_extdb "${MARIADB_SYNCSTORAGE_DATABASE}" | docker exec -i -e MYSQL_PWD="${MARIADB_SYNCSTORAGE_PASSWORD}" "${EXTDB}" mysql -h 127.0.0.1 -u"${MARIADB_SYNCSTORAGE_USER}" "${MARIADB_SYNCSTORAGE_DATABASE}" > /dev/null 2>&1
+      dump_extdb "${SYNC_STORAGE_DB_NAME}" | docker exec -i -e MYSQL_PWD="${SYNC_STORAGE_DB_PASSWORD}" "${EXTDB}" mysql -h 127.0.0.1 -u"${SYNC_STORAGE_DB_USER}" "${SYNC_STORAGE_DB_NAME}" > /dev/null 2>&1
       check "$?" 0 "the syncstorage dump restores with documented grants (no LOCK TABLES needed)"
     fi
   fi
@@ -1029,10 +1130,10 @@ check "$?" 0 "upstream storage tests"
 echo "== errors in syncstorage logs"
 check "$(dc logs syncstorage 2>&1 | grep -ciE 'panicked|"status":5[0-9][0-9]')" 0 "no panics or 5xx in syncstorage logs"
 
-echo "== upstream tokenserver integration tests (MAX_USERS raised, they create many users)"
-set_env MAX_USERS 1000000
+echo "== upstream tokenserver integration tests (SYNC_MAX_USERS raised, they create many users)"
+set_env SYNC_MAX_USERS 1000000
 dc up -d > /dev/null 2>&1
-check "$(wait_init)" 0 "init container exit code (MAX_USERS=1000000)"
+check "$(wait_init)" 0 "init container exit code (SYNC_MAX_USERS=1000000)"
 hb > /dev/null
 # test_e2e.py needs real accounts on Mozilla's FxA stage environment
 UPSTREAM_TS="tools/integration_tests/tokenserver --ignore=tools/integration_tests/tokenserver/test_e2e.py"
@@ -1107,7 +1208,7 @@ check "$?" 0 "a first sign-in and sync without the admin UI"
 if [ -z "${EXTDB}" ]; then
   echo "== a backup restores, the way ADMIN.md#restoring says, on a new host (empty volumes)"
   # the storage database (MariaDB, MySQL): PostgreSQL has one database, sql's
-  sql_storage() { dc exec -T -e MYSQL_PWD="${MARIADB_SYNCSTORAGE_PASSWORD}" syncstorage_db "${DB_CLIENT}" -u"${MARIADB_SYNCSTORAGE_USER}" "${MARIADB_SYNCSTORAGE_DATABASE}" -sN -e "$1" < /dev/null; }
+  sql_storage() { dc exec -T -e MYSQL_PWD="${SYNC_STORAGE_DB_PASSWORD}" syncstorage_db "${DB_CLIENT}" -u"${SYNC_STORAGE_DB_USER}" "${SYNC_STORAGE_DB_NAME}" -sN -e "$1" < /dev/null; }
   # every table of a database with its rows, its triggers and procedures: <sql function>
   inventory() {
     local q t

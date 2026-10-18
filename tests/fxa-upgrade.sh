@@ -79,11 +79,11 @@ rnd() { tr -dc '[:alnum:]' < /dev/urandom 2> /dev/null | head -c 32; }
 # sets them) and the backups
 sed -e "s|<REPLACE_WITH_SOMETHING_SECURE>|RANDOM|" "${CODE}/.env-example" | while IFS= read -r line; do
   case "${line}" in *=RANDOM) echo "${line%RANDOM}$(rnd)" ;; *) echo "${line}" ;; esac
-done | sed -e "s|^SYNCSTORAGE_DOMAIN=.*|SYNCSTORAGE_DOMAIN=https://sync.fxa.test|" \
-    -e "s|^CONTAINER_EXPORT_PORT=.*|CONTAINER_EXPORT_PORT=127.0.0.1:$((28663 + SLOT_PORTS))|" \
-    -e "s|^REPOSITORY=.*|REPOSITORY=${REPOSITORY}|" \
-    -e "s|^SYNCSTORAGE_IMAGE_TAG=.*|SYNCSTORAGE_IMAGE_TAG=${TAG}|" \
-    -e "s|^SYNCSTORAGE_INIT_IMAGE_TAG=.*|SYNCSTORAGE_INIT_IMAGE_TAG=${INIT_TAG}|" \
+done | sed -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.fxa.test|" \
+    -e "s|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=127.0.0.1:$((28663 + SLOT_PORTS))|" \
+    -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=${REPOSITORY}|" \
+    -e "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${TAG}|" \
+    -e "s|^SYNC_INIT_IMAGE_TAG=.*|SYNC_INIT_IMAGE_TAG=${INIT_TAG}|" \
     -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.fxa.test|" \
     -e "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1|" \
     -e "s|^FXA_CONTENT_URL=.*|FXA_CONTENT_URL=https://accounts.fxa.test|" \
@@ -200,7 +200,7 @@ upgrade_tests() {
   dc run --rm -T --no-deps --user root \
     -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" -v "${WORK}/state:/state" \
     -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
-    -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNCSTORAGE_DOMAIN -e MAILPIT_URL=http://mailpit:8025 \
+    -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNC_PUBLIC_URL -e MAILPIT_URL=http://mailpit:8025 \
     -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_UPGRADE_PHASE="$1" -e UPGRADE_STATE=/state/upgrade.json \
     -e FXA_NEW_VERSION="${new_release}" -e FXA_OLD_LEVELS="${old_levels:-}" -e FXA_NEW_LEVELS="${new_levels:-}" \
     -e FXA_NEW_DB_SERVER="${new_db_server:-}" \
