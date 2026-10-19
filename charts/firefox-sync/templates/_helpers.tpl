@@ -344,9 +344,9 @@ docker-compose.sync-postgres.yml), for the migrate init container and the server
 - name: SYNC_TOKENSERVER__INIT_NODE_URL
   value: {{ .Values.syncDomain | quote }}
 - name: SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN
-  value: {{ .Values.fxa.emailDomain | quote }}
+  value: {{ include "firefox-sync.fxaEmailDomain" . | quote }}
 - name: SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL
-  value: {{ .Values.fxa.oauthServerUrl | quote }}
+  value: {{ include "firefox-sync.fxaOauthServerUrl" . | quote }}
 {{ include "firefox-sync.secretEnv" (dict "root" . "name" "SYNC_TOKENSERVER__FXA_METRICS_HASH_SECRET" "key" "METRICS_HASH_SECRET") }}
 - name: SYNC_TOKENSERVER__ADDITIONAL_BLOCKING_THREADS_FOR_FXA_REQUESTS
   value: "2"

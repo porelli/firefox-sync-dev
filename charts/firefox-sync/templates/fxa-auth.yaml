@@ -1,0 +1,411 @@
+{{- /*
+The accounts' auth server, compose's fxa-auth. Compose's one-shot services before it
+(fxa-keys-owner, fxa-migrations, fxa-policy) are its init containers, in compose's order: every
+new pod (an image or a policy change) migrates first and never serves on an old schema, and a
+failing init keeps it in Init:Error, out of its Service
+*/ -}}
+{{- if .Values.fxa.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $f := .Values.fxa }}
+{{- $redis := printf "%s-fxa-redis" $fullname }}
+{{- $dbHost := include "firefox-sync.fxaDbHost" . }}
+{{- $dbPort := include "firefox-sync.fxaDbPort" . }}
+{{- $smtp := include "firefox-sync.smtp" . | fromJson }}
+{{- $keysSecret := $f.keys.existingSecret }}
+{{- if not $keysSecret }}
+# the signing keys, written by the auth server's own scripts on its first start: never
+# regenerated while this volume is there
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-fxa-keys
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-keys") | nindent 4 }}
+  annotations:
+    # kept on helm uninstall: losing the keys signs everyone out
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $f.keys.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $f.keys.persistence.size }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-fxa-auth
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-auth") | nindent 4 }}
+spec:
+  selector:
+    {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-auth") | nindent 4 }}
+  ports:
+    - name: http
+      port: 9000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-fxa-auth
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-auth") | nindent 4 }}
+spec:
+  replicas: 1
+  # stop, then start, like compose: one migration at a time, and the keys' volume is RWO
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-auth") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-auth") | nindent 8 }}
+      {{- /* a new pod when its scripts or the chart's Secret change (its env reads the
+      Secret at the start; existingSecret: restart it yourself) */}}
+      {{- $annotations := dict "checksum/fxa-config" (include "firefox-sync.fxaConfigData" . | sha256sum) }}
+      {{- if not .Values.existingSecret }}
+      {{- $_ := set $annotations "checksum/secrets" (include "firefox-sync.secretData" . | sha256sum) }}
+      {{- end }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" . "annotations" $annotations) }}{{ . | trim | nindent 6 }}{{ end }}
+    spec:
+      {{- include "firefox-sync.podSpec" . | nindent 6 }}
+      securityContext:
+        {{- include "firefox-sync.fxaPodSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- if $keysSecret }}
+        # the keys of fxa.keys.existingSecret, copied for the auth server (which also writes
+        # its OAuth clients there): it stops here when one is missing, never generating new ones
+        - name: keys-copy
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          args:
+            - sh
+            - -c
+            - |
+              missing=
+              for f in secret-key.json public-key.json vapid-keys.json openid-key.json; do
+                [ -s "/fxa-keys-secret/$f" ] || missing="$missing $f"
+              done
+              if [ -n "$missing" ]; then
+                echo "fxa.keys.existingSecret {{ $keysSecret }} lacks:$missing (HELM.md)"; exit 1
+              fi
+              for f in /fxa-keys-secret/*; do
+                cp "$f" "/fxa-keys/${f##*/}" && chmod 600 "/fxa-keys/${f##*/}" || exit 1
+              done
+              echo "keys copied from fxa.keys.existingSecret {{ $keysSecret }}"
+          volumeMounts:
+            - name: fxa-keys
+              mountPath: /fxa-keys
+            - name: fxa-keys-secret
+              mountPath: /fxa-keys-secret
+              readOnly: true
+        {{- else if $f.volumeOwnerInit }}
+        # compose's fxa-keys-owner: the image runs as app (10001), new volumes are root's.
+        # Root with CHOWN alone (fxa.volumeOwnerInit false: none, fsGroup instead)
+        - name: keys-owner
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          args: [chown, "10001:10001", /fxa-keys]
+          volumeMounts:
+            - name: fxa-keys
+              mountPath: /fxa-keys
+        {{- end }}
+        # the accounts database answers (up to 30 minutes, its first start), without
+        # credentials: a refused password stops the migrations after it
+        - name: wait-db
+          image: {{ include "firefox-sync.fxaDbImage" . }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              deadline=$(( $(date +%s) + 1800 ))
+              # ping is alive also when the (empty) login is refused
+              until out=$({{ ternary "mariadb-admin" "mysqladmin" (eq $f.database.backend "mariadb") }} --connect-timeout=5 -h {{ $dbHost | quote }} -P {{ $dbPort | quote }} ping 2>&1); do
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "Timeout waiting for {{ $dbHost }}:{{ $dbPort }}: $out"; exit 1
+                fi
+                sleep 2
+              done
+              echo "{{ $dbHost }}:{{ $dbPort }} answers"
+        # compose's fxa-migrations
+        - name: migrations
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /fxa/packages/db-migrations
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          # compose's command verbatim: Kubernetes, like compose, turns $$ into $ (retried:
+          # your own server may not answer yet)
+          args: [sh, -c, "for i in $$(seq 1 60); do node bin/patcher.mjs && exit 0; sleep 5; done; exit 1"]
+          env:
+            {{- range list "AUTH_" "OAUTH_" "PROFILE_" "PUSHBOX_" }}
+            {{- include "firefox-sync.fxaMysqlEnv" (dict "root" $ "prefix" .) | nindent 12 }}
+            {{- end }}
+        # compose's fxa-policy: who can create an account (fxa.signups, signupAllowlist,
+        # maxAccounts), enforced by the accounts database itself; also the database user of
+        # the admin UI (ADMIN.md). The admin UI's image, also with admin.enabled false
+        - name: policy
+          image: {{ include "firefox-sync.image" (dict "root" . "name" "admin") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # the image's user nonroot, as the admin UI's pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          args: [fxa-init]
+          env:
+            - name: FXA_DB_HOST
+              value: {{ $dbHost | quote }}
+            - name: FXA_DB_PORT
+              value: {{ $dbPort | quote }}
+            # installs the policy and grants ffs_admin: your own server's policy user, empty:
+            # FXA_MYSQL_USER (with its own password: fxa-init picks the pair)
+            {{- if and (not $f.database.bundled) $f.database.external.policyUser }}
+            - name: FXA_DB_ROOT_USER
+              value: {{ $f.database.external.policyUser | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FXA_DB_ROOT_PASSWORD" "key" "FXA_MYSQL_POLICY_PASSWORD") | nindent 12 }}
+            {{- else }}
+            - name: FXA_DB_ROOT_USER
+              value: ""
+            - name: FXA_DB_ROOT_PASSWORD
+              value: ""
+            {{- end }}
+            - name: FXA_MYSQL_USER
+              value: {{ include "firefox-sync.fxaDbUser" . | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FXA_MYSQL_PASSWORD" "key" "FXA_MYSQL_PASSWORD") | nindent 12 }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FXA_ADMIN_DB_PASSWORD" "key" "FXA_ADMIN_DB_PASSWORD") | nindent 12 }}
+            - name: FXA_SIGNUPS
+              value: {{ $f.signups | quote }}
+            - name: FXA_SIGNUP_ALLOWLIST
+              value: {{ include "firefox-sync.fxaAllowlist" . | quote }}
+            # the most accounts: N or unlimited (every start), initial:N (once, then the admin UI)
+            - name: FXA_MAX_ACCOUNTS
+              value: {{ include "firefox-sync.number" $f.maxAccounts | quote }}
+        # compose's depends_on fxa-redis (service_healthy): it answers (up to 5 minutes)
+        - name: wait-redis
+          image: {{ $f.redis.image }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              deadline=$(( $(date +%s) + 300 ))
+              until [ "$(redis-cli -h {{ $redis }} ping 2>&1)" = PONG ]; do
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "Timeout waiting for {{ $redis }}"; exit 1
+                fi
+                sleep 2
+              done
+              echo "{{ $redis }} answers"
+      containers:
+        - name: auth
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /fxa/packages/fxa-auth-server/dist/packages/fxa-auth-server
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with $f.resources.auth }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # keys are only generated when missing, the volume keeps them across restarts
+          args:
+            - sh
+            - -c
+            - >-
+              node scripts/gen_keys.js &&
+              node scripts/oauth_gen_keys.js &&
+              node scripts/gen_vapid_keys.js &&
+              node /fxa-config/oauth-clients.js /fxa-keys/oauth-clients.json &&
+              exec node bin/key_server.js
+          env:
+            - name: NODE_ENV
+              value: prod
+            - name: CONFIG_FILES
+              value: /fxa-keys/oauth-clients.json
+            - name: IP_ADDRESS
+              value: 0.0.0.0
+            - name: PUBLIC_URL
+              value: {{ $f.authUrl | quote }}
+            - name: OAUTH_URL
+              value: {{ $f.authUrl | quote }}
+            - name: CONTENT_SERVER_URL
+              value: {{ $f.contentUrl | quote }}
+            - name: FXA_OPENID_ISSUER
+              value: {{ $f.contentUrl | quote }}
+            # the host of fxa.authUrl, it signs and checks the OAuth assertions
+            - name: ISSUER
+              value: {{ include "firefox-sync.fxaEmailDomain" . | quote }}
+            - name: PROFILE_SERVER_URL
+              value: http://{{ $fullname }}-fxa-profile:1111
+            - name: SYNC_TOKENSERVER_URL
+              value: {{ .Values.syncDomain | quote }}
+            - name: CORS_ORIGIN
+              value: {{ $f.contentUrl | quote }}
+            # the client IP for the rate limits is this far from the end of X-Forwarded-For:
+            # 2 = one reverse proxy in front (the Ingress controller)
+            - name: CLIENT_ADDRESS_DEPTH
+              value: {{ include "firefox-sync.number" $f.clientAddressDepth | quote }}
+            - name: FXA_EXPIRATION_ACCESS_TOKEN
+              value: {{ $f.accessTokenLifetime | quote }}
+            # when sessions were last used (the admin UI shows it): for every account
+            - name: LASTACCESSTIME_UPDATES_SAMPLE_RATE
+              value: "1"
+            # the OAuth client of the admin UI (config/fxa/oauth-clients.js)
+            - name: ADMIN_FXA_CLIENT_ID
+              value: {{ $f.adminClientId | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_FXA_CLIENT_SECRET" "key" "ADMIN_FXA_CLIENT_SECRET" "optional" true) | nindent 12 }}
+            - name: ADMIN_OIDC_REDIRECT_URL
+              value: {{ .Values.admin.oidc.redirectUrl | quote }}
+            # clients that never skip the sign-in code: Mozilla's defaults and the admin UI
+            - name: SERVICES_WITH_EMAIL_VERIFICATION
+              value: {{ printf "32aaeb6f1c21316a,98e6508e88680e1a,%s" $f.adminClientId | quote }}
+            # secrets: the auth server signs OAuth assertions with OAUTH_SERVER_SECRET_KEY and
+            # accepts those signed with one of AUTH_SERVER_SECRETS: they share the secret
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "OAUTH_SERVER_SECRET_KEY" "key" "FXA_OAUTH_SECRET") | nindent 12 }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "OAUTH_SERVER_SECRETS" "key" "FXA_OAUTH_SECRET") | nindent 12 }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "AUTH_SERVER_SECRETS" "key" "FXA_OAUTH_SECRET") | nindent 12 }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "AUTH_SERVER_SHARED_SECRET" "key" "FXA_AUTH_SECRET") | nindent 12 }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "PROFILE_SERVER_AUTH_SECRET_BEARER_TOKEN" "key" "FXA_PROFILE_SECRET") | nindent 12 }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FLOW_ID_KEY" "key" "FXA_FLOW_ID_KEY") | nindent 12 }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "SESSION_TOKEN_HANDLE_KEY" "key" "FXA_SESSION_TOKEN_HANDLE_KEY") | nindent 12 }}
+            - name: SECRET_KEY_FILE
+              value: /fxa-keys/secret-key.json
+            - name: PUBLIC_KEY_FILE
+              value: /fxa-keys/public-key.json
+            - name: VAPID_KEYS_FILE
+              value: /fxa-keys/vapid-keys.json
+            - name: FXA_OPENID_KEYFILE
+              value: /fxa-keys/openid-key.json
+            - name: FXA_OPENID_NEWKEYFILE
+              value: /fxa-keys/openid-newKey.json
+            - name: FXA_OPENID_OLDKEYFILE
+              value: /fxa-keys/openid-oldKey.json
+            # databases
+            - name: DB
+              value: mysql
+            {{- include "firefox-sync.fxaMysqlEnv" (dict "root" . "prefix" "AUTH_") | nindent 12 }}
+            {{- include "firefox-sync.fxaMysqlEnv" (dict "root" . "prefix" "") | nindent 12 }}
+            - name: PUSHBOX_ENABLED
+              value: "true"
+            {{- include "firefox-sync.fxaMysqlEnv" (dict "root" . "prefix" "PUSHBOX_") | nindent 12 }}
+            - name: DB_AUTO_UPDATE_CLIENTS
+              value: "true"
+            {{- range list "REDIS_HOST" "ACCESS_TOKEN_REDIS_HOST" "REFRESH_TOKEN_REDIS_HOST" "CUSTOMS_REDIS_HOST" "RATELIMIT_REDIS_HOST" "METRICS_REDIS_HOST" "AUTH_CACHE_REDIS_HOST" "RECOVERY_PHONE_REDIS_HOST" "PASSKEY_REDIS_HOST" }}
+            - name: {{ . }}
+              value: {{ $redis }}
+            {{- end }}
+            # email (smtp.*)
+            - name: SMTP_HOST
+              value: {{ $smtp.host | quote }}
+            - name: SMTP_PORT
+              value: {{ $smtp.port | quote }}
+            - name: SMTP_USER
+              value: {{ $smtp.user | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "SMTP_PASS" "key" "FXA_SMTP_PASS" "optional" true) | nindent 12 }}
+            - name: SMTP_SECURE
+              value: {{ $smtp.secure | quote }}
+            - name: SMTP_SENDER
+              value: {{ $smtp.sender | quote }}
+            # Mozilla/Google cloud services this deployment does not have
+            - name: FIRESTORE_ENABLED
+              value: "false"
+            - name: SNS_TOPIC_ARN
+              value: disabled
+            - name: GEODB_ENABLED
+              value: "false"
+            - name: AUTH_GLEAN_ENABLED
+              value: "false"
+            - name: CUSTOMS_SERVER_URL
+              value: none
+            - name: RECOVERY_PHONE__ENABLED
+              value: "false"
+            - name: RECOVERY_PHONE__TWILIO__CREDENTIAL_MODE
+              value: ""
+            # the security history (sign-ins, password and 2-step changes, with IP addresses)
+            - name: ACCOUNT_EVENTS_ENABLED
+              value: {{ $f.accountEvents | toString | quote }}
+            # Mozilla skips the sign-in code for 7 days after a confirmed sign-in from the
+            # same IP address: never here, a password alone does not sign in (FXA.md)
+            - name: IP_PROFILING_RECENCY
+              value: "0"
+            - name: LOG_LEVEL
+              value: {{ $f.logLevel | quote }}
+            {{- with include "firefox-sync.fxaCaEnv" . }}{{ . | nindent 12 }}{{ end }}
+          ports:
+            - name: http
+              containerPort: 9000
+          # compose's healthcheck; its start_period of 300 s plus the first start's key
+          # generation: up to 10 minutes
+          startupProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: fxa-keys
+              mountPath: /fxa-keys
+            - name: fxa-config
+              mountPath: /fxa-config
+              readOnly: true
+            {{- with include "firefox-sync.fxaCaVolumeMount" . }}{{ . | nindent 12 }}{{ end }}
+      volumes:
+        - name: fxa-keys
+          {{- if $keysSecret }}
+          emptyDir: {}
+        - name: fxa-keys-secret
+          secret:
+            secretName: {{ $keysSecret }}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-fxa-keys
+          {{- end }}
+        - name: fxa-config
+          configMap:
+            name: {{ $fullname }}-fxa-config
+        {{- with include "firefox-sync.fxaCaVolume" . }}{{ . | nindent 8 }}{{ end }}
+{{- end }}

@@ -5,20 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHART_DIR="${REPO_ROOT}/charts/firefox-sync"
 
-check() {
-  echo "✓ $1"
-}
-
-# rendered manifests (stdin) as a JSON array, for jq
-manifests() {
-  python3 -c 'import json, sys, yaml; print(json.dumps([d for d in yaml.safe_load_all(sys.stdin) if d]))'
-}
-
-fail() {
-  echo "✗ $1"
-  exit 1
-}
-
+# check, fail, manifests and the e2e's helpers, shared with tests/helm-fxa.sh
+# shellcheck source=tests/helm/lib.sh
+source "${SCRIPT_DIR}/helm/lib.sh"
 # the self-hosted accounts' checks (fxa_lint)
 # shellcheck source=tests/helm-fxa.sh
 source "${SCRIPT_DIR}/helm-fxa.sh"
@@ -492,6 +481,40 @@ pods_lint() {
   check "every pod: no service account token, seccomp RuntimeDefault, no privilege escalation, nothing baseline refuses; the admin UI restricted (mariadb, mysql, postgres)"
   check "every pod: nodeSelector, tolerations, affinity, imagePullSecrets, podAnnotations of the values (the chart's checksums kept)"
   check "resources: syncstorage.resources, .initResources (wait-db, sync-role, migrate, db-init), admin.resources (and wait-sync), database.resources, backup.resources (and bind)"
+
+  # with the accounts (ci/fxa-values.yaml, both their backends): the same for their pods; a
+  # capability added only to the volume owners' init containers, CHOWN alone; their pods (but
+  # their database server's, root at the start as the Sync server's) root only there, and
+  # nowhere with fxa.volumeOwnerInit=false
+  local fxa_backend owner_init caps roots want_roots
+  for fxa_backend in mysql mariadb; do
+    for owner_init in true false; do
+      pods=$(pod_specs -f "${CHART_DIR}/ci/fxa-values.yaml" --set fxa.database.backend="${fxa_backend}" --set fxa.volumeOwnerInit="${owner_init}")
+      [[ "$(jq '[.[] | select(.w | test("-fxa-"))] | length' <<< "${pods}")" -ge 3 ]] || fail "fxa ${fxa_backend}: not every workload of the accounts rendered"
+      bad=$(jq -r '.[] | .w as $w | .s.spec | select(.automountServiceAccountToken != false or .securityContext.seccompProfile.type != "RuntimeDefault"
+        or ([(.initContainers // [])[], .containers[] | .securityContext.allowPrivilegeEscalation] | any(. != false))
+        or .hostNetwork or .hostPID or .hostIPC or ([.volumes[]? | .hostPath] | any(. != null))
+        or ([(.initContainers // [])[], .containers[] | (.securityContext.privileged // false), ([.ports[]? | .hostPort] | any(. != null))] | any)) | $w' <<< "${pods}")
+      [[ -z "${bad}" ]] || fail "fxa ${fxa_backend}, volumeOwnerInit=${owner_init}: pods PodSecurity baseline refuses, or without the chart's hardening: ${bad}"
+      caps=$(jq -r '.[] | .w as $w | .s.spec | (.initContainers // [])[], .containers[] | select((.securityContext.capabilities.add // []) != [])
+        | "\($w | sub("^[A-Za-z]+/test-release-firefox-sync-"; ""))/\(.name)=\(.securityContext.capabilities.add | join(","))"' <<< "${pods}" | sort | paste -sd' ' -)
+      roots=$(jq -r '.[] | select((.w | test("-fxa-")) and .w != "StatefulSet/test-release-firefox-sync-fxa-db") | .w as $w | .s.spec | .securityContext as $p
+        | (.initContainers // [])[], .containers[] | select((.securityContext.runAsUser // $p.runAsUser // 0) == 0 or (.securityContext.runAsNonRoot // $p.runAsNonRoot) != true)
+        | "\($w | sub("^[A-Za-z]+/test-release-firefox-sync-"; ""))/\(.name)"' <<< "${pods}" | sort | paste -sd' ' -)
+      if [[ ${owner_init} == true ]]; then
+        want_roots="fxa-auth/keys-owner"
+        jq -e '[.[] | select(.w | test("-fxa-auth$")) | .s.spec.securityContext.fsGroup] == [null]' <<< "${pods}" > /dev/null \
+          || fail "fxa ${fxa_backend}: fsGroup on the auth pod with fxa.volumeOwnerInit"
+      else
+        want_roots=""
+        jq -e '[.[] | select(.w | test("-fxa-auth$")) | .s.spec.securityContext.fsGroup] == [10001]' <<< "${pods}" > /dev/null \
+          || fail "fxa ${fxa_backend}: no fsGroup 10001 on the auth pod with fxa.volumeOwnerInit=false"
+      fi
+      [[ "${caps}" == "${want_roots:+${want_roots}=CHOWN}" ]] || fail "fxa ${fxa_backend}, volumeOwnerInit=${owner_init}: capabilities added: ${caps:-none}"
+      [[ "${roots}" == "${want_roots}" ]] || fail "fxa ${fxa_backend}, volumeOwnerInit=${owner_init}: the accounts' root containers: ${roots:-none}, expected ${want_roots:-none}"
+    done
+  done
+  check "the accounts' pods: nothing baseline refuses; root only in keys-owner, with CHOWN alone, none with fxa.volumeOwnerInit=false (fsGroup 10001 then)"
 }
 
 # values.schema.json: no key the chart does not know (a typo fails), where the chart owns
@@ -791,16 +814,7 @@ e2e() {
     # migrations are the first to log in)
     [[ ${backend} == postgres ]] && failing_init='wait-db=0 sync-role=0 migrate=[1-9]'
   fi
-  # A host with Ubuntu's mysql-server (the GitHub runners) has an AppArmor profile for
-  # /usr/sbin/mysqld, and kind's pods run unconfined: the profile then takes the mysqld of the
-  # mysql:8 image too (docker's containers, in docker-default, are not). It denies /etc/my.cnf,
-  # /usr/share/mysql-8.4 and the init file of admin-user.sh (/run/ffs-admin, errno 13): the
-  # first start aborts half-way and every next one finds no mysql.user (CrashLoopBackOff)
-  if [[ ${backend} == mysql && -e /etc/apparmor.d/usr.sbin.mysqld && ! -e /etc/apparmor.d/disable/usr.sbin.mysqld \
-    && "$(cat /sys/module/apparmor/parameters/enabled 2> /dev/null)" == Y ]]; then
-    fail "the host's AppArmor profile /usr/sbin/mysqld would confine MySQL in kind; disable it first:
-  sudo ln -s /etc/apparmor.d/usr.sbin.mysqld /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld"
-  fi
+  [[ ${backend} != mysql ]] || mysqld_apparmor_check
   # as tests/e2e.sh: REPOSITORY and TAG of the images; the init image is built from this
   # tree (the published one may be older than the chart), unless SKIP_BUILD=1
   local repository=${REPOSITORY:-ghcr.io/porelli/firefox-sync} tag=${TAG:-latest} init_tag=${TAG:-latest}
@@ -824,31 +838,7 @@ e2e() {
   # the namespace at PodSecurity baseline (HELM.md#what-you-need), enforced: every pod of the
   # chart (and of the tests) is admitted under it, a refused one fails the run
   kubectl label ns default pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/enforce-version=latest > /dev/null
-  if [[ -z "${SKIP_BUILD:-}" ]]; then
-    init_tag=helm-e2e
-    ADMIN_TAG=helm-e2e
-    # in the test VM its helper (vm.sh: ~/.ffs/lib.sh), which builds a folder once per content
-    # and serializes the builds of the slots; elsewhere docker
-    if ! declare -F ffs_image > /dev/null && [[ -f "${HOME}/.ffs/lib.sh" ]]; then
-      # shellcheck source=/dev/null
-      source "${HOME}/.ffs/lib.sh"
-    fi
-    if declare -F ffs_image > /dev/null; then
-      (cd "${REPO_ROOT}" && ffs_image "${init_dir}" "${repository}:syncstorage-rs-${flavor}-init-${init_tag}" > /dev/null) \
-        || fail "init image not built"
-      (cd "${REPO_ROOT}" && ffs_image admin "${repository}:admin-${ADMIN_TAG}" > /dev/null) || fail "admin image not built"
-    else
-      docker build -q -t "${repository}:syncstorage-rs-${flavor}-init-${init_tag}" "${REPO_ROOT}/${init_dir}" > /dev/null \
-        || fail "init image not built"
-      # with BuildKit (the Dockerfile's BUILDPLATFORM), as tests/e2e.sh builds it
-      ADMIN_IMAGE="${repository}:admin-${ADMIN_TAG}" COMPOSE_BAKE=false docker compose -p ffs-helm-admin-build \
-        -f "${SCRIPT_DIR}/docker-compose.admin-build.yml" build -q || fail "admin image not built"
-    fi
-    kind load docker-image --name "${CLUSTER}" "${repository}:syncstorage-rs-${flavor}-init-${init_tag}"
-    check "init image built from ${init_dir}"
-    kind load docker-image --name "${CLUSTER}" "${repository}:admin-${ADMIN_TAG}"
-    check "admin image built from admin/"
-  fi
+  load_images "${repository}" "${flavor}" "${init_dir}"
 
   # a syncstorage image of the host's docker (of a private repository, or built there): into
   # the cluster, which would pull it otherwise
@@ -1263,21 +1253,6 @@ count() {
   esac
 }
 
-# wait_job <name> <seconds>: the Job succeeded (its logs on the way)
-wait_job() {
-  local deadline=$(( $(date +%s) + $2 )) succeeded failed
-  while [[ $(date +%s) -lt ${deadline} ]]; do
-    succeeded=$(kubectl get job "$1" -o jsonpath='{.status.succeeded}')
-    failed=$(kubectl get job "$1" -o jsonpath='{.status.failed}')
-    if [[ "${succeeded}" == 1 || -n "${failed}" ]]; then
-      break
-    fi
-    sleep 5
-  done
-  kubectl logs "job/$1" --tail=40 || true
-  [[ "${succeeded}" == 1 ]]
-}
-
 # sync_ready <statsd host, "" for none>: the one syncstorage pod Ready, SYNC_STATSD_HOST as given
 sync_ready() {
   kubectl rollout status "deploy/${FULL}-syncstorage" --timeout=10m || fail "syncstorage not rolled out"
@@ -1478,35 +1453,6 @@ extdb_server() {
   fi
 }
 
-rnd() { tr -dc A-Za-z0-9 < /dev/urandom | head -c 32 || true; }
-
-# ingress_is <name> <class> <host> <service> <port>: that Ingress, / of the host to the Service
-ingress_is() {
-  local got
-  got=$(kubectl get ingress "$1" -o json 2> /dev/null | jq -c '[.spec.ingressClassName, [.spec.rules[] | .host, (.http.paths[] | .path, .pathType,
-    .backend.service.name, .backend.service.port.number)]]') || true
-  [[ "${got}" == "[\"$2\",[\"$3\",\"/\",\"Prefix\",\"$4\",$5]]" ]] || fail "Ingress $1: ${got:-none}"
-}
-
-pod_status() {
-  kubectl get pods -l "${POD_SELECTOR}" --no-headers 2>/dev/null | awk '{print $3}' | paste -sd, -
-}
-
-# wait_pod_status <regex> <seconds>: the only syncstorage pod has a STATUS matching regex
-wait_pod_status() {
-  local deadline=$(( $(date +%s) + $2 )) status
-  while [[ $(date +%s) -lt ${deadline} ]]; do
-    status=$(pod_status)
-    if [[ "${status}" != *,* ]] && [[ "${status}" =~ ^($1)$ ]]; then
-      MATCHED_STATUS=${status}
-      return 0
-    fi
-    sleep 5
-  done
-  echo "pod status: ${status}"
-  return 1
-}
-
 # client_flow <job name> [pytest args]: tests/test_client_flow.py in the syncstorage image,
 # with the syncstorage container's own env (database URLs and their passwords from the Secret)
 client_flow() {
@@ -1529,32 +1475,6 @@ client_flow() {
         env: $env, volumeMounts: [{name: "tests", mountPath: "/tests", readOnly: true}]}],
       volumes: [{name: "tests", configMap: {name: "ffs-tests"}}]}}}}' | kubectl apply -f - || return 1
   wait_job "${name}" 600
-}
-
-# on a failure, what the pods did: every pod not Ready
-# (but those that completed) in full, describe, each container's and init container's log,
-# the current one and that of the previous run (a crash loop), and the events
-diagnostics() {
-  kubectl get pods -o wide 2>/dev/null || return 0
-  local pod c
-  for pod in $(kubectl get pods -o go-template='{{range .items}}{{if ne .status.phase "Succeeded"}}{{$ready := "False"}}{{range .status.conditions}}{{if eq .type "Ready"}}{{$ready = .status}}{{end}}{{end}}{{if ne $ready "True"}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{{end}}' 2>/dev/null); do
-    echo "=== pod/${pod} not Ready"
-    kubectl describe pod "${pod}" 2>/dev/null || true
-    for c in $(kubectl get pod "${pod}" -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null); do
-      echo "--- pod/${pod} ${c}: log"
-      kubectl logs "${pod}" -c "${c}" --tail=200 2>&1 || true
-      echo "--- pod/${pod} ${c}: log of the previous run"
-      kubectl logs "${pod}" -c "${c}" --previous --tail=200 2>&1 || true
-    done
-  done
-  echo "=== events"
-  kubectl get events --sort-by=.lastTimestamp 2>/dev/null || true
-  kubectl logs extdb-0 --tail=15 2> /dev/null || true
-  # the backup and the restore check
-  for pod in $(kubectl get pods -l "ffs-e2e" -o name 2>/dev/null) $(kubectl get pods -l "job-name=backup-now" -o name 2>/dev/null); do
-    echo "--- ${pod}"
-    kubectl logs "${pod}" --tail=15 2>/dev/null || true
-  done
 }
 
 case "${1:-}" in

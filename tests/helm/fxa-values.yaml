@@ -1,0 +1,7 @@
+# Test-only: the values of tests/helm-fxa.sh e2e, the self-hosted accounts on *.fxa.test
+# (fxa.enabled, the images and the databases' backends are set by the script)
+syncDomain: https://sync.fxa.test
+fxa:
+  contentUrl: https://accounts.fxa.test
+  authUrl: https://api.fxa.test
+  profileUrl: https://profile.fxa.test

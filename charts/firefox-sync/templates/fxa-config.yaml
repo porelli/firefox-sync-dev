@@ -1,0 +1,15 @@
+{{- /*
+The accounts' scripts, compose's ./config/fxa mounted read-only at /fxa-config (files/fxa/,
+copies kept identical to config/fxa/): the auth server's OAuth clients, the content server's
+settings. The pods that run them restart when they change (checksum/fxa-config)
+*/ -}}
+{{- if .Values.fxa.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "firefox-sync.fullname" . }}-fxa-config
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-config") | nindent 4 }}
+data:
+  {{- include "firefox-sync.fxaConfigData" . | trim | nindent 2 }}
+{{- end }}

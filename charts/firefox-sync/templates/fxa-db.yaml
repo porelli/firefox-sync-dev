@@ -1,0 +1,115 @@
+{{- /*
+The accounts database, compose's fxa-db (MySQL 8; MariaDB with docker-compose.fxa-mariadb.yml):
+only with fxa.database.bundled, your own server otherwise. Its root password is
+FXA_MYSQL_PASSWORD, as compose's
+*/ -}}
+{{- if and .Values.fxa.enabled .Values.fxa.database.bundled }}
+{{- $name := include "firefox-sync.fxaDbHost" . }}
+{{- $db := .Values.fxa.database }}
+{{- $check := list "sh" "-c" "mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent" }}
+{{- if eq $db.backend "mariadb" }}
+{{- $check = list "healthcheck.sh" "--connect" "--innodb_initialized" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-db") | nindent 4 }}
+spec:
+  selector:
+    {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-db") | nindent 4 }}
+  ports:
+    - name: db
+      port: 3306
+      targetPort: db
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-db") | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-db") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-db") | nindent 8 }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" .) }}{{ . | trim | nindent 6 }}{{ end }}
+    spec:
+      {{- include "firefox-sync.podSpec" . | nindent 6 }}
+      # root at the start, as the Sync server's databases (the image's entrypoint chowns the
+      # data, then drops to its user): PodSecurity baseline
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: db
+          image: {{ include "firefox-sync.fxaDbImage" . }}
+          {{- include "firefox-sync.noEscalation" . | nindent 10 }}
+          {{- with $db.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "MYSQL_ROOT_PASSWORD" "key" "FXA_MYSQL_PASSWORD") | nindent 12 }}
+            {{- if eq $db.backend "mariadb" }}
+            - name: MARIADB_AUTO_UPGRADE
+              value: "true"
+            {{- end }}
+          {{- if eq $db.backend "mariadb" }}
+          # the default authentication is already mysql_native_password, the only one FxA's
+          # driver supports
+          args: [mariadbd, --event-scheduler=ON]
+          {{- else }}
+          # FxA uses the node mysql driver, which only supports mysql_native_password
+          args: [mysqld, --mysql-native-password=ON, --authentication-policy=mysql_native_password, --event-scheduler=ON]
+          {{- end }}
+          # compose's healthcheck (MySQL over TCP: during the first start the image runs a
+          # temporary server on the socket only), with the timings of the Sync server's
+          # databases: up to 30 minutes for the first start, restarted only after 5 minutes
+          # without an answer
+          startupProbe:
+            exec:
+              command: {{ toJson $check }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 180
+          readinessProbe:
+            exec:
+              command: {{ toJson $check }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command: {{ toJson $check }}
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          ports:
+            - name: db
+              containerPort: 3306
+          volumeMounts:
+            # a subdirectory: MariaDB and MySQL refuse to initialise next to the lost+found
+            # of a fresh ext4 volume
+            - name: data
+              mountPath: /var/lib/mysql
+              subPath: data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $db.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $db.persistence.size }}
+{{- end }}

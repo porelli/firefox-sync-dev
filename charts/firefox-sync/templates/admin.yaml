@@ -140,9 +140,9 @@ spec:
             - name: SYNCSTORAGE_DOMAIN
               value: {{ .Values.syncDomain | quote }}
             - name: FXA_OAUTH_SERVER_URL
-              value: {{ .Values.fxa.oauthServerUrl | quote }}
+              value: {{ include "firefox-sync.fxaOauthServerUrl" . | quote }}
             - name: FXA_EMAIL_DOMAIN
-              value: {{ .Values.fxa.emailDomain | quote }}
+              value: {{ include "firefox-sync.fxaEmailDomain" . | quote }}
             - name: ADMIN_PUBLIC_CHECK
               value: {{ $a.publicCheck | toString | quote }}
             - name: ALERT_EMAIL

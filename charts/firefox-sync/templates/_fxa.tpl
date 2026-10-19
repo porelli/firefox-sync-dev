@@ -258,3 +258,54 @@ host, port, user, secure, sender (the password is FXA_SMTP_PASS of the Secret)
 {{- $s := merge (deepCopy (.Values.smtp | default dict)) (dict "host" "" "port" 587 "user" "" "secure" false "sender" "") }}
 {{- toJson (dict "host" ($s.host | default "" | toString) "port" (include "firefox-sync.number" $s.port) "user" ($s.user | default "" | toString) "secure" ($s.secure | toString) "sender" ($s.sender | default "" | toString)) }}
 {{- end }}
+
+{{/*
+resources: of the accounts' init containers (fxa.resources.init), empty: none
+*/}}
+{{- define "firefox-sync.fxaInitResources" -}}
+{{- with .Values.fxa.resources.init }}
+resources:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+
+{{/*
+The data of the ConfigMap <fullname>-fxa-config: every files/fxa/*.js (compose's ./config/fxa),
+also the input of the pods' checksum/fxa-config
+*/}}
+{{- define "firefox-sync.fxaConfigData" -}}
+{{- range $path, $_ := .Files.Glob "files/fxa/*.js" }}
+{{ base $path }}: |
+  {{- $.Files.Get $path | trimSuffix "\n" | nindent 2 }}
+{{- end }}
+{{- end }}
+
+{{/*
+fxa.extraCaCerts (chart-only, no compose counterpart): the CA of your SMTP server or of your
+own HTTPS hosts for the accounts' node servers, the ConfigMap at /ffs-ca. The env entry, the
+volumeMount and the volume, each empty without it
+*/}}
+{{- define "firefox-sync.fxaCaEnv" -}}
+{{- with .Values.fxa.extraCaCerts }}
+{{- if .configMap }}
+- name: NODE_EXTRA_CA_CERTS
+  value: /ffs-ca/{{ .key }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "firefox-sync.fxaCaVolumeMount" -}}
+{{- if .Values.fxa.extraCaCerts.configMap }}
+- name: ffs-ca
+  mountPath: /ffs-ca
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{- define "firefox-sync.fxaCaVolume" -}}
+{{- with .Values.fxa.extraCaCerts.configMap }}
+- name: ffs-ca
+  configMap:
+    name: {{ . }}
+{{- end }}
+{{- end }}
