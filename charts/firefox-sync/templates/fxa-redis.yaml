@@ -1,7 +1,8 @@
 {{- /*
 The accounts' Redis, compose's fxa-redis: caches and rate-limit counters, in memory (an
 emptyDir, as compose's anonymous volume). The sessions and refresh tokens are in the database:
-a new pod signs nobody out
+a new pod signs nobody out. Chart-only: its password (FXA_REDIS_PASSWORD) and the
+NetworkPolicy of fxa-networkpolicy.yaml, compose's Redis is on a network of its own
 */ -}}
 {{- if .Values.fxa.enabled }}
 {{- $name := printf "%s-fxa-redis" (include "firefox-sync.fullname" .) }}
@@ -39,8 +40,7 @@ spec:
       {{- with include "firefox-sync.podAnnotations" (dict "root" .) }}{{ . | trim | nindent 6 }}{{ end }}
     spec:
       {{- include "firefox-sync.podSpec" . | nindent 6 }}
-      # the image's user redis (999, group 1000), by number: its entrypoint then starts
-      # redis-server as it is, without chowning /data as root
+      # the image's user redis (999, group 1000), by number: nothing to chown in /data
       securityContext:
         runAsNonRoot: true
         runAsUser: 999
@@ -59,6 +59,17 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          env:
+            # its password, also redis-cli's (the probes)
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "REDISCLI_AUTH" "key" "FXA_REDIS_PASSWORD") | nindent 12 }}
+          # the image's redis-server, its password in the configuration read from stdin: not
+          # in the pod spec, nor in the process' arguments
+          command: [/bin/sh, -c]
+          args:
+            - |
+              exec redis-server - <<EOF
+              requirepass $REDISCLI_AUTH
+              EOF
           ports:
             - name: redis
               containerPort: 6379

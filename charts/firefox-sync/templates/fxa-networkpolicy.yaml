@@ -1,0 +1,45 @@
+{{- /*
+fxa.networkPolicy (chart-only: compose's databases are on a network of its own): Redis takes
+connections from the accounts' servers alone, the bundled accounts database from them and the
+admin UI (it reads the accounts). Their own pods by the chart's labels; enforced where the
+cluster's network plugin does
+*/ -}}
+{{- if and .Values.fxa.enabled .Values.fxa.networkPolicy.enabled }}
+{{- $clients := dict "fxa-redis" (list "fxa-auth" "fxa-content" "fxa-profile") "fxa-db" (list "fxa-auth" "fxa-profile") }}
+{{- if .Values.admin.enabled }}
+{{- $_ := set $clients "fxa-db" (append (get $clients "fxa-db") "admin") }}
+{{- end }}
+{{- $ports := dict "fxa-redis" 6379 "fxa-db" 3306 }}
+{{- $servers := list "fxa-redis" }}
+{{- if .Values.fxa.database.bundled }}
+{{- $servers = append $servers "fxa-db" }}
+{{- end }}
+{{- range $i, $server := $servers }}
+{{- if $i }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "firefox-sync.fullname" $ }}-{{ $server }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" $ "component" $server) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" $ "component" $server) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "firefox-sync.selectorLabels" (dict "root" $) | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: {{ toJson (get $clients $server) }}
+      ports:
+        - protocol: TCP
+          port: {{ get $ports $server }}
+{{- end }}
+{{- end }}

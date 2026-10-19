@@ -148,10 +148,11 @@ seccompProfile:
 
 {{/*
 The secrets of the accounts that the chart generates, as prepare_environment.sh does
-(generate_random_string 32): kept in the Secret, also once fxa.enabled is off again
+(generate_random_string 32): kept in the Secret, also once fxa.enabled is off again. Its list,
+and FXA_REDIS_PASSWORD, the chart's own (compose's Redis is on a network of its own)
 */}}
 {{- define "firefox-sync.fxaGeneratedKeys" -}}
-FXA_MYSQL_PASSWORD FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_FLOW_ID_KEY FXA_SESSION_TOKEN_HANDLE_KEY FXA_CONTENT_SESSION_SECRET
+FXA_MYSQL_PASSWORD FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_FLOW_ID_KEY FXA_SESSION_TOKEN_HANDLE_KEY FXA_CONTENT_SESSION_SECRET FXA_REDIS_PASSWORD
 {{- end }}
 
 {{/*
@@ -307,5 +308,20 @@ volumeMount and the volume, each empty without it
 - name: ffs-ca
   configMap:
     name: {{ . }}
+{{- end }}
+{{- end }}
+
+{{/*
+The env of a Redis client of the accounts: compose's <SUBSYSTEM>_REDIS_HOST and the password
+of each (FXA_REDIS_PASSWORD, chart-only). Accepts a dict with "root" and "names" (the host
+variables, e.g. REDIS_HOST ACCESS_TOKEN_REDIS_HOST: their _PASSWORD next to each); for
+trim | nindent
+*/}}
+{{- define "firefox-sync.fxaRedisEnv" -}}
+{{- $redis := printf "%s-fxa-redis" (include "firefox-sync.fullname" .root) }}
+{{- range .names }}
+- name: {{ . }}
+  value: {{ $redis }}
+{{ include "firefox-sync.secretEnv" (dict "root" $.root "name" (printf "%sPASSWORD" (trimSuffix "HOST" .)) "key" "FXA_REDIS_PASSWORD") }}
 {{- end }}
 {{- end }}

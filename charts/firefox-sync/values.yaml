@@ -97,6 +97,11 @@ fxa:
   # new volumes to the image's user 10001, with CHOWN alone. false: none, fsGroup 10001 instead,
   # for a StorageClass that applies fsGroup (PodSecurity restricted then)
   volumeOwnerInit: true
+  # NetworkPolicies (chart-only: compose has a network of its own): the accounts database and
+  # Redis (its password FXA_REDIS_PASSWORD) take connections from the accounts' pods only (and
+  # the admin UI's, for the database). Enforced where the cluster's network plugin does
+  networkPolicy:
+    enabled: true
 
   # the accounts database: compose's fxa-db, or your own server (DATABASES.md)
   database:
@@ -296,9 +301,10 @@ database:
 # are ignored then.
 # With fxa.enabled also FXA_MYSQL_PASSWORD, FXA_ADMIN_DB_PASSWORD, FXA_AUTH_SECRET,
 # FXA_OAUTH_SECRET, FXA_PROFILE_SECRET, FXA_FLOW_ID_KEY, FXA_SESSION_TOKEN_HANDLE_KEY,
-# FXA_CONTENT_SESSION_SECRET (an upgrade that turns the accounts on fails while one is
-# missing), FXA_MYSQL_POLICY_PASSWORD with your own accounts server, and optionally
-# ADMIN_FXA_CLIENT_SECRET (fxa.adminClientSecret ignored then).
+# FXA_CONTENT_SESSION_SECRET, FXA_REDIS_PASSWORD (the chart's own, not in .env) (an upgrade
+# that turns the accounts on fails while one is missing), FXA_MYSQL_POLICY_PASSWORD with your
+# own accounts server, and optionally ADMIN_FXA_CLIENT_SECRET (fxa.adminClientSecret ignored
+# then).
 # Without existingSecret those optional ones are managed by the values alone: written into the
 # chart's Secret on every install and upgrade, an empty value is an empty key (the feature
 # off), whatever was set in the Secret by hand. Manage them out of band with existingSecret.

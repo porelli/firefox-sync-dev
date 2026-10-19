@@ -10,6 +10,10 @@ FXA_MYSQL_PASSWORD, as compose's
 {{- if eq $db.backend "mariadb" }}
 {{- $check = list "healthcheck.sh" "--connect" "--innodb_initialized" }}
 {{- end }}
+{{- /* a volume per backend, as compose's fxa-db and fxa-db-mariadb: MariaDB cannot open
+MySQL's data files. volumeClaimTemplates cannot change, so a helm upgrade to the other
+backend is refused, the data left as it is */}}
+{{- $data := ternary "data-mariadb" "data" (eq $db.backend "mariadb") }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -98,12 +102,12 @@ spec:
           volumeMounts:
             # a subdirectory: MariaDB and MySQL refuse to initialise next to the lost+found
             # of a fresh ext4 volume
-            - name: data
+            - name: {{ $data }}
               mountPath: /var/lib/mysql
               subPath: data
   volumeClaimTemplates:
     - metadata:
-        name: data
+        name: {{ $data }}
       spec:
         accessModes: [ReadWriteOnce]
         {{- with $db.persistence.storageClass }}

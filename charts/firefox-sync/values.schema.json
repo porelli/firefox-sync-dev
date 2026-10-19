@@ -181,6 +181,15 @@
         "volumeOwnerInit": {
           "type": "boolean"
         },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
         "database": {
           "type": "object",
           "properties": {

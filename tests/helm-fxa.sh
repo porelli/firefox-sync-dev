@@ -105,10 +105,11 @@ fxa_lint() {
   # the Secret: with the accounts, their eight generated secrets (as prepare_environment.sh,
   # 32 letters and digits) and ADMIN_FXA_CLIENT_SECRET of the values; none without them (the
   # generated ones kept by the lookup, ADMIN_FXA_CLIENT_SECRET removed: no old copy)
-  local generated="FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_CONTENT_SESSION_SECRET FXA_FLOW_ID_KEY FXA_MYSQL_PASSWORD FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_SESSION_TOKEN_HANDLE_KEY"
+  # (and FXA_REDIS_PASSWORD, the chart's own: compose's Redis is on a network of its own)
+  local generated="FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_CONTENT_SESSION_SECRET FXA_FLOW_ID_KEY FXA_MYSQL_PASSWORD FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_REDIS_PASSWORD FXA_SESSION_TOKEN_HANDLE_KEY"
   local prepared
-  prepared=$(sed -n 's/^ *for name in \(FXA_MYSQL_PASSWORD .*\); do$/\1/p' "${REPO_ROOT}/prepare_environment.sh" | tr ' ' '\n' | LC_ALL=C sort | paste -sd' ' -)
-  [[ "${prepared}" == "${generated}" ]] || fail "prepare_environment.sh generates ${prepared}, the chart ${generated}"
+  prepared=$({ sed -n 's/^ *for name in \(FXA_MYSQL_PASSWORD .*\); do$/\1/p' "${REPO_ROOT}/prepare_environment.sh" | tr ' ' '\n'; echo FXA_REDIS_PASSWORD; } | LC_ALL=C sort | paste -sd' ' -)
+  [[ "${prepared}" == "${generated}" ]] || fail "prepare_environment.sh generates ${prepared} (with the chart's FXA_REDIS_PASSWORD), the chart ${generated}"
   secret_data() { helm template test-release "${CHART_DIR}" "$@" --show-only templates/secret.yaml | manifests | jq -c '.[0].data'; }
   local on off added
   on=$(secret_data -f "${fxa}" --set fxa.adminClientSecret="$(printf 'b%.0s' $(seq 1 64))")
@@ -145,10 +146,10 @@ fxa_lint() {
     rm -rf "${d}"
     return "${rc}"
   }
-  local full='{"FXA_MYSQL_PASSWORD":"eA==","FXA_ADMIN_DB_PASSWORD":"eA==","FXA_AUTH_SECRET":"eA==","FXA_OAUTH_SECRET":"eA==","FXA_PROFILE_SECRET":"eA==","FXA_FLOW_ID_KEY":"eA==","FXA_SESSION_TOKEN_HANDLE_KEY":"eA==","FXA_CONTENT_SESSION_SECRET":"eA=="}'
+  local full='{"FXA_MYSQL_PASSWORD":"eA==","FXA_ADMIN_DB_PASSWORD":"eA==","FXA_AUTH_SECRET":"eA==","FXA_OAUTH_SECRET":"eA==","FXA_PROFILE_SECRET":"eA==","FXA_FLOW_ID_KEY":"eA==","FXA_SESSION_TOKEN_HANDLE_KEY":"eA==","FXA_CONTENT_SESSION_SECRET":"eA==","FXA_REDIS_PASSWORD":"eA=="}'
   out=$(existing_check '{"SYNC_MASTER_SECRET":"eA==","FXA_MYSQL_PASSWORD":"eA==","FXA_ADMIN_DB_PASSWORD":"eA==","FXA_OAUTH_SECRET":"","FXA_PROFILE_SECRET":"eA=="}' \
     -f "${fxa}" --set existingSecret=ffs-own) && fail "an existingSecret without the accounts' keys passes"
-  grep -qF "existingSecret ffs-own lacks FXA_AUTH_SECRET, FXA_CONTENT_SESSION_SECRET, FXA_FLOW_ID_KEY, FXA_OAUTH_SECRET, FXA_SESSION_TOKEN_HANDLE_KEY" <<< "${out}" \
+  grep -qF "existingSecret ffs-own lacks FXA_AUTH_SECRET, FXA_CONTENT_SESSION_SECRET, FXA_FLOW_ID_KEY, FXA_OAUTH_SECRET, FXA_REDIS_PASSWORD, FXA_SESSION_TOKEN_HANDLE_KEY" <<< "${out}" \
     || fail "an existingSecret without the accounts' keys: not the message: ${out}"
   existing_check "${full}" -f "${fxa}" --set existingSecret=ffs-own > /dev/null || fail "an existingSecret with the accounts' keys refused"
   existing_check '{}' -f "${fxa}" --set fxa.enabled=false --set existingSecret=ffs-own > /dev/null || fail "accounts off: their keys required"
@@ -233,18 +234,18 @@ fxa_lint() {
 fxa_objects_lint() {
   local fxa="${CHART_DIR}/ci/fxa-values.yaml" out objs
   fxa_objs() { helm template test-release "${CHART_DIR}" -f "${fxa}" "$@" | manifests; }
-  # auth_pod <helm args>: the auth Deployment's pod spec
-  auth_pod() { fxa_objs "$@" | jq -c '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-auth") | .spec.template'; }
-  inits() { jq -r '[.spec.initContainers[].name] | join(" ")' <<< "$1"; }
+  # fxa_auth_pod <helm args>: the auth Deployment's pod spec
+  fxa_auth_pod() { fxa_objs "$@" | jq -c '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-auth") | .spec.template'; }
+  fxa_inits() { jq -r '[.spec.initContainers[].name] | join(" ")' <<< "$1"; }
 
   # compose's order: the keys' owner (or the keys of fxa.keys.existingSecret), the database,
   # the migrations, the policy, Redis; the keys on their PVC (kept) or that Secret's copy
-  out=$(auth_pod)
-  [[ "$(inits "${out}")" == "keys-owner wait-db migrations policy wait-redis" ]] || fail "auth's init containers: $(inits "${out}")"
-  [[ "$(auth_pod --set fxa.volumeOwnerInit=false | jq -r '[.spec.initContainers[].name] | join(" ")')" == "wait-db migrations policy wait-redis" ]] \
-    || fail "fxa.volumeOwnerInit=false: auth's init containers: $(auth_pod --set fxa.volumeOwnerInit=false | jq -r '[.spec.initContainers[].name] | join(" ")')"
-  out=$(auth_pod --set fxa.keys.existingSecret=my-keys)
-  [[ "$(inits "${out}")" == "keys-copy wait-db migrations policy wait-redis" ]] || fail "fxa.keys.existingSecret: auth's init containers: $(inits "${out}")"
+  out=$(fxa_auth_pod)
+  [[ "$(fxa_inits "${out}")" == "keys-owner wait-db migrations policy wait-redis" ]] || fail "auth's init containers: $(fxa_inits "${out}")"
+  [[ "$(fxa_auth_pod --set fxa.volumeOwnerInit=false | jq -r '[.spec.initContainers[].name] | join(" ")')" == "wait-db migrations policy wait-redis" ]] \
+    || fail "fxa.volumeOwnerInit=false: auth's init containers: $(fxa_auth_pod --set fxa.volumeOwnerInit=false | jq -r '[.spec.initContainers[].name] | join(" ")')"
+  out=$(fxa_auth_pod --set fxa.keys.existingSecret=my-keys)
+  [[ "$(fxa_inits "${out}")" == "keys-copy wait-db migrations policy wait-redis" ]] || fail "fxa.keys.existingSecret: auth's init containers: $(fxa_inits "${out}")"
   jq -e '[.spec.volumes[] | select(.name == "fxa-keys" or .name == "fxa-keys-secret")] == [{name: "fxa-keys", emptyDir: {}}, {name: "fxa-keys-secret", secret: {secretName: "my-keys"}}]
     and (.spec.initContainers[0].securityContext.runAsUser == 10001)' <<< "${out}" > /dev/null || fail "fxa.keys.existingSecret: the keys' volumes: ${out}"
   grep -q 'for f in secret-key.json public-key.json vapid-keys.json openid-key.json; do' <<< "$(jq -r '.spec.initContainers[0].args[2]' <<< "${out}")" \
@@ -258,7 +259,7 @@ fxa_objects_lint() {
   check "auth's init containers keys-owner (keys-copy with fxa.keys.existingSecret, none with volumeOwnerInit=false), wait-db, migrations, policy, wait-redis; the keys' PVC kept"
 
   # wait-db logs in to nothing, as the Sync server's
-  out=$(auth_pod)
+  out=$(fxa_auth_pod)
   if jq -r '.spec.initContainers[] | select(.name == "wait-db") | tostring' <<< "${out}" | grep -qE 'secretKeyRef|PASSWORD'; then
     fail "auth's wait-db uses a password"
   fi
@@ -267,31 +268,32 @@ fxa_objects_lint() {
     and (.spec.initContainers[] | select(.name == "policy") | .args == ["fxa-init"] and .image == "ghcr.io/porelli/firefox-sync:admin-latest")
     and (.metadata.annotations | (.["checksum/fxa-config"] | test("^[0-9a-f]{64}$")) and (.["checksum/secrets"] | test("^[0-9a-f]{64}$")))' <<< "${out}" > /dev/null \
     || fail "auth: working dirs, probe, policy or checksums: ${out}"
-  [[ "$(auth_pod --set existingSecret=mine | jq -r '.metadata.annotations | has("checksum/secrets")')" == false ]] || fail "existingSecret: checksum/secrets of a Secret the chart does not have"
+  [[ "$(fxa_auth_pod --set existingSecret=mine | jq -r '.metadata.annotations | has("checksum/secrets")')" == false ]] || fail "existingSecret: checksum/secrets of a Secret the chart does not have"
   # the policy: your own server's policy user and its password, else FxA's user's pair
-  policy_env() { jq -c '[.spec.initContainers[] | select(.name == "policy") | .env[] | select(.name | test("^FXA_(DB_ROOT|SIGNUP|MAX)"))
+  fxa_policy_env() { jq -c '[.spec.initContainers[] | select(.name == "policy") | .env[] | select(.name | test("^FXA_(DB_ROOT|SIGNUP|MAX)"))
     | {(.name): (.value // .valueFrom.secretKeyRef.key)}] | add' <<< "$1"; }
-  [[ "$(policy_env "${out}")" == '{"FXA_DB_ROOT_USER":"","FXA_DB_ROOT_PASSWORD":"","FXA_SIGNUPS":"allowlist","FXA_SIGNUP_ALLOWLIST":"@example.test,you@example.org","FXA_MAX_ACCOUNTS":"initial:unlimited"}' ]] \
-    || fail "the policy's env: $(policy_env "${out}")"
+  [[ "$(fxa_policy_env "${out}")" == '{"FXA_DB_ROOT_USER":"","FXA_DB_ROOT_PASSWORD":"","FXA_SIGNUPS":"allowlist","FXA_SIGNUP_ALLOWLIST":"@example.test,you@example.org","FXA_MAX_ACCOUNTS":"initial:unlimited"}' ]] \
+    || fail "the policy's env: $(fxa_policy_env "${out}")"
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" --set-string fxa.maxAccounts=5 | manifests \
     | jq -c '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-auth") | .spec.template')
-  [[ "$(policy_env "${out}")" == '{"FXA_DB_ROOT_USER":"ffs_policy","FXA_DB_ROOT_PASSWORD":"FXA_MYSQL_POLICY_PASSWORD","FXA_SIGNUPS":"open","FXA_SIGNUP_ALLOWLIST":"","FXA_MAX_ACCOUNTS":"5"}' ]] \
-    || fail "your own accounts server: the policy's env: $(policy_env "${out}")"
+  [[ "$(fxa_policy_env "${out}")" == '{"FXA_DB_ROOT_USER":"ffs_policy","FXA_DB_ROOT_PASSWORD":"FXA_MYSQL_POLICY_PASSWORD","FXA_SIGNUPS":"open","FXA_SIGNUP_ALLOWLIST":"","FXA_MAX_ACCOUNTS":"5"}' ]] \
+    || fail "your own accounts server: the policy's env: $(fxa_policy_env "${out}")"
   jq -e '.spec.initContainers[] | select(.name == "wait-db") | .image == "docker.io/library/mariadb:lts" and (.args[0] | contains("mariadb-admin --connect-timeout=5 -h \"fxadb.example.test\" -P \"3306\" ping"))' <<< "${out}" > /dev/null \
     || fail "your own MariaDB server: wait-db"
   check "auth: wait-db without credentials; working dirs, heartbeat, checksums (checksum/secrets not with existingSecret); the policy's user (your own server's policyUser), signups, allowlist, max accounts"
 
   # the accounts database: compose's fxa-db for each backend, only bundled
-  db_spec() { fxa_objs "$@" | jq -cS '.[] | select(.kind == "StatefulSet" and .metadata.name == "test-release-firefox-sync-fxa-db") | .spec.template.spec.containers[0]
-    | {image, args, env: [.env[] | {(.name): (.value // .valueFrom.secretKeyRef.key)}] | add, probe: .startupProbe.exec.command, mount: .volumeMounts[0]}'; }
+  fxa_db_spec() { fxa_objs "$@" | jq -cS '.[] | select(.kind == "StatefulSet" and .metadata.name == "test-release-firefox-sync-fxa-db")
+    | .spec.volumeClaimTemplates[0].metadata.name as $claim | .spec.template.spec.containers[0]
+    | {image, args, env: [.env[] | {(.name): (.value // .valueFrom.secretKeyRef.key)}] | add, probe: .startupProbe.exec.command, mount: .volumeMounts[0], $claim}'; }
   # shellcheck disable=SC2016 # (compose's $$, literally)
-  [[ "$(db_spec)" == '{"args":["mysqld","--mysql-native-password=ON","--authentication-policy=mysql_native_password","--event-scheduler=ON"],"env":{"MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mysql:8","mount":{"mountPath":"/var/lib/mysql","name":"data","subPath":"data"},"probe":["sh","-c","mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]}' ]] \
-    || fail "fxa-db (mysql): $(db_spec)"
-  [[ "$(db_spec --set fxa.database.backend=mariadb)" == '{"args":["mariadbd","--event-scheduler=ON"],"env":{"MARIADB_AUTO_UPGRADE":"true","MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mariadb:lts","mount":{"mountPath":"/var/lib/mysql","name":"data","subPath":"data"},"probe":["healthcheck.sh","--connect","--innodb_initialized"]}' ]] \
-    || fail "fxa-db (mariadb): $(db_spec --set fxa.database.backend=mariadb)"
+  [[ "$(fxa_db_spec)" == '{"args":["mysqld","--mysql-native-password=ON","--authentication-policy=mysql_native_password","--event-scheduler=ON"],"claim":"data","env":{"MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mysql:8","mount":{"mountPath":"/var/lib/mysql","name":"data","subPath":"data"},"probe":["sh","-c","mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]}' ]] \
+    || fail "fxa-db (mysql): $(fxa_db_spec)"
+  [[ "$(fxa_db_spec --set fxa.database.backend=mariadb)" == '{"args":["mariadbd","--event-scheduler=ON"],"claim":"data-mariadb","env":{"MARIADB_AUTO_UPGRADE":"true","MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mariadb:lts","mount":{"mountPath":"/var/lib/mysql","name":"data-mariadb","subPath":"data"},"probe":["healthcheck.sh","--connect","--innodb_initialized"]}' ]] \
+    || fail "fxa-db (mariadb): $(fxa_db_spec --set fxa.database.backend=mariadb)"
   [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq '[.[] | select(.metadata.name | test("-fxa-db$"))] | length')" == 0 ]] \
     || fail "your own accounts server: fxa-db rendered"
-  check "fxa-db: compose's command, env and healthcheck (mysql, mariadb), data in subPath data; none with your own server"
+  check "fxa-db: compose's command, env and healthcheck (mysql, mariadb), a volume each (data, data-mariadb: compose's fxa-db, fxa-db-mariadb), data in subPath data; none with your own server"
 
   # Redis: the image's user, its data in memory
   jq -e '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-redis") | .spec | .strategy.type == "Recreate"
@@ -299,6 +301,34 @@ fxa_objects_lint() {
     and .volumes == [{name: "data", emptyDir: {}}] and .containers[0].readinessProbe.exec.command == ["redis-cli", "ping"])' <<< "${objs}" > /dev/null \
     || fail "fxa-redis: not Recreate, uid 999/1000 with /data in an emptyDir and redis-cli ping"
   check "fxa-redis: Recreate, the image's redis (999, 1000), /data an emptyDir, redis-cli ping"
+
+  # Redis' password (chart-only): read by redis-server from stdin, never in the pod spec;
+  # REDISCLI_AUTH of the probes and wait-redis, each <SUBSYSTEM>_REDIS_PASSWORD of auth
+  jq -e '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-redis") | .spec.template.spec.containers[0]
+    | .env == [{name: "REDISCLI_AUTH", valueFrom: {secretKeyRef: {name: "test-release-firefox-sync", key: "FXA_REDIS_PASSWORD"}}}]
+    and .command == ["/bin/sh", "-c"] and (.args[0] | test("^exec redis-server - <<EOF\nrequirepass \\$REDISCLI_AUTH\nEOF\n$"))' <<< "${objs}" > /dev/null \
+    || fail "fxa-redis: not started with requirepass from stdin and REDISCLI_AUTH"
+  out=$(fxa_auth_pod)
+  [[ "$(jq -r '[.spec.initContainers[] | select(.name == "wait-redis") | .env[] | "\(.name)=\(.valueFrom.secretKeyRef.key)"] | join(" ")' <<< "${out}")" == "REDISCLI_AUTH=FXA_REDIS_PASSWORD" ]] \
+    || fail "wait-redis without REDISCLI_AUTH"
+  [[ "$(jq -r '[.spec.containers[0].env[] | select(.name | endswith("REDIS_HOST") or endswith("REDIS_PASSWORD")) | "\(.name)=\(.value // .valueFrom.secretKeyRef.key)"] | join(" ")' <<< "${out}")" == \
+    "$(for v in REDIS ACCESS_TOKEN_REDIS REFRESH_TOKEN_REDIS CUSTOMS_REDIS RATELIMIT_REDIS METRICS_REDIS AUTH_CACHE_REDIS RECOVERY_PHONE_REDIS PASSKEY_REDIS; do
+      printf '%s_HOST=test-release-firefox-sync-fxa-redis %s_PASSWORD=FXA_REDIS_PASSWORD\n' "${v}" "${v}"; done | paste -sd' ' -)" ]] \
+    || fail "auth's Redis hosts and passwords: $(jq -c '[.spec.containers[0].env[] | select(.name | test("REDIS"))]' <<< "${out}")"
+  check "fxa-redis: requirepass FXA_REDIS_PASSWORD (from stdin, not in the spec); auth's nine <SUBSYSTEM>_REDIS_PASSWORD, REDISCLI_AUTH of wait-redis and the probes"
+
+  # fxa.networkPolicy (chart-only): Redis from the accounts' servers, the database from them
+  # and the admin UI; none with it off; no fxa-db one with your own server
+  fxa_policies() { fxa_objs "$@" | jq -c '[.[] | select(.kind == "NetworkPolicy") | {name: .metadata.name, to: .spec.podSelector.matchLabels["app.kubernetes.io/component"],
+    types: .spec.policyTypes, from: .spec.ingress[0].from[0].podSelector | [.matchLabels["app.kubernetes.io/instance"], .matchExpressions[0].values],
+    ports: [.spec.ingress[0].ports[] | "\(.protocol)/\(.port)"]}]'; }
+  [[ "$(fxa_policies)" == '[{"name":"test-release-firefox-sync-fxa-redis","to":"fxa-redis","types":["Ingress"],"from":["test-release",["fxa-auth","fxa-content","fxa-profile"]],"ports":["TCP/6379"]},{"name":"test-release-firefox-sync-fxa-db","to":"fxa-db","types":["Ingress"],"from":["test-release",["fxa-auth","fxa-profile","admin"]],"ports":["TCP/3306"]}]' ]] \
+    || fail "the NetworkPolicies: $(fxa_policies)"
+  [[ "$(fxa_policies --set admin.enabled=false | jq -c '.[1].from[1]')" == '["fxa-auth","fxa-profile"]' ]] || fail "admin.enabled=false: the admin UI still allowed to fxa-db"
+  [[ "$(fxa_policies --set fxa.networkPolicy.enabled=false)" == '[]' ]] || fail "fxa.networkPolicy.enabled=false: NetworkPolicies rendered"
+  [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq -r '[.[] | select(.kind == "NetworkPolicy") | .metadata.name] | join(" ")')" == \
+    test-release-firefox-sync-fxa-redis ]] || fail "your own accounts server: not the fxa-redis NetworkPolicy alone"
+  check "fxa.networkPolicy: fxa-redis from fxa-auth, fxa-content, fxa-profile; fxa-db from them and the admin UI (when on); none with it off, no fxa-db one with your own server"
 
   # the scripts of config/fxa, byte for byte, in the ConfigMap
   local file
@@ -317,12 +347,12 @@ fxa_objects_lint() {
   check "the Sync server (migrate, syncstorage) and the admin UI: FXA_OAUTH_SERVER_URL the chart's auth, FXA_EMAIL_DOMAIN the host of fxa.authUrl"
 
   # fxa.extraCaCerts (chart-only): the ConfigMap at /ffs-ca, NODE_EXTRA_CA_CERTS
-  out=$(auth_pod --set fxa.extraCaCerts.configMap=my-ca --set fxa.extraCaCerts.key=root.pem)
+  out=$(fxa_auth_pod --set fxa.extraCaCerts.configMap=my-ca --set fxa.extraCaCerts.key=root.pem)
   jq -e '(.spec.containers[0] | (.env[] | select(.name == "NODE_EXTRA_CA_CERTS") | .value == "/ffs-ca/root.pem")
     and ([.volumeMounts[] | select(.name == "ffs-ca")] == [{name: "ffs-ca", mountPath: "/ffs-ca", readOnly: true}]))
     and ([.spec.volumes[] | select(.name == "ffs-ca")] == [{name: "ffs-ca", configMap: {name: "my-ca"}}])' <<< "${out}" > /dev/null \
     || fail "fxa.extraCaCerts: auth without /ffs-ca or NODE_EXTRA_CA_CERTS"
-  [[ "$(auth_pod | jq '[.. | objects | select(.name? == "ffs-ca" or .name? == "NODE_EXTRA_CA_CERTS")] | length')" == 0 ]] || fail "no fxa.extraCaCerts: /ffs-ca rendered"
+  [[ "$(fxa_auth_pod | jq '[.. | objects | select(.name? == "ffs-ca" or .name? == "NODE_EXTRA_CA_CERTS")] | length')" == 0 ]] || fail "no fxa.extraCaCerts: /ffs-ca rendered"
   check "fxa.extraCaCerts: auth's NODE_EXTRA_CA_CERTS=/ffs-ca/<key>, the ConfigMap at /ffs-ca; nothing without it"
 }
 
@@ -407,6 +437,9 @@ fxa_e2e() {
   free=$(df -BG --output=avail "$(docker info -f '{{.DockerRootDir}}')" | tail -1 | tr -dc 0-9)
   [[ "${free}" -ge 15 ]] || fail "${free} GB free for docker, the accounts' kind cluster needs 15 GB (vm.sh prune, docker system prune)"
   [[ ${backend} != mysql ]] || mysqld_apparmor_check
+  # the images go into the node with docker save --platform (Docker 27 and later)
+  docker save --help 2> /dev/null | grep -q -- '--platform' \
+    || fail "docker $(docker version -f '{{.Server.Version}}' 2> /dev/null) has no docker save --platform: Docker 27 or later is needed"
 
   echo "=== e2e of the accounts on kind (${backend}) ==="
   kind delete cluster --name "${CLUSTER}" > /dev/null 2>&1 || true
@@ -461,6 +494,36 @@ fxa_e2e() {
   kubectl logs "${auth}" -c policy | grep -q 'max accounts: unlimited' || fail "the policy's log: $(kubectl logs "${auth}" -c policy | tail -5)"
   check "the sign-up policy installed: max accounts: unlimited"
 
+  # Redis' password (chart-only): auth's clients authenticate (requests that use its rate
+  # limits and caches, then no NOAUTH error in Redis), a client without it is refused
+  local redis="deploy/${FULL}-fxa-redis"
+  for _ in 1 2 3; do
+    kubectl exec "${auth}" -c auth -- node -e "fetch('http://localhost:9000/v1/account/status', {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({email: 'nobody@example.test'})}).then(r => process.exit(r.status < 500 ? 0 : 1), () => process.exit(1))" \
+      || fail "auth's /v1/account/status failed"
+  done
+  out=$(kubectl exec "${redis}" -- redis-cli INFO errorstats)
+  ! grep -q NOAUTH <<< "${out}" || fail "Redis refused unauthenticated commands of the accounts: ${out}"
+  [[ "$(kubectl exec "${redis}" -- redis-cli INFO clients | sed -n 's/^connected_clients:\([0-9]*\).*/\1/p')" -ge 2 ]] || fail "no client of the accounts connected to Redis"
+  [[ "$(kubectl exec "${redis}" -- sh -c 'env -u REDISCLI_AUTH redis-cli ping' 2>&1)" == *NOAUTH* ]] || fail "Redis answers without its password"
+  check "fxa-redis: the accounts authenticate with FXA_REDIS_PASSWORD (no NOAUTH error, $(kubectl exec "${redis}" -- redis-cli INFO clients | sed -n 's/^connected_clients:\([0-9]*\).*/\1/p') clients), no answer without it"
+
+  # fxa.networkPolicy: a pod not of the accounts does not reach Redis (no answer, the
+  # connection dropped), one with the accounts' labels does (its NOAUTH)
+  np_probe() {
+    kubectl delete pod np-probe --ignore-not-found --wait=true > /dev/null
+    kubectl run np-probe --image="${redis_image}" --restart=Never --labels="ffs-e2e=np$1" --command -- \
+      sh -c "timeout 10 redis-cli -h ${FULL}-fxa-redis ping; echo rc=\$?" > /dev/null
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/np-probe --timeout=2m > /dev/null || fail "np-probe did not complete"
+    kubectl logs np-probe 2>&1
+  }
+  out=$(np_probe "")
+  ! grep -qE 'NOAUTH|PONG' <<< "${out}" || fail "a pod without the accounts' labels reaches fxa-redis: ${out}"
+  out=$(np_probe ",app.kubernetes.io/name=firefox-sync,app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-content")
+  grep -q NOAUTH <<< "${out}" || fail "a pod with the accounts' labels does not reach fxa-redis: ${out}"
+  kubectl delete pod np-probe --wait=true > /dev/null
+  check "fxa.networkPolicy: fxa-redis unreachable from a pod not of the accounts, reached with their labels (the CNI enforces it)"
+
   # fail closed: a wrong password of the accounts' database stops auth at the migrations
   # (wait-db has no credentials), never Ready, out of its Service
   local good ready
@@ -475,14 +538,35 @@ fxa_e2e() {
   inits=$(kubectl get pods -l "${POD_SELECTOR}" -o json | jq -r '.items[0].status.initContainerStatuses[]
     | "\(.name)=\(.state.terminated.exitCode // .lastState.terminated.exitCode // "none")"' | paste -sd' ' -) || true
   [[ "${inits}" =~ wait-db=0\ migrations=[1-9] ]] || fail "expected wait-db to pass and the migrations to fail: ${inits}"
-  ready=$(kubectl get endpointslices -l "kubernetes.io/service-name=${FULL}-fxa-auth" -o json \
-    | jq '[.items[].endpoints[]? | select(.conditions.ready == true)] | length')
-  [[ "${ready}" == 0 ]] || fail "${FULL}-fxa-auth has ${ready} ready endpoints while the migrations fail"
-  check "wrong FXA_MYSQL_PASSWORD: auth in ${MATCHED_STATUS} (${inits}), no ready endpoint"
+  # (over 30 s, not a single look)
+  for _ in $(seq 1 6); do
+    ready=$(kubectl get endpointslices -l "kubernetes.io/service-name=${FULL}-fxa-auth" -o json \
+      | jq '[.items[].endpoints[]? | select(.conditions.ready == true)] | length')
+    [[ "${ready}" == 0 ]] || fail "${FULL}-fxa-auth has ${ready} ready endpoints while the migrations fail"
+    sleep 5
+  done
+  [[ "$(pod_status)" =~ ^Init: ]] || fail "the auth pod is $(pod_status) 30 s later, not in its init containers"
+  check "wrong FXA_MYSQL_PASSWORD: auth in ${MATCHED_STATUS} (${inits}), no ready endpoint for 30 s"
   kubectl patch secret "${SECRET}" --type merge -p "{\"data\":{\"FXA_MYSQL_PASSWORD\":\"${good}\"}}"
   kubectl delete pod -l "${POD_SELECTOR}" --wait=true
   kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=15m || fail "auth not Ready after restoring the password"
   check "password restored: auth Ready again"
+
+  # the other backend on this release: its volume (data, data-mariadb) is another claim of the
+  # StatefulSet, which Kubernetes refuses to change; the data of this one left as it is
+  local other=mariadb claim="data-${FULL}-fxa-db-0"
+  [[ ${backend} == mysql ]] || { other=mysql; claim="data-mariadb-${FULL}-fxa-db-0"; }
+  if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.backend="${other}" --timeout 2m 2>&1); then
+    fail "helm upgrade to fxa.database.backend=${other} accepted"
+  fi
+  # (Kubernetes 1.37: spec.volumeClaimTemplates: field is immutable; before: Forbidden:
+  # updates to statefulset spec)
+  grep -qE 'volumeClaimTemplates: Invalid value: .*field is immutable|Forbidden: updates to statefulset spec' <<< "${out}" \
+    || fail "helm upgrade to ${other} refused, but not by the StatefulSet: ${out}"
+  [[ "$(kubectl get pvc -o name | grep -- '-fxa-db-0$')" == "persistentvolumeclaim/${claim}" ]] \
+    || fail "the accounts database's claims: $(kubectl get pvc -o name | paste -sd' ' -)"
+  [[ "$(kubectl get pod "${FULL}-fxa-db-0" -o jsonpath='{.status.containerStatuses[0].ready}')" == true ]] || fail "fxa-db not running on its data after the refused upgrade"
+  check "helm upgrade to fxa.database.backend=${other}: refused (the StatefulSet's volumeClaimTemplates are immutable), ${claim} and fxa-db untouched"
 
   echo ""
   echo "=== e2e of the accounts (${backend}) passed ==="

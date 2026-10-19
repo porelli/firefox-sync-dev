@@ -207,13 +207,16 @@ spec:
             # the most accounts: N or unlimited (every start), initial:N (once, then the admin UI)
             - name: FXA_MAX_ACCOUNTS
               value: {{ include "firefox-sync.number" $f.maxAccounts | quote }}
-        # compose's depends_on fxa-redis (service_healthy): it answers (up to 5 minutes)
+        # compose's depends_on fxa-redis (service_healthy): it answers (up to 5 minutes), to
+        # its password (redis-cli reads REDISCLI_AUTH)
         - name: wait-redis
           image: {{ $f.redis.image }}
           imagePullPolicy: IfNotPresent
           securityContext:
             {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
           {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          env:
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "REDISCLI_AUTH" "key" "FXA_REDIS_PASSWORD") | nindent 12 }}
           command: [/bin/sh, -c]
           args:
             - |
@@ -319,10 +322,10 @@ spec:
             {{- include "firefox-sync.fxaMysqlEnv" (dict "root" . "prefix" "PUSHBOX_") | nindent 12 }}
             - name: DB_AUTO_UPDATE_CLIENTS
               value: "true"
-            {{- range list "REDIS_HOST" "ACCESS_TOKEN_REDIS_HOST" "REFRESH_TOKEN_REDIS_HOST" "CUSTOMS_REDIS_HOST" "RATELIMIT_REDIS_HOST" "METRICS_REDIS_HOST" "AUTH_CACHE_REDIS_HOST" "RECOVERY_PHONE_REDIS_HOST" "PASSKEY_REDIS_HOST" }}
-            - name: {{ . }}
-              value: {{ $redis }}
-            {{- end }}
+            # (each with its _PASSWORD, FXA_REDIS_PASSWORD: chart-only, compose's Redis is on
+            # a network of its own)
+            {{- $redisHosts := list "REDIS_HOST" "ACCESS_TOKEN_REDIS_HOST" "REFRESH_TOKEN_REDIS_HOST" "CUSTOMS_REDIS_HOST" "RATELIMIT_REDIS_HOST" "METRICS_REDIS_HOST" "AUTH_CACHE_REDIS_HOST" "RECOVERY_PHONE_REDIS_HOST" "PASSKEY_REDIS_HOST" }}
+            {{- include "firefox-sync.fxaRedisEnv" (dict "root" . "names" $redisHosts) | trim | nindent 12 }}
             # email (smtp.*)
             - name: SMTP_HOST
               value: {{ $smtp.host | quote }}
