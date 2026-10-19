@@ -154,6 +154,10 @@ if [ -n "${DEMO:-}" ]; then
   sed -i -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.example.org|" -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.accounts.firefox.com|" \
     -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=initial:10|" "${ENV_FILE}"
 fi
+# the database images and options as the env file has them: not empty ones of the caller's
+# environment (CI passes its matrix values, empty for the defaults), which compose would
+# prefer to the file and which would hide its pins from db/mysql/keep-major.sh
+export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
 set -a; source "${ENV_FILE}"; set +a
 # the admin UI's own database users, the Sync server's role in the PostgreSQL container
 # (set_env empties them until the upgrade)
@@ -534,8 +538,17 @@ UP=${WORK}/upgrade
 # SYNC_DB=mysql on mysql:8: as an install from before SYNC_MYSQL_IMAGE, which --upgrade pins
 [ "${SYNC_DB}" = mysql ] && [ -n "${MYSQL_PINNED}" ] && sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"
 mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
-(cd "${UP}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
+# (the compose project of this test, as a user running docker compose -p would set it)
+(cd "${UP}" && COMPOSE_PROJECT_NAME=${PROJECT} ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
 check "$?" 0 "./prepare_environment.sh --upgrade" || cat "${WORK}/upgrade.log"
+# the Sync MariaDB containers of an install from before SYNC_MARIADB_IMAGE (mariadb:lts): pinned
+# to the major their data holds, which they keep running
+if [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && [ -z "${EXTDB}" ]; then
+  # (the containers may be stopped here: from the data, as --upgrade reads it)
+  mariadb_major=$(docker run --rm -v "${PROJECT}_tokenserver-db:/v:ro" --entrypoint cat mariadb:lts /v/mariadb_upgrade_info 2> /dev/null | tr -d '\0' | sed -n '1s/^\([0-9]*\)\..*/\1/p')
+  check "$(grep '^SYNC_MARIADB_IMAGE=' "${UP}/.env") $(grep -c "the Sync databases stay on MariaDB ${mariadb_major}, the major of their data" "${WORK}/upgrade.log")" \
+    "SYNC_MARIADB_IMAGE=mariadb:${mariadb_major} 1" "--upgrade pins the Sync MariaDB of an install from before to the major of its data (${mariadb_major})"
+fi
 [ "${SYNC_DB}" = mysql ] && [ -n "${MYSQL_PINNED}" ] && check "$(grep '^SYNC_MYSQL_IMAGE=' "${UP}/.env") $(grep -c 'the Sync databases stay on MySQL 8' "${WORK}/upgrade.log")" \
   "SYNC_MYSQL_IMAGE=mysql:8 1" "--upgrade pins the Sync databases of an install from before on MySQL 8"
 # each value under its new name, as it was under the old one (the empty ones it may fill in)

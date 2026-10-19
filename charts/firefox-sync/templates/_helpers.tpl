@@ -363,6 +363,84 @@ The image of the bundled database, also the client of wait-db and of the backups
 {{- end }}
 
 {{/*
+The major of an image's tag ("9" of docker.io/library/mysql:9.7, "" of :lts or :latest), and
+its name and tag without the registry ("mysql:lts"), for checkDbMajor
+*/}}
+{{- define "firefox-sync.imageMajor" -}}
+{{- $tag := regexReplaceAll "^.*:" (regexReplaceAll "@.*$" (last (splitList "/" .)) "") "" }}
+{{- regexFind "^[0-9]+" $tag }}
+{{- end }}
+{{- define "firefox-sync.imageNameTag" -}}
+{{- regexReplaceAll "@.*$" (last (splitList "/" .)) "" }}
+{{- end }}
+
+{{/*
+"true" when the image old -> new moves the data to another major (dict "old" "new"): two
+numbered majors that differ, a numbered major to a tag without one (lts, latest), or one tag
+without a major to another; to a numbered major from lts or latest is the pin of
+HELM.md#upgrades. Another server (a backend switch) is not a major change of this one
+*/}}
+{{- define "firefox-sync.dbMajorChange" -}}
+{{- $oldNameTag := include "firefox-sync.imageNameTag" .old }}
+{{- $newNameTag := include "firefox-sync.imageNameTag" .new }}
+{{- if and .old (eq (first (splitList ":" $oldNameTag)) (first (splitList ":" $newNameTag))) }}
+{{- $om := include "firefox-sync.imageMajor" .old }}
+{{- $nm := include "firefox-sync.imageMajor" .new }}
+{{- if and $om $nm }}{{ if ne $om $nm }}true{{ end }}
+{{- else if $om }}true
+{{- else if not $nm }}{{ if ne $oldNameTag $newNameTag }}true{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+A new database.image.<backend> on a release whose bundled database runs: the render fails
+before anything is applied when it would move the data to another major. MariaDB and MySQL
+upgrade their data in place at the first start on a newer major, with no way back but a
+backup; PostgreSQL cannot open another major's data at all. The running image is read with
+lookup (install and upgrade; nothing to check where lookup returns nothing: helm template, a
+GitOps render), the change as dbMajorChange says (a pin from lts goes through: the server
+refuses one older than its data). database.allowMajorUpgrade lets MariaDB and MySQL move (lts to lts), never PostgreSQL;
+a PostgreSQL whose server is not up (its db-major init container refused a wrong pin) may change
+*/}}
+{{- define "firefox-sync.checkDbMajor" -}}
+{{- if .Values.database.bundled }}
+{{- $root := . }}
+{{- $backend := .Values.database.backend }}
+{{- $new := include "firefox-sync.dbImage" . }}
+{{- $dbs := ternary (list "tokenserver") (list "tokenserver" "storage") (eq $backend "postgres") }}
+{{- range $dbs }}
+{{- $name := include "firefox-sync.dbHost" (dict "root" $root "db" .) }}
+{{- $existing := lookup "apps/v1" "StatefulSet" $root.Release.Namespace $name }}
+{{- if $existing }}
+{{- $old := "" }}
+{{- range $existing.spec.template.spec.containers }}
+{{- if eq .name "db" }}{{ $old = .image }}{{ end }}
+{{- end }}
+{{- /* PostgreSQL not up on that image (e.g. refused by db-major after a wrong pin): nothing
+of its data changed, going back to its major must stay possible */}}
+{{- $up := true }}
+{{- if eq $backend "postgres" }}
+{{- $up = false }}
+{{- with lookup "v1" "Pod" $root.Release.Namespace (printf "%s-0" $name) }}
+{{- range (.status.containerStatuses | default list) }}
+{{- if and (eq .name "db") .ready }}{{ $up = true }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $up (include "firefox-sync.dbMajorChange" (dict "old" $old "new" $new)) }}
+{{- if eq $backend "postgres" }}
+{{- fail (printf "firefox-sync: database.image.postgres is %s but the bundled PostgreSQL (%s) runs %s, and PostgreSQL cannot open another major's data; set database.image.postgres to %s, a newer major needs a dump and restore or pg_upgrade, see HELM.md#upgrades" $new $name $old $old) }}
+{{- else if not $root.Values.database.allowMajorUpgrade }}
+{{- fail (printf "firefox-sync: database.image.%s is %s but the bundled database %s runs %s; another major upgrades its data for good at the next start: set database.image.%s to %s to stay, or database.allowMajorUpgrade=true to move (a backup first), see HELM.md#upgrades" $backend $new $name $old $backend $old) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 The host of the Sync server's Ingress: ingress.host, else the host of syncDomain (without a port)
 */}}
 {{- define "firefox-sync.ingressHost" -}}

@@ -19,7 +19,7 @@
 #               install from before on mysql:8, pinned by --upgrade; the quadlets on mysql:lts); the
 #               MySQL quadlets are rendered and checked in any case
 #   ADMIN_IMAGE     admin UI image to test, used as is, pulled when not here (default: built from admin/)
-#   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
+#   FXA_TEST_IMAGE  accounts image to test with the quadlets (a local one of podman used as it is), e.g.
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1, or a digest (default: REPOSITORY:fxa-mono-latest)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the quadlets (SYNC_DB=mariadb) start as an install of it, its files, admin UI
@@ -174,6 +174,11 @@ compose_test() {
     check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:${pg_major}" "prepare_environment.sh pins PostgreSQL to the major of postgres:latest (postgres, compose)"
     sed -i 's|^SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=postgres:18|' .env
   fi
+  # MariaDB: a new install is on mariadb:lts; one from before ran it without SYNC_MARIADB_IMAGE
+  if [ "${backend}" = mariadb ]; then
+    check "$(env_of SYNC_MARIADB_IMAGE)" mariadb:lts "prepare_environment.sh writes SYNC_MARIADB_IMAGE=mariadb:lts (mariadb, compose)"
+    sed -i '/^SYNC_MARIADB_IMAGE=/d' .env
+  fi
   # MySQL: a new install is on mysql:lts; one from before ran mysql:8 without SYNC_MYSQL_IMAGE
   # (--upgrade pins it below)
   if [ "${backend}" = mysql ]; then
@@ -222,6 +227,12 @@ compose_test() {
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
   [ "${backend}" != postgres ] || check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:18" "--upgrade writes SYNC_POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"
   [ "${backend}" != mysql ] || check "$(env_of FXA_DB | grep -c mariadb)" "0" "no FXA_MARIADB_IMAGE for MariaDB backend without accounts (${backend})"
+  # MariaDB: an install from before SYNC_MARIADB_IMAGE, pinned to the major of its data
+  if [ "${backend}" = mariadb ]; then
+    mariadb_major=$(podman exec "$(ctr tokenserver_db)" mariadbd --version 2> /dev/null | sed -n 's/.* Ver \([0-9]*\)\..*/\1/p')
+    check "$(env_of SYNC_MARIADB_IMAGE) $(grep -c "Sync databases stay on MariaDB ${mariadb_major}," "upgrade-${backend}.log")" "mariadb:${mariadb_major} 1" \
+      "--upgrade pins the Sync MariaDB of an install from before to the major of its data (mariadb)"
+  fi
   [ "${backend}" != mysql ] || check "$(env_of SYNC_MYSQL_IMAGE) $(grep -c 'Sync databases stay on MySQL 8' "upgrade-${backend}.log") $(env_of FXA_MYSQL_IMAGE)" "mysql:8 1 " \
     "--upgrade pins the Sync databases of an install from before on MySQL 8, nothing for the accounts it has not (mysql)"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
@@ -520,6 +531,8 @@ printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare
 check "$?" 0 "prepare_environment.sh (quadlets, no admin UI)"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-admin.* 2> /dev/null | wc -l)" 0 "no admin UI quadlet"
 check "$(grep -hcxF 'Environment=MAX_USERS=1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "plain SYNC_MAX_USERS=1 in the init quadlet"
+check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | paste -sd' ') $(env_of SYNC_MARIADB_IMAGE)" \
+  "docker.io/library/mariadb:lts docker.io/library/mariadb:lts docker.io/library/mariadb:lts mariadb:lts" "the Sync MariaDB units on lts for a new install (SYNC_MARIADB_IMAGE)"
 "${QUADLET}" -dryrun -user > quadlet-no-admin-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files without the admin UI"
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
@@ -634,11 +647,13 @@ if [ -z "${SKIP_FXA:-}" ]; then
   fxa_image=$(grep '^IMAGE_REPOSITORY=' .env-example | cut -d= -f2):$(grep '^FXA_VERSION=' .env-example | cut -d= -f2)
   if [ -n "${FXA_TEST_IMAGE:-}" ]; then
     # the candidate, under the name the quadlets use
-    podman pull -q --arch "${fxa_arch}" "${FXA_TEST_IMAGE}" > /dev/null && podman tag "${FXA_TEST_IMAGE}" "${fxa_image}"
+    # (a local build is used as it is)
+    { podman image exists "${FXA_TEST_IMAGE}" || podman pull -q --arch "${fxa_arch}" "${FXA_TEST_IMAGE}" > /dev/null; } && podman tag "${FXA_TEST_IMAGE}" "${fxa_image}"
   else
     podman pull -q --arch "${fxa_arch}" "${fxa_image}" > /dev/null
   fi
   fxa_pulled=$?
+  fxa_image_id=$(podman image inspect -f '{{.Id}}' "${fxa_image}" 2> /dev/null)
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test 'p%ss|w&rd' "" "@fxa.invalid" \
     "me@fxa.invalid" "" "${fxa_db_answers[@]}" \
     | ./prepare_environment.sh > setup-fxa-quadlets.log 2>&1
@@ -691,6 +706,18 @@ if [ -z "${SKIP_FXA:-}" ]; then
   timeout 1200 systemctl --user start firefox-sync-syncstorage.service firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \
     firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service firefox-sync-admin.service
   check "$?" 0 "systemctl --user start (syncstorage and accounts)"
+  # the image the accounts' units run is the one whose label chose fxa-db's MySQL: lts only with
+  # mozilla/fxa#21554 in it, and the units did not pull another one over it (podman 4 does with
+  # --arch, which the units have only for another architecture)
+  run_id=$(podman image inspect -f '{{.Id}}' "${fxa_image}" 2> /dev/null)
+  run_label=$(podman image inspect -f '{{index .Labels "org.firefox-sync.upstream-patches"}}' "${fxa_image}" 2> /dev/null)
+  check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u) [$(grep -h '^PodmanArgs=--arch' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u)] $(grep -hc '^PodmanArgs=--network-alias=fxa-' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | awk '{ s += $1 } END { print s }') ${run_id}" \
+    "${fxa_image} [$([ "${fxa_arch}" = "$(case "$(uname -m)" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac)" ] || echo "PodmanArgs=--arch=${fxa_arch}")] 2 ${fxa_image_id}" \
+    "the accounts' units run ${fxa_image}, the image prepare_environment.sh read (not pulled over: no --arch on this host's architecture)"
+  if [ "${FXA_DB}" != mariadb ]; then
+    [[ " ${run_label} " == *" mozilla/fxa#21554@"* ]] && want_db=docker.io/library/mysql:lts || want_db=docker.io/library/mysql:8
+    check "$(fxa_db_image)" "${want_db}" "fxa-db's MySQL agrees with the label of the image the units run ($([ "${want_db##*:}" = lts ] && echo with || echo without) mozilla/fxa#21554)"
+  fi
   ok=""
   for _ in $(seq 1 225); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${CONTENT_PORT}/__heartbeat__)" = 200 ] && ok=yes && break

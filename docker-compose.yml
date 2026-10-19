@@ -113,7 +113,12 @@ services:
       - ${SYNC_EXPORT_PORT:-${CONTAINER_EXPORT_PORT:-127.0.0.1:5000}}:8000
 
   syncstorage_db:
-    image: mariadb:lts
+    # SYNC_MARIADB_IMAGE: mariadb:lts by default, MariaDB's newest long-term major, which
+    # MARIADB_AUTO_UPGRADE follows: the data is upgraded at the first start on the next one,
+    # with no way back but a backup. prepare_environment.sh writes it (--upgrade and a re-run:
+    # the major the data of an install from before holds); without it the containers refuse
+    # data of another major (db/mysql/keep-major.sh). Pin a major (mariadb:12) to choose when
+    image: ${SYNC_MARIADB_IMAGE:-mariadb:lts}
     # 0: your own server (DATABASES.md); compose then skips the dependency on it
     deploy:
       replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
@@ -123,12 +128,14 @@ services:
       MARIADB_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
       MARIADB_PASSWORD: ${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}
       MARIADB_AUTO_UPGRADE: "true"
+      FFS_MYSQL_IMAGE: ${SYNC_MARIADB_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MARIADB_IMAGE
       # the admin UI's reader of the Sync data, created by db/mysql/admin-user.sh:
       # SELECT and DELETE here (sizes, purges, resets)
       ADMIN_DB_ROLE: storage
       ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
       ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}
-    command: [sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
+    command: [sh, /ffs-db/keep-major.sh, sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       start_period: 10s
@@ -138,10 +145,12 @@ services:
     volumes:
       - syncstorage-db:/var/lib/mysql
       - ./db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ./db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
     restart: unless-stopped
 
   tokenserver_db:
-    image: mariadb:lts
+    # SYNC_MARIADB_IMAGE: as syncstorage_db
+    image: ${SYNC_MARIADB_IMAGE:-mariadb:lts}
     # 0: your own server (DATABASES.md); compose then skips the dependency on it
     deploy:
       replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
@@ -151,6 +160,8 @@ services:
       MARIADB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
       MARIADB_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
       MARIADB_AUTO_UPGRADE: "true"
+      FFS_MYSQL_IMAGE: ${SYNC_MARIADB_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MARIADB_IMAGE
       # the admin UI's users, created by db/mysql/admin-user.sh: ADMIN_DB_USER for its
       # own database (the event log, the audit trail...), ADMIN_DB_SYNC_USER with SELECT
       # and EXECUTE here
@@ -159,7 +170,7 @@ services:
       ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
       ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}
       ADMIN_DB_NAME: ${ADMIN_DB_NAME:-ffs_admin}
-    command: [sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
+    command: [sh, /ffs-db/keep-major.sh, sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       start_period: 10s
@@ -169,6 +180,7 @@ services:
     volumes:
       - tokenserver-db:/var/lib/mysql
       - ./db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ./db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
     restart: unless-stopped
 
   tokenserver_db_init:
@@ -297,7 +309,8 @@ services:
   # databases into the backups volume, see ADMIN.md#backups. Run one now:
   # docker compose exec backup sh /ffs-backup/backup.sh now
   backup:
-    image: mariadb:lts
+    # the client of the Sync databases: their image (MySQL's with docker-compose.sync-mysql.yml)
+    image: ${SYNC_MARIADB_IMAGE:-mariadb:lts}
     profiles: [backup]
     entrypoint: [sh, /ffs-backup/backup.sh]
     command: [loop]
@@ -332,9 +345,16 @@ services:
     volumes:
       - ./config/backup:/ffs-backup:ro
       - backups:/backups
+    # the databases healthy too: a docker compose up -d that recreates them (a new image, e.g.
+    # SYNC_MARIADB_IMAGE written by --upgrade) leaves the init container completed from before,
+    # and the loop's run at the start would meet them starting
     depends_on:
       tokenserver_db_init:
         condition: service_completed_successfully
+      tokenserver_db:
+        condition: service_healthy
+      syncstorage_db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

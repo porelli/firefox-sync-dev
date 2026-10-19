@@ -7,7 +7,9 @@ Description=Firefox Sync - Backup of the databases
 After=firefox-sync-network.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
 
 [Container]
-Image=docker.io/library/mariadb:lts
+# SYNC_MARIADB_IMAGE of .env (prepare_environment.sh: mariadb:lts, the major of the data for
+# the installs from before; AutoUpdate=registry follows the tag, lts too: pin a major to choose)
+Image=%SYNC_MARIADB_IMAGE%
 ContainerName=firefox-sync-backup
 Network=firefox-sync-network.network
 Volume=firefox-sync-backups.volume:/backups

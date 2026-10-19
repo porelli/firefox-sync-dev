@@ -167,6 +167,10 @@ if [ -n "${RERUN:-}" ]; then
   cp "${KEPT_ENV}" "${ENV_FILE}"
   KEEP=1
 fi
+# the database images and options as the env file has them: not empty ones of the caller's
+# environment (CI passes its matrix values, empty for the defaults), which compose would
+# prefer to the file and which would hide its pins from db/mysql/keep-major.sh
+export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
 set -a; source "${ENV_FILE}"; set +a
 FXA_DB=${FXA_DB:-mysql}
 # (RERUN: as the kept stack was started)
@@ -252,6 +256,7 @@ printf '%s\n' "${answers[@]}" "" "" "" 5 | (cd "${SETUP}" && ./prepare_environme
 check "$?" 0 "prepare_environment.sh with self-hosted accounts"
 password='p@ss|w&rd\#1 $x'
 check "$(grep -cxF "FXA_SMTP_PASS='${password}'" "${SETUP}/.env")" 1 "SMTP password written as typed"
+check "$(sed -n 's/^SYNC_MARIADB_IMAGE=//p' "${SETUP}/.env")" mariadb:lts "the Sync MariaDB containers on mariadb:lts for a new install"
 # the accounts on MySQL: lts when the accounts image of .env has mozilla/fxa#21554, else MySQL 8
 # with mysql_native_password, as prepare_environment.sh reads its label (here, else the registry)
 setup_image=$(sed -n 's/^FXA_IMAGE=//p' "${SETUP}/.env"):$(sed -n 's/^FXA_VERSION=//p' "${SETUP}/.env")
@@ -528,7 +533,44 @@ docker volume create "${volume}" > /dev/null
 printf '%s\n' "${answers[@]}" n n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-mysql-volume.log" 2>&1
 check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c "found the accounts database$" "${WORK}/setup-fxa-mysql-volume.log") $(grep -c "earlier install (docker volume ${volume})" "${WORK}/setup-fxa-mysql-volume.log")" \
   "0 mysql:8 [${NATIVE_ARGS}] 1 1" "prepare_environment.sh keeps MySQL 8 with mysql_native_password for the volume of an earlier install"
+# the same volume already on MySQL 9 (its mysql_upgrade_history): lts, no way back to 8
+docker run --rm -v "${volume}:/v" --entrypoint sh mysql:lts -c 'mkdir -p /v/mysql && echo "{\"file_format\":\"1\",\"upgrade_history\":[{\"version\":\"8.4.11\"},{\"version\":\"9.7.2\"}]}" > /v/mysql_upgrade_history'
+rm -f "${SETUP}/.env"
+printf '%s\n' "${answers[@]}" n n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-mysql9-volume.log" 2>&1
+check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c "on\$" "${WORK}/setup-fxa-mysql9-volume.log") $(grep -c 'MySQL 9 already: it stays on lts' "${WORK}/setup-fxa-mysql9-volume.log")" \
+  "0 mysql:lts [] 1 1" "prepare_environment.sh keeps a volume of an earlier install already on MySQL 9 on lts"
+# keep-major.sh: that data under mysql:8 without FXA_MYSQL_IMAGE would be a downgrade, under lts
+# fine; MariaDB 11 data under mariadb:lts (12) without the setting: refused, and said
+docker run --rm -v "${volume}:/var/lib/mysql" -v "${CODE}/db/mysql/keep-major.sh:/k.sh:ro" -e FFS_MYSQL_SETTING=FXA_MYSQL_IMAGE \
+  --entrypoint sh mysql:lts /k.sh true > /dev/null 2>&1
+check "$?" 0 "keep-major.sh lets MySQL 9 start on MySQL 9 data"
 docker volume rm "${volume}" > /dev/null
+docker volume create ffs-e2e-keep-major${SLOT_SUFFIX} > /dev/null
+docker run --rm -v "ffs-e2e-keep-major${SLOT_SUFFIX}:/v" --entrypoint sh mariadb:lts -c 'mkdir -p /v/mysql && echo 11.8.9-MariaDB > /v/mariadb_upgrade_info'
+keep=$(docker run --rm -v "ffs-e2e-keep-major${SLOT_SUFFIX}:/var/lib/mysql" -v "${CODE}/db/mysql/keep-major.sh:/k.sh:ro" -e FFS_MYSQL_SETTING=SYNC_MARIADB_IMAGE \
+  --entrypoint sh mariadb:lts /k.sh true 2>&1)
+check "$? $(grep -c 'keep-major.sh: this database is MariaDB 11, the image is MariaDB [0-9]* (SYNC_MARIADB_IMAGE is not set' <<< "${keep}") $(grep -c 'SYNC_MARIADB_IMAGE=mariadb:11 in .env' <<< "${keep}")" \
+  "1 1 1" "keep-major.sh refuses MariaDB 11 data on mariadb:lts without SYNC_MARIADB_IMAGE, says what to set"
+docker run --rm -v "ffs-e2e-keep-major${SLOT_SUFFIX}:/var/lib/mysql" -v "${CODE}/db/mysql/keep-major.sh:/k.sh:ro" -e FFS_MYSQL_IMAGE=mariadb:lts \
+  --entrypoint sh mariadb:lts /k.sh true > /dev/null 2>&1
+check "$?" 0 "keep-major.sh lets a chosen image (SYNC_MARIADB_IMAGE set) start"
+docker volume rm "ffs-e2e-keep-major${SLOT_SUFFIX}" > /dev/null
+# PostgreSQL: a new setup over the volume of an earlier install (its .env gone) is pinned to the
+# major of its data; db/postgres/keep-major.sh refuses that data on latest without the setting
+pg_volume="$(basename "${SETUP}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')_postgres-db"
+docker volume create "${pg_volume}" > /dev/null
+docker run --rm -v "${pg_volume}:/v" --entrypoint sh postgres:latest -c 'mkdir -p /v/17/docker && echo 17 > /v/17/docker/PG_VERSION'
+answers[4]=postgres
+rm -f "${SETUP}/.env"
+printf '%s\n' "${answers[@]}" n n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-postgres-volume.log" 2>&1
+check "$? $(env_value SYNC_POSTGRES_IMAGE) $(grep -c "found the Sync database of an earlier install (docker volume ${pg_volume})" "${WORK}/setup-postgres-volume.log")" \
+  "0 postgres:17 1" "prepare_environment.sh pins PostgreSQL to the major of the volume of an earlier install (17)"
+keep=$(docker run --rm -v "${pg_volume}:/var/lib/postgresql" -v "${CODE}/db/postgres/keep-major.sh:/k.sh:ro" \
+  --entrypoint sh postgres:latest /k.sh true 2>&1)
+check "$? $(grep -c 'keep-major.sh: this database is PostgreSQL 17 (/var/lib/postgresql/17/docker), the image is PostgreSQL' <<< "${keep}") $(grep -c 'Set SYNC_POSTGRES_IMAGE to the major of the data, postgres:17' <<< "${keep}")" \
+  "1 1 1" "db/postgres/keep-major.sh refuses PostgreSQL 17 data on latest, says what to set"
+docker volume rm "${pg_volume}" > /dev/null
+answers[4]=mariadb
 rm -f "${SETUP}/.env"
 # a new setup over the MariaDB volume of an earlier install (its .env gone): kept on 11
 volume="$(basename "${SETUP}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')_fxa-db-mariadb"
