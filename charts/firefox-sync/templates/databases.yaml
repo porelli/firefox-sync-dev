@@ -151,8 +151,8 @@ spec:
           volumeMounts:
             - name: data
               {{- if eq $backend "postgres" }}
-              # postgres:18 and later keep their data in a subdirectory of the major
-              # (PGDATA /var/lib/postgresql/18/docker): a new major does not open the old data
+              # the official image keeps its data in a subdirectory of the major (PGDATA
+              # /var/lib/postgresql/<major>/docker): a new major does not open the old data
               mountPath: /var/lib/postgresql
               {{- else }}
               # a subdirectory: MariaDB and MySQL refuse to initialise next to the lost+found

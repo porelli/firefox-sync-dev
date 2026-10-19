@@ -147,7 +147,11 @@ services:
       - ${SYNC_EXPORT_PORT:-${CONTAINER_EXPORT_PORT:-127.0.0.1:5000}}:8000
 
   postgres_db:
-    image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:18}}
+    # SYNC_POSTGRES_IMAGE pins the major of the install (prepare_environment.sh writes
+    # postgres:<the major of postgres:latest> for new installs, postgres:18 for those from
+    # before it); unset: postgres:latest, which a new major cannot start on (it refuses another
+    # major's data: DATABASES.md#another-postgresql-major)
+    image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:latest}}
     # 0: your own server (DATABASES.md); compose then skips the dependency on it
     deploy:
       replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
@@ -293,7 +297,7 @@ services:
   # optional nightly backups (COMPOSE_PROFILES=backup) of the database into the backups
   # volume, see ADMIN.md#backups. Run one now: docker compose exec backup sh /ffs-backup/backup.sh now
   backup:
-    image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:18}}
+    image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:latest}}
     profiles: [backup]
     entrypoint: [sh, /ffs-backup/backup.sh]
     command: [loop]

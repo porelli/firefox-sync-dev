@@ -57,7 +57,11 @@ database:
   image:
     mariadb: docker.io/library/mariadb:lts
     mysql: docker.io/library/mysql:lts
-    postgres: docker.io/library/postgres:18
+    # PostgreSQL has no lts: latest is its newest major, which a newer one replaces. A chart
+    # cannot read the image's major at install as prepare_environment.sh does: pin it in your
+    # values from the first install, docker.io/library/postgres:<major> (helm show values,
+    # HELM.md#upgrades); left on latest a new PostgreSQL major leaves the server unable to start
+    postgres: docker.io/library/postgres:latest
 
   # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),
   # no superuser, the owner of the Sync tables (DATABASES.md). Not used with your own server,

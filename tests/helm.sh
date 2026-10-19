@@ -133,7 +133,7 @@ lint() {
   [[ $(echo "${output}" | grep -c 'drop: \["NET_RAW"\]') -eq 2 ]] || fail "mariadb: NET_RAW not dropped on migrate and syncstorage"
   check "mariadb: migrate and syncstorage without NET_RAW"
   # database.image.<backend>: the database server, wait-db, the backups and the PVC's binding
-  # Job (compose's POSTGRES_IMAGE: postgres_db and backup), postgres:18 by default
+  # Job (compose's POSTGRES_IMAGE: postgres_db and backup), postgres:latest by default
   for backend in mariadb mysql postgres; do
     images() {
       helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --set backup.enabled=true "$@" \
@@ -149,8 +149,8 @@ lint() {
       fail "an empty database.image.${backend} not refused by the schema"
     fi
   done
-  [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:18 ]] || fail "database.image.postgres is not docker.io/library/postgres:18 by default"
-  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:lts, postgres:18), empty refused"
+  [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:latest ]] || fail "database.image.postgres is not docker.io/library/postgres:latest by default"
+  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:lts, postgres:latest), empty refused"
 
   # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
@@ -180,7 +180,7 @@ lint() {
   for backend in mariadb mysql postgres; do
     image=docker.io/library/mariadb:lts
     [[ ${backend} == mysql ]] && image=docker.io/library/mysql:lts
-    [[ ${backend} == postgres ]] && image=docker.io/library/postgres:18
+    [[ ${backend} == postgres ]] && image=docker.io/library/postgres:latest
     docs=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
       --set backup.enabled=true | manifests)
     cron=$(echo "${docs}" | jq '.[] | select(.kind == "CronJob" and .metadata.name == "test-release-firefox-sync-backup")')
@@ -662,6 +662,12 @@ external_lint() {
   notes --set database.backend=mysql "${ext[@]}" | grep -q 'do not check the server.s certificate (tlsVerify false' || fail "NOTES: nothing on tlsVerify false"
   notes --set database.backend=mysql "${ext[@]}" --set database.external.tlsVerify=true | grep -q 'from a CA the images trust' || fail "NOTES: nothing on tlsVerify true"
   check "your own MariaDB/MySQL: MARIADB_TLS_VERIFY false unless tlsVerify (NOTES says which), the bundled ones unchanged"
+  # the bundled PostgreSQL on latest: NOTES says to pin its major (a chart cannot read it)
+  notes --set database.backend=postgres | grep -q '^database.image.postgres is docker.io/library/postgres:latest: pin the major' \
+    || fail "NOTES: nothing on pinning the bundled PostgreSQL's major"
+  ! notes --set database.backend=postgres --set database.image.postgres=docker.io/library/postgres:17 | grep -q 'pin the major' \
+    || fail "NOTES: the PostgreSQL pin note with a pinned major"
+  check "NOTES: the bundled PostgreSQL on latest, pin its major (not when pinned)"
   # PostgreSQL: compose's POSTGRES_* of your own server, POSTGRES_USER the owner (no Sync role)
   out=$(env_values SYNC_TOKENSERVER__DATABASE_URL --set database.backend=postgres "${ext[@]}")
   [[ "${out}" == 'postgres://syncserver:$(POSTGRES_PASSWORD)@db.example.test:5432/syncserver' ]] || fail "postgres, bundled=false: the URL: ${out}"
@@ -1442,7 +1448,7 @@ extdb_server() {
     image=mysql:lts port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
     probe='mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent'
   else
-    image=postgres:18 port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'
+    image=postgres:latest port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'
     probe='pg_isready -h 127.0.0.1 -U postgres'
   fi
   EXTDB_IMAGE=${image}

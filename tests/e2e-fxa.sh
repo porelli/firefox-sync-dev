@@ -328,6 +328,10 @@ prepare_again postgres ""
 check "$?" 0 "prepare_environment.sh with PostgreSQL and self-hosted accounts"
 check "$(grep -c '^COMPOSE_FILE=docker-compose.sync-postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
 check "$(setup_compose config --services | grep -cxE 'postgres_db|fxa-auth|fxa-policy|ffs-admin')" 4 "compose stack with PostgreSQL, the accounts and the admin UI"
+# the major of postgres:latest now, pinned (a new major cannot open the data)
+pg_major=$(docker run --rm --entrypoint postgres postgres:latest --version 2> /dev/null | sed -n 's/^postgres (PostgreSQL) \([0-9]*\)[^0-9].*/\1/p')
+check "$(env_value SYNC_POSTGRES_IMAGE) $(setup_compose --profile backup config | awk '/^  [a-z]/ { on = ($1 == "postgres_db:" || $1 == "backup:") } on' | grep -cE "^ +image: postgres:${pg_major}$") $(grep -c "^SYNC_POSTGRES_IMAGE=postgres:${pg_major}: PostgreSQL ${pg_major}, the major of postgres:latest" "${WORK}/setup-postgres-.log")" \
+  "postgres:${pg_major} 2 1" "PostgreSQL pinned to the major of postgres:latest (${pg_major}), for the database and its backups, and said"
 check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db|MAX_USERS: "?initial:2"?)$')" 3 "admin UI for PostgreSQL and the accounts, with SYNC_MAX_USERS"
 # Sync on MySQL containers (SYNC_DB=mysql), the same mysql images
 prepare_again mysql ""

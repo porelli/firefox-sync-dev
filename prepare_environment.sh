@@ -779,6 +779,20 @@ db_volume() {
     return 1
 }
 
+# the major of postgres:latest, from its own server ("postgres (PostgreSQL) 18.1 (Debian ...)"):
+# pulled if needed (Docker's first, a Docker without its daemon fails at once, then Podman's)
+postgres_latest_major() {
+    local runtime image=postgres:latest out
+    for runtime in docker podman; do
+        command -v "${runtime}" > /dev/null 2>&1 || continue
+        [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
+        out=$(${runtime} run --rm --pull=missing --entrypoint postgres "${image}" --version 2> /dev/null) || continue
+        out=$(printf '%s' "${out}" | sed -n 's/^postgres (PostgreSQL) \([0-9][0-9]*\)[^0-9].*/\1/p')
+        [ -n "${out}" ] && { echo "${out}"; return 0; }
+    done
+    return 1
+}
+
 # run again on an install: its databases stay on the PostgreSQL, MariaDB or MySQL versions they run
 PREVIOUS_SYNCSTORAGE_IMAGE="" PREVIOUS_POSTGRES_IMAGE=""
 PREVIOUS_FXA_DB="" PREVIOUS_FXA_MARIADB_IMAGE=""
@@ -984,15 +998,19 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|"
         apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(generate_random_string 32)|"
     fi
-    # PostgreSQL 18 for new installs, written out (unset it is postgres:18; not lts: no install
-    # moves to a new major by itself). One that ran PostgreSQL before SYNC_POSTGRES_IMAGE, or whose
-    # PostgreSQL volume is still there, runs postgres:18 (every release so far used 18, git log
-    # -- docker-compose.sync-postgres.yml confirms it)
-    SYNC_POSTGRES_IMAGE=postgres:18
+    # PostgreSQL has no lts (every major is supported for 5 years) and no major opens another's
+    # data: new installs get the major postgres:latest is at now, read from the image itself,
+    # written out (postgres:<major>; unset it is postgres:latest, which a new major would
+    # leave unable to start). One that ran PostgreSQL before SYNC_POSTGRES_IMAGE runs
+    # postgres:18 (every release before it used 18, git log -- docker-compose.sync-postgres.yml)
     if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
         SYNC_POSTGRES_IMAGE=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
+    elif SYNC_POSTGRES_MAJOR=$(postgres_latest_major); then
+        SYNC_POSTGRES_IMAGE=postgres:${SYNC_POSTGRES_MAJOR}
+    else
+        SYNC_POSTGRES_IMAGE=""
     fi
-    apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_IMAGE}")|"
+    [ -z "${SYNC_POSTGRES_IMAGE}" ] || apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_IMAGE}")|"
 fi
 
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
@@ -1236,6 +1254,14 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
     fxa_mariadb_image_check
     [ "${FXA_DB}" = mysql ] && fxa_mysql_image_check
+fi
+if [ "${DATABASE_BACKEND}" = postgres ] && [ -n "${SYNC_POSTGRES_MAJOR:-}" ]; then
+    echo "SYNC_POSTGRES_IMAGE=postgres:${SYNC_POSTGRES_MAJOR}: PostgreSQL ${SYNC_POSTGRES_MAJOR}, the major of postgres:latest today, pinned: a newer"
+    echo "  major cannot open its data. Moving later: DATABASES.md#another-postgresql-major"
+elif [ "${DATABASE_BACKEND}" = postgres ] && [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" != "syncstorage-rs-postgres" ]; then
+    echo "WARNING: could not read the major of postgres:latest (docker or podman run postgres:latest postgres --version):"
+    echo "  SYNC_POSTGRES_IMAGE is not set, postgres:latest, which a new PostgreSQL major leaves unable to start."
+    echo "  Pin it in .env to the major it runs: SYNC_POSTGRES_IMAGE=postgres:<major> (DATABASES.md#another-postgresql-major)"
 fi
 if [ "${PINNED_SYNC_MYSQL:-}" = "yes" ]; then
     echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases of this install stay on MySQL 8. To move them to MySQL lts, 9:"

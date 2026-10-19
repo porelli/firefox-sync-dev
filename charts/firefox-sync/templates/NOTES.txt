@@ -28,6 +28,14 @@ MySQL's own is self-signed); true needs one from a CA the images trust.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if and .Values.database.bundled (eq .Values.database.backend "postgres") (hasSuffix ":latest" .Values.database.image.postgres) }}
+
+database.image.postgres is {{ .Values.database.image.postgres }}: pin the major the server runs now in your
+values, or a new PostgreSQL major leaves it unable to start on its data (HELM.md#upgrades):
+
+  kubectl -n {{ .Release.Namespace }} exec sts/{{ include "firefox-sync.fullname" . }}-postgres -- postgres --version
+  database.image.postgres: docker.io/library/postgres:<that major>
+{{- end }}
 {{- if and .Values.admin.enabled .Values.admin.ingress.enabled }}
 
 The admin UI is published by the Ingress {{ include "firefox-sync.adminService" . }} at {{ .Values.admin.ingress.host }}: keep it

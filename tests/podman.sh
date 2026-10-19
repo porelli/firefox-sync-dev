@@ -167,6 +167,13 @@ compose_test() {
   admin_password=$(env_of ADMIN_DB_PASSWORD)
   check "$(echo "${admin_password}" | grep -cE '^[A-Za-z0-9]{32}$')" 1 "prepare_environment.sh generates ADMIN_DB_PASSWORD (${backend})"
   sed -i 's|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=|' .env
+  # PostgreSQL: a new install is pinned to the major of postgres:latest; one from before ran 18
+  # without SYNC_POSTGRES_IMAGE (--upgrade pins it below)
+  if [ "${backend}" = postgres ]; then
+    pg_major=$(podman run --rm --entrypoint postgres docker.io/library/postgres:latest --version 2> /dev/null | sed -n 's/^postgres (PostgreSQL) \([0-9]*\)[^0-9].*/\1/p')
+    check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:${pg_major}" "prepare_environment.sh pins PostgreSQL to the major of postgres:latest (postgres, compose)"
+    sed -i 's|^SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=postgres:18|' .env
+  fi
   # MySQL: a new install is on mysql:lts; one from before ran mysql:8 without SYNC_MYSQL_IMAGE
   # (--upgrade pins it below)
   if [ "${backend}" = mysql ]; then
@@ -199,6 +206,11 @@ compose_test() {
   # an install from before docker-compose.sync-postgres.yml had the old name in COMPOSE_FILE
   [ "${backend}" = postgres ] && sed -i 's|^COMPOSE_FILE=docker-compose.sync-postgres.yml$|COMPOSE_FILE=docker-compose.postgres.yml|' .env
   [ "${backend}" != mysql ] || sed -i '/^SYNC_MYSQL_IMAGE=/d' .env
+  # (the old names left, as counted for the rename below)
+  if [ "${backend}" = postgres ]; then
+    sed -i '/^\(SYNC_\)\{0,1\}POSTGRES_IMAGE=/d' .env
+    old_lines=$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env)
+  fi
   # the upgrade, as MIGRATING.md says: prepare_environment.sh --upgrade fills in what is missing
   ./prepare_environment.sh --upgrade > "upgrade-${backend}.log" 2>&1
   check "$?" 0 "prepare_environment.sh --upgrade (${backend})"

@@ -85,7 +85,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
     - same as `syncstorage-rs-mysql` but built with `SYNCSTORAGE_DATABASE_BACKEND=postgres` and `TOKENSERVER_DATABASE_BACKEND=postgres` to use PostgreSQL
 - [ghcr.io/porelli/firefox-sync:syncstorage-rs-postgres-init-latest](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions)
-    - Base image: [PostgreSQL's](https://github.com/docker-library/postgres/blob/master/18/trixie/Dockerfile) container (`postgres:18`)
+    - Base image: [PostgreSQL's](https://hub.docker.com/_/postgres) container (`postgres:latest`, for its `psql`)
     - Purpose: Post-migration database initialization and handling of SYNC_MAX_USERS
     - Base image differences: [added](/db/postgres/init/Dockerfile) [`db_init.sh`](/db/postgres/init/db_init.sh) and [`db_init.sql`](/db/postgres/init/db_init.sql) scripts
     - source code: https://github.com/postgres/postgres

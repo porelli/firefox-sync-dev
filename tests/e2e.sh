@@ -33,7 +33,7 @@
 #                   --upgrade pins it
 #   EXTERNAL_DB     set to 1 for a database server outside the stack (SYNC_DB_CONTAINERS=0, DATABASES.md),
 #                   created with only the grants of db/<engine>/sync.sql: MySQL with binary logging
-#                   for mysql, a PostgreSQL owner that is no superuser for postgres; on its own
+#                   for mysql, a PostgreSQL (postgres:latest) owner that is no superuser for postgres; on its own
 #                   network (EXTDB_SUBNET, default: 10.232.1.0/24 mysql, 10.232.2.0/24 postgres)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the install from before below runs its compose files, its admin UI and its
@@ -342,7 +342,7 @@ start_extdb() {
       -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" "${SYNC_MYSQL_IMAGE}" --log-bin-trust-function-creators=ON > /dev/null || return 1
   else
     docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/postgresql \
-      -e POSTGRES_PASSWORD="${EXTDB_ROOT}" postgres:18 > /dev/null || return 1
+      -e POSTGRES_PASSWORD="${EXTDB_ROOT}" postgres:latest > /dev/null || return 1
   fi
   # over TCP: while the images initialize, a temporary server listens on the socket only
   for _ in $(seq 1 90); do
@@ -415,7 +415,7 @@ echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
 
 if [ -n "${EXTDB}" ]; then
-  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo "${SYNC_MYSQL_IMAGE}" || echo postgres:18))"
+  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo "${SYNC_MYSQL_IMAGE}" || echo postgres:latest))"
   start_extdb
   check "$?" 0 "external database server with the databases and users of db/${BACKEND}/sync.sql"
 fi
@@ -579,9 +579,9 @@ check "$(hb)" 200 "/__heartbeat__ after the upgrade"
 check "$(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -q syncstorage)") $(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -a -q syncstorage_migrate)")" \
   "[CAP_NET_RAW] [CAP_NET_RAW]" "the Sync server and its migrations without raw sockets (cap_drop)"
 if [ "${BACKEND}" = postgres ] && [ -z "${EXTERNAL_DB:-}" ]; then
-  # postgres_db and backup use SYNC_POSTGRES_IMAGE from .env (postgres:18 by default)
+  # postgres_db and backup use SYNC_POSTGRES_IMAGE from .env (postgres:latest by default)
   pg_image=$(grep "^SYNC_POSTGRES_IMAGE=" "${ENV_FILE}" | cut -d= -f2)
-  pg_image=${pg_image:-postgres:18}
+  pg_image=${pg_image:-postgres:latest}
   check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -q postgres_db)")" \
     "${pg_image}" "postgres_db uses SYNC_POSTGRES_IMAGE from .env"
   # backup service: check the compose config (not running unless COMPOSE_PROFILES=backup was used)
@@ -1066,7 +1066,7 @@ else
     BACKUP_IMAGE="${SYNC_MYSQL_IMAGE}"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   else
-    BACKUP_IMAGE="${SYNC_POSTGRES_IMAGE:-postgres:18}"
+    BACKUP_IMAGE="${SYNC_POSTGRES_IMAGE:-postgres:latest}"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   fi
   docker volume create "${BACKUP_VOL}" > /dev/null
