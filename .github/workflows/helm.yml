@@ -156,7 +156,7 @@ jobs:
         # 1: on a database server of its own in the cluster (database.bundled=false)
         external_db: ["", "1"]
         exclude:
-          # (EXTERNAL_DB=1: MySQL 8 or PostgreSQL 18, as tests/e2e.sh)
+          # (EXTERNAL_DB=1: MySQL lts or PostgreSQL latest, as tests/e2e.sh)
           - backend: mariadb
             external_db: "1"
     steps:
@@ -186,7 +186,7 @@ jobs:
 
       - name: Disable the runner's AppArmor profile of MySQL
         # the runner's own MySQL server's profile (/usr/sbin/mysqld) would also confine the
-        # mysqld of the mysql:8 image in kind, whose pods run unconfined: no /etc/my.cnf, no
+        # mysqld of the mysql image in kind, whose pods run unconfined: no /etc/my.cnf, no
         # init file, the first start aborts (tests/helm.sh fails early while it is enabled)
         if: matrix.backend == 'mysql'
         run: |

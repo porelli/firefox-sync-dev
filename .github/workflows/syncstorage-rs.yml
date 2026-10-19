@@ -388,12 +388,24 @@ jobs:
         database_backend: [mysql, postgres]
         # 1: on a database server outside the stack, with only the grants of DATABASES.md
         external_db: ["", "1"]
-        # the database containers: mariadb, or mysql (MySQL 8, SYNC_DB=mysql) for the mysql backend
+        # the database containers: mariadb (lts), or mysql (SYNC_DB=mysql) for the mysql backend
         sync_db: [mariadb]
+        # the MySQL of sync_db mysql and of the external server of the mysql backend: empty is
+        # mysql:lts (the default), mysql:8 the installs from before (pinned by --upgrade;
+        # tests/e2e.sh also checks there that lts refuses their data, and moves them to lts)
+        mysql_image: [""]
         include:
           - database_backend: mysql
             external_db: ""
             sync_db: mysql
+          - database_backend: mysql
+            external_db: ""
+            sync_db: mysql
+            mysql_image: mysql:8
+          - database_backend: mysql
+            external_db: "1"
+            sync_db: mariadb
+            mysql_image: mysql:8
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -408,12 +420,13 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: End-to-end tests${{ matrix.external_db && ' (your own database server)' || '' }}${{ matrix.sync_db == 'mysql' && ' (MySQL 8)' || '' }}
+      - name: End-to-end tests${{ matrix.external_db && ' (your own database server)' || '' }}${{ matrix.sync_db == 'mysql' && ' (MySQL containers)' || '' }}${{ matrix.database_backend == 'mysql' && matrix.mysql_image && format(' ({0})', matrix.mysql_image) || '' }}
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
           EXTERNAL_DB: ${{ matrix.external_db }}
           SYNC_DB: ${{ matrix.sync_db }}
+          SYNC_MYSQL_IMAGE: ${{ matrix.mysql_image }}
         run: ./tests/e2e.sh ${{ matrix.database_backend }}
 
   ## Test rootless podman (quadlets, docker compose on the Podman socket) ##
@@ -497,6 +510,8 @@ jobs:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
           # Mozilla's own images: early warning about a new release before fxa.yml builds it
+          # (without mozilla/fxa#21554: the accounts on mysql:8 with mysql_native_password, as
+          # the installs from before)
           FXA_IMAGE: docker.io/mozilla/fxa-mono
           FXA_VERSION: ${{ steps.fxa.outputs.version }}
           FXA_ARCH: amd64

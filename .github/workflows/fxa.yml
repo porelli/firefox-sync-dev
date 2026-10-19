@@ -371,6 +371,10 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # the accounts on MySQL: mysql_image empty is what tests/e2e-fxa.sh picks from the image's
+    # label, mysql:lts with mozilla/fxa#21554 (upstream-patches.yml); mysql:8 with
+    # mysql_native_password is what the installs from before run (pinned by --upgrade), with
+    # the candidate's mysql2 driver
     strategy:
       fail-fast: false
       matrix:
@@ -379,6 +383,9 @@ jobs:
             runner: ubuntu-latest
           - arch: arm64
             runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-latest
+            mysql_image: mysql:8
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -442,10 +449,11 @@ jobs:
           docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
           docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
-      - name: End-to-end tests with our ${{ matrix.arch }} image
+      - name: End-to-end tests with our ${{ matrix.arch }} image${{ matrix.mysql_image && format(', the accounts on {0}', matrix.mysql_image) || '' }}
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
+          FXA_MYSQL_IMAGE: ${{ matrix.mysql_image }}
           # the init images above (the others are pulled when missing)
           SKIP_PULL: 1
           # FXA_VERSION, FXA_PAIRING_IMAGE: the images under test, above
@@ -546,7 +554,9 @@ jobs:
         run: ./tests/e2e-fxa.sh
 
   # an install of the published release (fxa-mono-latest, not moved yet) with an account,
-  # a device and Sync data, upgraded in place to the candidate as FXA.md says
+  # a device and Sync data, upgraded in place to the candidate as FXA.md says; on MySQL 8 with
+  # mysql_native_password as the installs from before, through --upgrade, then with a
+  # candidate that has mozilla/fxa#21554 moved to mysql:lts as MIGRATING.md#mysql-lts says
   test-upgrade:
     needs: [prepare, build, push, build-pairing, push-pairing]
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
@@ -554,7 +564,7 @@ jobs:
       contents: read
       packages: read
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - name: Checkout
         uses: actions/checkout@v7
