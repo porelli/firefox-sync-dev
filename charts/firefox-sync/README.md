@@ -1,6 +1,6 @@
 # firefox-sync
 
-Self-hosted Firefox Sync: Mozilla's [syncstorage-rs](https://github.com/mozilla-services/syncstorage-rs) with its tokenserver and its databases (MariaDB, MySQL or PostgreSQL, or your own server), and optionally an admin UI and nightly backups. Firefox stores its Sync data, encrypted by Firefox, on your cluster. The images are those of [porelli/firefox-sync](https://github.com/porelli/firefox-sync), which also runs with docker compose and Podman.
+Self-hosted Firefox Sync: Mozilla's [syncstorage-rs](https://github.com/mozilla-services/syncstorage-rs) with its tokenserver and its databases (MariaDB, MySQL or PostgreSQL, or your own server), and optionally an admin UI, nightly backups and self-hosted Mozilla accounts. Firefox stores its Sync data, encrypted by Firefox, on your cluster. The images are those of [porelli/firefox-sync](https://github.com/porelli/firefox-sync), which also runs with docker compose and Podman.
 
 The full guide: [Install with Helm](https://github.com/porelli/firefox-sync/blob/main/docs/install/helm.md).
 
@@ -43,9 +43,12 @@ Every value is described in [values.yaml](https://github.com/porelli/firefox-syn
 | `ingress.*` | off | the Sync server's Ingress |
 | `admin.enabled`, `admin.*` | off | the admin UI; `admin.ingress.*` for its own Ingress, behind your own sign-in |
 | `backup.enabled`, `backup.*` | off | a CronJob dumping the databases into a PVC |
+| `smtp.*` | none | the SMTP server of the admin UI's alerts and of the accounts' emails |
+| `fxa.enabled`, `fxa.*` | off | the self-hosted Mozilla accounts, on four hosts of their own: [Self-hosted accounts](https://github.com/porelli/firefox-sync/blob/main/docs/install/helm.md#self-hosted-accounts) |
 
 ## Good to know
 
 - The generated Secret (`<release>-firefox-sync`) is read back on upgrades and kept on `helm uninstall`, like the database volumes. Keep a copy off the cluster.
-- One Sync server replica: the migrations run in its init containers.
+- One Sync server replica, and one of each accounts server: the migrations run in their init containers.
+- With the accounts, keep a copy of their signing keys off the cluster: the NOTES give the command.
 - Release names have a maximum length, which depends on the components: see [Limits](https://github.com/porelli/firefox-sync/blob/main/docs/install/helm.md#limits). Longer names are refused at render time.

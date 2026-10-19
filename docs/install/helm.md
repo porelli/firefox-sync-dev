@@ -2,12 +2,12 @@
 
 This page installs the Sync server on Kubernetes with the Helm chart [charts/firefox-sync](/charts/firefox-sync). The chart runs the same images as docker compose, with the settings of `.env` as values. Read [What you need](../README.md#what-you-need) first.
 
-The chart runs syncstorage-rs with its tokenserver, its migrations and the init container of `maxUsers`, and the databases: MariaDB, MySQL or PostgreSQL, or [your own server](../databases.md#with-helm). The admin UI and the nightly backups are optional.
+The chart runs syncstorage-rs with its tokenserver, its migrations and the init container of `maxUsers`, and the databases: MariaDB, MySQL or PostgreSQL, or [your own server](../databases.md#with-helm). The admin UI, the nightly backups and the [self-hosted accounts](#self-hosted-accounts) are optional.
 
 ## Requirements
 
 - Kubernetes 1.27 or later, and Helm 3.
-- A default StorageClass, or `database.persistence.storageClass` and `backup.persistence.storageClass`. The chart needs one volume per database server and one for the backups.
+- A default StorageClass, or `database.persistence.storageClass` and `backup.persistence.storageClass`. The chart needs one volume per database server and one for the backups, and with the self-hosted accounts one each for their keys and avatars.
 - A host name with HTTPS that reaches the Sync server: an Ingress controller ([Ingress](#ingress)), or your own reverse proxy in front of the Service `<release>-firefox-sync-syncstorage`, port 8000.
 - A namespace at the [PodSecurity](https://kubernetes.io/docs/concepts/security/pod-security-standards/) level `baseline`, or `privileged` (the default):
 
@@ -100,7 +100,7 @@ database:
 
 ### Scheduling and pulling
 
-`nodeSelector`, `tolerations`, `affinity` (as in a pod spec) and `podAnnotations` apply to every pod of the chart: the Sync server, the admin UI, the database servers and the backups. The chart's own annotations, its checksums, stay.
+`nodeSelector`, `tolerations`, `affinity` (as in a pod spec) and `podAnnotations` apply to every pod of the chart: the Sync server, the admin UI, the database servers, the backups and the self-hosted accounts. The chart's own annotations, its checksums, stay.
 
 `imagePullSecrets` (`[{name: my-registry}]`) applies to every pod too, for a registry that needs a login. That is a mirror of `ghcr.io/porelli/firefox-sync`, and of Docker Hub, whose official images the database servers and the backups run. The `database.image.*` values are fully qualified (`docker.io/library/...`) for the nodes whose runtime has another default registry.
 
@@ -152,8 +152,14 @@ Its keys:
 | `POSTGRES_SYNC_PASSWORD` | `postgres`, bundled | the Sync server's own role `syncserver_app` (`database.postgresSyncUser`), no superuser |
 | `ADMIN_PASSWORD` | optional | the admin UI's password. Missing or empty: no password form ([Signing in](../admin/signing-in.md)) |
 | `FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY` | optional | the admin UI's. Missing or empty: that feature is off |
+| `FXA_MYSQL_PASSWORD` | `fxa.enabled` | the accounts database's user: `root` of the bundled server, or `fxa.database.external.user` on your own |
+| `FXA_ADMIN_DB_PASSWORD` | `fxa.enabled` | the admin UI's user `ffs_admin` of the accounts database |
+| `FXA_AUTH_SECRET`, `FXA_OAUTH_SECRET`, `FXA_PROFILE_SECRET`, `FXA_FLOW_ID_KEY`, `FXA_SESSION_TOKEN_HANDLE_KEY`, `FXA_CONTENT_SESSION_SECRET` | `fxa.enabled` | the accounts services' secrets, as in `.env` |
+| `FXA_REDIS_PASSWORD` | `fxa.enabled` | the password of the accounts' Redis. The chart's own: `.env` has none |
+| `FXA_MYSQL_POLICY_PASSWORD` | `fxa.enabled`, your own accounts database server, a non-empty `fxa.database.external.policyUser` | that user's password. The chart never generates it |
+| `ADMIN_FXA_CLIENT_SECRET` | optional | leave it out: see [Sign in with the accounts](#sign-in-with-the-accounts) |
 
-With `existingSecret`, the chart does not read the values of those optional secrets (`smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken`, `admin.notify`), nor `admin.password`.
+With `existingSecret`, the chart does not read the values of those optional secrets (`smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken`, `admin.notify`, `fxa.adminClientSecret`), nor `admin.password`. With `fxa.enabled`, an install or upgrade whose `existingSecret` lacks one of the accounts' keys is refused, with the missing keys named.
 
 For MariaDB or MySQL, for example:
 
@@ -165,7 +171,7 @@ kubectl create secret generic ffs-secrets \
   --from-literal=TOKENSERVER_DB_PASSWORD="$(rnd)" --from-literal=STORAGE_DB_PASSWORD="$(rnd)"
 ```
 
-Then set `existingSecret: ffs-secrets` in your values. With PostgreSQL, use `POSTGRES_PASSWORD` and `POSTGRES_SYNC_PASSWORD` instead of the last two. With a GitOps tool, create the same keys from your secrets manager (Sealed Secrets, External Secrets...).
+Then set `existingSecret: ffs-secrets` in your values. With PostgreSQL, use `POSTGRES_PASSWORD` and `POSTGRES_SYNC_PASSWORD` instead of the last two. With the self-hosted accounts, add each of their keys the same way, for example `--from-literal=FXA_REDIS_PASSWORD="$(rnd)"`. With a GitOps tool, create the same keys from your secrets manager (Sealed Secrets, External Secrets...).
 
 A key missing that a pod needs stops it in `CreateContainerConfigError` until the key is there; `kubectl describe pod` names it. A new chart version that needs a new key says so in its release notes.
 
@@ -227,17 +233,142 @@ admin:
 
 Without `admin.ingress.tls.enabled` the NOTES warn: unless the controller adds TLS, the password and the session cookie cross the network in plain HTTP.
 
-<!-- helm-fxa: accounts values go here -->
+## Self-hosted accounts
+
+`fxa.enabled` runs the [self-hosted Mozilla accounts](../accounts.md) in the cluster, with the same images as compose: their database, Redis, the auth, content and profile servers, and optionally the pairing server. The chart points the Sync server to them. Read their [requirements](../accounts.md#requirements) first: four host names, an SMTP server and about 3-4 GB of memory.
+
+1. Add them to your `my-values.yaml`, next to `syncDomain` and the Sync server's Ingress of [Install](#install):
+
+   ```yaml
+   smtp:
+     host: smtp.example.com
+     user: accounts@example.com
+     password: <the SMTP password>
+     sender: "Mozilla accounts <no-reply@example.com>"
+   fxa:
+     enabled: true
+     contentUrl: https://accounts.example.com
+     authUrl: https://api.example.com
+     profileUrl: https://profile.example.com
+     signups: allowlist
+     signupAllowlist: ["@example.com"]
+     ingress:
+       enabled: true
+       className: nginx
+       annotations:
+         cert-manager.io/cluster-issuer: letsencrypt-prod
+       tls:
+         enabled: true
+         secretNames:
+           content: accounts-example-com-tls
+           auth: api-example-com-tls
+           profile: profile-example-com-tls
+   ```
+
+   Each URL needs a host of its own, none of the Sync server's or the admin UI's: the chart refuses the others. Each `.env` setting and its value are in [Settings](../reference/settings.md#accounts). Who can sign up: [Who can sign up](../accounts.md#who-can-sign-up). The Ingresses, and your own proxy instead: [Kubernetes](../reverse-proxy.md#kubernetes).
+1. Install, or upgrade an install, with them. The first start pulls the accounts image (about 5 GB) and creates their databases, hence the longer timeout:
+
+   ```bash
+   helm upgrade --install ffs oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync --version <chart version> \
+     -f my-values.yaml --wait --timeout 20m
+   ```
+
+1. Check the auth server's init containers, in their order: the migrations, then the sign-up policy.
+
+   ```bash
+   kubectl get pods -l app.kubernetes.io/instance=ffs
+   kubectl logs deploy/ffs-firefox-sync-fxa-auth -c migrations
+   kubectl logs deploy/ffs-firefox-sync-fxa-auth -c policy
+   ```
+
+1. [Set up Firefox](../firefox.md#self-hosted-accounts). `identity.fxaccounts.autoconfig.uri` alone is enough: the NOTES also print the token server URL of Mozilla's accounts, which Firefox then does not need.
+
+A private CA, for your SMTP server or your own HTTPS hosts: put its PEM file into a ConfigMap, and name it in `fxa.extraCaCerts.configMap` and `.key`.
+
+### The signing keys
+
+The auth server writes its keys at its first start, onto the PVC `ffs-firefox-sync-fxa-keys`, and never again while that volume is there. `helm uninstall` keeps it. Losing it signs everyone out, and the [backups](../backups.md#kubernetes) don't have it. So keep a copy off the cluster, for example as a Secret of yours:
+
+```bash
+kubectl exec deploy/ffs-firefox-sync-fxa-auth -c auth -- tar -C /fxa-keys -c secret-key.json public-key.json vapid-keys.json openid-key.json > fxa-keys.tar
+mkdir fxa-keys && tar -C fxa-keys -xf fxa-keys.tar
+kubectl create secret generic ffs-firefox-sync-fxa-keys --from-file=fxa-keys
+```
+
+With `fxa.keys.existingSecret: ffs-firefox-sync-fxa-keys`, the auth pod copies them from that Secret at every start, and stops in its init container `keys-copy` while one of the four files is missing or empty. The chart then creates no keys PVC. One made before stays, and you can delete it.
+
+- `helm template` and GitOps tools need an [existingSecret](#existingsecret) with the accounts' keys too: otherwise each render makes new secrets, and signs everyone out.
+- Argo CD does not read `helm.sh/resource-policy: keep`. A pruning sync deletes a PVC that leaves the render: the keys' one when you set `fxa.keys.existingSecret` or turn the accounts off, and the avatars' (`ffs-firefox-sync-fxa-profile-images`). With Argo CD, use `fxa.keys.existingSecret` from the first install, and keep pruning off for the accounts' PVCs.
+
+### Sign in with the accounts
+
+With the admin UI (`admin.enabled`), the chart adds its [sign-up gate](../reverse-proxy.md#sign-up-gate) to the accounts API's Ingress. `admin.fxaSignIn: true` also lets the admins sign in to the admin UI with these accounts ([Self-hosted accounts](../admin/signing-in.md#self-hosted-accounts)):
+
+```yaml
+admin:
+  enabled: true
+  fxaSignIn: true
+  allowed:
+    users: alice@example.com
+  ingress:
+    enabled: true
+    host: admin.example.com
+    # className, tls, annotations as in Admin UI above
+```
+
+- `admin.allowed.users` or `.groups` is required: who of the accounts is an admin.
+- The accounts send the admins back to `admin.oidc.redirectUrl`, which must be `https://<host>/auth/callback`. Empty, it is `https://<admin.ingress.host>/auth/callback`.
+- The `admin.oidc.*` left empty take the accounts': the issuer `fxa.contentUrl`, the name "Mozilla account", and `trustUnverifiedEmail` true.
+- The admin UI's OAuth client id is derived from the namespace and the release name: `printf '%s/%s/admin-oidc' <namespace> <release> | sha256sum | cut -c1-16`. It stays the same on every upgrade. A render with another namespace, such as `helm template` without `-n`, gets another id: the accounts register the new client at their next start, and drop the old one. To fix it, set `fxa.adminClientId` (16 hex characters, `openssl rand -hex 8`).
+- The admin UI's pod signs in through the accounts' public URLs, so it must resolve and reach them from inside the cluster, with a certificate it trusts (`fxa.extraCaCerts` for a private CA).
+- `fxa.adminClientId` needs `admin.fxaSignIn`: the chart refuses it alone. Leave `fxa.adminClientSecret` empty: the accounts refuse PKCE from clients with a secret.
+
+### Pairing
+
+The phones pair through Mozilla's pairing server unless you run your own ([Pair a phone](../firefox.md#pair-a-phone)). For the chart's own, set `fxa.pairing.enabled: true`, `fxa.pairing.url: wss://pairing.example.com` and `fxa.ingress.tls.secretNames.pairing`. Its websockets need a longer timeout at the Ingress controller: see [Kubernetes](../reverse-proxy.md#kubernetes).
+
+A `fxa.pairing.url` without `fxa.pairing.enabled` is still given to Firefox, as with compose, for a pairing server you run elsewhere.
+
+### MySQL or MariaDB
+
+`fxa.database.backend` is `mysql` (the default) or `mariadb`, whatever `database.backend` is ([MySQL or MariaDB](../accounts.md#mysql-or-mariadb)). The images and their majors: [Database majors](../upgrading.md#database-majors). Your own server instead: [With Helm](../databases.md#with-helm).
+
+Choose before the first install. Each backend has its volume: `data-ffs-firefox-sync-fxa-db-0` for MySQL, `data-mariadb-ffs-firefox-sync-fxa-db-0` for MariaDB.
+
+- A `helm upgrade` to the other backend is refused before anything changes: `firefox-sync: fxa.database.backend is mariadb but the accounts database was created with mysql ...`.
+- Moving to the other backend takes a dump and a restore ([Restore on Kubernetes](../backups.md#restore-on-kubernetes)). That is not tested here.
+- Turning the accounts off and on again with the other backend is not refused: the server starts on a new, empty volume, and the old PVC stays until you delete it.
+
+### Resources and PodSecurity
+
+The accounts' containers have memory requests by default, and no limits. The requests add up to about 2.6 GiB; plan 3-4 GB. Change them with `fxa.resources.*` (`auth`, `content`, `profile`, `profileWorker`, `profileStatic`, `imgProxy`, and `init` for the init containers), `fxa.database.resources`, `fxa.redis.resources` and `fxa.pairing.resources`.
+
+The accounts' images run as the user 10001, and new volumes are root's. By default (`fxa.volumeOwnerInit: true`) two init containers, `keys-owner` and `images-owner`, change the owner of the keys' and the avatars' volumes as root, with the `CHOWN` capability alone. That needs PodSecurity `baseline`, as the database servers do.
+
+With `fxa.volumeOwnerInit: false` there are none, and the accounts' pods get `fsGroup: 10001` instead. Then no accounts container runs as root except the database server's, and the other accounts pods meet `restricted`. It needs a StorageClass whose volumes Kubernetes gives the `fsGroup`. With one that does not (`hostPath`, kind's `local-path`), the auth server cannot write its keys.
+
+### NetworkPolicies
+
+`fxa.networkPolicy.enabled` (`true`) admits only these pods of the release to the accounts' Redis and database:
+
+| Server | Port | From |
+|---|---|---|
+| Redis, `ffs-firefox-sync-fxa-redis` | 6379 | the auth, content and profile servers, and the admin UI when it is on |
+| the bundled database, `ffs-firefox-sync-fxa-db` | 3306 | the auth server (also its migrations and policy), the profile server, the admin UI and the backups when they are on |
+
+Only a network plugin that enforces NetworkPolicies applies them. Redis also has a password, `FXA_REDIS_PASSWORD` of the Secret, which it reads from its standard input: it is in neither the pod's spec nor its arguments. A tool of yours that connects to the accounts' database needs a NetworkPolicy of its own.
 
 ## Backups and upgrades
 
-- Backups: `backup.enabled`, see [Backups on Kubernetes](../backups.md#kubernetes).
-- Upgrades, and what `helm uninstall` keeps: see [Upgrading with Helm](../upgrading.md#helm).
-- From docker compose to Kubernetes: see [Migrating](../migrating.md#from-docker-compose-to-kubernetes).
+- Backups: `backup.enabled`, see [Backups on Kubernetes](../backups.md#kubernetes). With the self-hosted accounts, they dump the accounts too.
+- Upgrades, and what `helm uninstall` keeps: see [Upgrading with Helm](../upgrading.md#helm). A new accounts release: see [Self-hosted accounts](../upgrading.md#self-hosted-accounts).
+- From docker compose to Kubernetes, with or without the accounts: see [Migrating](../migrating.md#from-docker-compose-to-kubernetes).
 
 ## Limits
 
 - **One Sync server.** `syncstorage.replicas` stays 1: the migrations and the `maxUsers` init run in its init containers, and two at once is not tested.
+- **One of each accounts server.** The auth server runs the accounts' migrations in its init containers, and its keys' and the avatars' volumes are `ReadWriteOnce`.
+- **Ingress only.** The chart has no Gateway API routes. With a Gateway, publish the Services yourself: see [Kubernetes](../reverse-proxy.md#kubernetes).
 - **Release names.** The names the admin UI builds from the release are never truncated: the Services, the StatefulSets, the Sync server's Deployment and the backup CronJob. A name over Kubernetes' limits is refused at render time, with the name that is too long. Only the one-shot Job that binds the backups' PVC has a shortened name of its own.
 
   With the default fullname `<release>-firefox-sync`, the release name is at most:
@@ -247,6 +378,7 @@ Without `admin.ingress.tls.enabled` the NOTES warn: unless the controller adds T
   | the bundled MariaDB or MySQL | `<fullname>-tokenserver-db`, a StatefulSet (52) | 24 characters |
   | the bundled PostgreSQL | `<fullname>-postgres` | 30 characters |
   | the backups | `<fullname>-backup`, a CronJob (52) | 32 characters |
+  | the self-hosted accounts' bundled database | `<fullname>-fxa-db`, a StatefulSet (52) | 32 characters |
 
   The shortest of those that apply wins. A release name that contains `firefox-sync` is the fullname itself, and `fullnameOverride` sets it.
 - **Probes.** The database servers have up to 30 minutes for their first start (a new database, a long recovery), and are restarted only after 5 minutes without an answer, so a server that recovers is not killed half-way. The Sync server is ready once its heartbeat answers, as with the healthcheck of compose.

@@ -112,7 +112,7 @@ Tested: the steps above (docker compose; not the Quadlets nor your own database 
 
 The same images and databases, moved to the [Helm chart](install/helm.md) with a dump and a restore.
 
-<!-- helm-fxa: accounts values go here -->
+With the self-hosted accounts, they move in the same steps: see [With the self-hosted accounts](#with-the-self-hosted-accounts) below for what each step adds.
 
 1. On the compose host, with this release: an older one first needs [Older firefox-sync releases](upgrading.md#older-firefox-sync-releases), so that `.env` has the `SYNC_` names. Stop the Sync server and the admin UI, so that nothing changes after the dump, and make one with the [backup service](backups.md#the-backup-service). If it is off, turn it on for this: `COMPOSE_PROFILES=...,backup` and `docker compose up -d backup`.
 
@@ -152,6 +152,35 @@ The same images and databases, moved to the [Helm chart](install/helm.md) with a
 With your own database server (`SYNC_DB_CONTAINERS=0`) there is nothing to move: stop the stack (`docker compose down`), put the passwords of `.env` into the `existingSecret` as above, and point the chart to the same server and names ([With Helm](databases.md#with-helm)).
 
 Rollback: `docker compose start syncstorage ffs-admin` (or the Quadlets) and the host name back to it, as long as nothing synced to Kubernetes in the meantime. What did is still on the devices, which upload it again.
+
+### With the self-hosted accounts
+
+The accounts keep their databases, their keys and their secrets, so Firefox stays signed in. Each step above adds:
+
+1. **The dump.** Stop the accounts too, and dump them first, with `backup-fxa`. The copy of `/backups` then has both `sync/` and `accounts/`:
+
+    ```bash
+    docker compose stop syncstorage ffs-admin fxa-auth fxa-content fxa-profile
+    docker compose exec backup-fxa sh /ffs-backup/backup.sh now
+    ```
+
+    Then the `backup.sh now` of `backup` and the copy, as above. The keys, from their volume, with the `tar` of [Copy them off the host](backups.md#copy-them-off-the-host): `fxa-keys.tar.gz`. The avatars of the `fxa-profile-images` volume are in no backup and don't move: the accounts show the default one until their owners upload theirs again.
+1. **The secrets.** Put the keys into a Secret of their own, for `fxa.keys.existingSecret`:
+
+    ```bash
+    mkdir fxa-keys && tar -C fxa-keys -xzf fxa-keys.tar.gz
+    kubectl create secret generic ffs-fxa-keys --from-file=fxa-keys/secret-key.json --from-file=fxa-keys/public-key.json \
+      --from-file=fxa-keys/vapid-keys.json --from-file=fxa-keys/openid-key.json
+    ```
+
+    Add the accounts' secrets of `.env` to `ffs-secrets`, with the same names: `FXA_AUTH_SECRET`, `FXA_OAUTH_SECRET`, `FXA_PROFILE_SECRET`, `FXA_FLOW_ID_KEY`, `FXA_SESSION_TOKEN_HANDLE_KEY`, `FXA_CONTENT_SESSION_SECRET`, `FXA_MYSQL_PASSWORD`, `FXA_ADMIN_DB_PASSWORD` and `FXA_SMTP_PASS`. `FXA_REDIS_PASSWORD` is the chart's own: generate one. Every key: [existingSecret](install/helm.md#existingsecret).
+1. **The values.** `fxa.enabled: true`, the same three URLs, `fxa.database.backend` as `FXA_DB`, `fxa.keys.existingSecret: ffs-fxa-keys`, the top-level `smtp.*` from `FXA_SMTP_*`, and `fxa.ingress` ([Self-hosted accounts](install/helm.md#self-hosted-accounts)). Each setting's value: [Settings](reference/settings.md#accounts).
+1. **The restore.** [Restore on Kubernetes](backups.md#restore-on-kubernetes) restores the accounts' run first, from `/backups/accounts`. Use the run of the same night as the Sync one.
+1. **The host names.** Point the four of them to the Ingress controller.
+
+With your own accounts database server (`FXA_DB_CONTAINERS=0`), skip the dump and the restore of the accounts: point `fxa.database.external.*` to the same server ([With Helm](databases.md#with-helm)), with `FXA_MYSQL_POLICY_PASSWORD` in `ffs-secrets` too.
+
+Tested: not as a migration. `tests/helm-fxa.sh` restores the chart's own accounts dump with the command of [Restore on Kubernetes](backups.md#restore-on-kubernetes), into a scratch database.
 
 Tested: not as a migration. `tests/helm.sh e2e` restores the chart's own backups with the commands of [Restore](backups.md#restore) in pods of the backup's spec, as [Restore on Kubernetes](backups.md#restore-on-kubernetes) does. Those steps as written were run once on kind (MariaDB, PostgreSQL), not in CI.
 

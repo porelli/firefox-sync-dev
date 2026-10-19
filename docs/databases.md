@@ -182,8 +182,6 @@ The migrations retry until your server answers. A server on the same host is `ho
 
 ### With Helm
 
-<!-- helm-fxa: accounts values go here -->
-
 There is no `prepare_environment.sh` here: you fill in the SQL by hand.
 
 1. Create the databases and users with [db/mysql/sync.sql](/db/mysql/sync.sql) or [db/postgres/sync.sql](/db/postgres/sync.sql). Replace each `@NAME@` with the names of the values below and your passwords:
@@ -221,6 +219,26 @@ The chart then has no database pods, volumes or Secret of its own. The Sync serv
 ```bash
 kubectl logs deploy/<release>-firefox-sync-syncstorage -c migrate
 ```
+
+The self-hosted accounts on your own MySQL or MariaDB server ([Self-hosted accounts](install/helm.md#self-hosted-accounts)):
+
+1. Create their users with [db/mysql/fxa-mysql.sql](/db/mysql/fxa-mysql.sql) or [fxa-mariadb.sql](/db/mysql/fxa-mariadb.sql). Replace `@FXA_USER@` and `@FXA_POLICY_USER@` with `fxa.database.external.user` (`fxa`) and `.policyUser` (`ffs_policy`), and the `@FXA_*PASSWORD@` with their passwords and the admin UI's. Check the [server requirements](#server-requirements), the accounts' on MySQL too.
+1. Put those passwords into your `existingSecret`, as `FXA_MYSQL_PASSWORD`, `FXA_MYSQL_POLICY_PASSWORD` and `FXA_ADMIN_DB_PASSWORD`, with the accounts' other keys ([existingSecret](install/helm.md#existingsecret)).
+1. Set the values:
+
+    ```yaml
+    fxa:
+      database:
+        backend: mysql          # or mariadb: your server's
+        bundled: false
+        external:
+          host: fxadb.example.com
+          port: ""              # empty: 3306
+          user: fxa
+          policyUser: ffs_policy   # empty: user, with its password
+    ```
+
+The chart then runs no accounts database. `fxa.database.image.*` is only the client of the backups and of the auth pod's `wait-db`. The auth pod waits for your server there, and stops in `migrations` while a login is refused: `kubectl logs deploy/<release>-firefox-sync-fxa-auth -c migrations`.
 
 To move a chart install with bundled databases to your server: dump it as in [Restore on Kubernetes](backups.md#restore-on-kubernetes), load the dumps as in [Move an existing install](#move-an-existing-install), and use the passwords of the chart's Secret in your SQL and your `existingSecret`.
 

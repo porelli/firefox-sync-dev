@@ -153,7 +153,28 @@ The unit tests (`cd admin && go test ./...`) cover the backups' age and failures
 
 [helm.yml](/.github/workflows/helm.yml) runs `ct lint`, kubeconform with each `ci/` values file, `tests/helm.sh lint`, and `e2e` on MariaDB, MySQL and PostgreSQL and on your own MySQL and PostgreSQL server: on every push that changes the chart, its tests, the compose files, `db/`, the backups, the admin UI or [docs/backups.md](../backups.md), and every week. Publishing the chart: [Releasing](releasing.md#the-helm-chart).
 
-<!-- helm-fxa: tests/helm-fxa.sh goes here -->
+### The accounts in the chart
+
+[tests/helm-fxa.sh](/tests/helm-fxa.sh) tests the chart with the self-hosted accounts (`fxa.enabled`).
+
+- `fxa_lint`, which `tests/helm.sh lint` sources and runs before `parity`:
+    - `helm lint` and `kubeconform -strict` of `ci/fxa-values.yaml`, `fxa-mariadb-values.yaml` and `fxa-external-values.yaml`;
+    - the values refused, with their messages, and the schema's formats;
+    - the generated Secret keys, and those an `existingSecret` must have;
+    - every object of the accounts, against compose: env, commands, probes, the order of the init containers, the volumes and the users;
+    - the Ingresses, the NetworkPolicies, pairing, the backups' init container, the admin UI's accounts block, its derived client id, and the NOTES;
+    - with `fxa.enabled=false`, the same objects as chart 0.1.0 at commit `PARITY_BASE` (`2512e9a`), from `git archive`. Without that commit (a copy without `.git`, a shallow clone), set `PARITY_BASE_CHART` to it extracted: `git archive 2512e9a charts/firefox-sync | tar -x -C <dir>`.
+- `e2e <mysql|mariadb>`: the chart with the accounts on that backend, on a throwaway kind cluster (`ffs-helm-fxa-<backend>`, its namespace enforcing PodSecurity `baseline`). It needs 15 GB free for docker. Its fixtures: Traefik as the Ingress controller, a test CA and a `*.fxa.test` certificate, CoreDNS sending `*.fxa.test` to Traefik, and Mailpit for the emails. It checks:
+    - the install, the init containers in their order, the keys on their volume, the sign-up policy, Redis's password and the NetworkPolicies (kindnet enforces them);
+    - a wrong `FXA_MYSQL_PASSWORD` keeping the auth server out of its Service; a backend switch and a database major refused at render time;
+    - [test_fxa_flow.py](/tests/test_fxa_flow.py) through the Ingresses over HTTPS, the rate limits by client address through the Ingress, an uploaded avatar kept across a restart, and [test_fxa_pairing.py](/tests/test_fxa_pairing.py) in a browser through the pairing server's Ingress;
+    - [test_fxa_admin.py](/tests/test_fxa_admin.py): the gate, signing in with the accounts, max accounts, health and the security history; then the admin UI turned off;
+    - a backup of both scopes, and the accounts' `fxa` dump restored into a scratch database with the `restore()` and `restore restore-accounts` commands of [Restore on Kubernetes](../backups.md#restore-on-kubernetes);
+    - a new install with `fxa.volumeOwnerInit=false`.
+
+    `REPOSITORY`, `TAG`, `FXA_IMAGE` and `FXA_VERSION` choose the images, as in `tests/e2e-fxa.sh`. The accounts database is `mysql:8` or `mariadb:11` when the accounts image lacks the patch for `lts` ([Upstream patches](../reference/images.md#upstream-patches)); `FXA_MYSQL_IMAGE` and `FXA_MARIADB_IMAGE` override that.
+
+[helm.yml](/.github/workflows/helm.yml) runs `fxa_lint` through `tests/helm.sh lint`, with the whole history for `git archive`. The e2e runs locally only.
 
 ## Docs that tests read
 
@@ -163,6 +184,7 @@ Some tests read commands from the docs and check them word for word, so a page a
 |---|---|---|
 | `tests/e2e.sh` | [backups.md](../backups.md#restore) | the compose restore commands |
 | `tests/helm.sh` | [backups.md](../backups.md#restore) | the blocks starting `--entrypoint sh backup -c '` that contain `$TOKENSERVER_DB_NAME.sql.gz`: the first is MariaDB, the second PostgreSQL |
+| `tests/helm-fxa.sh` | [backups.md](../backups.md#restore-on-kubernetes) | `restore() {` to its closing `}`, and the `restore restore-accounts 'run=` command to its line ending `backup-accounts`, both indented four spaces, each exactly once |
 | `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; the Quadlet `systemctl --user stop` line, exactly once |
 | `tests/migrate.sh` | [migrating.md](../migrating.md), [upgrading.md](../upgrading.md#older-firefox-sync-releases) | every command it runs, with `grep -qF` in either page |
 
