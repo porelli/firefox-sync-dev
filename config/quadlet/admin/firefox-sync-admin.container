@@ -4,7 +4,8 @@ After=firefox-sync-network.service firefox-sync-tokenserver-db-init.service
 Requires=firefox-sync-tokenserver-db-init.service
 
 [Container]
-Image=%IMAGE_REPOSITORY%:admin-latest
+# ADMIN_IMAGE of .env, else IMAGE_REPOSITORY:admin-latest (as compose)
+Image=%ADMIN_IMAGE%
 ContainerName=firefox-sync-admin
 Network=firefox-sync-network.network
 # the Sync server sends its metrics to ffs-admin

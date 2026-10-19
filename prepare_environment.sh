@@ -392,6 +392,183 @@ sync_mariadb_major() {
     mariadb_running_major
 }
 
+# where the Quadlet units go; timers are plain systemd units, not Quadlets
+QUADLET_DIR="${QUADLET_DIR:-${HOME}/.config/containers/systemd}"
+SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user}"
+# the units of this install: installed, and rendered from this directory (they mount its
+# config/backup and db/), not from another checkout
+units_installed() { [ -f "${QUADLET_DIR}/firefox-sync-syncstorage.container" ]; }
+units_of_here() { grep -qF "=${SCRIPT_DIR}/" "${QUADLET_DIR}"/firefox-sync-*.container 2> /dev/null; }
+# the directory the installed units were rendered from ("": not known)
+units_dir() {
+    grep -h '^Volume=/.*/config/backup:' "${QUADLET_DIR}"/firefox-sync-backup.container 2> /dev/null \
+        | head -n 1 | sed -e 's|^Volume=||; s|/config/backup:.*||'
+}
+
+# the Quadlet units of .env, with the units SELF_HOST_FXA and ADMIN_UI say (the answers of
+# the setup, or what the install has with --upgrade): rendered aside, then only the units
+# that differ installed, the units of before kept first in quadlets.before-<UTC time>/; none
+# differ: nothing written (run again, nothing changes)
+render_units() {
+    local line key value stage file filename source target_dir changed=() removed=() backup
+    # load the values of .env (database names, users, FxA endpoints, etc.); not with
+    # `source`: unused sections keep placeholders like <REPLACE_WITH_...>, not shell
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+        key=${line%%=*}
+        value=${line#*=}
+        case "${value}" in
+            \'*\') value=${value:1:${#value}-2} ;;
+            \"*\") value=${value:1:${#value}-2} ;;
+        esac
+        export "${key}=${value}"
+    done < ${SCRIPT_DIR}/.env
+    mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
+    # the images from .env only (not this shell's environment); unset: lts, as the compose
+    # files (the admin UI's: IMAGE_REPOSITORY's admin-latest). podman needs the registry in
+    # the image name (compose is fine with mariadb:lts): a first part with a dot or a port,
+    # or localhost, is one
+    podman_image() {
+        local image first
+        image=$(env_plain "${1}")
+        image=${image:-${2}}
+        first=${image%%/*}
+        if [ "${first}" != "${image}" ] && { [[ "${first}" == *[.:]* ]] || [ "${first}" = localhost ]; }; then
+            :
+        elif [[ "${image}" == */* ]]; then
+            image=docker.io/${image}
+        else
+            image=docker.io/library/${image}
+        fi
+        export "${1}=${image}"
+    }
+    podman_image SYNC_MARIADB_IMAGE mariadb:lts
+    podman_image FXA_MARIADB_IMAGE mariadb:lts
+    podman_image FXA_MYSQL_IMAGE mysql:lts
+    podman_image SYNC_MYSQL_IMAGE mysql:lts
+    podman_image ADMIN_IMAGE "$(env_value IMAGE_REPOSITORY | tail -n 1):admin-latest"
+    # fxa-db's extra options, none when not set
+    FXA_MYSQL_ARGS=$(env_plain FXA_MYSQL_ARGS)
+    export FXA_MYSQL_ARGS
+    # the accounts' units: --arch only for another architecture than this host's (an emulated
+    # image). With it podman 4 pulls the tag from the registry at every start, over the local
+    # image: the units would not run the image whose label chose FXA_MYSQL_IMAGE above
+    FXA_ARCH_ARGS=""
+    # (none in an .env from before FXA_ARCH: the host's)
+    [ -z "$(env_plain FXA_ARCH)" ] || [ "$(env_plain FXA_ARCH)" = "$(host_arch)" ] || FXA_ARCH_ARGS="--arch=$(env_plain FXA_ARCH)"
+    export FXA_ARCH_ARGS
+
+    # the database containers: the .env names (syncstorage_db) are compose's, here the
+    # containers are reached by their names. Your own server: none of them
+    SKIP_UNITS=""
+    DROP_DEPS=""
+    if [ "${SYNC_DB_CONTAINERS:-1}" = 0 ]; then
+        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
+        DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
+    else
+        export SYNC_STORAGE_DB_HOST=firefox-sync-syncstorage-db SYNC_STORAGE_DB_PORT=3306
+        export SYNC_TOKENSERVER_DB_HOST=firefox-sync-tokenserver-db SYNC_TOKENSERVER_DB_PORT=3306
+        if [ "${SYNC_DB:-mariadb}" = "mysql" ]; then
+            # MariaDB's volumes, unused (the volumes themselves are kept); MySQL's certificate
+            # is self-signed, the init container's client does not check it
+            SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.volume$'
+            export SYNC_DB_TLS_VERIFY=false
+        fi
+    fi
+    if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
+        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db(-mariadb)?\.(container|volume)$"
+        DROP_DEPS="${DROP_DEPS:+${DROP_DEPS}|}firefox-sync-fxa-db\.service"
+    elif [ "${FXA_DB:-mysql}" = "mariadb" ]; then
+        # MySQL's volume, unused (the volume itself is kept)
+        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db\.volume$"
+    fi
+    # Requires= on a unit that is not installed fails the start: drop those dependencies
+    drop_deps() {
+        [ -n "${DROP_DEPS}" ] || { cat; return; }
+        sed -E -e "/^(After|Requires)=/{s/(=| )(${DROP_DEPS})/\1/g; s/= +/=/; s/ +$//; s/  +/ /g;}" -e '/^Requires=$/d'
+    }
+
+    # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it
+    render_quadlet() {
+        local file=${1} content name value
+        content=$(cat "${file}")
+        for name in $(grep -o '%[A-Z][A-Z0-9_]*%' "${file}" | sort -u | tr -d '%'); do
+            if [ -z "${!name+x}" ]; then
+                echo "ERROR: ${file} needs ${name}, which is not set in .env" >&2
+                return 1
+            fi
+            value=$(printf '%s' "${!name}" | sed -e 's/%/%%/g')
+            content=$(printf '%s\n' "${content}" | sed -e "s|%${name}%|$(sed_escape "${value}")|g")
+        done
+        printf '%s\n' "${content}"
+    }
+
+    QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
+    # SYNC_DB=mysql: sync-mysql/ replaces the database units of the same name (without the
+    # database containers, SKIP_UNITS leaves them out)
+    [ "${SYNC_DB:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/sync-mysql")
+    [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
+    # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
+    [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
+    if [ "${ADMIN_UI}" = "yes" ]; then
+        # with the accounts, the admin UI also manages them
+        [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/admin") || QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/admin")
+    fi
+    echo "Processing quadlet files..."
+    stage=$(mktemp -d) || exit 1
+    for source in "${QUADLET_SOURCES[@]}"; do
+        for file in "${source}"/*.{network,volume,container,timer}; do
+            [ -f "${file}" ] || continue
+            filename=$(basename "${file}")
+            [ "${FXA_DB:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
+            [ "${SYNC_DB:-mariadb}" = "mysql" ] && [ -f "${source}/sync-mysql/${filename}" ] && continue
+            if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
+                # left from a setup with the database containers (the volume is kept)
+                [ -f "${QUADLET_DIR}/${filename}" ] && removed+=("${filename}")
+                continue
+            fi
+            # (an empty PodmanArgs= would reset the ones before it, the network aliases)
+            render_quadlet "${file}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
+            [ "${PIPESTATUS[0]}" = 0 ] || { rm -rf "${stage}"; exit 1; }
+        done
+    done
+    for file in "${stage}"/*; do
+        filename=$(basename "${file}")
+        target_dir=${QUADLET_DIR}
+        [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
+        cmp -s "${file}" "${target_dir}/${filename}" || changed+=("${filename}")
+    done
+    if [ "${#changed[@]}" = 0 ] && [ "${#removed[@]}" = 0 ]; then
+        rm -rf "${stage}"
+        echo "  the units in ${QUADLET_DIR} are those of .env already: nothing changed"
+        UNITS_CHANGED=""
+        return 0
+    fi
+    # the units of before (their passwords too: this user only), all of them
+    if ls "${QUADLET_DIR}"/firefox-sync-* "${SYSTEMD_USER_DIR}"/firefox-sync-*.timer > /dev/null 2>&1; then
+        backup=${SCRIPT_DIR}/quadlets.before-$(date -u +%Y%m%dT%H%M%SZ)
+        (umask 077; mkdir -p "${backup}") && cp -p "${QUADLET_DIR}"/firefox-sync-* "${backup}/" 2> /dev/null
+        cp -p "${SYSTEMD_USER_DIR}"/firefox-sync-*.timer "${backup}/" 2> /dev/null
+        echo "  the units of before: ${backup}"
+    fi
+    for filename in "${changed[@]}"; do
+        target_dir=${QUADLET_DIR}
+        [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
+        cp "${stage}/${filename}" "${target_dir}/${filename}" || { rm -rf "${stage}"; exit 1; }
+        echo "  ✓ ${filename}"
+    done
+    for filename in "${removed[@]}"; do
+        rm -f "${QUADLET_DIR}/${filename}"
+        echo "  - ${filename} (removed)"
+    done
+    rm -rf "${stage}"
+    UNITS_CHANGED="${changed[*]} ${removed[*]}"
+
+    echo ""
+    echo "Reloading systemd daemon..."
+    systemctl --user daemon-reload
+}
+
 # ./prepare_environment.sh --upgrade: the .env of an install that runs (docker compose), given
 # the settings of this release that need a value of their own (docs/upgrading.md#older-firefox-sync-releases), nothing else
 # changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
@@ -403,13 +580,42 @@ sync_mariadb_major() {
 # FXA_MYSQL_IMAGE=mysql:8 and FXA_MYSQL_ARGS with mysql_native_password, Sync on MySQL
 # SYNC_MYSQL_IMAGE=mysql:8 (the default is now mysql:lts, 9; docs/upgrading.md#mysql-8-to-9). A value already set is kept; the
 # old file is kept as .env.before-upgrade. With your own database server database-setup.sql
-# is written again, to run there first. Quadlets: run this script again (docs/upgrading.md#with-quadlets).
-# First the settings of RENAMED_SETTINGS get their new names, their values as they are.
+# is written again, to run there first. First the settings of RENAMED_SETTINGS get their new
+# names, their values as they are.
+# The Quadlets (their units installed from this directory, or --render-units): the same, then
+# the settings of .env-example that .env lacks added with their defaults (a new secret only
+# for a secret that is missing: every password and secret of .env stays), and the units
+# rendered again from .env (render_units), with the units of before kept; no question asked.
+# Also to apply a setting changed in .env, or an image pinned there. Run again, nothing
+# changes (docs/upgrading.md#quadlets)
 upgrade_env() {
-    local env_file name changed=()
+    local env_file name changed=() quadlets=no here
     SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
     env_file=${SCRIPT_DIR}/.env
     [ -f "${env_file}" ] || { echo "ERROR: no ${env_file} to upgrade: run ./prepare_environment.sh"; exit 1; }
+    if [ "${RENDER_UNITS:-}" = yes ]; then
+        quadlets=yes
+        if units_installed && ! units_of_here; then
+            here=$(units_dir)
+            echo "WARNING: the units in ${QUADLET_DIR} were rendered from ${here:-another directory}, not ${SCRIPT_DIR}:"
+            echo "  rendered again from this .env (the units of before are kept)"
+        fi
+    elif units_installed; then
+        if units_of_here; then
+            quadlets=yes
+        else
+            here=$(units_dir)
+            echo "NOTE: the Quadlet units in ${QUADLET_DIR} are those of ${here:-another directory}, not of ${SCRIPT_DIR}:"
+            echo "  not rendered again (./prepare_environment.sh --render-units renders them from this .env)"
+            echo ""
+        fi
+    fi
+    if [ "${quadlets}" = yes ]; then
+        command -v podman > /dev/null 2>&1 || { echo "ERROR: --render-units: the Quadlets need podman, which is not installed"; exit 1; }
+        [ "$(env_value SYNC_IMAGE | tail -n 1)" != "syncstorage-rs-postgres" ] \
+            || { echo "ERROR: the Quadlets are for MariaDB and MySQL only, this .env is PostgreSQL's (docker compose)"; exit 1; }
+        DEPLOY_METHOD=quadlets
+    fi
     # the old names of RENAMED_SETTINGS: the line renamed where it is (indented or with
     # export, as compose reads it too), the rest of it as it is written. Both names there:
     # the new one is kept, unless it has no value of its own (empty, a placeholder or the
@@ -560,6 +766,35 @@ upgrade_env() {
         echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases stay on MySQL 8. To move them to MySQL lts, 9"
         echo "  (a backup first, there is no way back): docs/upgrading.md#mysql-8-to-9"
     fi
+    # the Quadlets have no defaults of their own: every setting of .env-example in .env, as a
+    # new setup writes it. A secret only when it is not there at all, the accounts' only
+    # with the accounts (their placeholders say they are not set up)
+    add_missing_settings() {
+        local line key value fxa=no added=() generated=()
+        fxa_installed && fxa=yes
+        # (an .env without a line end at its end)
+        [ -z "$(tail -c 1 "${env_file}")" ] || echo "" >> "${env_file}"
+        while IFS= read -r line || [ -n "${line}" ]; do
+            [[ "${line}" =~ ^[A-Z][A-Z0-9_]*= ]] || continue
+            key=${line%%=*}
+            env_has "${key}" && continue
+            case "${key}" in
+                # the units of an .env from before it ran the accounts on this host's architecture
+                FXA_ARCH) line="FXA_ARCH=$(host_arch)" ;;
+            esac
+            if [[ "${line}" == *"<REPLACE_WITH_SOMETHING_SECURE>"* ]] && { [[ "${key}" != FXA_* ]] || [ "${fxa}" = yes ]; }; then
+                line="${key}=$(generate_random_string 32)"
+                generated+=("${key}")
+            else
+                added+=("${key}")
+            fi
+            printf '%s\n' "${line}" >> "${env_file}"
+            changed+=("${key}")
+        done < "${SCRIPT_DIR}/.env-example"
+        [ "${#added[@]}" = 0 ] || echo "Added from .env-example, with their defaults: ${added[*]}"
+        [ "${#generated[@]}" = 0 ] || echo "Generated, as they were not in .env: ${generated[*]}"
+    }
+    [ "${quadlets}" = yes ] && add_missing_settings
     old_names_in_environment
     if [ "${#changed[@]}" = 0 ]; then
         rm -f "${env_file}.upgrading"
@@ -574,10 +809,31 @@ upgrade_env() {
     fi
     fxa_mariadb_image_check
     fxa_installed && UPGRADING=yes fxa_mysql_image_check
-    echo "Then: docker compose pull && docker compose up -d"
+    if [ "${quadlets}" = yes ]; then
+        # the units of this install: the accounts' with them, the admin UI's when it is on
+        SELF_HOST_FXA=no ADMIN_UI=no
+        fxa_installed && SELF_HOST_FXA=yes
+        case ",$(env_plain COMPOSE_PROFILES)," in *,admin,*) ADMIN_UI=yes ;; esac
+        [ -f "${QUADLET_DIR}/firefox-sync-admin.container" ] && ADMIN_UI=yes
+        echo ""
+        echo "Rendering the Quadlet units from ${env_file}..."
+        render_units
+        echo ""
+        echo "Then: the new images (podman does not pull a tag it has),"
+        echo "  grep -h '^Image=' ${QUADLET_DIR}/firefox-sync-*.container | cut -d= -f2 | sort -u | xargs -n1 podman pull"
+        if [ -n "${UNITS_CHANGED// /}" ]; then
+            echo "  and start the units again: stopped, systemctl --user start$([ "${ADMIN_UI}" = yes ] && echo " firefox-sync-admin.service") firefox-sync-syncstorage.service"
+            echo "  (running: systemctl --user restart of the units changed above)"
+        fi
+    else
+        echo "Then: docker compose pull && docker compose up -d"
+    fi
     exit 0
 }
-[ "${1:-}" = "--upgrade" ] && upgrade_env
+case "${1:-}" in
+    --upgrade) upgrade_env ;;
+    --render-units) RENDER_UNITS=yes upgrade_env ;;
+esac
 
 # domain
 DOMAIN_EXAMPLE='firefox-sync.example.com'
@@ -939,7 +1195,14 @@ if [ "${DATABASE_BACKEND}" = mariadb ] && [ "${EXTERNAL_DB}" != "yes" ]; then
     fi
 fi
 
-# prepare .env file
+# prepare .env file: new passwords and secrets. Run again on an install, its .env of before
+# is kept as .env.before-setup (the passwords its databases have); ./prepare_environment.sh
+# --upgrade keeps them instead
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    cp -p "${SCRIPT_DIR}/.env" "${SCRIPT_DIR}/.env.before-setup"
+    echo "NOTE: ${SCRIPT_DIR}/.env written again with new passwords, the one of before is .env.before-setup"
+    echo "  (to keep the passwords of an install: ./prepare_environment.sh --upgrade, Quadlets too)"
+fi
 cp ${SCRIPT_DIR}/.env-example ${SCRIPT_DIR}/.env
 apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${SYNC_TOKENSERVER_DB_PASSWORD}|"
 apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=${SYNC_STORAGE_DB_PASSWORD}|"
@@ -1167,136 +1430,7 @@ apply_sed ${SCRIPT_DIR}/config/systemd/syncstorage-rs.service "s|<COMPOSE_DIR>|$
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
     echo ""
     echo "Setting up Podman Quadlets..."
-    
-    QUADLET_DIR="${QUADLET_DIR:-${HOME}/.config/containers/systemd}"
-    # timers are plain systemd units, not Quadlets
-    SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user}"
-
-    # load the generated values (database names, users, FxA endpoints, etc.); not with
-    # `source`: unused sections keep placeholders like <REPLACE_WITH_...>, not shell
-    while IFS= read -r line || [ -n "${line}" ]; do
-        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
-        key=${line%%=*}
-        value=${line#*=}
-        case "${value}" in
-            \'*\') value=${value:1:${#value}-2} ;;
-            \"*\") value=${value:1:${#value}-2} ;;
-        esac
-        export "${key}=${value}"
-    done < ${SCRIPT_DIR}/.env
-    mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
-    # the database images from .env only (not this shell's environment); unset: lts, as the
-    # compose files. podman needs the registry in the image name (compose is fine with
-    # mariadb:lts): a first part with a dot or a port, or localhost, is one
-    podman_image() {
-        local image first
-        image=$(env_plain "${1}")
-        image=${image:-${2}}
-        first=${image%%/*}
-        if [ "${first}" != "${image}" ] && { [[ "${first}" == *[.:]* ]] || [ "${first}" = localhost ]; }; then
-            :
-        elif [[ "${image}" == */* ]]; then
-            image=docker.io/${image}
-        else
-            image=docker.io/library/${image}
-        fi
-        export "${1}=${image}"
-    }
-    podman_image SYNC_MARIADB_IMAGE mariadb:lts
-    podman_image FXA_MARIADB_IMAGE mariadb:lts
-    podman_image FXA_MYSQL_IMAGE mysql:lts
-    podman_image SYNC_MYSQL_IMAGE mysql:lts
-    # fxa-db's extra options, none when not set
-    FXA_MYSQL_ARGS=$(env_plain FXA_MYSQL_ARGS)
-    export FXA_MYSQL_ARGS
-    # the accounts' units: --arch only for another architecture than this host's (an emulated
-    # image). With it podman 4 pulls the tag from the registry at every start, over the local
-    # image: the units would not run the image whose label chose FXA_MYSQL_IMAGE above
-    FXA_ARCH_ARGS=""
-    # (none in an .env from before FXA_ARCH: the host's)
-    [ -z "$(env_plain FXA_ARCH)" ] || [ "$(env_plain FXA_ARCH)" = "$(host_arch)" ] || FXA_ARCH_ARGS="--arch=$(env_plain FXA_ARCH)"
-    export FXA_ARCH_ARGS
-
-    # the database containers: the .env names (syncstorage_db) are compose's, here the
-    # containers are reached by their names. Your own server: none of them
-    SKIP_UNITS=""
-    DROP_DEPS=""
-    if [ "${SYNC_DB_CONTAINERS:-1}" = 0 ]; then
-        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
-        DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
-    else
-        export SYNC_STORAGE_DB_HOST=firefox-sync-syncstorage-db SYNC_STORAGE_DB_PORT=3306
-        export SYNC_TOKENSERVER_DB_HOST=firefox-sync-tokenserver-db SYNC_TOKENSERVER_DB_PORT=3306
-        if [ "${SYNC_DB:-mariadb}" = "mysql" ]; then
-            # MariaDB's volumes, unused (the volumes themselves are kept); MySQL's certificate
-            # is self-signed, the init container's client does not check it
-            SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.volume$'
-            export SYNC_DB_TLS_VERIFY=false
-        fi
-    fi
-    if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
-        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db(-mariadb)?\.(container|volume)$"
-        DROP_DEPS="${DROP_DEPS:+${DROP_DEPS}|}firefox-sync-fxa-db\.service"
-    elif [ "${FXA_DB:-mysql}" = "mariadb" ]; then
-        # MySQL's volume, unused (the volume itself is kept)
-        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db\.volume$"
-    fi
-    # Requires= on a unit that is not installed fails the start: drop those dependencies
-    drop_deps() {
-        [ -n "${DROP_DEPS}" ] || { cat; return; }
-        sed -E -e "/^(After|Requires)=/{s/(=| )(${DROP_DEPS})/\1/g; s/= +/=/; s/ +$//; s/  +/ /g;}" -e '/^Requires=$/d'
-    }
-    
-    # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it
-    render_quadlet() {
-        local file=${1} content name value
-        content=$(cat "${file}")
-        for name in $(grep -o '%[A-Z][A-Z0-9_]*%' "${file}" | sort -u | tr -d '%'); do
-            if [ -z "${!name+x}" ]; then
-                echo "ERROR: ${file} needs ${name}, which is not set in .env" >&2
-                return 1
-            fi
-            value=$(printf '%s' "${!name}" | sed -e 's/%/%%/g')
-            content=$(printf '%s\n' "${content}" | sed -e "s|%${name}%|$(sed_escape "${value}")|g")
-        done
-        printf '%s\n' "${content}"
-    }
-
-    QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
-    # SYNC_DB=mysql: sync-mysql/ replaces the database units of the same name (without the
-    # database containers, SKIP_UNITS leaves them out)
-    [ "${SYNC_DB:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/sync-mysql")
-    [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
-    # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
-    [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
-    if [ "${ADMIN_UI}" = "yes" ]; then
-        # with the accounts, the admin UI also manages them
-        [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/admin") || QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/admin")
-    fi
-    echo "Processing quadlet files..."
-    for source in "${QUADLET_SOURCES[@]}"; do
-        for file in "${source}"/*.{network,volume,container,timer}; do
-            [ -f "${file}" ] || continue
-            filename=$(basename "${file}")
-            target_dir=${QUADLET_DIR}
-            [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
-            [ "${FXA_DB:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
-            [ "${SYNC_DB:-mariadb}" = "mysql" ] && [ -f "${source}/sync-mysql/${filename}" ] && continue
-            if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
-                # left from a setup with the database containers (the volume is kept)
-                rm -f "${QUADLET_DIR}/${filename}"
-                continue
-            fi
-            # (an empty PodmanArgs= would reset the ones before it, the network aliases)
-            render_quadlet "${file}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${target_dir}/${filename}"
-            [ "${PIPESTATUS[0]}" = 0 ] || exit 1
-            echo "  ✓ ${filename}"
-        done
-    done
-    
-    echo ""
-    echo "Reloading systemd daemon..."
-    systemctl --user daemon-reload
+    render_units
 fi
 
 echo ""

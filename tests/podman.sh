@@ -304,30 +304,45 @@ env_keys_diff() {
 
 echo "== quadlets (${SYNC_DB})"
 export QUADLET_DIR=${HOME}/.config/containers/systemd
+# the passwords and secrets of an .env ($1) in another ($2), under their new names: "kept <n>",
+# else the first that changed (not shown)
+secrets_kept() {
+  local key new pair n=0
+  for key in $(sed -nE 's/^([A-Z][A-Z0-9_]*(PASSWORD|PASS|SECRET|KEY|TOKEN|_CLIENT_ID))=.+/\1/p' "$1"); do
+    new=${key}
+    for pair in "${RENAMED_SETTINGS[@]}"; do [ "${pair#*=}" = "${key}" ] && new=${pair%%=*}; done
+    [ "$(grep "^${new}=" "$2" | cut -d= -f2-)" = "$(grep "^${key}=" "$1" | cut -d= -f2-)" ] || { echo "changed: ${key}"; return; }
+    n=$((n + 1))
+  done
+  echo "kept ${n}"
+}
 if [ -n "${UPGRADE_FROM:-}" ]; then
   echo "== first the quadlets of ${UPGRADE_FROM}, then upgraded as docs/upgrading.md#with-quadlets says"
   [ "${SYNC_DB}" = mariadb ] || { echo "UPGRADE_FROM is for SYNC_DB=mariadb"; exit 2; }
-  FROM=${WORK}/from
-  cp -r "${UPGRADE_FROM}" "${FROM}" && rm -f "${FROM}/.env" && example "${FROM}" || exit 1
+  # that release where this tree is (its units mount files of it), this tree aside until the
+  # upgrade brings it, as git pull does
+  mv "${WORK}/ffs" "${WORK}/new" && cp -r "${UPGRADE_FROM}" "${WORK}/ffs" && cd "${WORK}/ffs" && rm -f .env && example . || exit 1
   # that release's admin UI and init image under the names of the units, this tree's aside
   INIT_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-init-${INIT_TAG}
   # (releases before db/: syncstorage-rs-init)
-  INIT_DIR=${FROM}/db/mysql/init; [ -d "${INIT_DIR}" ] || INIT_DIR=${FROM}/syncstorage-rs-init
+  INIT_DIR=db/mysql/init; [ -d "${INIT_DIR}" ] || INIT_DIR=syncstorage-rs-init
   podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:upgrade-to && podman tag "${INIT_IMAGE}" localhost/ffs-init:upgrade-to &&
-    podman build -q --format docker -t "${REPOSITORY}:admin-latest" "${FROM}/admin" > build-from.log 2>&1 &&
-    podman build -q -t "${INIT_IMAGE}" "${INIT_DIR}" >> build-from.log 2>&1
+    podman build -q --format docker -t "${REPOSITORY}:admin-latest" admin > "${WORK}/build-from.log" 2>&1 &&
+    podman build -q -t "${INIT_IMAGE}" "${INIT_DIR}" >> "${WORK}/build-from.log" 2>&1
   check "$?" 0 "the admin UI and init images of ${UPGRADE_FROM}"
-  (cd "${FROM}" && setup mariadb 1)
+  setup mariadb 1
   check "$?" 0 "its prepare_environment.sh (quadlets)"
   timeout 900 systemctl --user start firefox-sync-syncstorage.service
   check "$?" 0 "its units started (quadlets)"
   check "$(hb) $(admin_up /login)" "200 200" "its Sync server and admin UI (quadlets)"
+  FROM_ENV=${WORK}/from.env
+  cp -p .env "${FROM_ENV}"
   # (a release from before the SYNC_ names: the old one)
   from_env() {
     local pair v
-    v=$(grep "^$1=" "${FROM}/.env" | cut -d= -f2)
+    v=$(grep "^$1=" "${FROM_ENV}" | cut -d= -f2)
     for pair in "${RENAMED_SETTINGS[@]}"; do
-      [ -z "${v}" ] && [ "${pair%%=*}" = "$1" ] && v=$(grep "^${pair#*=}=" "${FROM}/.env" | cut -d= -f2)
+      [ -z "${v}" ] && [ "${pair%%=*}" = "$1" ] && v=$(grep "^${pair#*=}=" "${FROM_ENV}" | cut -d= -f2)
     done
     echo "${v}"
   }
@@ -336,16 +351,32 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   for _ in $(seq 1 30); do [ "$(from_ts_sql 'SELECT COUNT(*) FROM ffs_events' 2> /dev/null)" -gt 0 ] 2> /dev/null && break; sleep 2; done
   from_ts_sql "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the Quadlet upgrade by admin (password)')"
   check "$?" 0 "an audit event in the tokenserver database, as before (quadlets)"
-  # the upgrade: the units stopped, the one-shot ones too, as docs/upgrading.md#with-quadlets says
+  # the upgrade: the units stopped, the one-shot ones too, as docs/upgrading.md#quadlets says
   STOP='systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
   check "$(grep -cF "\`${STOP}\`" "${CODE}/docs/upgrading.md")" 1 "docs/upgrading.md says \`${STOP}\`"
   timeout 300 ${STOP}
-  # (the images of this tree are local: what docs/upgrading.md#with-quadlets pulls is here already)
+  # the new files, the .env of the install kept
+  cp -p .env "${WORK}/new/.env" && cd "${WORK}" && rm -rf "${WORK}/ffs" && mv "${WORK}/new" "${WORK}/ffs" && cd "${WORK}/ffs" || exit 1
+  # (the images of this tree are local: what docs/upgrading.md#quadlets pulls is here already)
   podman tag localhost/ffs-admin:upgrade-to "${REPOSITORY}:admin-latest" && podman tag localhost/ffs-init:upgrade-to "${INIT_IMAGE}"
   podman rmi localhost/ffs-admin:upgrade-to localhost/ffs-init:upgrade-to > /dev/null 2>&1
+  # the units rendered again from that .env: every password and secret as it was, nothing asked
+  ./prepare_environment.sh --upgrade < /dev/null > upgrade-quadlets.log 2>&1
+  check "$?" 0 "prepare_environment.sh --upgrade (quadlets)"
+  check "$(secrets_kept "${FROM_ENV}" .env | sed 's/ [0-9]*$//') $(grep -c '^Rendering the Quadlet units from' upgrade-quadlets.log) $(ls quadlets.before-*/firefox-sync-syncstorage.container 2> /dev/null | wc -l)" \
+    "kept 1 1" "--upgrade renders the units from the .env of the install, every secret kept, the units of before kept (quadlets)"
+  check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env)" "1 0" \
+    "--upgrade gives the Quadlets ADMIN_DB_PASSWORD, renames the old setting names (quadlets)"
+  [ "${FAILED}" = 0 ] || cat upgrade-quadlets.log
+  # run again: nothing to change
+  cp -p .env "${WORK}/upgraded.env"
+  ./prepare_environment.sh --upgrade < /dev/null > upgrade-quadlets-again.log 2>&1
+  check "$? $(grep -c 'nothing changed$' upgrade-quadlets-again.log) $(ls -d quadlets.before-* | wc -l) $(cmp -s .env "${WORK}/upgraded.env" && echo same)" "0 1 1 same" \
+    "--upgrade again: .env and the units as they are (quadlets)"
+else
+  setup "${SYNC_DB}" 1
+  check "$?" 0 "prepare_environment.sh (quadlets)"
 fi
-setup "${SYNC_DB}" 1
-check "$?" 0 "prepare_environment.sh (quadlets)"
 # the healthchecks of compose, those of the Quadlets (as rendered from .env)
 sync_compose=(-f docker-compose.yml)
 [ "${SYNC_DB}" = mysql ] && sync_compose+=(-f docker-compose.sync-mysql.yml)
@@ -365,21 +396,6 @@ check "$(grep -cxE 'Environment="(BACKUP_TIME=03:00|BACKUP_KEEP=7|ADMIN_DEPLOYME
 QUADLET=$(ls /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2> /dev/null | head -1)
 "${QUADLET}" -dryrun -user > quadlet-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files"
-if [ -n "${UPGRADE_FROM:-}" ]; then
-  # docs/upgrading.md#with-quadlets: the database containers (they create the admin UI's users with the new
-  # ADMIN_DB_PASSWORD), then the Sync users' new passwords, as the old ones
-  timeout 300 systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
-  for db in TOKENSERVER STORAGE; do
-    container=firefox-sync-$([ "${db}" = STORAGE ] && echo syncstorage || echo tokenserver)-db
-    for _ in $(seq 1 30); do
-      podman exec "${container}" mariadb -u"$(from_env "SYNC_${db}_DB_USER")" -p"$(from_env "SYNC_${db}_DB_PASSWORD")" \
-        -e "SET PASSWORD = PASSWORD('$(env_of "SYNC_${db}_DB_PASSWORD")')" > /dev/null 2>&1 && ok=0 && break
-      ok=1
-      sleep 2
-    done
-    check "${ok}" 0 "the new password of the ${db} user (quadlets upgraded)"
-  done
-fi
 # the journal keeps earlier runs
 fast_admin_checks
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
@@ -440,6 +456,35 @@ check "$(admin_db_sql "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND
 check "$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" && basename "$f"; done' | sort | paste -sd' ')" \
   "ffs_admin.sql.gz syncstorage.sql.gz tokenserver.sql.gz" "the dumps in the firefox-sync-backups volume (quadlets)"
 [ "${FAILED}" = 0 ] || journalctl --user -u firefox-sync-backup.service --no-pager | tail -20
+
+echo "== the units of the running install rendered again from its .env: a setting changed, an image pinned"
+cp -p .env "${WORK}/rendered.env"
+backups=$(ls -d quadlets.before-* 2> /dev/null | wc -l)
+# as an admin edits .env (the same admin UI under a name of its own: a pin)
+podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:pinned
+sed -i 's|^ADMIN_STALE_DAYS=.*|ADMIN_STALE_DAYS=45|' .env
+grep -q '^ADMIN_IMAGE=' .env && sed -i 's|^ADMIN_IMAGE=.*|ADMIN_IMAGE=localhost/ffs-admin:pinned|' .env || echo 'ADMIN_IMAGE=localhost/ffs-admin:pinned' >> .env
+cp -p .env "${WORK}/edited.env"
+./prepare_environment.sh --render-units < /dev/null > render-units.log 2>&1
+check "$?" 0 "prepare_environment.sh --render-units (quadlets)"
+check "$(secrets_kept "${WORK}/rendered.env" .env | sed 's/ [0-9]*$//') $(cmp -s .env "${WORK}/edited.env" && echo same)" "kept same" "--render-units keeps every password and secret, and .env as it is (quadlets)"
+# only the admin UI's unit changed (fast_admin_checks' line gone with it), the units of before kept
+check "$(sed -n 's/^  ✓ //p' render-units.log | paste -sd' ') $(grep -cxE 'Image=localhost/ffs-admin:pinned|Environment="ADMIN_STALE_DAYS=45"' "${QUADLET_DIR}/firefox-sync-admin.container") $(($(ls -d quadlets.before-* | wc -l) - backups)) $(grep -Hc '^Image=localhost/ffs-admin:pinned' quadlets.before-*/firefox-sync-admin.container 2> /dev/null | grep -c ':0$')" \
+  "firefox-sync-admin.container 2 1 $((backups + 1))" "--render-units writes the changed unit only, with ADMIN_IMAGE and the setting, the units of before kept (quadlets)"
+./prepare_environment.sh --render-units < /dev/null > render-units-again.log 2>&1
+check "$? $(grep -c 'nothing changed$' render-units-again.log) $(grep -c '✓' render-units-again.log) $(($(ls -d quadlets.before-* | wc -l) - backups)) $(cmp -s .env "${WORK}/edited.env" && echo same)" "0 1 0 1 same" \
+  "--render-units again: nothing changes (quadlets)"
+[ "${FAILED}" = 0 ] || cat render-units.log render-units-again.log
+# every unit stopped and started again with the units rendered (daemon-reload done): the
+# databases have the passwords of before, nothing set by hand
+fast_admin_checks
+timeout 300 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service \
+  firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
+timeout 900 systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service
+check "$?" 0 "the units started again, rendered again (quadlets)"
+check "$(hb) $(admin_up /login) $(admin_sign_in rendered) $(podman inspect -f '{{.ImageName}}' firefox-sync-admin)" "200 200 yes localhost/ffs-admin:pinned" \
+  "the Sync server, the admin UI with the same password and the image pinned (quadlets rendered again)"
+check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')" all "admin UI reaches the Sync server and its databases, their passwords as before (quadlets rendered again)"
 
 echo "== a backup restores, the way docs/backups.md#restore-with-quadlets says for the Quadlets"
 st_sql() { podman exec -e MYSQL_PWD="$(grep '^SYNC_STORAGE_DB_PASSWORD=' .env | cut -d= -f2)" firefox-sync-syncstorage-db \
@@ -526,6 +571,9 @@ stop_quadlets() {
 stop_quadlets
 
 echo "== quadlets without the admin UI (mariadb)"
+# a new install (the .env of the phase before pins its databases' major, which a setup run
+# again keeps: UPGRADE_FROM's)
+rm -f .env
 # answers as setup, admin UI: n. The Sync server starts without ffs-admin to resolve
 printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare_environment.sh > setup-no-admin.log 2>&1
 check "$?" 0 "prepare_environment.sh (quadlets, no admin UI)"
