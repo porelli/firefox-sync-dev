@@ -218,6 +218,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             upstream-patches.yml
+            upstream-patches/
             .github/scripts/upstream-patches.py
           sparse-checkout-cone-mode: false
 

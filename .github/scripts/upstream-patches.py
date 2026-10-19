@@ -22,6 +22,15 @@ error, exit 1. Then:
 plan decides only (for the reuse of images and the rebuilds), apply also patches the
 checkout (git apply; a depth-1 checkout has no blobs for a 3-way merge).
 
+Ports: an entry with `ports: <dir>` (a directory of this repository) may hold
+<dir>/<release-tag>.diff, the same change made by hand for a release the pull request does not
+apply to (e.g. code moved between the release and the pull request's base). Building that
+release, the file is applied instead of base...sha (the checks of the pull request and the
+merged/closed decisions are the same); the reference gets +<release-tag>
+(owner/repo#pr@base7..sha7+<release-tag>). Without a file for the release, base...sha as
+always: one that does not apply fails, so a new release needs its port (or the pull request
+rebased) and does not go out without the patch.
+
 Outputs (GITHUB_OUTPUT, and printed): applied (space-separated owner/repo#pr@base7..sha7),
 label (applied, or "none"), key (12 hex of label's sha256, for cache keys), obsolete
 (the same form), obsolete_json ([{"id", "pr", "when_released"}]). A summary for
@@ -41,6 +50,7 @@ import tempfile
 
 COMPONENTS = ("fxa-mono", "syncstorage-rs")
 FIELDS = ("id", "repo", "pr", "head_repo", "base", "sha", "component", "why", "when_released")
+OPTIONAL = ("ports",)
 LABEL = "org.firefox-sync.upstream-patches"
 
 
@@ -95,7 +105,7 @@ def parse(text):
         missing = [f for f in FIELDS if not e.get(f)]
         if missing:
             raise ValueError(f"entry {n} ({e.get('id', '?')}): missing {', '.join(missing)}")
-        unknown = sorted(set(e) - set(FIELDS))
+        unknown = sorted(set(e) - set(FIELDS) - set(OPTIONAL))
         if unknown:
             raise ValueError(f"entry {n} ({e['id']}): unknown {', '.join(unknown)}")
         if e["component"] not in COMPONENTS:
@@ -106,6 +116,9 @@ def parse(text):
         for field in ("repo", "head_repo"):
             if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", e[field]):
                 raise ValueError(f"entry {n} ({e['id']}): {field} must be owner/name")
+        if "ports" in e and not re.fullmatch(r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*", e["ports"]) \
+                or ".." in e.get("ports", "").split("/"):
+            raise ValueError(f"entry {n} ({e['id']}): ports must be a relative directory of this repository")
         if not e["pr"].isdigit():
             raise ValueError(f"entry {n} ({e['id']}): pr must be a number")
         e["pr"] = int(e["pr"])
@@ -116,8 +129,20 @@ def parse(text):
 
 
 def ref(entry):
-    # base too: a correction of base alone changes what is applied, the label and the keys
-    return f"{entry['repo']}#{entry['pr']}@{entry['base'][:7]}..{entry['sha'][:7]}"
+    # base too: a correction of base alone changes what is applied, the label and the keys;
+    # a port the release it is for (its file is what is applied)
+    port = f"+{entry['port_tag']}" if entry.get("port") else ""
+    return f"{entry['repo']}#{entry['pr']}@{entry['base'][:7]}..{entry['sha'][:7]}{port}"
+
+
+def with_port(entry, tag, root):
+    """The entry, with port (the file) and port_tag when its ports directory has one for tag."""
+    if not entry.get("ports") or not re.fullmatch(r"[A-Za-z0-9_.+-]+", tag):
+        return entry
+    path = os.path.join(root, entry["ports"], f"{tag}.diff")
+    if not os.path.isfile(path):
+        return entry
+    return dict(entry, port=path, port_tag=tag)
 
 
 # --- GitHub, through gh (replaced by a fake in the tests) ---
@@ -191,11 +216,18 @@ def apply_patch(entry, pull, gh, checkout, released=False):
     """Applies the pinned changes; returns "applied" or "present" (already in the sources).
     released: the release has the pull request, its changes must be there."""
     name = f"{ref(entry)} ({entry['id']})"
-    diff = gh.diff(entry["repo"], entry["base"], entry["sha"])
-    if not diff.strip():
-        raise Fail(f"{name}: no changes between {entry['base'][:7]} and {entry['sha'][:7]}")
+    if entry.get("port"):
+        with open(entry["port"]) as f:
+            diff = f.read()
+        if not diff.strip():
+            raise Fail(f"{name}: the port {entry['ports']}/{entry['port_tag']}.diff is empty")
+    else:
+        diff = gh.diff(entry["repo"], entry["base"], entry["sha"])
+        if not diff.strip():
+            raise Fail(f"{name}: no changes between {entry['base'][:7]} and {entry['sha'][:7]}")
     files = len(re.findall(r"^diff --git ", diff, re.M))
-    if entry["sha"] == pull["head"]["sha"] and pull.get("changed_files") not in (None, files):
+    # a port is made by hand for the release: its files are not the pull request's
+    if not entry.get("port") and entry["sha"] == pull["head"]["sha"] and pull.get("changed_files") not in (None, files):
         raise Fail(f"{name}: {files} files changed since base {entry['base'][:7]}, the pull request "
                    f"changes {pull['changed_files']}: retargeted or rebased? Review it and pin base and sha again")
     with tempfile.NamedTemporaryFile("w", suffix=".diff", delete=False) as f:
@@ -215,16 +247,22 @@ def apply_patch(entry, pull, gh, checkout, released=False):
                 return "applied"
         elif present:
             return "present"
+        if entry.get("port"):
+            raise Fail(f"{name}: the port {entry['ports']}/{entry['port_tag']}.diff does not apply to the release: "
+                       f"{(result.stderr or result.stdout).strip()}\nfix the port, or remove it and the entry")
+        hint = (f", or add a port for it ({entry['ports']}/<release-tag>.diff)" if entry.get("ports") else "")
         raise Fail(f"{name} does not apply to the release: {(result.stderr or result.stdout).strip()}\n"
-                   f"rebase the pull request and pin its new head (and base), or remove the entry")
+                   f"rebase the pull request and pin its new head (and base){hint}, or remove the entry")
     finally:
         os.unlink(path)
 
 
-def run(entries, component, tag, gh, checkout=None, log=print):
-    """The decisions for the entries of component, applied to checkout when given."""
+def run(entries, component, tag, gh, checkout=None, log=print, root=None):
+    """The decisions for the entries of component, applied to checkout when given. root: the
+    directory the ports are in (that of upstream-patches.yml)."""
     result = {"applied": [], "obsolete": [], "notices": [], "rows": []}
-    chosen = [e for e in entries if e["component"] == component]
+    root = root or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+    chosen = [with_port(e, tag, root) for e in entries if e["component"] == component]
     decisions = []
     errors = []
     for entry in chosen:
@@ -293,7 +331,7 @@ def main(argv):
     try:
         with open(path) as f:
             entries = parse(f.read())
-        result = run(entries, component, tag, GitHub(), checkout)
+        result = run(entries, component, tag, GitHub(), checkout, root=os.path.dirname(os.path.abspath(path)))
     except (Fail, ValueError) as e:
         for line in str(e).splitlines():
             print(f"::error title=upstream-patches.yml::{line}")
