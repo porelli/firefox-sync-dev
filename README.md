@@ -20,7 +20,7 @@ Self-host Firefox Sync with Docker, Podman or Kubernetes: your bookmarks, passwo
 | Who can use it | anybody with a Mozilla account who points Firefox to it, up to `SYNC_MAX_USERS` | who you allow to sign up: everybody, an allowlist of emails and domains, or nobody |
 | Needs | a host name with HTTPS | four host names with HTTPS, 3-4 GB of RAM, an SMTP server (the accounts email their codes) |
 | Runs on | docker compose, Podman Quadlets, Kubernetes ([Helm chart](HELM.md)) | docker compose, Podman Quadlets (not in the Helm chart yet) |
-| Guide | [SYNC.md](SYNC.md) ([HELM.md](HELM.md) on Kubernetes) | [SYNC.md](SYNC.md), then [FXA.md](FXA.md) |
+| Guide | [SYNC.md](SYNC.md) | [SYNC.md](SYNC.md), then [FXA.md](FXA.md) |
 
 Both are set up by `./prepare_environment.sh`, which asks the questions and writes `.env`:
 
