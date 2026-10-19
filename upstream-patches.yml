@@ -53,8 +53,8 @@
   repo: mozilla/fxa
   pr: 21494
   head_repo: porelli/fxa
-  base: 517651a36053d1fc306520bd7d95bfeb4543c7fd
-  sha: aa0b1780901844fc5639f7837d7841f5e90ce227
+  base: 3e2cb676f8c561e7c293d44ec979c3be88eb81cb
+  sha: 0eaa3a297f65ebe4898602e7b4e4675f7df7ddf4
   component: fxa-mono
   why: >-
     fix(db-migrations): name foreign keys that later patches drop. MariaDB 12 names unnamed
@@ -72,7 +72,7 @@
   pr: 2638
   head_repo: porelli/syncstorage-rs
   base: 3a5abd9e2365fd70ee9ac27bc2c07561a727c4a9
-  sha: c670cf0843a3af9a3d58bb3187323257039aa642
+  sha: 771fa8cfb697d17e94beed2818e4905a6aebdf84
   component: syncstorage-rs
   why: >-
     fix: break ties by id when choosing the best tokenserver node. On MariaDB the nodes that
@@ -81,5 +81,21 @@
   when_released: >-
     In tests/e2e.sh drop the --deselect of test_node_assignment.py::test_user_creation (the
     LOG(0) comment) and its check of the image label: every image tested then has the fix.
-    Moving sha past c670cf0 (the pull request's update giving the test's extra nodes ids after
-    800): drop the PostgreSQL --deselect of the same test there, for #2638@3a5abd9..c670cf0.
+
+- id: tokenserver-new-client-state-test
+  repo: mozilla-services/syncstorage-rs
+  pr: 2671
+  head_repo: porelli/syncstorage-rs
+  base: b0d78b8100d322ddd4e6530abf589016e219997f
+  sha: a56eb274288e076498fd93a705d4db382b0f4fab
+  component: syncstorage-rs
+  why: >-
+    test: create the replaced user before the request in
+    test_user_updates_with_new_client_state. The test's old row got the current millisecond
+    as created_at and the tokenserver replaces only rows created strictly before the request:
+    when both fall in the same millisecond the test fails with assert 0 == 1. The image ships
+    tools/integration_tests and tests/e2e.sh runs them from it, so the fix goes in the image.
+  when_released: >-
+    In tests/e2e.sh drop the special handling of test_misc.py::test_user_updates_with_new_client_state
+    (deselected from the tokenserver run, run on its own with one retry) and its check of the
+    image label: every image tested then has the fix.

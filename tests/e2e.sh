@@ -1174,27 +1174,23 @@ if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ] && [[ " ${UPSTR
   T=test_node_assignment.py::test_user_creation
   UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
 fi
-if [ "${BACKEND}" = postgres ] && [[ " ${UPSTREAM_PATCHES} " == *" mozilla-services/syncstorage-rs#2638@3a5abd9..c670cf0 "* ]]; then
-  # #2638 at c670cf0 breaks the ties by id, and on PostgreSQL the test's three extra nodes
-  # get ids from the identity sequence (an explicit id does not advance it), below the
-  # default node's 800: the user lands on one of them (assert 33 == 800). The test, not the
-  # tokenserver: the update of the pull request gives them ids after 800
-  # (firefox-sync-drafts/syncstorage-rs-2638-postgres-fix.md); deselected only for this sha
-  T=test_node_assignment.py::test_user_creation
-  UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
-fi
 # test_misc.py::test_user_updates_with_new_client_state creates its old row at the current
 # millisecond, and the tokenserver replaces only the rows created strictly before the new
 # one (created_at < its timestamp): when both fall in the same millisecond (about 1 in 100
 # here, the request takes about 1 ms) nothing is replaced and the test fails. Upstream's
-# race, not this stack's: run on its own, once more when it fails
+# race, not this stack's, fixed by mozilla-services/syncstorage-rs#2671 (upstream-patches.yml):
+# for the images without it, run on its own, once more when it fails
 RACY=test_misc.py::test_user_updates_with_new_client_state
-UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${RACY} --deselect tools/integration_tests/tokenserver/${RACY}"
+if [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2671@"* ]]; then
+  UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${RACY} --deselect tools/integration_tests/tokenserver/${RACY}"
+fi
 pytest_in_app "${UPSTREAM_TS}"
 check "$?" 0 "upstream tokenserver tests"
-pytest_in_app "tools/integration_tests/tokenserver/${RACY}" > /dev/null ||
-  { echo "  ${RACY} failed, once more"; pytest_in_app "tools/integration_tests/tokenserver/${RACY}"; }
-check "$?" 0 "upstream ${RACY} (once more when it fails: the same millisecond)"
+if [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2671@"* ]]; then
+  pytest_in_app "tools/integration_tests/tokenserver/${RACY}" > /dev/null ||
+    { echo "  ${RACY} failed, once more"; pytest_in_app "tools/integration_tests/tokenserver/${RACY}"; }
+  check "$?" 0 "upstream ${RACY} (once more when it fails: the same millisecond)"
+fi
 
 echo "== admin UI"
 check "$(admin_healthy)" healthy "admin UI container healthcheck"
