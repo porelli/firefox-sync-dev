@@ -34,12 +34,21 @@ wait_job() {
 
 rnd() { tr -dc A-Za-z0-9 < /dev/urandom | head -c 32 || true; }
 
-# ingress_is <name> <class> <host> <service> <port>: that Ingress, / of the host to the Service
+# ingress_is <name> <class> <host> <service> <port> [<path> <pathType> <service> <port>]...:
+# that Ingress, its only rule: / (Prefix) of the host to the Service, then each other path
 ingress_is() {
-  local got
-  got=$(kubectl get ingress "$1" -o json 2> /dev/null | jq -c '[.spec.ingressClassName, [.spec.rules[] | .host, (.http.paths[] | .path, .pathType,
+  local got want name=$1 class=$2 host=$3
+  shift 3
+  want="[\"${class}\",[\"${host}\",\"/\",\"Prefix\",\"$1\",$2"
+  shift 2
+  while (($# >= 4)); do
+    want+=",\"$1\",\"$2\",\"$3\",$4"
+    shift 4
+  done
+  want+="]]"
+  got=$(kubectl get ingress "${name}" -o json 2> /dev/null | jq -c '[.spec.ingressClassName, [.spec.rules[] | .host, (.http.paths[] | .path, .pathType,
     .backend.service.name, .backend.service.port.number)]]') || true
-  [[ "${got}" == "[\"$2\",[\"$3\",\"/\",\"Prefix\",\"$4\",$5]]" ]] || fail "Ingress $1: ${got:-none}"
+  [[ "${got}" == "${want}" ]] || fail "Ingress ${name}: ${got:-none}, expected ${want}"
 }
 
 pod_status() {

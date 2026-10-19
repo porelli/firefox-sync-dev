@@ -1,0 +1,56 @@
+{{- /*
+The accounts' public hosts (fxa.ingress.enabled), an Ingress each, as config/nginx/fxa-example.conf's
+server blocks: one host failing (its certificate, its rule) leaves the others up, and a
+certificate each (tls.secretNames.<host>, empty: the controller's default) keeps cert-manager's
+per-host issuance working. The profile host's /img/ goes to img-proxy (port img), which strips
+the prefix as nginx's proxy_pass .../ does, so no controller-specific rewrite is needed
+*/ -}}
+{{- if and .Values.fxa.enabled .Values.fxa.ingress.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $f := .Values.fxa }}
+{{- $ingresses := list
+  (dict "name" "content" "url" $f.contentUrl "paths" (list (list "/" 3030)))
+  (dict "name" "auth" "url" $f.authUrl "paths" (list (list "/" 9000)))
+  (dict "name" "profile" "url" $f.profileUrl "paths" (list (list "/" 1111) (list "/img/" 1114))) }}
+{{- range $ingresses }}
+{{- $host := include "firefox-sync.fxaHost" (dict "root" $ "url" .url) }}
+{{- $service := printf "%s-fxa-%s" $fullname .name }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $service }}
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" $ "component" (printf "fxa-%s" .name)) | nindent 4 }}
+  {{- with $f.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $f.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- if $f.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      {{- with index $f.ingress.tls.secretNames .name }}
+      secretName: {{ . | quote }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ index . 0 }}
+            pathType: Prefix
+            backend:
+              service:
+                # the Service of the same name
+                name: {{ $service }}
+                port:
+                  number: {{ index . 1 }}
+          {{- end }}
+{{- end }}
+{{- end }}

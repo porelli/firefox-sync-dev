@@ -1,7 +1,45 @@
 # Test-only: the values of tests/helm-fxa.sh e2e, the self-hosted accounts on *.fxa.test
-# (fxa.enabled, the images and the databases' backends are set by the script)
+# (fxa.enabled, the images and the databases' backends are set by the script), as
+# tests/docker-compose.fxa-test.yml: every public host through the test Ingress controller
+# (tests/helm/traefik.yaml, class traefik) over HTTPS with the test CA (Secret fxa-test-tls,
+# its CA in the ConfigMap fxa-test-ca), the email to the mail catcher (tests/helm/fxa-fixtures.yaml)
 syncDomain: https://sync.fxa.test
+ingress:
+  enabled: true
+  className: traefik
+  tls:
+    enabled: true
+    secretName: fxa-test-tls
+smtp:
+  host: mailpit
+  port: 1025
+  user: ""
+  sender: "Mozilla accounts <no-reply@fxa.test>"
+# (test_fxa_flow.py's reset of the Sync data)
+admin:
+  enabled: true
+  ingress:
+    enabled: true
+    className: traefik
+    host: admin.fxa.test
+    tls:
+      enabled: true
+      secretName: fxa-test-tls
 fxa:
   contentUrl: https://accounts.fxa.test
   authUrl: https://api.fxa.test
   profileUrl: https://profile.fxa.test
+  # the accounts' servers trust the test CA (compose's NODE_EXTRA_CA_CERTS=/caddy-ca/root.crt)
+  extraCaCerts:
+    configMap: fxa-test-ca
+    key: root.crt
+  ingress:
+    enabled: true
+    className: traefik
+    tls:
+      enabled: true
+      secretNames:
+        content: fxa-test-tls
+        auth: fxa-test-tls
+        profile: fxa-test-tls
+        pairing: fxa-test-tls

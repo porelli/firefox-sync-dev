@@ -1,0 +1,95 @@
+# Test-only: the Ingress controller of tests/helm-fxa.sh e2e, Traefik v3 on :443 (TLS on every
+# router, the certificates of the Ingresses' tls), IngressClass traefik. It keeps the
+# X-Forwarded-For of clients from private addresses and appends theirs, as tests/Caddyfile.fxa
+# (trusted_proxies private_ranges) and nginx's $proxy_add_x_forwarded_for
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ffs-test-ingress
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+  namespace: ffs-test-ingress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ffs-test-traefik
+rules:
+  - apiGroups: [""]
+    resources: [services, endpoints, secrets, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, ingressclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses/status]
+    verbs: [update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ffs-test-traefik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ffs-test-traefik
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: ffs-test-ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: traefik
+spec:
+  controller: traefik.io/ingress-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: ffs-test-ingress
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: traefik}
+  template:
+    metadata:
+      labels: {app: traefik}
+    spec:
+      serviceAccountName: traefik
+      containers:
+        - name: traefik
+          image: docker.io/library/traefik:v3
+          imagePullPolicy: Never
+          args:
+            - --providers.kubernetesingress
+            - --entrypoints.websecure.address=:443
+            - --entrypoints.websecure.http.tls=true
+            - --entrypoints.websecure.forwardedHeaders.trustedIPs=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+          ports:
+            - name: websecure
+              containerPort: 443
+          readinessProbe:
+            tcpSocket:
+              port: websecure
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: ffs-test-ingress
+spec:
+  selector: {app: traefik}
+  ports:
+    - name: websecure
+      port: 443
+      targetPort: websecure

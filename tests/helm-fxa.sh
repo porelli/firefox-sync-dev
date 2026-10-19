@@ -223,10 +223,70 @@ fxa_lint() {
   check "helpers: fxaImage, fxaDb*, fxaHost, fxaOauthServerUrl, fxaEmailDomain (derived with the accounts), fxaAllowlist, fxaMysqlEnv, smtp, security contexts"
 
   fxa_objects_lint
+  fxa_ingress_lint
 
   # chart 0.1.0's render, with the accounts off: the same objects for every ci/*.yaml it had,
   # but the chart label, ADMIN_K8S_CHART_VERSION and the generated secrets
   fxa_base_parity
+}
+
+# the accounts' public hosts: an Ingress each (content, auth, profile with /img/ to img-proxy),
+# their class, annotations and certificates; and what NOTES says of them
+fxa_ingress_lint() {
+  local fxa="${CHART_DIR}/ci/fxa-values.yaml" out want
+  # fxa_ingresses <helm args>: the accounts' Ingresses, each its name, class, annotations, tls, rules
+  fxa_ingresses() {
+    helm template test-release "${CHART_DIR}" -f "${fxa}" "$@" | manifests | jq -c '[.[] | select(.kind == "Ingress" and (.metadata.name | test("-fxa-")))
+      | {name: .metadata.name, component: .metadata.labels["app.kubernetes.io/component"], class: .spec.ingressClassName, annotations: .metadata.annotations,
+        tls: .spec.tls, rules: [.spec.rules[] | {host, paths: [.http.paths[] | [.path, .pathType, .backend.service.name, .backend.service.port.number]]}]}]'
+  }
+  local f=test-release-firefox-sync
+  want='[{"name":"'${f}'-fxa-content","component":"fxa-content","class":null,"annotations":null,"tls":[{"hosts":["accounts.example.test"]}],"rules":[{"host":"accounts.example.test","paths":[["/","Prefix","'${f}'-fxa-content",3030]]}]},'
+  want+='{"name":"'${f}'-fxa-auth","component":"fxa-auth","class":null,"annotations":null,"tls":[{"hosts":["api.example.test"]}],"rules":[{"host":"api.example.test","paths":[["/","Prefix","'${f}'-fxa-auth",9000]]}]},'
+  want+='{"name":"'${f}'-fxa-profile","component":"fxa-profile","class":null,"annotations":null,"tls":[{"hosts":["profile.example.test"]}],"rules":[{"host":"profile.example.test","paths":[["/","Prefix","'${f}'-fxa-profile",1111],["/img/","Prefix","'${f}'-fxa-profile",1114]]}]}]'
+  out=$(fxa_ingresses)
+  [[ "${out}" == "${want}" ]] || fail "the accounts' Ingresses of ci/fxa-values.yaml: ${out}"
+  if command -v kubeconform > /dev/null; then
+    helm template test-release "${CHART_DIR}" -f "${fxa}" --show-only templates/fxa-ingress.yaml | kubeconform -strict -summary -kubernetes-version 1.27.0 > /dev/null \
+      || fail "kubeconform -strict: the accounts' Ingresses of ci/fxa-values.yaml"
+  fi
+  # the services' ports in the Ingresses: those of their Services
+  helm template test-release "${CHART_DIR}" -f "${fxa}" | manifests | jq -e '[.[] | select(.kind == "Service") | {key: .metadata.name, value: [.spec.ports[].port]}] | from_entries as $svc
+    | [.[] | select(.kind == "Ingress") | .spec.rules[].http.paths[].backend.service | . as $b | $svc[$b.name] // [] | index($b.port.number) != null] | all' > /dev/null \
+    || fail "an Ingress of the accounts to a Service port that does not exist"
+  # the class and the annotations of all, a certificate each (empty: the controller's default),
+  # the host without the URL's port
+  out=$(fxa_ingresses --set fxa.ingress.className=nginx --set fxa.ingress.annotations.a=b --set fxa.ingress.tls.secretNames.content=c-tls \
+    --set fxa.ingress.tls.secretNames.auth=a-tls --set fxa.ingress.tls.secretNames.profile=p-tls --set fxa.profileUrl=https://profile.example.test:8443/ \
+    | jq -c 'map([.name, .class, .annotations, .tls, .rules[0].host])')
+  [[ "${out}" == '[["'${f}'-fxa-content","nginx",{"a":"b"},[{"hosts":["accounts.example.test"],"secretName":"c-tls"}],"accounts.example.test"],["'${f}'-fxa-auth","nginx",{"a":"b"},[{"hosts":["api.example.test"],"secretName":"a-tls"}],"api.example.test"],["'${f}'-fxa-profile","nginx",{"a":"b"},[{"hosts":["profile.example.test"],"secretName":"p-tls"}],"profile.example.test"]]' ]] \
+    || fail "fxa.ingress.className, annotations, tls.secretNames, a host with a port: ${out}"
+  [[ "$(fxa_ingresses --set fxa.ingress.tls.enabled=false | jq -c 'map(.tls)')" == '[null,null,null]' ]] || fail "fxa.ingress.tls.enabled=false: tls in the Ingresses"
+  [[ "$(fxa_ingresses --set fxa.ingress.enabled=false)" == '[]' ]] || fail "fxa.ingress.enabled=false: the accounts' Ingresses rendered"
+  [[ "$(fxa_ingresses --set fxa.enabled=false --set fxa.ingress.enabled=true)" == '[]' ]] || fail "fxa.enabled=false: the accounts' Ingresses rendered"
+  check "Ingresses <fullname>-fxa-content (/ 3030), -fxa-auth (/ 9000), -fxa-profile (/ 1111, /img/ 1114) on their URLs' hosts, kubeconform -strict; fxa.ingress class, annotations, a certificate each; none with fxa.ingress.enabled=false"
+
+  # NOTES: the four URLs, Firefox's setting, the keys' export, the memory, http:// warned of
+  out=$(notes -f "${fxa}")
+  for want in "  https://accounts.example.test  the pages (${f}-fxa-content:3030)" "  https://api.example.test  the API (${f}-fxa-auth:9000)" \
+    "  https://profile.example.test  the profiles (${f}-fxa-profile:1111, /img/ to :1114)" "  wss://pairing.example.test  the pairing server" \
+    "identity.fxaccounts.autoconfig.uri = https://accounts.example.test" \
+    "kubectl -n default exec deploy/${f}-fxa-auth -c auth -- tar -C /fxa-keys -c secret-key.json public-key.json vapid-keys.json openid-key.json > fxa-keys.tar" \
+    "about 3-4 GB of memory"; do
+    grep -qF -- "${want}" <<< "${out}" || fail "NOTES with the accounts: no '${want}': ${out}"
+  done
+  grep -q "^Their URLs, published by the Ingresses ${f}-fxa-content, -fxa-auth and -fxa-profile:$" <<< "${out}" || fail "NOTES: not the accounts' Ingresses"
+  ! grep -q '^WARNING: fxa\.' <<< "${out}" || fail "NOTES: a warning on https:// URLs"
+  grep -q 'Publish these Services at these URLs' <<< "$(notes -f "${fxa}" --set fxa.ingress.enabled=false)" || fail "NOTES without the accounts' Ingresses: not what to publish"
+  ! grep -q 'wss://pairing' <<< "$(notes -f "${fxa}" --set fxa.pairing.enabled=false)" || fail "NOTES: the pairing server's URL with it off"
+  out=$(notes -f "${fxa}" --set fxa.contentUrl=http://accounts.example.test --set fxa.profileUrl=http://profile.example.test)
+  if ! grep -q '^WARNING: fxa.contentUrl is http://' <<< "${out}" || ! grep -q '^WARNING: fxa.profileUrl is http://' <<< "${out}" \
+    || grep -q '^WARNING: fxa.authUrl' <<< "${out}"; then
+    fail "NOTES: not a warning for each http:// URL: ${out}"
+  fi
+  ! grep -q 'fxa-keys.tar' <<< "$(notes -f "${fxa}" --set fxa.keys.existingSecret=mine)" || fail "NOTES: the keys' export with fxa.keys.existingSecret"
+  ! grep -qi 'accounts' <<< "$(notes -f "${CHART_DIR}/ci/default-values.yaml")" || fail "NOTES without the accounts: names them"
+  check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL"
 }
 
 # the accounts' objects: the database, Redis, the keys, the auth pod and its init containers,
@@ -431,7 +491,7 @@ fxa_objects_lint() {
     and .spec.volumes == [{name: "images", persistentVolumeClaim: {claimName: "test-release-firefox-sync-fxa-profile-images"}}, {name: "fxa-config", configMap: {name: "test-release-firefox-sync-fxa-config"}}]
     and (.metadata.annotations | (.["checksum/fxa-config"] | test("^[0-9a-f]{64}$")) and (.["checksum/secrets"] | test("^[0-9a-f]{64}$")))' <<< "${profile}" > /dev/null \
     || fail "profile: img-proxy's read-only root, the volumes or the checksums: $(jq -c '[.spec.volumes, .metadata.annotations]' <<< "${profile}")"
-  jq -e '[.[] | select(.metadata.name == "test-release-firefox-sync-fxa-profile" or .metadata.name == "test-release-firefox-sync-fxa-profile-images")
+  jq -e '[.[] | select(.kind != "Ingress") | select(.metadata.name == "test-release-firefox-sync-fxa-profile" or .metadata.name == "test-release-firefox-sync-fxa-profile-images")
     | if .kind == "Service" then .spec.ports elif .kind == "Deployment" then .spec.strategy.type
       else [.metadata.annotations["helm.sh/resource-policy"], .spec.accessModes[0], .spec.resources.requests.storage] end]
     == [["keep", "ReadWriteOnce", "1Gi"], [{name: "http", port: 1111, targetPort: "http"}, {name: "static", port: 1112, targetPort: "static"}, {name: "img", port: 1114, targetPort: "img"}], "Recreate"]' <<< "${objs}" > /dev/null \
@@ -494,7 +554,9 @@ fxa_base_parity() {
 
 # e2e <mysql|mariadb>: the chart with the accounts (their database on that backend, the Sync
 # server's too) on a throwaway kind cluster: the auth pod's init containers in compose's
-# order, its keys, its heartbeat, the sign-up policy, and fail closed on a wrong password.
+# order, its keys, its heartbeat, the sign-up policy, and fail closed on a wrong password;
+# then, through the Ingresses over HTTPS (fxa_fixtures), test_fxa_flow.py, the client's
+# address in the rate limits and the avatars on their volume.
 # REPOSITORY, TAG: the Sync server's images, as tests/helm.sh; FXA_IMAGE (default REPOSITORY),
 # FXA_VERSION (default fxa-mono-latest): the accounts'; FXA_MARIADB_IMAGE: their MariaDB (as
 # tests/e2e-fxa.sh: the chart's lts when the accounts image has mozilla/fxa#21494, else mariadb:11)
@@ -530,6 +592,9 @@ fxa_e2e() {
   FULL="${REL}-firefox-sync"
   SECRET=${FULL}
   SYNC_IMAGE="${repository}:syncstorage-rs-mysql-${tag}"
+  # the fixtures' images (tests/helm/traefik.yaml, tests/helm/fxa-fixtures.yaml)
+  TRAEFIK_IMAGE=docker.io/library/traefik:v3
+  MAILPIT_IMAGE=docker.io/axllent/mailpit:latest
   POD_SELECTOR="app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-auth"
 
   # the accounts image is about 5 GB in the node, on top of the Sync server's images
@@ -557,12 +622,15 @@ fxa_e2e() {
   local sync_db_image
   sync_db_image=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["database"]["image"][sys.argv[2]])' \
     "${CHART_DIR}/values.yaml" "${backend}") || fail "no database.image.${backend} in values.yaml"
-  for image in "${SYNC_IMAGE}" "${fxa_image}" "${db_image}" "${redis_image}" $([[ ${sync_db_image} == "${db_image}" ]] || echo "${sync_db_image}"); do
+  # (and the test fixtures': the Ingress controller, the mail catcher)
+  local fixtures_images="${TRAEFIK_IMAGE} ${MAILPIT_IMAGE}"
+  for image in "${SYNC_IMAGE}" "${fxa_image}" "${db_image}" "${redis_image}" $([[ ${sync_db_image} == "${db_image}" ]] || echo "${sync_db_image}") ${fixtures_images}; do
     docker image inspect "${image}" > /dev/null 2>&1 || docker pull -q "${image}" > /dev/null || fail "${image} not pulled"
     docker save --platform "${platform}" "${image}" | docker exec -i "${CLUSTER}-control-plane" ctr --namespace=k8s.io images import --digests \
       --snapshotter=overlayfs --local --discard-unpacked-layers - > /dev/null || fail "${image} not loaded"
   done
-  check "loaded from the host's docker: ${SYNC_IMAGE} ${fxa_image} ${db_image} ${redis_image}$([[ ${sync_db_image} == "${db_image}" ]] || echo " ${sync_db_image}")"
+  check "loaded from the host's docker: ${SYNC_IMAGE} ${fxa_image} ${db_image} ${redis_image}$([[ ${sync_db_image} == "${db_image}" ]] || echo " ${sync_db_image}") ${fixtures_images}"
+  fxa_fixtures
   # the user of fxa-redis' pod: the image's redis
   [[ "$(docker run --rm "${redis_image}" id redis)" == "uid=999(redis) gid=1000(redis)"* ]] \
     || fail "${redis_image}: redis is $(docker run --rm "${redis_image}" id redis), not uid 999, gid 1000"
@@ -760,12 +828,123 @@ fxa_e2e() {
   [[ "${got}" == "${want}" ]] || fail "the avatars: ${got}, expected ${want}"
   check "content's fxa-client-configuration: auth_server_base_url https://api.fxa.test; the default avatar at :1114/img/a/0… (GET, HEAD) and :1112/a/0… 200, :1114/a/0… and a missing one 404, POST 405; the worker reached at 127.0.0.1:1113 in its pod, not from another one"
 
+  # what Firefox does, over HTTPS through the Ingresses (Traefik, the test CA) as through
+  # compose's Caddy: test_fxa_flow.py (the configuration, the pages served here, sign-up with
+  # the code from the mail catcher, the keys, Sync, a second device, wrong passwords, Sync
+  # again after the admin UI's reset)
+  fxa_job flow "${SYNC_IMAGE}" /tests/test_fxa_flow.py || fail "test_fxa_flow.py failed"
+  got=$(kubectl logs job/fxa-test-flow | tail -1)
+  [[ "${got}" =~ ^[0-9]+\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_flow.py: not every test passed: ${got}"
+  check "test_fxa_flow.py through the Ingresses over HTTPS: ${got}"
+  # every rule of the accounts' Ingresses, and their certificates
+  ingress_is "${FULL}-fxa-content" traefik accounts.fxa.test "${FULL}-fxa-content" 3030
+  ingress_is "${FULL}-fxa-auth" traefik api.fxa.test "${FULL}-fxa-auth" 9000
+  ingress_is "${FULL}-fxa-profile" traefik profile.fxa.test "${FULL}-fxa-profile" 1111 /img/ Prefix "${FULL}-fxa-profile" 1114
+  for name in content:accounts auth:api profile:profile; do
+    got=$(kubectl get ingress "${FULL}-fxa-${name%%:*}" -o json | jq -c '.spec.tls')
+    [[ "${got}" == "[{\"hosts\":[\"${name#*:}.fxa.test\"],\"secretName\":\"fxa-test-tls\"}]" ]] || fail "Ingress ${FULL}-fxa-${name%%:*}: tls ${got}"
+  done
+  check "Ingresses ${FULL}-fxa-content (accounts.fxa.test /: 3030), -fxa-auth (api.fxa.test /: 9000), -fxa-profile (profile.fxa.test /: 1111, /img/: 1114), each with fxa-test-tls"
+
+  # the client's own address through the Ingress (Review Focus 3): alice's wrong passwords
+  # from one pod block that pod, not alice from another one
+  local alice=alice@example.com alice_pw token
+  alice_pw=$(rnd)
+  fxa_client_pod ip-a
+  fxa_client_pod ip-b
+  # (alice signs up from ip-b, confirming with the code from the mail catcher; and an
+  # OAuth token for her profile, for the avatars below)
+  token=$(fxa_py ip-b ALICE="${alice}" ALICE_PASSWORD="${alice_pw}" <<'PY'
+import os, sys
+from urllib.parse import parse_qs, urlparse
+import requests
+from fxa._utils import HawkTokenAuth
+from fxa.core import Client
+from fxa.oauth import Client as OAuthClient
+sys.path.insert(0, "/tests")
+from test_fxa_flow import FIREFOX_CLIENT_ID, wait_for_code
+AUTH = os.environ["FXA_AUTH_URL"]
+email = os.environ["ALICE"]
+session = Client(server_url=f"{AUTH}/v1").create_account(email, os.environ["ALICE_PASSWORD"], keys=True)
+session.verify_email_code(wait_for_code(email))
+oauth = OAuthClient(client_id=FIREFOX_CLIENT_ID, server_url=AUTH)
+challenge, verifier = oauth.generate_pkce_challenge()
+res = requests.post(f"{AUTH}/v1/oauth/authorization",
+                    json={"client_id": FIREFOX_CLIENT_ID, "scope": "profile:write", "state": "avatar", **challenge},
+                    headers={"Authorization": f"Bearer fxs_{HawkTokenAuth(session.token, 'sessionToken').id}"}, timeout=30)
+assert res.status_code == 200, res.text
+data = res.json()
+code = data.get("code") or parse_qs(urlparse(data["redirect"]).query)["code"][0]
+print(oauth.trade_code(code, **verifier)["access_token"])
+PY
+) || fail "alice's sign-up from ip-b: ${token}"
+  got=$(fxa_py ip-a ALICE="${alice}" <<'PY'
+import os
+import requests
+seen = []
+for _ in range(6):
+    res = requests.post(f"{os.environ['FXA_AUTH_URL']}/v1/account/login", json={"email": os.environ["ALICE"], "authPW": "00" * 32}, timeout=30)
+    seen.append(f"{res.status_code}/{res.json().get('errno')}")
+print(" ".join(seen))
+PY
+) || fail "the wrong passwords from ip-a: ${got}"
+  [[ "${got}" == "400/103 400/103 400/103 400/103 400/103 429/114" ]] || fail "5 wrong passwords then a 6th from ip-a: ${got} (expected 5 times 400/103, then 429/114)"
+  out=$(fxa_py ip-b ALICE="${alice}" ALICE_PASSWORD="${alice_pw}" <<'PY'
+import os
+from fxa.core import Client
+Client(server_url=f"{os.environ['FXA_AUTH_URL']}/v1").login(os.environ["ALICE"], os.environ["ALICE_PASSWORD"])
+print(200)
+PY
+) || fail "alice's right password from ip-b refused: ${out}"
+  [[ "${out}" == 200 ]] || fail "alice's right password from ip-b: ${out}"
+  check "the client's address through the Ingress: 5 wrong passwords for ${alice} from ip-a, the 6th refused (429, errno 114); from ip-b her password signs in (200)"
+
+  # avatars (Review Focus 5): the default one through the Ingress, and alice's uploaded one,
+  # its bytes those of the volume, the same again once profile's pod is new
+  # (the worker re-encodes every upload with sharp, as PNG: not the uploaded bytes themselves)
+  out=$(fxa_py ip-b TOKEN="${token}" <<'PY'
+import hashlib, os, struct, zlib
+import requests
+PROFILE = os.environ["FXA_PROFILE_URL"]
+default = requests.get(f"{PROFILE}/img/a/{'0' * 32}", timeout=30)
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+rows = b"".join(b"\0" + bytes([200, 40 + 8 * y, 90]) * 16 for y in range(16))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+res = requests.post(f"{PROFILE}/v1/avatar/upload", data=png, headers={"Authorization": f"Bearer {os.environ['TOKEN']}", "Content-Type": "image/png"}, timeout=60)
+assert res.status_code == 201, res.text
+url, avatar_id = res.json()["url"], res.json()["id"]
+got = requests.get(url, timeout=30)
+assert got.status_code == 200 and got.content[:8] == png[:8] and got.content[16:24] == png[16:24], (got.status_code, got.content[:32])
+print(default.status_code, url, avatar_id, hashlib.sha256(got.content).hexdigest())
+PY
+) || fail "the avatars through profile.fxa.test: ${out}"
+  local avatar_url avatar_id avatar_sha
+  read -r got avatar_url avatar_id avatar_sha <<< "${out}"
+  [[ "${got}" == 200 ]] || fail "GET https://profile.fxa.test/img/a/0…: ${got}"
+  [[ "${avatar_url}" == "https://profile.fxa.test/img/a/${avatar_id}" ]] || fail "the uploaded avatar's url: ${avatar_url}"
+  got=$(kubectl exec "${profile}" -c profile -- sha256sum "${public}/${avatar_id}" | cut -d' ' -f1)
+  [[ "${got}" == "${avatar_sha}" ]] || fail "the avatar read back (${avatar_sha}) is not the volume's ${public}/${avatar_id} (${got})"
+  kubectl rollout restart "${profile}" > /dev/null
+  kubectl rollout status "${profile}" --timeout 10m > /dev/null || fail "${profile} not rolled out again"
+  got=$(fxa_py ip-b URL="${avatar_url}" <<'PY'
+import hashlib, os
+import requests
+res = requests.get(os.environ["URL"], timeout=30)
+print(res.status_code, hashlib.sha256(res.content).hexdigest())
+PY
+) || fail "the avatar after the restart: ${got}"
+  [[ "${got}" == "200 ${avatar_sha}" ]] || fail "the avatar after kubectl rollout restart ${profile}: ${got}, before 200 ${avatar_sha}"
+  kubectl delete pod ip-a ip-b --wait=true > /dev/null
+  check "avatars: the default one at https://profile.fxa.test/img/a/0… 200; alice's upload (profile:write) read back as the volume's bytes, the same after kubectl rollout restart ${profile}"
+
   # fxa.volumeOwnerInit=false on new volumes: no root init container; auth writes its keys
   # and profile its avatars. (kind's local-path volumes are hostPath ones, a directory of
   # root's, 0777, where the kubelet applies no fsGroup: the fsGroup case itself is the docker
   # check before the install)
   helm uninstall "${REL}" --wait --timeout 5m > /dev/null || fail "helm uninstall failed"
-  kubectl delete pvc --all --wait=true > /dev/null
+  # (the release's volumes: not the tests' state, which a completed test pod still holds)
+  kubectl get pvc -o name | { grep -vx persistentvolumeclaim/fxa-test-state || true; } | xargs -r kubectl delete --wait=true > /dev/null
   helm install "${install[@]}" --set fxa.volumeOwnerInit=false --wait --timeout 20m > /dev/null \
     || fail "helm install with fxa.volumeOwnerInit=false did not get Ready"
   for name in "auth:wait-db=0 migrations=0 policy=0 wait-redis=0" "profile:images-seed=0 wait-auth=0"; do
@@ -796,6 +975,98 @@ wait_init_failed() {
   done
   echo "pod status: $(pod_status)"
   return 1
+}
+
+# fxa_fixtures: what the e2e runs next to the chart, as tests/docker-compose.fxa-test.yml:
+# the Ingress controller (tests/helm/traefik.yaml) with every *.fxa.test resolved to it (as
+# compose's network aliases of Caddy), a test CA and its *.fxa.test certificate (Secret
+# fxa-test-tls; the CA in the ConfigMap fxa-test-ca, root.crt, as compose's caddy-ca volume),
+# the mail catcher and the tests' state (tests/helm/fxa-fixtures.yaml), the tests themselves
+# (ConfigMap ffs-fxa-tests)
+fxa_fixtures() {
+  kubectl apply -f "${SCRIPT_DIR}/helm/traefik.yaml" > /dev/null
+  # a CA for 90 days and its certificate of *.fxa.test (the extensions Python 3.13's strict
+  # verification wants: keyUsage on the CA, the key identifiers)
+  local d corefile
+  d=$(mktemp -d)
+  openssl req -x509 -newkey rsa:2048 -nodes -days 90 -sha256 -subj "/CN=firefox-sync test CA" -keyout "${d}/ca.key" -out "${d}/root.crt" \
+    -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" -addext "subjectKeyIdentifier=hash" 2> /dev/null \
+    || fail "the test CA not created"
+  openssl req -newkey rsa:2048 -nodes -subj "/CN=*.fxa.test" -keyout "${d}/tls.key" -out "${d}/tls.csr" 2> /dev/null || fail "the test certificate's request not created"
+  printf '%s\n' "subjectAltName=DNS:*.fxa.test" "basicConstraints=critical,CA:FALSE" "keyUsage=critical,digitalSignature,keyEncipherment" \
+    "extendedKeyUsage=serverAuth" "subjectKeyIdentifier=hash" "authorityKeyIdentifier=keyid,issuer" > "${d}/ext"
+  openssl x509 -req -in "${d}/tls.csr" -CA "${d}/root.crt" -CAkey "${d}/ca.key" -CAcreateserial -days 90 -sha256 -extfile "${d}/ext" \
+    -out "${d}/tls.crt" 2> /dev/null || fail "the test certificate not signed"
+  kubectl create secret tls fxa-test-tls --cert="${d}/tls.crt" --key="${d}/tls.key" > /dev/null
+  kubectl create configmap fxa-test-ca --from-file=root.crt="${d}/root.crt" > /dev/null
+  rm -rf "${d}"
+  # every *.fxa.test to the controller's Service, in CoreDNS (the answers keep the name asked)
+  corefile=$(kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}')
+  grep -qE '^ +ready$' <<< "${corefile}" || fail "CoreDNS' Corefile has no ready line: ${corefile}"
+  corefile=$(sed -E 's|^( +)ready$|&\n\1rewrite name regex (.+)\\.fxa\\.test traefik.ffs-test-ingress.svc.cluster.local answer auto|' <<< "${corefile}")
+  kubectl -n kube-system patch configmap coredns --type merge -p "$(jq -n --arg c "${corefile}" '{data: {Corefile: $c}}')" > /dev/null
+  kubectl -n kube-system rollout restart deploy/coredns > /dev/null
+  kubectl -n kube-system rollout status deploy/coredns --timeout 3m > /dev/null || fail "CoreDNS not back with the rewrite of *.fxa.test"
+  local files=() f
+  for f in "${SCRIPT_DIR}"/test_fxa_*.py; do files+=(--from-file="${f}"); done
+  kubectl create configmap ffs-fxa-tests "${files[@]}" > /dev/null
+  kubectl apply -f "${SCRIPT_DIR}/helm/fxa-fixtures.yaml" > /dev/null
+  kubectl -n ffs-test-ingress rollout status deploy/traefik --timeout 3m > /dev/null || fail "Traefik not Ready"
+  kubectl rollout status deploy/mailpit --timeout 3m > /dev/null || fail "Mailpit not Ready"
+  check "fixtures: Traefik (IngressClass traefik) with *.fxa.test resolved to it, the test CA (fxa-test-ca) and *.fxa.test's certificate (fxa-test-tls), Mailpit, the tests (${#files[@]} files)"
+}
+
+# fxa_test_spec <image> <command (a JSON array)> [NAME=value]...: the pod spec of the tests,
+# as tests/e2e-fxa.sh's runs (as root, /tests, the CA at /caddy-ca, the state at /state, their
+# env with this release's hosts), plus the env given (over the same names)
+fxa_test_spec() {
+  local image=$1 command=$2 extra
+  shift 2
+  extra=$( (($#)) && printf '%s\n' "$@" | jq -Rn '[inputs | {name: sub("=.*"; ""), value: sub("^[^=]*="; "")}]' || echo '[]')
+  jq -n --arg image "${image}" --argjson command "${command}" --argjson extra "${extra}" --arg full "${FULL}" --arg secret "${SECRET}" '
+    ([{name: "FXA_CONTENT_URL", value: "https://accounts.fxa.test"}, {name: "FXA_AUTH_URL", value: "https://api.fxa.test"},
+      {name: "FXA_PROFILE_URL", value: "https://profile.fxa.test"}, {name: "FXA_PAIRING_URL", value: ""},
+      {name: "SYNC_PUBLIC_URL", value: "https://sync.fxa.test"}, {name: "MAILPIT_URL", value: "http://mailpit:8025"},
+      {name: "ADMIN_URL", value: "https://admin.fxa.test"},
+      {name: "ADMIN_PASSWORD", valueFrom: {secretKeyRef: {name: $secret, key: "ADMIN_PASSWORD"}}},
+      {name: "FXA_DIRECT_URL", value: "http://\($full)-fxa-auth:9000"}, {name: "ADMIN_FXA_CLIENT_ID", value: ""},
+      {name: "REQUESTS_CA_BUNDLE", value: "/caddy-ca/root.crt"}, {name: "PYTHONPATH", value: "/app:/app/tools:/tests"},
+      {name: "PYTHONDONTWRITEBYTECODE", value: "1"}] | map(select(.name as $n | $extra | map(.name) | index($n) | not))) + $extra
+    | {restartPolicy: "Never", securityContext: {runAsUser: 0},
+      containers: [{name: "test", image: $image, imagePullPolicy: "Never", command: $command, workingDir: "/app", env: .,
+        volumeMounts: [{name: "tests", mountPath: "/tests", readOnly: true}, {name: "ca", mountPath: "/caddy-ca", readOnly: true},
+          {name: "state", mountPath: "/state"}]}],
+      volumes: [{name: "tests", configMap: {name: "ffs-fxa-tests"}}, {name: "ca", configMap: {name: "fxa-test-ca"}},
+        {name: "state", persistentVolumeClaim: {claimName: "fxa-test-state"}}]}'
+}
+
+# fxa_job <name> <image> <pytest args> [NAME=value]...: pytest with those arguments (quoted as
+# in a shell) in the Job fxa-test-<name>, which must succeed (its log's end shown)
+fxa_job() {
+  local name=$1 image=$2 args=$3 spec
+  shift 3
+  # shellcheck disable=SC2016 # (the pod's shell expands it)
+  spec=$(fxa_test_spec "${image}" '["sh", "-c", "eval \"set -- ${PYTEST_ARGS}\" && exec python3 -m pytest -q -p no:cacheprovider \"$@\""]' \
+    PYTEST_ARGS="${args}" "$@")
+  kubectl delete job "fxa-test-${name}" --ignore-not-found --wait=true > /dev/null
+  jq -n --arg name "fxa-test-${name}" --argjson spec "${spec}" '{apiVersion: "batch/v1", kind: "Job", metadata: {name: $name},
+    spec: {backoffLimit: 0, template: {metadata: {labels: {"ffs-e2e": $name}}, spec: $spec}}}' | kubectl apply -f - > /dev/null
+  wait_job "fxa-test-${name}" 1800
+}
+
+# fxa_client_pod <name>: a pod of the tests (the Sync server's image) waiting for kubectl exec
+fxa_client_pod() {
+  kubectl delete pod "$1" --ignore-not-found --wait=true > /dev/null
+  jq -n --arg name "$1" --argjson spec "$(fxa_test_spec "${SYNC_IMAGE}" '["sleep", "3600"]')" \
+    '{apiVersion: "v1", kind: "Pod", metadata: {name: $name, labels: {"ffs-e2e": $name}}, spec: $spec}' | kubectl apply -f - > /dev/null
+  kubectl wait --for=condition=Ready "pod/$1" --timeout=3m > /dev/null || fail "the test pod $1 not Ready"
+}
+
+# fxa_py <pod> [NAME=value]...: the Python script on stdin in that test pod, its output
+fxa_py() {
+  local pod=$1
+  shift
+  kubectl exec -i "${pod}" -- env "$@" python3 -
 }
 
 # run, not sourced by tests/helm.sh: the e2e

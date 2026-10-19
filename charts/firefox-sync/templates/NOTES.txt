@@ -28,6 +28,46 @@ MySQL's own is self-signed); true needs one from a CA the images trust.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if .Values.fxa.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+
+The self-hosted Mozilla accounts serve once their migrations and sign-up policy succeeded
+(the init containers of {{ $fullname }}-fxa-auth).
+{{ if .Values.fxa.ingress.enabled -}}
+Their URLs, published by the Ingresses {{ $fullname }}-fxa-content, -fxa-auth and -fxa-profile{{ if .Values.fxa.ingress.className }} (class {{ .Values.fxa.ingress.className }}){{ end }}:
+{{- else -}}
+Publish these Services at these URLs (your reverse proxy, or fxa.ingress.enabled), with HTTPS:
+{{- end }}
+
+  {{ .Values.fxa.contentUrl }}  the pages ({{ $fullname }}-fxa-content:3030)
+  {{ .Values.fxa.authUrl }}  the API ({{ $fullname }}-fxa-auth:9000)
+  {{ .Values.fxa.profileUrl }}  the profiles ({{ $fullname }}-fxa-profile:1111, /img/ to :1114)
+{{- if .Values.fxa.pairing.enabled }}
+  {{ .Values.fxa.pairing.url }}  the pairing server
+{{- end }}
+{{- range $name := list "contentUrl" "authUrl" "profileUrl" }}
+{{- if hasPrefix "http://" (index $.Values.fxa $name) }}
+WARNING: fxa.{{ $name }} is http://: passwords and session tokens cross the network in plain
+HTTP, and Firefox refuses such an accounts server unless identity.fxaccounts.allowHttp is true.
+{{- end }}
+{{- end }}
+
+Firefox signs in with them, and syncs here, once about:config has
+
+  identity.fxaccounts.autoconfig.uri = {{ .Values.fxa.contentUrl }}
+
+see https://github.com/porelli/firefox-sync/blob/main/FXA.md#firefox-setup
+The accounts need about 3-4 GB of memory (fxa.resources: the requests of each pod).
+{{- if not .Values.fxa.keys.existingSecret }}
+
+Their signing keys are on the PVC {{ $fullname }}-fxa-keys (kept on helm uninstall): losing
+them signs everyone out. Keep a copy, e.g. as a Secret for fxa.keys.existingSecret:
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ $fullname }}-fxa-auth -c auth -- tar -C /fxa-keys -c secret-key.json public-key.json vapid-keys.json openid-key.json > fxa-keys.tar
+  mkdir fxa-keys && tar -C fxa-keys -xf fxa-keys.tar
+  kubectl -n {{ .Release.Namespace }} create secret generic {{ $fullname }}-fxa-keys --from-file=fxa-keys
+{{- end }}
+{{- end }}
 {{- if and .Values.admin.enabled .Values.admin.ingress.enabled }}
 
 The admin UI is published by the Ingress {{ include "firefox-sync.adminService" . }} at {{ .Values.admin.ingress.host }}: keep it
