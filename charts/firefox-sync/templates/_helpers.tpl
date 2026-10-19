@@ -234,7 +234,7 @@ Return the name of the secret containing database passwords
 {{- end }}
 
 {{/*
-maxUsers as compose's MAX_USERS: a string, also when given as a number (maxUsers: 5,
+maxUsers as SYNC_MAX_USERS of .env (MAX_USERS of the init container): a string, also when given as a number (maxUsers: 5,
 --set maxUsers=5); int64 first, so that a large number is not printed as a float (1e+06)
 */}}
 {{- define "firefox-sync.maxUsers" -}}
@@ -254,7 +254,7 @@ as an integer, never 2e+06; empty for nil
 {{- end }}
 
 {{/*
-PostgreSQL: the Sync server's own role (compose's POSTGRES_SYNC_USER, database.postgresSyncUser,
+PostgreSQL: the Sync server's own role (SYNC_POSTGRES_APP_USER of .env, database.postgresSyncUser,
 syncserver_app as prepare_environment.sh names it), no superuser, created by the sync-role init
 container before the migrations. Empty with your own server (compose: also an install from
 before it): the Sync server is POSTGRES_USER, the owner there
@@ -356,7 +356,7 @@ docker-compose.sync-postgres.yml), for the migrate init container and the server
 
 {{/*
 The image of the bundled database, also the client of wait-db and of the backups: as compose
-(database.image.<backend>, compose's POSTGRES_IMAGE for PostgreSQL)
+(database.image.<backend>, compose's SYNC_POSTGRES_IMAGE for PostgreSQL)
 */}}
 {{- define "firefox-sync.dbImage" -}}
 {{- index .Values.database.image .Values.database.backend }}

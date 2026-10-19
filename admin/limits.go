@@ -69,7 +69,7 @@ func parseLimitValue(s string) (n int, unlimited bool, err error) {
 
 var errLimitValue = fmt.Errorf("a number from 0 to %d, or unlimited", math.MaxInt32)
 
-// parseLimitSetting: a setting of .env (MAX_USERS, FXA_MAX_ACCOUNTS): N, fixed:N or
+// parseLimitSetting: a setting of .env (SYNC_MAX_USERS as MAX_USERS, FXA_MAX_ACCOUNTS): N, fixed:N or
 // unlimited (set on every start, read-only in the admin UI), initial:N (set when there
 // is none yet, then managed in the admin UI). empty: the setting when none is given
 func parseLimitSetting(s, empty string) (value string, fixed bool, err error) {

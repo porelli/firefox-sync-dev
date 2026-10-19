@@ -133,7 +133,7 @@ lint() {
   [[ $(echo "${output}" | grep -c 'drop: \["NET_RAW"\]') -eq 2 ]] || fail "mariadb: NET_RAW not dropped on migrate and syncstorage"
   check "mariadb: migrate and syncstorage without NET_RAW"
   # database.image.<backend>: the database server, wait-db, the backups and the PVC's binding
-  # Job (compose's POSTGRES_IMAGE: postgres_db and backup), postgres:latest by default
+  # Job (compose's SYNC_POSTGRES_IMAGE: postgres_db and backup), postgres:latest by default
   for backend in mariadb mysql postgres; do
     images() {
       helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --set backup.enabled=true "$@" \
@@ -640,7 +640,7 @@ notes() {
   echo "${out}"
 }
 
-# the names of the roles and databases (compose's POSTGRES_SYNC_USER, ADMIN_DB_NAME,
+# the names of the roles and databases (compose's SYNC_POSTGRES_APP_USER, ADMIN_DB_NAME,
 # ADMIN_DB_USER, ADMIN_DB_SYNC_USER) and your own database server (database.bundled=false)
 external_lint() {
   echo "Testing the names of the roles and databases..."
@@ -722,7 +722,7 @@ external_lint() {
   ! notes --set database.backend=postgres --set database.image.postgres=docker.io/library/postgres:17 | grep -q 'pin the major' \
     || fail "NOTES: the PostgreSQL pin note with a pinned major"
   check "NOTES: the bundled PostgreSQL on latest, pin its major (not when pinned)"
-  # PostgreSQL: compose's POSTGRES_* of your own server, POSTGRES_USER the owner (no Sync role)
+  # PostgreSQL: compose's SYNC_POSTGRES_* of your own server, POSTGRES_USER the owner (no Sync role)
   out=$(env_values SYNC_TOKENSERVER__DATABASE_URL --set database.backend=postgres "${ext[@]}")
   [[ "${out}" == 'postgres://syncserver:$(POSTGRES_PASSWORD)@db.example.test:5432/syncserver' ]] || fail "postgres, bundled=false: the URL: ${out}"
   local pg=(--set database.backend=postgres "${ext[@]}" --set database.external.port=6432 --set database.external.postgresDatabase=pg_db

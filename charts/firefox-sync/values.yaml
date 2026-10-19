@@ -95,7 +95,8 @@ database:
     # compose's SYNC_TOKENSERVER_DB_HOST or SYNC_POSTGRES_HOST (required): a host name or an
     # IPv4 address the pods reach (plain connections, docs/databases.md#server-requirements)
     host: ""
-    # its port (1-65535, a number or quoted); empty for 3306 (mariadb, mysql) or 5432 (postgres)
+    # its port (SYNC_TOKENSERVER_DB_PORT, SYNC_POSTGRES_PORT; 1-65535, a number or quoted);
+    # empty for 3306 (mariadb, mysql) or 5432 (postgres)
     port: ""
     # mariadb, mysql: the storage database on another server (SYNC_STORAGE_DB_HOST,
     # _PORT); empty: host and port above

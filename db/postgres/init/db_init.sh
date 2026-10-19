@@ -101,7 +101,7 @@ sync_role() {
     exit 1
   fi
   role_exists "${POSTGRES_SYNC_USER}" || admin_psql -v ON_ERROR_STOP=1 -q -c "CREATE ROLE ${POSTGRES_SYNC_USER} LOGIN;" || exit 1
-  # (again with a new password: POSTGRES_SYNC_PASSWORD changed in .env)
+  # (again with a new password: SYNC_POSTGRES_APP_PASSWORD changed in .env)
   admin_psql -v ON_ERROR_STOP=1 -q -c "ALTER ROLE ${POSTGRES_SYNC_USER} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '${POSTGRES_SYNC_PASSWORD}';" || exit 1
   sed -e "s|@SYNC_USER@|${POSTGRES_SYNC_USER}|g" -e "s|@POSTGRES_DATABASE@|${POSTGRES_DATABASE}|g" \
       /scripts/sync_owner.sql > /tmp/sync_owner.sql
