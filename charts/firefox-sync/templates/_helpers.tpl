@@ -522,8 +522,12 @@ there is empty here, the feature off (existingSecret to manage them out of band)
 {{- $_ := set $data "ADMIN_OIDC_CLIENT_SECRET" (.Values.admin.oidc.clientSecret | toString | b64enc) }}
 {{- $_ := set $data "ADMIN_METRICS_TOKEN" (.Values.admin.metricsToken | toString | b64enc) }}
 {{- $_ := set $data "ADMIN_NOTIFY" (include "firefox-sync.adminNotify" . | b64enc) }}
-{{- /* (always: with the accounts off an empty one, never an old copy the lookup found) */ -}}
-{{- $_ := set $data "ADMIN_FXA_CLIENT_SECRET" (ternary (.Values.fxa.adminClientSecret | default "" | toString) "" (.Values.fxa.enabled | default false) | b64enc) }}
+{{- /* the values' with the accounts; without them none, also not an old copy the lookup found */ -}}
+{{- if .Values.fxa.enabled }}
+{{- $_ := set $data "ADMIN_FXA_CLIENT_SECRET" (.Values.fxa.adminClientSecret | default "" | toString | b64enc) }}
+{{- else }}
+{{- $_ := unset $data "ADMIN_FXA_CLIENT_SECRET" }}
+{{- end }}
 {{- $_ := set $ "ffsSecretData" $data }}
 {{- end }}
 {{- toJson (get $ "ffsSecretData") }}

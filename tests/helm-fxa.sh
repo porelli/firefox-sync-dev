@@ -101,8 +101,8 @@ fxa_lint() {
   check "the hosts of contentUrl, authUrl, profileUrl, pairing.url, syncDomain (ingress.host) and admin.ingress.host pairwise distinct (case, trailing dot, port)"
 
   # the Secret: with the accounts, their eight generated secrets (as prepare_environment.sh,
-  # 32 letters and digits); ADMIN_FXA_CLIENT_SECRET of the values, always there (empty with the
-  # accounts off: the values', never an old copy)
+  # 32 letters and digits) and ADMIN_FXA_CLIENT_SECRET of the values; none without them (the
+  # generated ones kept by the lookup, ADMIN_FXA_CLIENT_SECRET removed: no old copy)
   local generated="FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_CONTENT_SESSION_SECRET FXA_FLOW_ID_KEY FXA_MYSQL_PASSWORD FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_SESSION_TOKEN_HANDLE_KEY"
   local prepared
   prepared=$(sed -n 's/^ *for name in \(FXA_MYSQL_PASSWORD .*\); do$/\1/p' "${REPO_ROOT}/prepare_environment.sh" | tr ' ' '\n' | LC_ALL=C sort | paste -sd' ' -)
@@ -112,20 +112,21 @@ fxa_lint() {
   on=$(secret_data -f "${fxa}" --set fxa.adminClientSecret="$(printf 'b%.0s' $(seq 1 64))")
   off=$(secret_data -f "${fxa}" --set fxa.enabled=false)
   added=$(jq -r --argjson off "${off}" 'keys - ($off | keys) | join(" ")' <<< "${on}")
-  [[ "${added}" == "${generated}" ]] || fail "fxa.enabled adds to the Secret: ${added}"
-  [[ "$(jq -r '.ADMIN_FXA_CLIENT_SECRET' <<< "${off}")" == "" ]] || fail "accounts off: ADMIN_FXA_CLIENT_SECRET not empty: ${off}"
-  [[ "$(secret_data -f "${fxa}" --set fxa.enabled=false --set fxa.adminClientSecret="$(printf 'b%.0s' $(seq 1 64))" | jq -r '.ADMIN_FXA_CLIENT_SECRET')" == "" ]] \
-    || fail "accounts off: ADMIN_FXA_CLIENT_SECRET not empty with fxa.adminClientSecret set"
+  [[ "${added}" == "ADMIN_FXA_CLIENT_SECRET ${generated}" ]] || fail "fxa.enabled adds to the Secret: ${added}"
+  jq -e 'has("ADMIN_FXA_CLIENT_SECRET") | not' <<< "$(secret_data -f "${fxa}" --set fxa.enabled=false --set fxa.adminClientSecret="$(printf 'b%.0s' $(seq 1 64))")" > /dev/null \
+    || fail "accounts off: ADMIN_FXA_CLIENT_SECRET in the Secret"
+  grep -qF '{{- $_ := unset $data "ADMIN_FXA_CLIENT_SECRET" }}' "${CHART_DIR}/templates/_helpers.tpl" \
+    || fail "secretData does not remove ADMIN_FXA_CLIENT_SECRET with the accounts off (a lookup would keep an old copy)"
   jq -e --arg g "${generated}" '. as $d | [$g | split(" ")[] | $d[.] | @base64d | test("^[A-Za-z0-9]{32}$")] | all' <<< "${on}" > /dev/null \
     || fail "the generated secrets of the accounts are not 32 letters and digits: ${on}"
   [[ "$(jq -r '.ADMIN_FXA_CLIENT_SECRET | @base64d' <<< "${on}")" == "$(printf 'b%.0s' $(seq 1 64))" ]] || fail "ADMIN_FXA_CLIENT_SECRET is not fxa.adminClientSecret"
   [[ "$(secret_data -f "${fxa}" | jq -r '.ADMIN_FXA_CLIENT_SECRET')" == "" ]] || fail "an empty fxa.adminClientSecret is not an empty ADMIN_FXA_CLIENT_SECRET"
   for values in "${CHART_DIR}"/ci/{default,admin,backup,mysql,postgres}-values.yaml; do
-    [[ "$(secret_data -f "${values}" | jq -r 'keys[] | select(test("^(FXA_|ADMIN_FXA_)") and . != "FXA_SMTP_PASS" and . != "ADMIN_FXA_CLIENT_SECRET")')" == "" ]] \
+    [[ "$(secret_data -f "${values}" | jq -r 'keys[] | select(test("^(FXA_|ADMIN_FXA_)") and . != "FXA_SMTP_PASS")')" == "" ]] \
       || fail "$(basename "${values}"): keys of the accounts in the Secret without them"
   done
   [[ "$(secret_data -f "${fxa}" --set smtp.password=pw | jq -r '.FXA_SMTP_PASS | @base64d')" == pw ]] || fail "FXA_SMTP_PASS is not smtp.password"
-  check "Secret: fxa.enabled adds the eight generated secrets of prepare_environment.sh (32 characters) and ADMIN_FXA_CLIENT_SECRET (fxa.adminClientSecret, empty with the accounts off); none of the generated without; FXA_SMTP_PASS of smtp.password"
+  check "Secret: fxa.enabled adds the eight generated secrets of prepare_environment.sh (32 characters) and ADMIN_FXA_CLIENT_SECRET (fxa.adminClientSecret); none without (ADMIN_FXA_CLIENT_SECRET removed); FXA_SMTP_PASS of smtp.password"
 
   # an existingSecret without the accounts' keys: the render fails naming them (lookup, so
   # tested here on the data it would return: helm template has no cluster)
@@ -224,7 +225,7 @@ fxa_lint() {
 }
 
 fxa_base_parity() {
-  local base base_dir mask values name diffs old new keys old_keys
+  local base base_dir mask values name diffs old new
   base=$(mktemp -d)
   if [[ -n "${PARITY_BASE_CHART:-}" ]]; then
     base_dir=$(cd "${PARITY_BASE_CHART}" && pwd) || fail "PARITY_BASE_CHART ${PARITY_BASE_CHART}: no such directory"
@@ -236,13 +237,12 @@ fxa_base_parity() {
   fi
   [[ "$(sed -n 's/^version: //p' "${base_dir}/Chart.yaml")" == 0.1.0 ]] || fail "${base_dir}: not chart 0.1.0"
   # (the Secret's data masked: its generated values differ on every render, and so does the
-  # admin UI's checksum/admin-secrets, the sha256 of that data; its keys compared apart: 0.1.0's
-  # and ADMIN_FXA_CLIENT_SECRET, always written)
+  # admin UI's checksum/admin-secrets, the sha256 of that data; its keys are compared)
   mask='walk(if type == "object" then
       (if has("helm.sh/chart") then .["helm.sh/chart"] = "masked" else . end)
       | (if has("checksum/admin-secrets") then .["checksum/admin-secrets"] = "masked" else . end)
       | (if .name? == "ADMIN_K8S_CHART_VERSION" and has("value") then .value = "masked" else . end)
-      | (if .kind? == "Secret" and has("data") then .data = "masked" else . end)
+      | (if .kind? == "Secret" and has("data") then .data = (.data | map_values("masked")) else . end)
     else . end)'
   diffs=""
   for values in "${base_dir}"/ci/*.yaml; do
@@ -250,10 +250,6 @@ fxa_base_parity() {
     [[ -f "${CHART_DIR}/ci/${name}" ]] || fail "ci/${name} of chart 0.1.0 is gone"
     old=$(helm template test-release "${base_dir}" -f "${values}" 2>&1) || fail "chart 0.1.0 failed to render with ci/${name}: ${old}"
     new=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/${name}" 2>&1) || fail "the chart failed to render with ci/${name}: ${new}"
-    keys='[.[] | select(.kind == "Secret") | .data | keys] | add // [] | sort'
-    old_keys=$(manifests <<< "${old}" | jq -c "${keys} + (if length > 0 then [\"ADMIN_FXA_CLIENT_SECRET\"] else [] end) | sort")
-    [[ "$(manifests <<< "${new}" | jq -c "${keys}")" == "${old_keys}" ]] \
-      || fail "ci/${name}: the Secret's keys are not 0.1.0's and ADMIN_FXA_CLIENT_SECRET: $(manifests <<< "${new}" | jq -c "${keys}"), 0.1.0 ${old_keys}"
     if ! diff <(manifests <<< "${old}" | jq -S "${mask}") <(manifests <<< "${new}" | jq -S "${mask}") > "${base}/${name}.diff"; then
       diffs+=" ${name}"
       cut -c1-200 "${base}/${name}.diff" | head -40
@@ -261,5 +257,5 @@ fxa_base_parity() {
   done
   rm -rf "${base}"
   [[ -z "${diffs}" ]] || fail "with the accounts off, not what chart 0.1.0 renders:${diffs}"
-  check "accounts off: the same objects as chart 0.1.0 (${PARITY_BASE}) for every ci/*.yaml it had (but helm.sh/chart, ADMIN_K8S_CHART_VERSION, the Secret's values and their checksum; its keys 0.1.0's and ADMIN_FXA_CLIENT_SECRET)"
+  check "accounts off: the same objects as chart 0.1.0 (${PARITY_BASE}) for every ci/*.yaml it had (but helm.sh/chart, ADMIN_K8S_CHART_VERSION, the Secret's values and their checksum)"
 }
