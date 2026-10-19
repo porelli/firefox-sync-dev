@@ -1,0 +1,187 @@
+# Self-hosted Mozilla accounts
+
+By default Firefox signs in with Mozilla accounts (`accounts.firefox.com`), and only the Sync data is on your server. This page adds the accounts service too, so that signing in, the account keys and the Sync data all stay on your server. Set up the Sync server first, with your install page from [the documentation](README.md).
+
+Mozilla does not support self-hosting its accounts service, and changes it every couple of weeks. A new release is published here only after the tests passed with it. Pin `FXA_VERSION` to choose when you take one, see [Upgrading](upgrading.md#self-hosted-accounts).
+
+## Requirements
+
+- The accounts image, about 5 GB unpacked. By default it is this project's build of Mozilla's newest tested release, for amd64 and arm64. Which images you can use: [Images](reference/images.md#accounts).
+- 3-4 GB of RAM for the whole stack.
+- An SMTP server. New accounts and new sign-ins are confirmed with a code sent by email, so without it nobody can sign up. The admin UI can send its alerts through the same server, see [Alerts](admin/alerts.md).
+- A database: the stack's `fxa-db` container, or your own server. See [MySQL or MariaDB](#mysql-or-mariadb).
+- Four host names behind your reverse proxy, with HTTPS: `accounts.`, `api.`, `profile.` and `sync.`. What each one proxies to: [Host names and ports](reverse-proxy.md#host-names-and-ports).
+
+## Set up
+
+`prepare_environment.sh` does the whole setup, for docker compose and for Quadlets.
+
+1. Run it, and answer `y` to "Also self-host Mozilla accounts?":
+
+   ```bash
+   ./prepare_environment.sh
+   ```
+
+   It asks for the domain of the host names, your SMTP server, [who can sign up](#who-can-sign-up) and the [database](#mysql-or-mariadb). It generates the secrets and points the Sync server to your accounts. With docker compose, it sets `COMPOSE_FILE` so that `docker compose up -d` starts everything. It also writes an nginx example to `config/nginx/fxa.conf`.
+1. With the admin UI, it last asks whether to sign in to the admin UI with these accounts. Give the admins' emails and the host name of the admin UI. See [Signing in](admin/signing-in.md#self-hosted-accounts).
+1. Start everything. With docker compose:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   With Quadlets, start the accounts' units as in [Podman](install/podman.md#quadlets).
+
+   The first start takes a few minutes: the databases are created, then the keys are generated.
+1. [Set up Firefox](firefox.md#self-hosted-accounts).
+
+The keys are kept in the `fxa-keys` volume. Don't lose it: without it every session becomes invalid. Back it up with the databases, see [Backups](backups.md#what-to-keep).
+
+<!-- helm-fxa: accounts values go here -->
+
+### Set up by hand
+
+1. Fill in the `SELF-HOSTED MOZILLA ACCOUNTS` section of `.env`:
+    - the three URLs: `FXA_CONTENT_URL`, `FXA_AUTH_URL` and `FXA_PROFILE_URL`;
+    - a different random value for each `FXA_*_SECRET`, `FXA_FLOW_ID_KEY`, `FXA_SESSION_TOKEN_HANDLE_KEY`, `FXA_CONTENT_SESSION_SECRET`, `FXA_MYSQL_PASSWORD` and `FXA_ADMIN_DB_PASSWORD`;
+    - who can sign up: `FXA_SIGNUPS` and `FXA_SIGNUP_ALLOWLIST`, see [Who can sign up](#who-can-sign-up);
+    - your SMTP server.
+1. Point the Sync server to your accounts service instead of Mozilla's:
+
+   ```ini
+   FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1
+   FXA_EMAIL_DOMAIN=api.example.com
+   ```
+
+   `FXA_EMAIL_DOMAIN` must be the host name of `FXA_AUTH_URL`.
+1. Start everything:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.fxa.yml up -d
+   ```
+
+Every setting: [Settings](reference/settings.md).
+
+## MySQL or MariaDB
+
+Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL by default. The stack can run the accounts on MariaDB instead, if you would rather run only MariaDB. Every release is tested here on both, with the same tests: sign-up, Sync, the sign-up policy, the admin UI and a real Firefox. Which versions: [Supported versions](databases.md#supported-versions).
+
+To choose MariaDB:
+
+- With `prepare_environment.sh`: answer `mariadb` to the accounts database question. The default is `mysql`, whatever you chose for Sync: following Sync's default (MariaDB) would move most new installs off what Mozilla supports.
+- By hand: `FXA_DB=mariadb` in `.env`. With docker compose, add `docker-compose.fxa-mariadb.yml` at the end of `COMPOSE_FILE`:
+
+  ```ini
+  COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml
+  ```
+
+  With Quadlets, `prepare_environment.sh` installs `config/quadlet/fxa/mariadb/` in place of the MySQL unit.
+
+Choose before the first start. MariaDB gets its own volume, `fxa-db-mariadb` (Quadlets: `firefox-sync-fxa-db-mariadb`), because it cannot open MySQL's data files. Switching an existing install leaves the MySQL data in `fxa-db` and starts with no accounts. Moving the data takes a dump and a reload, which is not tested here.
+
+Mozilla could release a migration that works on MySQL only. A release is published here once it passes on MySQL: a failure on MariaDB does not hold it back. With MariaDB, pin `FXA_VERSION`, and upgrade once a release passed the `test-mariadb` jobs of [fxa.yml](/.github/workflows/fxa.yml).
+
+The image of `fxa-db` is `FXA_MYSQL_IMAGE` or `FXA_MARIADB_IMAGE`. Their defaults, and the pins for installs from before: [Default tags and pins](databases.md#default-tags-and-pins). Moving to a newer major: [MariaDB](upgrading.md#mariadb), or [MySQL 8 to 9](upgrading.md#mysql-8-to-9).
+
+### MySQL 9
+
+Mozilla's accounts use a MySQL driver that speaks `mysql_native_password` only. MySQL 8.4 has that method off by default, and MySQL 9 removed it. [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) replaces the driver with `mysql2`, which also speaks MySQL's default, `caching_sha2_password`.
+
+Until a release includes it, the accounts images built here have it, see [Upstream patches](reference/images.md#upstream-patches). Mozilla's own images and ours built before it don't. With them, `fxa-db` runs `mysql:8` with `FXA_MYSQL_ARGS`, and your own server must be MySQL 8.4 with `mysql_native_password=ON`.
+
+`prepare_environment.sh` reads the image's label and writes the right settings. It warns, with `--upgrade` too, when `FXA_MYSQL_IMAGE` and the image don't match. A mismatch shows as `ER_NOT_SUPPORTED_AUTH_MODE` in `fxa-migrations` and `fxa-auth`, see [Troubleshooting](troubleshooting.md#databases).
+
+### MariaDB 12
+
+MariaDB 12 names unnamed foreign keys `1`, `2`, and so on, where MySQL and MariaDB 11 name them `<table>_ibfk_N`. Mozilla's migrations drop foreign keys by those names, so on a new database on MariaDB 12 they stop at the first one:
+
+```text
+ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1
+```
+
+No server setting changes that. [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494) fixes it, and the accounts images built here have it until a release includes it ([Upstream patches](reference/images.md#upstream-patches)). With Mozilla's own images, or ours built before it, use `FXA_MARIADB_IMAGE=mariadb:11`.
+
+`prepare_environment.sh` warns, with `--upgrade` too, when the accounts would run on MariaDB 12 or later, or on your own MariaDB server, with an image that does not have it. The admin UI does not check it: it cannot inspect images.
+
+## Who can sign up
+
+Anybody who can reach your accounts pages can create an account, and with it use your Sync server. `FXA_SIGNUPS` in `.env`, or the admin UI's sign-ups page, says who can:
+
+| `FXA_SIGNUPS` | Who can create an account |
+|---|---|
+| `open` (default) | anybody who can reach your accounts pages |
+| `allowlist` | only the emails (`alice@example.com`) and domains (`@example.com`) of `FXA_SIGNUP_ALLOWLIST`, comma-separated |
+| `closed` | nobody |
+
+`prepare_environment.sh` asks for the allowlist. Existing accounts are never affected: disable them in the admin UI instead, see [Sign out and disable](admin/accounts.md#sign-out-and-disable).
+
+How many accounts can be created at all, whoever signs up, is `FXA_MAX_ACCOUNTS`, see [Limits](limits.md#fxa_max_accounts).
+
+How the policy is enforced:
+
+- The accounts database refuses the account itself. `fxa-policy` runs before the accounts service at every start, and installs a trigger on the accounts table and the `ffs` database it reads the policy from. So nothing that reaches the accounts service, by any path, can create an account the policy does not allow.
+- So that people see why, the admin UI also answers sign-up requests itself. Your reverse proxy sends `POST /v1/account/create` of the accounts API host name to `ADMIN_GATE_EXPORT_PORT` (`127.0.0.1:8091`), see [Host names and ports](reverse-proxy.md#host-names-and-ports). Refused sign-ups then show "The request was blocked for security reasons" instead of "Unexpected error".
+- The policy itself lives in the accounts database (`ffs.settings` and `ffs.signup_allowlist`), not in `.env`. Both `.env` and the admin UI's page write it there.
+
+`.env` and the page share the policy like this:
+
+1. At every start, `fxa-policy` compares `FXA_SIGNUPS` and `FXA_SIGNUP_ALLOWLIST` with the values it read from `.env` at the start before. It keeps those in `ffs.settings`.
+1. On the first start, or when you changed either of them in `.env`, the values of `.env` replace the policy, including what was set on the page.
+1. Otherwise the policy stays as it is in the database. What you set on the page survives restarts and upgrades.
+
+So to take the policy back from the page, change `.env` and run `docker compose up -d`. With Quadlets the values are written in `firefox-sync-fxa-policy.container` instead: change them there, then `systemctl --user daemon-reload` and restart `firefox-sync-fxa-policy.service`. `FXA_SIGNUPS=allowlist` with an empty `FXA_SIGNUP_ALLOWLIST` lets nobody sign up, and `fxa-policy` logs a warning. `FXA_MAX_ACCOUNTS` follows its own rules, see [Limits](limits.md#fxa_max_accounts).
+
+The page itself (the allowlist, removing entries): [Sign-ups](admin/accounts.md#sign-ups).
+
+## Security history
+
+The security history is off by default. With it on, the accounts service records every sign-in with the IP address it came from.
+
+To turn it on, set this in `.env` (`prepare_environment.sh` asks, default no), then `docker compose up -d`:
+
+```ini
+FXA_ACCOUNT_EVENTS=true
+```
+
+The accounts service then keeps a history of every account in `fxa.securityEvents`. It records each sign-in and wrong password, password change and reset, two-step authentication turned on or off, recovery key created or removed, backup codes, secondary emails, passkeys and sign-outs. Each entry has its time, **the IP address it came from** and the browser's user agent.
+
+The owner sees it in Recent activity of the account settings. The admin UI shows it on the account page, and alerts when a password, the primary email or a way to sign in or recover changes: see [Security history](admin/accounts.md#security-history).
+
+With the history on, Mozilla would let later sign-ins from the same IP address skip the code sent by email for 7 days. The stack turns that off (`IP_PROFILING_RECENCY=0`): the sign-in code is asked exactly as with the history off.
+
+<details><summary>Why: what the setting changes in Mozilla's code</summary>
+
+Read in fxa-mono v1.347.x. The setting is `ACCOUNT_EVENTS_ENABLED` of the auth server, on in Mozilla's defaults.
+
+- Off, the auth server replaces its `AccountEventsManager` with one that does nothing (`bin/key_server.js`). No security event is written, and Recent activity stays empty.
+- On, every event is written to the accounts database. The other part of it, email events in Google's Firestore, stays off with `FIRESTORE_ENABLED=false`.
+- The auth server also reads the history at sign-in. After a confirmed sign-in from an IP address, later sign-ins from it skip the email code for `IP_PROFILING_RECENCY` (7 days), the sign-ins of Firefox for Sync too. From a shared network a password alone would then be enough. The stack sets it to 0, in `docker-compose.fxa.yml` and the Quadlets.
+- The other skips don't depend on the setting. The one for a known browser (`SIGNIN_CONFIRMATION_DEVICE_FINGERPRINTING_ENABLED`) is off in Mozilla's defaults. The one for accounts created less than 48 hours ago applies either way.
+
+</details>
+
+Privacy, plainly:
+
+- The IP address is stored as it is, next to a keyed hash of it (`IP_HMAC_KEY`), which therefore hides nothing. IP addresses are personal data in many countries: tell the people who use your server.
+- Mozilla never prunes the history: its procedures delete it only with the account. The admin UI's daily pruning removes events older than `ADMIN_RETENTION_DAYS` (30), see [Maintenance and retention](admin/storage.md#maintenance-and-retention). Without the admin UI nothing does: run this yourself, regularly:
+
+  ```sql
+  DELETE FROM fxa.securityEvents WHERE createdAt < (UNIX_TIMESTAMP() - 30 * 86400) * 1000;
+  ```
+
+- Turning it off again stops new entries. Those already recorded stay until they are pruned or the account is deleted.
+- The IP addresses are in other places too. Deleting rows of `fxa.securityEvents` leaves them there:
+    - the events of kind `security` in the admin UI's event log, in its own database (see [Event log](admin/monitoring.md#event-log) to delete them);
+    - the admin UI's alert emails, in the admins' mailboxes;
+    - the accounts' backups: `fxa.securityEvents` is in every dump, for the newest `BACKUP_KEEP` runs.
+- The admin UI reads the name, time, IP address and whether the sign-in was confirmed, not the rest. The full entry can hold the recovery phone's number.
+
+## What works
+
+- Tested on every release: sign-up, email confirmation, sign-in, OAuth for Sync, syncing, and a second device. A real Firefox signs up on one profile through the accounts pages, and a second profile signs in and receives its bookmark.
+- Send tab to device uses Mozilla's public push service, as Firefox does with Mozilla accounts.
+- Pairing a phone with a QR code ([Pair a phone](firefox.md#pair-a-phone)) uses Mozilla's channel server, unless you run your own. To run it, uncomment `COMPOSE_PROFILES=pairing` and `FXA_PAIRING_URL=wss://pairing.example.com` in `.env`, and proxy that host name (a websocket) to `FXA_PAIRING_EXPORT_PORT`. `config/nginx/fxa-example.conf` has an example.
+- The accounts service rate-limits sign-in attempts itself, in Redis, with upstream's `rate-limit-rules.txt`. For example: 5 failed sign-ins per IP address and email in 15 minutes. It reads the client's address from `X-Forwarded-For`, see [Client IP address](reverse-proxy.md#client-ip-address).
+- Not available: payments and subscriptions, the recovery phone (SMS), sign-in with Google or Apple, and the deferred clean-up tasks and event notifications to other services. They need Google Cloud. The [security history](#security-history) does not.
+
+Upgrades: [Upgrading](upgrading.md#self-hosted-accounts). The tests: [Testing](development/testing.md).
