@@ -121,7 +121,15 @@ How the policy is enforced:
 
 - The accounts database refuses the account itself. `fxa-policy` runs before the accounts service at every start, and installs a trigger on the accounts table and the `ffs` database it reads the policy from. So nothing that reaches the accounts service, by any path, can create an account the policy does not allow.
 - So that people see why, the admin UI also answers sign-up requests itself. Your reverse proxy sends `POST /v1/account/create` of the accounts API host name to `ADMIN_GATE_EXPORT_PORT` (`127.0.0.1:8091`), see [Host names and ports](reverse-proxy.md#host-names-and-ports). Refused sign-ups then show "The request was blocked for security reasons" instead of "Unexpected error".
-- `.env` and the admin UI's page both change the policy. A value in `.env` is applied when you change it there, at the next `docker compose up -d`. Otherwise what you set on the page stays.
+- The policy itself lives in the accounts database (`ffs.settings` and `ffs.signup_allowlist`), not in `.env`. Both `.env` and the admin UI's page write it there.
+
+`.env` and the page share the policy like this:
+
+1. At every start, `fxa-policy` compares `FXA_SIGNUPS` and `FXA_SIGNUP_ALLOWLIST` with the values it read from `.env` at the start before. It keeps those in `ffs.settings`.
+1. On the first start, or when you changed either of them in `.env`, the values of `.env` replace the policy, including what was set on the page.
+1. Otherwise the policy stays as it is in the database. What you set on the page survives restarts and upgrades.
+
+So to take the policy back from the page, change `.env` and run `docker compose up -d`. With Quadlets the values are written in `firefox-sync-fxa-policy.container` instead: change them there, then `systemctl --user daemon-reload` and restart `firefox-sync-fxa-policy.service`. `FXA_SIGNUPS=allowlist` with an empty `FXA_SIGNUP_ALLOWLIST` lets nobody sign up, and `fxa-policy` logs a warning. `FXA_MAX_ACCOUNTS` follows its own rules, see [Limits](limits.md#fxa_max_accounts).
 
 The page itself (the allowlist, removing entries): [Sign-ups](admin/accounts.md#sign-ups).
 

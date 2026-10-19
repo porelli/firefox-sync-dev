@@ -78,16 +78,25 @@ How the accounts' user signs in:
 - MySQL, with an image without mozilla/fxa#21554: `mysql_native_password`, the file's `-- native:` lines. `prepare_environment.sh` uses them for such an image. See [MySQL 9](../accounts.md#mysql-9).
 - MariaDB: `mysql_native_password`, explicitly. MariaDB has no `caching_sha2_password`, and both drivers speak it.
 
-What the policy user installs:
+What the policy user installs at every start ([admin/fxainit.go](/admin/fxainit.go)), and what the admin UI's user `ffs_admin` gets on it:
 
-- the database `ffs`, with the sign-up settings and `FXA_MAX_ACCOUNTS` in `ffs.settings`;
-- a trigger on `fxa.accounts` that checks both through `ffs.signup_refusal`;
-- views that leave out every secret: `ffs.sessions`, `ffs.devices`, `ffs.emails`, `ffs.account_security`, `ffs.security_events` and `ffs.schema_levels`;
-- procedures that run with its privileges: `ffs.disable_account`, `ffs.enable_account`, `ffs.sign_out_all`, `ffs.sign_out_device`, `ffs.sign_out_session`, `ffs.remove_totp`, `ffs.remove_recovery_key`, `ffs.confirm_email`, `ffs.delete_account`, `ffs.delete_unconfirmed` and `ffs.prune`.
+| Object | What it is | `ffs_admin` |
+|---|---|---|
+| `ffs.settings` | the sign-up policy, `FXA_MAX_ACCOUNTS`, and the last policy read from `.env` | `SELECT, INSERT, UPDATE, DELETE` |
+| `ffs.signup_allowlist` | the emails and domains of the allowlist | `SELECT, INSERT, UPDATE, DELETE` |
+| `ffs.signup_refusal()`, `ffs.signup_allowed()` | the functions that check an email against the policy and the max accounts | `EXECUTE` |
+| a trigger on `fxa.accounts` | refuses the new account through `ffs.signup_refusal` | none |
+| views `ffs.sessions`, `ffs.devices`, `ffs.emails`, `ffs.account_security`, `ffs.security_events`, `ffs.schema_levels`, `ffs.database_sizes` | what the admin UI lists, without any secret or token id | `SELECT` |
+| procedures `ffs.disable_account`, `ffs.enable_account`, `ffs.sign_out_all`, `ffs.sign_out_device`, `ffs.sign_out_session`, `ffs.remove_totp`, `ffs.remove_recovery_key`, `ffs.confirm_email`, `ffs.delete_account`, `ffs.delete_unconfirmed`, `ffs.prune` | what the admin UI changes, run with the policy user's privileges | `EXECUTE` |
+| `fxa.accounts` | Mozilla's table | `SELECT` on `uid`, `email`, `emailVerified`, `createdAt` and `disabledAt` only |
+
+`ffs_admin` has nothing else: no `UPDATE` or `DELETE` on Mozilla's tables. `fxa-policy` revokes its grants first at every start, so grants from older releases go.
+
+The procedures call Mozilla's own, and `fxa-policy` checks at every start that these exist: `revokeAccountTokens_1`, `deleteTotpToken_4`, `deleteRecoveryKey_2`, `verifyEmail_9`, `deleteAccount_24` and `prune_10`. When one is missing (a newer accounts release renamed it, or the policy user has no `EXECUTE` on `fxa`), it logs a warning naming it, and the accounts keep working. What needs it in the admin UI then answers with an error: disabling and signing out, turning off two-step authentication, removing a recovery key, confirming an email, deleting accounts and pruning ([Sign out and disable](../admin/accounts.md#sign-out-and-disable)).
 
 Why each grant:
 
-- `EXECUTE` on `fxa`: the procedures call Mozilla's own (`revokeAccountTokens_1`, `deleteTotpToken_4`, `deleteRecoveryKey_2`, `verifyEmail_9`, `deleteAccount_24`, `prune_10`). `fxa-policy` checks at every start that they exist. When one is missing, it logs a warning naming it and the accounts keep working, but what needs it in the admin UI answers with an error ([Sign out and disable](../admin/accounts.md#sign-out-and-disable)).
+- `EXECUTE` on `fxa`: the procedures call Mozilla's own, listed above.
 - `WITH GRANT OPTION`: to give the admin UI's user its grants.
 - `SELECT` on `fxa_profile` and `pushbox`: the admin UI shows the size and schema level of all five databases. `DELETE` there removes the profile and the push messages of a deleted account.
 - The grants are on whole databases because the tables don't exist yet when you run the file.
@@ -95,7 +104,7 @@ Why each grant:
 
 `ffs_admin` is a user, not the admin UI's own database of the same name (`ADMIN_DB_NAME`). On one server for Sync and the accounts, both exist side by side, and this user has no grant on that database.
 
-The admin UI's user never sees token ids (a session token id signs in as its account), and cannot change Mozilla's tables.
+The admin UI's user never sees token ids: a session token id signs in as its account.
 
 Installs whose SQL is older than these grants:
 
