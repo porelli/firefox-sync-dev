@@ -65,7 +65,7 @@ The host of a URL, without its port: the host of an Ingress. Accepts a dict with
 
 {{/*
 The Sync server's FXA_OAUTH_SERVER_URL and FXA_EMAIL_DOMAIN: with the self-hosted accounts their
-auth server and the host of fxa.authUrl (FXA.md: the email domain must be the auth host, so
+auth server and the host of fxa.authUrl (docs/accounts.md: the email domain must be the auth host, so
 fxa.oauthServerUrl and fxa.emailDomain are ignored then), else Mozilla's of the values
 */}}
 {{- define "firefox-sync.fxaOauthServerUrl" -}}
@@ -199,7 +199,7 @@ firefox-sync.checkValues
 {{- end }}
 {{- if include "firefox-sync.fxaSignIn" . }}
 {{- if not (or $a.allowed.users $a.allowed.groups) }}
-{{- fail "firefox-sync: admin.fxaSignIn needs admin.allowed.users or admin.allowed.groups: who of the accounts is an admin (ADMIN.md#signing-in)" }}
+{{- fail "firefox-sync: admin.fxaSignIn needs admin.allowed.users or admin.allowed.groups: who of the accounts is an admin (docs/admin/signing-in.md#self-hosted-accounts)" }}
 {{- end }}
 {{- if not (or $a.oidc.redirectUrl $a.ingress.host) }}
 {{- fail "firefox-sync: admin.fxaSignIn needs admin.oidc.redirectUrl or admin.ingress.host: the admin UI's public https://<host>/auth/callback, where the accounts send the admins back" }}
@@ -213,11 +213,11 @@ firefox-sync.checkValues
 {{- end }}
 {{- if $f.enabled }}
 {{- if not (and $f.contentUrl $f.authUrl $f.profileUrl) }}
-{{- fail "firefox-sync: fxa.enabled needs fxa.contentUrl, fxa.authUrl and fxa.profileUrl, the public URLs of the accounts' pages, API and profiles, each on a host of its own (FXA.md)" }}
+{{- fail "firefox-sync: fxa.enabled needs fxa.contentUrl, fxa.authUrl and fxa.profileUrl, the public URLs of the accounts' pages, API and profiles, each on a host of its own (docs/reverse-proxy.md#host-names-and-ports)" }}
 {{- end }}
 {{- if not $f.database.bundled }}
 {{- if not $f.database.external.host }}
-{{- fail "firefox-sync: fxa.database.bundled=false needs fxa.database.external.host, your accounts database server (DATABASES.md)" }}
+{{- fail "firefox-sync: fxa.database.bundled=false needs fxa.database.external.host, your accounts database server (docs/databases.md#your-own-server)" }}
 {{- end }}
 {{- if not .Values.existingSecret }}
 {{- fail "firefox-sync: fxa.database.bundled=false needs existingSecret, with FXA_MYSQL_PASSWORD and FXA_MYSQL_POLICY_PASSWORD, the passwords of fxa.database.external.user and policyUser on your server, and the accounts' secrets: the chart cannot generate passwords your server knows" }}
@@ -286,7 +286,7 @@ check where lookup returns nothing (helm template, a GitOps render)
 {{- end }}
 {{- $new := include "firefox-sync.fxaDbClaim" . }}
 {{- if and $old (ne $old $new) }}
-{{- fail (printf "firefox-sync: fxa.database.backend is %s but the accounts database was created with %s (its volume %s); switching needs a dump and restore, see HELM.md" .Values.fxa.database.backend (ternary "mariadb" "mysql" (eq $old "data-mariadb")) $old) }}
+{{- fail (printf "firefox-sync: fxa.database.backend is %s but the accounts database was created with %s (its volume %s); switching needs a dump and restore, see docs/backups.md#restore-on-kubernetes" .Values.fxa.database.backend (ternary "mariadb" "mysql" (eq $old "data-mariadb")) $old) }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -327,7 +327,7 @@ Secret) and "data" (its data)
 {{- end }}
 {{- end }}
 {{- if $missing }}
-{{- fail (printf "firefox-sync: existingSecret %s lacks %s, which the self-hosted accounts need (HELM.md): add them, then helm upgrade again" .name (sortAlpha $missing | join ", ")) }}
+{{- fail (printf "firefox-sync: existingSecret %s lacks %s, which the self-hosted accounts need (docs/install/helm.md#existingsecret): add them, then helm upgrade again" .name (sortAlpha $missing | join ", ")) }}
 {{- end }}
 {{- end }}
 {{- end }}

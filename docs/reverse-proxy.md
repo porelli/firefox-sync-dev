@@ -51,6 +51,8 @@ location = /v1/account/create {
 }
 ```
 
+With the Helm chart the gate is the Service `<release>-firefox-sync-admin`, port 8081. The chart's Ingress of the accounts API sends `/v1/account/create` there (`fxa.ingress.enabled` and `admin.enabled`). An Ingress or proxy of your own needs the same rule: path `/v1/account/create`, type `Exact`, to that Service and port.
+
 `prepare_environment.sh` removes this block when you don't enable the admin UI. Without the gate the accounts database still refuses the sign-ups the policy does not allow. What the gate adds: see [Who can sign up](accounts.md#who-can-sign-up).
 
 ## Pairing

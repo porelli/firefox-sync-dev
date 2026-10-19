@@ -1,5 +1,5 @@
 #!/bin/bash
-# The chart's self-hosted Mozilla accounts (fxa.enabled), FXA.md under Kubernetes.
+# The chart's self-hosted Mozilla accounts (fxa.enabled), docs/accounts.md under Kubernetes.
 #
 #   fxa_lint    the template checks of the accounts, run by `tests/helm.sh lint`, which sources
 #               this file (it uses check, fail and manifests of tests/helm/lib.sh, and CHART_DIR)
@@ -982,7 +982,7 @@ fxa_e2e() {
   if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.backend="${other}" --timeout 2m 2>&1); then
     fail "helm upgrade to fxa.database.backend=${other} accepted"
   fi
-  grep -qF "firefox-sync: fxa.database.backend is ${other} but the accounts database was created with ${backend} (its volume ${old_claim}); switching needs a dump and restore, see HELM.md" <<< "${out}" \
+  grep -qF "firefox-sync: fxa.database.backend is ${other} but the accounts database was created with ${backend} (its volume ${old_claim}); switching needs a dump and restore, see docs/backups.md#restore-on-kubernetes" <<< "${out}" \
     || fail "helm upgrade to ${other} refused, but not by the chart's check: ${out}"
   auth_after=$(kubectl get "${auth}" -o json | jq -cS '[.metadata.generation, .spec]')
   [[ "${auth_after}" == "${auth_before}" ]] || fail "the refused upgrade changed auth's Deployment: $(diff <(jq . <<< "${auth_before}") <(jq . <<< "${auth_after}") | head -20)"
@@ -1217,7 +1217,7 @@ PY
 
   # the backups with the accounts (backup.enabled): one run of the CronJob, the accounts
   # first (its init container, allowed into fxa-db by fxa.networkPolicy), then Sync, which
-  # records both; the five dumps pass gzip -t; fxa's restored as HELM.md#restoring says
+  # records both; the five dumps pass gzip -t; fxa's restored as docs/backups.md#restore-on-kubernetes says
   # (its restore(), in the container backup-accounts) into a scratch database, as
   # tests/e2e-fxa.sh: the same accounts and procedures; the run on the admin UI's Backups card
   kubectl create job --from="cronjob/${FULL}-backup" backup-now-1 > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
@@ -1227,13 +1227,13 @@ PY
   local stamp=${BASH_REMATCH[1]}
   kubectl logs job/backup-now-1 -c backup | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now-1: Sync not dumped: $(kubectl logs job/backup-now-1 -c backup)"
   check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: complete, the accounts dumped first (backup-accounts, ${stamp}), then Sync"
-  # (HELM.md#restoring's restore() and its command of the accounts, as they are there)
-  local helm_md="${REPO_ROOT}/HELM.md" restore_fn restore_cmd
-  restore_fn=$(sed -n '/^    restore() {/,/^    }$/p' "${helm_md}")
-  restore_cmd=$(sed -n "/^    restore restore-accounts 'run=/,/backup-accounts$/p" "${helm_md}")
-  [[ -n "${restore_fn}" && -n "${restore_cmd}" ]] || fail "HELM.md#restoring: no restore() or no restore restore-accounts"
+  # (docs/backups.md#restore-on-kubernetes's restore() and its command of the accounts, as they are there)
+  local backups_md="${REPO_ROOT}/docs/backups.md" restore_fn restore_cmd
+  restore_fn=$(sed -n '/^    restore() {/,/^    }$/p' "${backups_md}")
+  restore_cmd=$(sed -n "/^    restore restore-accounts 'run=/,/backup-accounts$/p" "${backups_md}")
+  [[ -n "${restore_fn}" && -n "${restore_cmd}" ]] || fail "docs/backups.md#restore-on-kubernetes: no restore() or no restore restore-accounts"
   eval "${restore_fn}"
-  # shellcheck disable=SC2034 # (HELM.md's restore() reads it)
+  # shellcheck disable=SC2034 # (the page's restore() reads it)
   local F=${FULL}
   got=$(restore restore-ls "cd /backups/accounts/${stamp} && for f in *.sql.gz; do gzip -t \$f && echo \$f; done" backup-accounts 2>&1 | grep '\.sql\.gz$' | LC_ALL=C sort | paste -sd' ' -)
   [[ "${got}" == "ffs.sql.gz fxa.sql.gz fxa_oauth.sql.gz fxa_profile.sql.gz pushbox.sql.gz" ]] || fail "accounts/${stamp}: ${got}"
@@ -1244,19 +1244,19 @@ PY
   accounts=$(fxa_db_sql "SELECT COUNT(*) FROM fxa.accounts")
   [[ "${accounts}" =~ ^[1-9][0-9]*$ ]] || fail "no accounts to back up: ${accounts}"
   routines() { fxa_db_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '$1'"; }
-  # (into the scratch database, fxa alone; MariaDB's client with MariaDB, as HELM.md says)
+  # (into the scratch database, fxa alone; MariaDB's client with MariaDB, as the page says)
   restore_cmd=$(sed -e 's/for db in fxa fxa_oauth fxa_profile pushbox ffs; do/for db in fxa; do/' -e 's/CREATE DATABASE IF NOT EXISTS \$db/CREATE DATABASE IF NOT EXISTS ffs_restore_test/' \
     -e 's/ \$db || exit 1$/ ffs_restore_test || exit 1/' <<< "${restore_cmd}")
   [[ ${backend} == mariadb ]] && restore_cmd=${restore_cmd//mysql -h/mariadb -h}
-  [[ "$(grep -c ffs_restore_test <<< "${restore_cmd}")" == 2 ]] || fail "HELM.md's restore of the accounts not made a scratch one: ${restore_cmd}"
-  # shellcheck disable=SC2034 # (the command of HELM.md reads it)
+  [[ "$(grep -c ffs_restore_test <<< "${restore_cmd}")" == 2 ]] || fail "docs/backups.md's restore of the accounts not made a scratch one: ${restore_cmd}"
+  # shellcheck disable=SC2034 # (the page's command reads it)
   local accounts_run=${stamp}
-  eval "${restore_cmd}" > /dev/null || fail "HELM.md's restore of the accounts (into ffs_restore_test) failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
+  eval "${restore_cmd}" > /dev/null || fail "docs/backups.md's restore of the accounts (into ffs_restore_test) failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
   [[ "$(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts")" == "${accounts}" ]] || fail "ffs_restore_test.accounts: $(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts"), fxa.accounts ${accounts}"
   [[ "$(routines ffs_restore_test)" == "$(routines fxa)" ]] || fail "ffs_restore_test's procedures: $(routines ffs_restore_test), fxa's $(routines fxa)"
   fxa_db_sql "DROP DATABASE ffs_restore_test" > /dev/null
   kubectl delete job restore-ls restore-accounts --wait=true > /dev/null
-  check "fxa.sql.gz restored with HELM.md#restoring's restore() (backup-accounts, as root) into ffs_restore_test: the same ${accounts} accounts and $(routines fxa) procedures as fxa; dropped"
+  check "fxa.sql.gz restored with docs/backups.md#restore-on-kubernetes's restore() (backup-accounts, as root) into ffs_restore_test: the same ${accounts} accounts and $(routines fxa) procedures as fxa; dropped"
   fxa_client_pod backups-card
   got=$(fxa_py backups-card <<'PY'
 import re, time

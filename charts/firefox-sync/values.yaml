@@ -45,7 +45,7 @@ smtp:
   insecureAuth: ""
 
 # The Mozilla accounts Firefox signs in with: Mozilla's (the default), or your own with
-# fxa.enabled (compose's docker-compose.fxa.yml, see FXA.md), with the names of .env below
+# fxa.enabled (compose's docker-compose.fxa.yml, see docs/accounts.md), with the names of .env below
 fxa:
   # Mozilla's accounts (fxa.enabled false): FXA_OAUTH_SERVER_URL and FXA_EMAIL_DOMAIN of .env.
   # Ignored with fxa.enabled: the chart's auth server (http://<release>-firefox-sync-fxa-auth:9000/v1)
@@ -57,7 +57,7 @@ fxa:
   # 3-4 GB of memory), on the three public URLs below (required), each a host of its own
   enabled: false
   # FXA_IMAGE (empty: image.repository) and FXA_VERSION: our builds of Mozilla's releases, amd64
-  # and arm64; pin a release with e.g. fxa-mono-v1.347.1 (FXA.md#upgrades). Mozilla's own
+  # and arm64; pin a release with e.g. fxa-mono-v1.347.1 (docs/upgrading.md#self-hosted-accounts). Mozilla's own
   # (amd64 only): repository docker.io/mozilla/fxa-mono, tag v1.347.1
   image:
     repository: ""
@@ -77,10 +77,10 @@ fxa:
   # UI; initial:N set once, then managed in the admin UI
   maxAccounts: "initial:unlimited"
   # FXA_ACCOUNT_EVENTS: true records the security history of every account (sign-ins, password,
-  # 2-step and recovery key changes) with the IP address of each (FXA.md)
+  # 2-step and recovery key changes) with the IP address of each (docs/accounts.md#security-history)
   accountEvents: false
   # FXA_CLIENT_ADDRESS_DEPTH: the reverse proxies in front of the auth server + 1, for the client
-  # IP of the rate limits: 2 for the Ingress controller alone (FXA.md)
+  # IP of the rate limits: 2 for the Ingress controller alone (docs/reverse-proxy.md#client-ip-address)
   clientAddressDepth: 2
   # FXA_ACCESS_TOKEN_LIFETIME: how long Firefox's access tokens live (Mozilla's: "365 minutes")
   accessTokenLifetime: "60 minutes"
@@ -107,9 +107,9 @@ fxa:
   networkPolicy:
     enabled: true
 
-  # the accounts database: compose's fxa-db, or your own server (DATABASES.md)
+  # the accounts database: compose's fxa-db, or your own server (docs/databases.md#your-own-server)
   database:
-    # FXA_DB: mysql (MySQL 8, what Mozilla supports) or mariadb (FXA.md#mysql-or-mariadb).
+    # FXA_DB: mysql (MySQL 8, what Mozilla supports) or mariadb (docs/accounts.md#mysql-or-mariadb).
     # Independent of database.backend
     backend: mysql
     # FXA_DB_CONTAINERS: true runs the server (StatefulSet <release>-firefox-sync-fxa-db, as
@@ -150,7 +150,7 @@ fxa:
   # the auth server's signing keys: never regenerated silently, losing them signs everyone
   # out. On the PVC <release>-firefox-sync-fxa-keys (kept on helm uninstall), or in a Secret
   # of yours (existingSecret: secret-key.json, public-key.json, vapid-keys.json,
-  # openid-key.json; the PVC is then not created), see HELM.md
+  # openid-key.json; the PVC is then not created), see docs/install/helm.md
   keys:
     existingSecret: ""
     persistence:

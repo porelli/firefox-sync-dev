@@ -1,5 +1,5 @@
 // Chart-only: the avatars at /img/ of fxa.profileUrl, compose's "/img/ -> fxa-profile-static:1112"
-// of your reverse proxy (FXA.md), the prefix stripped. An Ingress cannot strip a prefix
+// of your reverse proxy (docs/reverse-proxy.md#host-names-and-ports), the prefix stripped. An Ingress cannot strip a prefix
 // portably, so the profile pod runs this next to the static server: GET and HEAD of
 // /img/<path> on port 1114 are 127.0.0.1:1112's /<path>, any other path is 404 (another
 // method 405). The avatar URLs kept in fxa_profile (IMG_URL, <profileUrl>/img/a/<id>) stay

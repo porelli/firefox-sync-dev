@@ -131,7 +131,7 @@ kubectl get secret ffs-firefox-sync -o json \
   | jq '{apiVersion, kind, type, data, metadata: (.metadata | {name, labels, annotations})}' > ffs-secret.json
 ```
 
-The optional secrets of the admin UI come from the values alone: the SMTP password, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify`. The chart writes them into the Secret on every install and upgrade (`FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY`). An empty value turns that feature off, whatever was put into the Secret by hand.
+The optional secrets of the admin UI come from the values alone: `smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify`. The chart writes them into the Secret on every install and upgrade (`FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY`). An empty value turns that feature off, whatever was put into the Secret by hand.
 
 ### existingSecret
 
@@ -153,7 +153,7 @@ Its keys:
 | `ADMIN_PASSWORD` | optional | the admin UI's password. Missing or empty: no password form ([Signing in](../admin/signing-in.md)) |
 | `FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY` | optional | the admin UI's. Missing or empty: that feature is off |
 
-With `existingSecret`, the chart does not read the values of those optional secrets, nor `admin.password`.
+With `existingSecret`, the chart does not read the values of those optional secrets (`smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken`, `admin.notify`), nor `admin.password`.
 
 For MariaDB or MySQL, for example:
 
@@ -190,9 +190,14 @@ Turn it on in your values, then `helm upgrade`:
 admin:
   enabled: true
   alertEmail: you@example.com
+smtp:
+  host: smtp.example.com
+  user: sync@example.com
+  password: <the SMTP password>
+  sender: sync@example.com
 ```
 
-The values are the settings of `.env` under other names: `admin.alertEmail` is `ADMIN_ALERT_EMAIL`, `admin.oidc.*` is `ADMIN_OIDC_*`, `admin.notify` is `ADMIN_NOTIFY` (a list of URLs), and so on. Email alerts also need the SMTP server's values, `admin.smtp.*`. Each one is in [values.yaml](/charts/firefox-sync/values.yaml) and in the Helm column of [Settings](../reference/settings.md#admin-ui).
+The values are the settings of `.env` under other names: `admin.alertEmail` is `ADMIN_ALERT_EMAIL`, `admin.oidc.*` is `ADMIN_OIDC_*`, `admin.notify` is `ADMIN_NOTIFY` (a list of URLs), and so on. Email alerts also need the SMTP server, the top-level `smtp.*` (`FXA_SMTP_*`), which the self-hosted accounts share. Each one is in [values.yaml](/charts/firefox-sync/values.yaml) and in the Helm column of [Settings](../reference/settings.md#admin-ui).
 
 The chart tells the admin UI that it runs on Kubernetes (`ADMIN_DEPLOYMENT=kubernetes`). Its pages then give `kubectl` and `helm upgrade` commands and the names of the values, instead of `.env` and docker compose.
 

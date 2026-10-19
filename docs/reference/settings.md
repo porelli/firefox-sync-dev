@@ -150,21 +150,21 @@ How each way works: [Signing in](../admin/signing-in.md).
 
 ## Notifications
 
-The alerts and the emails of the admin UI: [Alerts](../admin/alerts.md). The same SMTP server sends the self-hosted accounts' emails.
+The alerts and the emails of the admin UI: [Alerts](../admin/alerts.md). The same SMTP server sends the self-hosted accounts' emails, so in the chart it is the top-level `smtp.*`, not under `admin`.
 
 | `.env` | Helm | Default | Meaning | Old name |
 |---|---|---|---|---|
 | `ADMIN_ALERT_EMAIL` | `admin.alertEmail` | empty: nobody | where the alerts go by email | |
 | `ADMIN_NOTIFY` | `admin.notify` (a list; Secret: `ADMIN_NOTIFY`) | empty: nowhere | the other destinations of the alerts, their URLs comma-separated, in single quotes: [Destinations](../admin/alerts.md#destinations). The URLs hold tokens: keep `.env` private | |
-| `FXA_SMTP_HOST` | `admin.smtp.host` | a placeholder (Helm empty: no emails) | the SMTP server | |
-| `FXA_SMTP_PORT` | `admin.smtp.port` | `587` | its port | |
-| `FXA_SMTP_USER` | `admin.smtp.user` | empty: none | its user | |
-| `FXA_SMTP_PASS` | `admin.smtp.password` (Secret: `FXA_SMTP_PASS`) | empty | its password | |
-| `FXA_SMTP_SECURE` | `admin.smtp.secure` | `false` | `true`: TLS from the start (port 465); `false`: STARTTLS | |
-| `FXA_SMTP_SENDER` | `admin.smtp.sender` | `"Mozilla accounts <no-reply@<your domain>>"` | the From of the emails. Empty, the admin UI uses `ADMIN_ALERT_EMAIL` | |
-| `ADMIN_SMTP_INSECURE_AUTH` | `admin.smtp.insecureAuth` | empty: refused | `1`, `true` or `yes` (as `ADMIN_INSECURE_COOKIE`): the admin UI sends `FXA_SMTP_PASS` also to an SMTP server that offers no TLS, in clear (a relay on the host or a network you trust only) | |
+| `FXA_SMTP_HOST` | `smtp.host` | a placeholder (Helm empty: no emails) | the SMTP server | |
+| `FXA_SMTP_PORT` | `smtp.port` | `587` | its port | |
+| `FXA_SMTP_USER` | `smtp.user` | empty: none | its user | |
+| `FXA_SMTP_PASS` | `smtp.password` (Secret: `FXA_SMTP_PASS`) | empty | its password | |
+| `FXA_SMTP_SECURE` | `smtp.secure` | `false` | `true`: TLS from the start (port 465); `false`: STARTTLS | |
+| `FXA_SMTP_SENDER` | `smtp.sender` | `"Mozilla accounts <no-reply@<your domain>>"` | the From of the emails. Empty, the admin UI uses `ADMIN_ALERT_EMAIL` | |
+| `ADMIN_SMTP_INSECURE_AUTH` | `smtp.insecureAuth` | empty: refused | `1`, `true` or `yes` (as `ADMIN_INSECURE_COOKIE`): the admin UI sends `FXA_SMTP_PASS` also to an SMTP server that offers no TLS, in clear (a relay on the host or a network you trust only) | |
 
-`admin.password`, `admin.smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` end up in a Secret: how, with and without `existingSecret`, is in [The Secret](../install/helm.md#the-secret).
+`admin.password`, `smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` end up in a Secret: how, with and without `existingSecret`, is in [The Secret](../install/helm.md#the-secret).
 
 ## Accounts
 

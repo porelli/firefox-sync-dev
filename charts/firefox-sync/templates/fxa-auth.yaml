@@ -96,7 +96,7 @@ spec:
                 [ -s "/fxa-keys-secret/$f" ] || missing="$missing $f"
               done
               if [ -n "$missing" ]; then
-                echo "fxa.keys.existingSecret {{ $keysSecret }} lacks:$missing (HELM.md)"; exit 1
+                echo "fxa.keys.existingSecret {{ $keysSecret }} lacks:$missing (docs/install/helm.md)"; exit 1
               fi
               for f in /fxa-keys-secret/*; do
                 cp "$f" "/fxa-keys/${f##*/}" && chmod 600 "/fxa-keys/${f##*/}" || exit 1
@@ -164,7 +164,7 @@ spec:
             {{- end }}
         # compose's fxa-policy: who can create an account (fxa.signups, signupAllowlist,
         # maxAccounts), enforced by the accounts database itself; also the database user of
-        # the admin UI (ADMIN.md). The admin UI's image, also with admin.enabled false
+        # the admin UI (docs/reference/database-users.md#the-accounts). The admin UI's image, also with admin.enabled false
         - name: policy
           image: {{ include "firefox-sync.image" (dict "root" . "name" "admin") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -360,7 +360,7 @@ spec:
             - name: ACCOUNT_EVENTS_ENABLED
               value: {{ $f.accountEvents | toString | quote }}
             # Mozilla skips the sign-in code for 7 days after a confirmed sign-in from the
-            # same IP address: never here, a password alone does not sign in (FXA.md)
+            # same IP address: never here, a password alone does not sign in (docs/accounts.md#what-works)
             - name: IP_PROFILING_RECENCY
               value: "0"
             - name: LOG_LEVEL
