@@ -345,9 +345,16 @@ services:
     volumes:
       - ./config/backup:/ffs-backup:ro
       - backups:/backups
+    # the databases healthy too: a docker compose up -d that recreates them (a new image, e.g.
+    # SYNC_MARIADB_IMAGE written by --upgrade) leaves the init container completed from before,
+    # and the loop's run at the start would meet them starting
     depends_on:
       tokenserver_db_init:
         condition: service_completed_successfully
+      tokenserver_db:
+        condition: service_healthy
+      syncstorage_db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

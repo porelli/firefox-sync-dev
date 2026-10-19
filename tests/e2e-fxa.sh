@@ -567,8 +567,8 @@ check "$? $(env_value SYNC_POSTGRES_IMAGE) $(grep -c "found the Sync database of
   "0 postgres:17 1" "prepare_environment.sh pins PostgreSQL to the major of the volume of an earlier install (17)"
 keep=$(docker run --rm -v "${pg_volume}:/var/lib/postgresql" -v "${CODE}/db/postgres/keep-major.sh:/k.sh:ro" \
   --entrypoint sh postgres:latest /k.sh true 2>&1)
-check "$? $(grep -c 'keep-major.sh: this database is PostgreSQL 17 (/var/lib/postgresql/17/docker), the image is PostgreSQL' <<< "${keep}") $(grep -c 'Set SYNC_POSTGRES_IMAGE=postgres:17 in .env' <<< "${keep}")" \
-  "1 1 1" "db/postgres/keep-major.sh refuses PostgreSQL 17 data on latest without SYNC_POSTGRES_IMAGE, says what to set"
+check "$? $(grep -c 'keep-major.sh: this database is PostgreSQL 17 (/var/lib/postgresql/17/docker), the image is PostgreSQL' <<< "${keep}") $(grep -c 'Set SYNC_POSTGRES_IMAGE to the major of the data, postgres:17' <<< "${keep}")" \
+  "1 1 1" "db/postgres/keep-major.sh refuses PostgreSQL 17 data on latest, says what to set"
 docker volume rm "${pg_volume}" > /dev/null
 answers[4]=mariadb
 rm -f "${SETUP}/.env"

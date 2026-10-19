@@ -400,7 +400,8 @@ upgrade their data in place at the first start on a newer major, with no way bac
 backup; PostgreSQL cannot open another major's data at all. The running image is read with
 lookup (install and upgrade; nothing to check where lookup returns nothing: helm template, a
 GitOps render), the change as dbMajorChange says (a pin from lts goes through: the server
-refuses one older than its data). database.allowMajorUpgrade lets MariaDB and MySQL move (lts to lts), never PostgreSQL
+refuses one older than its data). database.allowMajorUpgrade lets MariaDB and MySQL move (lts to lts), never PostgreSQL;
+a PostgreSQL whose server is not up (its db-major init container refused a wrong pin) may change
 */}}
 {{- define "firefox-sync.checkDbMajor" -}}
 {{- if .Values.database.bundled }}
@@ -416,7 +417,18 @@ refuses one older than its data). database.allowMajorUpgrade lets MariaDB and My
 {{- range $existing.spec.template.spec.containers }}
 {{- if eq .name "db" }}{{ $old = .image }}{{ end }}
 {{- end }}
-{{- if include "firefox-sync.dbMajorChange" (dict "old" $old "new" $new) }}
+{{- /* PostgreSQL not up on that image (e.g. refused by db-major after a wrong pin): nothing
+of its data changed, going back to its major must stay possible */}}
+{{- $up := true }}
+{{- if eq $backend "postgres" }}
+{{- $up = false }}
+{{- with lookup "v1" "Pod" $root.Release.Namespace (printf "%s-0" $name) }}
+{{- range (.status.containerStatuses | default list) }}
+{{- if and (eq .name "db") .ready }}{{ $up = true }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $up (include "firefox-sync.dbMajorChange" (dict "old" $old "new" $new)) }}
 {{- if eq $backend "postgres" }}
 {{- fail (printf "firefox-sync: database.image.postgres is %s but the bundled PostgreSQL (%s) runs %s, and PostgreSQL cannot open another major's data; set database.image.postgres to %s, a newer major needs a dump and restore or pg_upgrade, see HELM.md#upgrades" $new $name $old $old) }}
 {{- else if not $root.Values.database.allowMajorUpgrade }}

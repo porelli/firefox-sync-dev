@@ -75,8 +75,8 @@ ALLOWED_DIFFERENCES = {
     "compose file's default), for db/mysql/keep-major.sh; the chart's image is always database.image.<backend>, chosen in "
     "the values, and checkDbMajor refuses another major (HELM.md#upgrades)",
     "mariadb,mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
-    "postgres:db/FFS_POSTGRES_IMAGE": "compose-only: SYNC_POSTGRES_IMAGE as set in .env (empty: the compose file's default), for "
-    "db/postgres/keep-major.sh; the chart's image is always database.image.postgres, and checkDbMajor refuses another major",
+    "postgres:db/FFS_POSTGRES_IMAGE": "compose-only in the server's container: SYNC_POSTGRES_IMAGE for the message of "
+    "db/postgres/keep-major.sh, which the chart runs as its db-major init container (with database.image.postgres)",
     # the databases
     "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
     "the MySQL image ignores them",
@@ -93,8 +93,8 @@ ALLOWED_COMMANDS = {
     "*:backup": ([["sh", "/ffs-backup/backup.sh"], ["now"]],
                  "a CronJob runs backup.sh now at backup.schedule; compose's container runs backup.sh loop"),
     "postgres:db": ([None, None],
-                    "compose starts it through db/postgres/keep-major.sh (what to do on another major's data with "
-                    "SYNC_POSTGRES_IMAGE unset); the chart runs the image's entrypoint and command"),
+                    "compose starts it through db/postgres/keep-major.sh (refuses another major's data, says what "
+                    "to pin); the chart runs that as the db-major init container, then the image's entrypoint and command"),
     "mariadb:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mariadbd", "--explicit_defaults_for_timestamp"]],
                    "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
                    "SYNC_MARIADB_IMAGE unset in .env); the chart has no unset: database.image.mariadb"),
@@ -120,6 +120,8 @@ ALLOWED_PROBE_TIMINGS = {
 # containers of the chart that compose has no service for, without env (no credentials):
 # "<cases>:<kind>/<workload name, a regex>/<container>" -> why
 CHART_ONLY_CONTAINERS = {
+    f"postgres:StatefulSet/{FULLNAME}-postgres/db-major": "compose runs db/postgres/keep-major.sh in postgres_db's entrypoint: "
+    "refuses another major's data before the server starts",
     f"*:Deployment/{FULLNAME}-syncstorage/wait-db": "compose's depends_on service_healthy: waits for the database servers to answer",
     f"*:Deployment/{FULLNAME}-admin/wait-sync": "compose's ffs-admin depends_on tokenserver_db_init: the admin UI starts once the "
     "Sync server serves (its init containers succeeded)",
@@ -155,6 +157,7 @@ EQUIVALENT_CHECKS = {
 IDENTICAL_FILES = {
     "charts/firefox-sync/files/backup.sh": "config/backup/backup.sh",
     "charts/firefox-sync/files/admin-user.sh": "db/mysql/admin-user.sh",
+    "charts/firefox-sync/files/postgres-keep-major.sh": "db/postgres/keep-major.sh",
 }
 
 # compose service -> chart (workload kind, workload name, container, key prefix, init or one-shot);

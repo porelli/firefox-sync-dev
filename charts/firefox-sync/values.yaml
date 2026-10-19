@@ -60,7 +60,8 @@ database:
     # PostgreSQL has no lts: latest is its newest major, which a newer one replaces. A chart
     # cannot read the image's major at install as prepare_environment.sh does: pin it in your
     # values from the first install, docker.io/library/postgres:<major> (helm show values,
-    # HELM.md#upgrades); left on latest a new PostgreSQL major leaves the server unable to start
+    # HELM.md#upgrades); left on latest a new PostgreSQL major does not start on the data
+    # (the image's entrypoint refuses another major's, its db-major init container says what to pin)
     postgres: docker.io/library/postgres:latest
 
   # helm upgrade refuses a database.image.<backend> that would move the bundled server's data to

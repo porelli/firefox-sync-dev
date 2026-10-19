@@ -186,6 +186,16 @@ TPL
     fail "database.allowMajorUpgrade=yes not refused by the schema"
   fi
   check "checkDbMajor: run by the databases, reads the running StatefulSet; dbMajorChange on 13 pairs; allowMajorUpgrade a boolean"
+  # the bundled PostgreSQL: the db-major init container (db/postgres/keep-major.sh) with the
+  # server's image and its data, before the server
+  pg=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=postgres --show-only templates/databases.yaml | manifests)
+  [[ "$(jq -c '.[] | select(.kind == "StatefulSet") | .spec.template.spec | [(.initContainers | map(.name)), .initContainers[0].image == .containers[0].image,
+      (.initContainers[0].command | index("/ffs-db/keep-major.sh") != null), (.initContainers[0].volumeMounts | map([.name, .mountPath, .readOnly]))]' <<< "${pg}")" \
+    == '[["db-major"],true,true,[["data","/var/lib/postgresql",null],["db-scripts","/ffs-db",true]]]' ]] \
+    || fail "postgres: the db-major init container: $(jq -c '.[] | select(.kind == "StatefulSet") | .spec.template.spec.initContainers' <<< "${pg}")"
+  [[ "$(jq -r '.[] | select(.kind == "ConfigMap") | .data["keep-major.sh"]' <<< "${pg}")" == "$(cat "${CHART_DIR}/files/postgres-keep-major.sh")" ]] \
+    || fail "postgres: the db-scripts ConfigMap is not files/postgres-keep-major.sh"
+  check "postgres: the db-major init container runs keep-major.sh with the server's image on its data"
 
   # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
@@ -501,10 +511,9 @@ pods_lint() {
     [[ -z "${bad}" ]] || fail "${backend}: pods without nodeSelector, tolerations, affinity, imagePullSecrets or podAnnotations: ${bad}"
     jq -e '[.[] | select(.w | endswith("-admin")) | .s.metadata.annotations["checksum/admin-secrets"] | test("^[0-9a-f]{64}$")] == [true]' <<< "${pods}" > /dev/null \
       || fail "${backend}: podAnnotations lost the admin UI's checksum/admin-secrets"
-    if [[ ${backend} != postgres ]]; then
-      jq -e '[.[] | select(.w | startswith("StatefulSet/")) | .s.metadata.annotations["checksum/db-scripts"] | test("^[0-9a-f]{64}$")] == [true, true]' <<< "${pods}" > /dev/null \
-        || fail "${backend}: podAnnotations replaced the databases' checksum/db-scripts"
-    fi
+    # (PostgreSQL: one server, its keep-major.sh)
+    jq -e --argjson n "$([[ ${backend} == postgres ]] && echo 1 || echo 2)" '[.[] | select(.w | startswith("StatefulSet/")) | .s.metadata.annotations["checksum/db-scripts"] | test("^[0-9a-f]{64}$")] == [range($n) | true]' <<< "${pods}" > /dev/null \
+      || fail "${backend}: podAnnotations replaced the databases' checksum/db-scripts"
     # resources: each where it belongs (empty by default: none)
     jq -e '[.[] | .s.spec | (.initContainers // [])[], .containers[] | .resources // empty] == []' <<< "$(pod_specs --set database.backend="${backend}")" > /dev/null \
       || fail "${backend}: resources by default"
@@ -513,7 +522,7 @@ pods_lint() {
     bad=$(jq -r '.[] | .w as $w | .s.spec | (.initContainers // [])[], .containers[] | "\($w | sub("^[A-Za-z]+/test-release-firefox-sync-"; "") | sub("-[0-9a-f]{8}$"; ""))/\(.name)=\(.resources.requests.cpu // "none")"' <<< "${pods}" | sort | paste -sd' ' -)
     local want="admin/admin=3m admin/wait-sync=3m backup-volume/bind=5m backup/backup=5m"
     if [[ ${backend} == postgres ]]; then
-      want+=" postgres/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/sync-role=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m"
+      want+=" postgres/db-major=4m postgres/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/sync-role=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m"
     else
       want+=" storage-db/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m tokenserver-db/db=4m"
     fi
@@ -1016,6 +1025,28 @@ e2e() {
     [[ "$(helm history "${REL}" -o json | jq length) $(sts_image "${db_sts}")" == "${revision} ${running}" ]] \
       || fail "the refused upgrade changed the release or the StatefulSet"
     check "helm upgrade from ${running} to ${other} refused at render time (also allowMajorUpgrade=true for PostgreSQL), nothing applied"
+    if [[ ${backend} == postgres ]]; then
+      # a pin to another major goes through the render (from latest, not comparable), the
+      # db-major init container then refuses the data and says what to pin; back on the
+      # running image, it starts again (a StatefulSet does not replace a broken pod by itself)
+      helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image.postgres=docker.io/library/postgres:17 > /dev/null \
+        || fail "helm upgrade to postgres:17 not rendered"
+      local said="" i
+      for i in $(seq 1 90); do
+        said=$(kubectl logs "${db_sts}-0" -c db-major 2> /dev/null | grep -c 'keep-major.sh: this database is PostgreSQL 18 (/var/lib/postgresql/18/docker), the image is PostgreSQL 17' || true)
+        [[ "${said}" -ge 1 ]] 2> /dev/null && break
+        sleep 2
+      done
+      [[ "${said}" -ge 1 && "$(kubectl get pod "${db_sts}-0" -o jsonpath='{.status.containerStatuses[0].ready}')" != true ]] \
+        || fail "postgres:17 on 18's data: the db-major init container did not refuse ($(kubectl logs "${db_sts}-0" -c db-major 2>&1 | tail -3))"
+      kubectl logs "${db_sts}-0" -c db-major 2> /dev/null | grep -q 'Set database.image.postgres to the major of the data, postgres:18' \
+        || fail "db-major does not say what to pin"
+      helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image.postgres="${running}" > /dev/null || fail "helm upgrade back to ${running}"
+      kubectl delete pod "${db_sts}-0" --wait=true > /dev/null
+      kubectl rollout status "sts/${db_sts}" --timeout=10m > /dev/null || fail "PostgreSQL not back on ${running}"
+      kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=10m > /dev/null || fail "syncstorage not Ready after PostgreSQL came back"
+      check "postgres:17 on 18's data: refused by the db-major init container, which says what to pin; back on ${running}"
+    fi
     if [[ ${backend} == mysql ]]; then
       helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image.mysql="${other}" --set database.allowMajorUpgrade=true \
         --wait --timeout 10m || fail "helm upgrade to ${other} with allowMajorUpgrade did not get Ready"

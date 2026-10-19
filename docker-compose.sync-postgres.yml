@@ -149,8 +149,9 @@ services:
   postgres_db:
     # SYNC_POSTGRES_IMAGE pins the major of the install (prepare_environment.sh writes
     # postgres:<the major of postgres:latest> for new installs, postgres:18 for those from
-    # before it); unset: postgres:latest, which a new major cannot start on (it refuses another
-    # major's data, db/postgres/keep-major.sh says what to do: DATABASES.md#another-postgresql-major)
+    # before it); unset: postgres:latest. An image of another major than the data's does not
+    # start: db/postgres/keep-major.sh stops it and says what to set (the image's entrypoint
+    # refuses too; DATABASES.md#another-postgresql-major)
     image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:latest}}
     entrypoint: [sh, /ffs-db/keep-major.sh, docker-entrypoint.sh]
     command: [postgres]

@@ -150,8 +150,10 @@ render_sync_sql() {
 # imagetools or skopeo). Here and not in the admin UI, which cannot inspect images
 image_label() { grep -o '"org\.firefox-sync\.upstream-patches": *"[^"]*"' | head -n 1 | sed 's/.*: *"//; s/"$//'; }
 fxa_image_patches_local() {
-    local image=${1} runtime out
-    for runtime in docker podman; do
+    local image=${1} runtime out runtimes="docker podman"
+    # the store of what runs the units: Podman's for the Quadlets (also on a host with Docker)
+    [ "${DEPLOY_METHOD:-}" = quadlets ] && runtimes=podman
+    for runtime in ${runtimes}; do
         command -v "${runtime}" > /dev/null 2>&1 || continue
         out=$(${runtime} image inspect "${image}" 2> /dev/null) && { printf '%s' "${out}" | image_label; return 0; }
     done
@@ -183,7 +185,7 @@ fxa_image_has() {
         *)
             # Quadlets of another architecture (--arch): the units pull the registry's at every
             # start, so that one is what runs
-            if [ "${DEPLOY_METHOD:-}" = quadlets ] && [ "$(env_plain FXA_ARCH)" != "$(host_arch)" ] \
+            if [ "${DEPLOY_METHOD:-}" = quadlets ] && [ -n "$(env_plain FXA_ARCH)" ] && [ "$(env_plain FXA_ARCH)" != "$(host_arch)" ] \
                 && patches=$(fxa_image_patches_remote "${image}"); then
                 has_fxa_patch "${pr}" "${patches}" && rc=0 || rc=1
             elif patches=$(fxa_image_patches_local "${image}"); then
@@ -1211,7 +1213,8 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     # image). With it podman 4 pulls the tag from the registry at every start, over the local
     # image: the units would not run the image whose label chose FXA_MYSQL_IMAGE above
     FXA_ARCH_ARGS=""
-    [ "$(env_plain FXA_ARCH)" = "$(host_arch)" ] || FXA_ARCH_ARGS="--arch=$(env_plain FXA_ARCH)"
+    # (none in an .env from before FXA_ARCH: the host's)
+    [ -z "$(env_plain FXA_ARCH)" ] || [ "$(env_plain FXA_ARCH)" = "$(host_arch)" ] || FXA_ARCH_ARGS="--arch=$(env_plain FXA_ARCH)"
     export FXA_ARCH_ARGS
 
     # the database containers: the .env names (syncstorage_db) are compose's, here the

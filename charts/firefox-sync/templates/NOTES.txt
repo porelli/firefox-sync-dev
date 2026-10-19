@@ -30,7 +30,7 @@ MySQL's own is self-signed); true needs one from a CA the images trust.
 {{- end }}
 {{- if .Values.database.bundled }}
 
-The bundled database runs {{ include "firefox-sync.dbImage" . }}: a helm upgrade that would move it to another major is refused{{ if ne .Values.database.backend "postgres" }} unless database.allowMajorUpgrade=true{{ end }} (HELM.md#upgrades).
+The bundled database runs {{ include "firefox-sync.dbImage" . }}: a helm upgrade that would move it to another major is refused{{ if ne .Values.database.backend "postgres" }} unless database.allowMajorUpgrade=true (set it back to false after the move: --reuse-values keeps it){{ end }} (HELM.md#upgrades).
 {{- end }}
 {{- if and .Values.database.bundled (eq .Values.database.backend "postgres") (hasSuffix ":latest" .Values.database.image.postgres) }}
 
