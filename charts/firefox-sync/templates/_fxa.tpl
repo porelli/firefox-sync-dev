@@ -129,16 +129,19 @@ seccompProfile:
 {{- end }}
 
 {{/*
-The accounts' pods: 10001, its group on the volumes (fsGroup, only where the owner differs:
-the root init containers of fxa.volumeOwnerInit chown what fsGroup does not reach). For
+The accounts' pods: 10001. Their volumes are made 10001's by the root init containers
+(keys-owner, images-owner) with fxa.volumeOwnerInit, as compose's fxa-keys-owner; without
+them (volumeOwnerInit false) by fsGroup 10001, where the StorageClass applies it. For
 nindent under the pod's securityContext:
 */}}
 {{- define "firefox-sync.fxaPodSecurityContext" -}}
 runAsNonRoot: true
 runAsUser: 10001
 runAsGroup: 10001
+{{- if not .Values.fxa.volumeOwnerInit }}
 fsGroup: 10001
 fsGroupChangePolicy: OnRootMismatch
+{{- end }}
 seccompProfile:
   type: RuntimeDefault
 {{- end }}
