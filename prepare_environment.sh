@@ -845,10 +845,24 @@ CURRENT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 read -e -p "Enter full path for the docker-compose file [${CURRENT_DIR}]: " SCRIPT_DIR
 SCRIPT_DIR=${SCRIPT_DIR:-${CURRENT_DIR}}
 
-# listening port
-DEFAULT_CONTAINER_EXPORT_PORT=5000
-read -e -p "Listening port for syncstorage-rs [${DEFAULT_CONTAINER_EXPORT_PORT}]: " SYNC_EXPORT_PORT
-SYNC_EXPORT_PORT=${SYNC_EXPORT_PORT:-${DEFAULT_CONTAINER_EXPORT_PORT}}
+# where the Sync server listens for your reverse proxy, [address:]port: on this host only by
+# default, as the other ports; a port alone is 127.0.0.1:<port>, 0.0.0.0:<port> every
+# interface. Run again on an install: what its .env has, as it is
+DEFAULT_SYNC_EXPORT_PORT=127.0.0.1:5000
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    previous=$(env_plain SYNC_EXPORT_PORT); previous=${previous:-$(env_plain CONTAINER_EXPORT_PORT)}
+    DEFAULT_SYNC_EXPORT_PORT=${previous:-${DEFAULT_SYNC_EXPORT_PORT}}
+fi
+read -e -p "Listening address and port for syncstorage-rs, a port alone on 127.0.0.1 [${DEFAULT_SYNC_EXPORT_PORT}]: " SYNC_EXPORT_PORT
+case "${SYNC_EXPORT_PORT}" in
+    "") SYNC_EXPORT_PORT=${DEFAULT_SYNC_EXPORT_PORT} ;;
+    *[!0-9]*) ;;
+    *) SYNC_EXPORT_PORT=127.0.0.1:${SYNC_EXPORT_PORT} ;;
+esac
+if ! [[ "${SYNC_EXPORT_PORT}" =~ ^(([0-9]{1,3}\.){3}[0-9]{1,3}:)?([0-9]{1,5})$ ]] || [ "${BASH_REMATCH[3]}" -lt 1 ] || [ "${BASH_REMATCH[3]}" -gt 65535 ]; then
+    echo "ERROR: not a port or an IPv4 address and port: '${SYNC_EXPORT_PORT}' (e.g. 5000, 127.0.0.1:5000, 0.0.0.0:5000)"
+    exit 1
+fi
 
 # a limit of accounts: a number (0: nobody new) or unlimited
 valid_limit() {
@@ -1419,7 +1433,14 @@ fi
 # prepare nginx example
 cp ${SCRIPT_DIR}/config/nginx/syncstorage-rs-example.conf ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf
 apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s/firefox-sync.example.com/${SYNC_FQDN}/g"
-apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s|<SYNC_EXPORT_PORT>|${SYNC_EXPORT_PORT}|"
+# the Sync server where it listens: its address (127.0.0.1 for every interface, 0.0.0.0, or a
+# port alone in an .env of before), not localhost, which nginx tries on ::1 first
+SYNC_UPSTREAM=${SYNC_EXPORT_PORT}
+case "${SYNC_UPSTREAM}" in
+    *:*) [ "${SYNC_UPSTREAM%:*}" != 0.0.0.0 ] || SYNC_UPSTREAM=127.0.0.1:${SYNC_UPSTREAM##*:} ;;
+    *) SYNC_UPSTREAM=127.0.0.1:${SYNC_UPSTREAM} ;;
+esac
+apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s|localhost:<SYNC_EXPORT_PORT>|${SYNC_UPSTREAM}|; s|<SYNC_EXPORT_PORT>|${SYNC_UPSTREAM##*:}|"
 
 # prepare systemd example (for docker compose; with Podman, Quadlets start at boot instead)
 cp ${SCRIPT_DIR}/config/systemd/syncstorage-rs-example.service ${SCRIPT_DIR}/config/systemd/syncstorage-rs.service

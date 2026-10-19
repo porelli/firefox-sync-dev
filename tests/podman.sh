@@ -291,6 +291,27 @@ check "$?" 0 "prepare_environment.sh (postgres, quadlets)"
 check "$(grep -c 'Quadlets are only provided for MariaDB' setup-postgres-1.log) $(grep -c 'docker compose -f docker-compose.sync-postgres.yml up -d' setup-postgres-1.log) $(ls "${QUADLET_DIR}" 2> /dev/null | wc -l)" \
   "1 1 0" "quadlets with PostgreSQL fall back to docker compose, no quadlet files"
 
+echo "== where the Sync server listens: on this host only by default (nothing started)"
+# answers as setup, the port: the default, a port alone, another address, not a port
+port_setup() { printf '%s\n' ffs-e2e.invalid "" "$1" 1 mariadb 2 "" "${TAG}" "" | ./prepare_environment.sh > setup-port.log 2>&1; }
+rm -f .env
+port_setup ""
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5000;$' config/nginx/syncstorage-rs.conf)" "0 127.0.0.1:5000 1" \
+  "a new install: SYNC_EXPORT_PORT=127.0.0.1:5000, nginx proxies to it"
+port_setup 5001
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5001;$' config/nginx/syncstorage-rs.conf)" "0 127.0.0.1:5001 1" "a port alone: on 127.0.0.1"
+port_setup 0.0.0.0:5002
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5002;$' config/nginx/syncstorage-rs.conf)" "0 0.0.0.0:5002 1" "0.0.0.0:<port>: every interface, nginx on 127.0.0.1"
+# run again on an install from before (a port alone in its .env: every interface), it keeps it
+sed -i 's|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=5003|' .env
+port_setup ""
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5003;$' config/nginx/syncstorage-rs.conf) $(grep -c '^SYNC_EXPORT_PORT=5003$' .env.before-setup)" "0 5003 1 1" \
+  "run again on an install: its SYNC_EXPORT_PORT kept, the .env of before as .env.before-setup"
+cp -p .env "${WORK}/port.env"
+port_setup localhost:5004
+check "$? $(grep -c "^ERROR: not a port or an IPv4 address and port: 'localhost:5004'" setup-port.log) $(cmp -s .env "${WORK}/port.env" && echo kept)" "1 1 kept" "not a port: refused, .env as it was"
+rm -f .env .env.before-setup
+
 # the admin UI quadlet gets every setting of the compose ffs-admin service: the keys
 # only in compose (allowed: $2, a regex), then those only in the quadlet
 compose_env_keys() { docker compose --profile admin "$@" config --format json 2> /dev/null | jq -r '.services["ffs-admin"].environment | keys[]' | LC_ALL=C sort; }
@@ -377,6 +398,11 @@ else
   setup "${SYNC_DB}" 1
   check "$?" 0 "prepare_environment.sh (quadlets)"
 fi
+# the Sync server on this host only for a new install (a port alone answered: 127.0.0.1),
+# an install from before keeps what it has (a port alone: every interface)
+if [ -n "${UPGRADE_FROM:-}" ]; then sync_listen=${PORT}; else sync_listen=127.0.0.1:${PORT}; fi
+check "$(env_of SYNC_EXPORT_PORT) $(sed -n 's/^PublishPort=//p' "${QUADLET_DIR}/firefox-sync-syncstorage.container")" "${sync_listen} ${sync_listen}:8000" \
+  "SYNC_EXPORT_PORT=${sync_listen} in .env and the Sync server's PublishPort (quadlets)"
 # the healthchecks of compose, those of the Quadlets (as rendered from .env)
 sync_compose=(-f docker-compose.yml)
 [ "${SYNC_DB}" = mysql ] && sync_compose+=(-f docker-compose.sync-mysql.yml)
@@ -405,6 +431,12 @@ for u in syncstorage-db tokenserver-db syncstorage-migrate tokenserver-db-init s
   printf '  %-22s %s\n' "${u}" "$(systemctl --user is-active "firefox-sync-${u}.service")"
 done
 check "$(hb)" 200 "/__heartbeat__ (quadlets)"
+sync_sockets=$(ss -Hltn "sport = :${PORT}" | awk '{ print $4 }' | sort -u | paste -sd' ')
+if [ -n "${UPGRADE_FROM:-}" ]; then
+  check "$([ -n "${sync_sockets}" ] && [ "${sync_sockets}" != "127.0.0.1:${PORT}" ] && echo every)" every "the Sync server listens on every interface, as before the upgrade (quadlets; ${sync_sockets})"
+else
+  check "${sync_sockets}" "127.0.0.1:${PORT}" "the Sync server listens on 127.0.0.1 only (quadlets)"
+fi
 check "$(podman inspect -f '{{.EffectiveCaps}}' firefox-sync-syncstorage | grep -c NET_RAW) $(grep -hcxF 'DropCapability=NET_RAW' "${QUADLET_DIR}"/firefox-sync-syncstorage{,-migrate}.container | paste -sd' ')" \
   "0 1 1" "the Sync server and its migrations without raw sockets (quadlets)"
 journalctl --user -u firefox-sync-syncstorage-migrate.service --no-pager 2> /dev/null | grep -m1 "Migrations completed"
@@ -575,8 +607,10 @@ echo "== quadlets without the admin UI (mariadb)"
 # again keeps: UPGRADE_FROM's)
 rm -f .env
 # answers as setup, admin UI: n. The Sync server starts without ffs-admin to resolve
-printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare_environment.sh > setup-no-admin.log 2>&1
+# (the port as address and port)
+printf '%s\n' ffs-e2e.invalid "" "127.0.0.1:${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare_environment.sh > setup-no-admin.log 2>&1
 check "$?" 0 "prepare_environment.sh (quadlets, no admin UI)"
+check "$(sed -n 's/^PublishPort=//p' "${QUADLET_DIR}/firefox-sync-syncstorage.container")" "127.0.0.1:${PORT}:8000" "127.0.0.1:<port> answered: the Sync server's PublishPort"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-admin.* 2> /dev/null | wc -l)" 0 "no admin UI quadlet"
 check "$(grep -hcxF 'Environment=MAX_USERS=1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "plain SYNC_MAX_USERS=1 in the init quadlet"
 check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | paste -sd' ') $(env_of SYNC_MARIADB_IMAGE)" \
