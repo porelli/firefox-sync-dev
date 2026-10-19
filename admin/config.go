@@ -684,9 +684,9 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	groups := []configGroup{public, syncGroup, accounts, limits, admin, email, alerts, backupGroup, maintenance, metrics}
 	// the chart: the accounts' settings by the names of its values
 	for _, g := range groups {
-		for _, r := range g.Rows {
-			for i, name := range r.Vars {
-				r.Vars[i] = a.deployment.valueName(name)
+		for _, row := range g.Rows {
+			for i, name := range row.Vars {
+				row.Vars[i] = a.deployment.valueName(name)
 			}
 		}
 	}

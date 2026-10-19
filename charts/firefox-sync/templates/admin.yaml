@@ -367,9 +367,16 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 120
           readinessProbe:
+            {{- if $f.enabled }}
+            # (with the accounts: Ready once the sign-up gate listens too, the Ingress of the
+            # accounts' API sends the sign-ups there)
+            tcpSocket:
+              port: gate
+            {{- else }}
             httpGet:
               path: /healthz
               port: http
+            {{- end }}
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3

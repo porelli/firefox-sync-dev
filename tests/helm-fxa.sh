@@ -60,11 +60,14 @@ fxa_lint() {
   out=$(fxa_render -f "${fxa}" --set admin.smtp.host=b) || true
   grep -q "smtp" <<< "${out}" || fail "admin.smtp.host: the schema's message does not name smtp: ${out}"
   for good in fxa.maxAccounts=5 fxa.maxAccounts=initial:5 fxa.maxAccounts=fixed:unlimited fxa.maxAccounts=unlimited fxa.signups=closed \
-    fxa.signupAllowlist=you@example.test fxa.adminClientId=0123456789abcdef fxa.adminClientSecret="$(printf 'a%.0s' $(seq 1 64))" \
+    fxa.signupAllowlist=you@example.test fxa.adminClientSecret="$(printf 'a%.0s' $(seq 1 64))" \
     fxa.pairing.url=ws://pairing.example.test fxa.clientAddressDepth=3 fxa.resources.auth.limits.memory=2Gi fxa.ingress.annotations.a=b \
     fxa.database.resources.limits.memory=1Gi fxa.extraCaCerts.configMap=ca smtp.port=465 smtp.secure=true; do
     fxa_render -f "${fxa}" --set "${good}" > /dev/null || fail "${good}: refused: $(fxa_render -f "${fxa}" --set "${good}" | tail -3)"
   done
+  # (fxa.adminClientId: the client of sign-in with the accounts, with it)
+  fxa_render -f "${fxa}" --set fxa.adminClientId=0123456789abcdef --set admin.fxaSignIn=true --set admin.allowed.users=@example.test \
+    --set admin.ingress.host=admin.example.test > /dev/null || fail "fxa.adminClientId=0123456789abcdef with admin.fxaSignIn: refused"
   check "the schema: postgres, maxAccounts lots, signups invite, URLs without http(s):// (pairing ws(s)://), client id/secret not hex 16/64, admin.smtp and unknown keys refused"
 
   # names within Kubernetes' limits with the accounts too: <fullname>-fxa-db (StatefulSet, 52)
@@ -335,12 +338,17 @@ fxa_admin_lint() {
     and (.spec.initContainers[1] | .image == "ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-latest" and (.args[0] | contains("curl -sf -o /dev/null http://\($f)-fxa-auth:9000/__heartbeat__"))
       and .securityContext == {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}})' <<< "${admin}" > /dev/null \
     || fail "the admin UI's ports and init containers: $(jq -c '[.spec.containers[0].ports, .spec.initContainers]' <<< "${admin}")"
+  # (Ready once the gate listens too: the Ingress sends the sign-ups there; started and alive
+  # by /healthz, as without the accounts)
+  jq -e '.spec.containers[0] | .readinessProbe == {tcpSocket: {port: "gate"}, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 3}
+    and .startupProbe.httpGet == {path: "/healthz", port: "http"} and .livenessProbe.httpGet == {path: "/healthz", port: "http"}' <<< "${admin}" > /dev/null \
+    || fail "the admin UI's probes with the accounts: $(jq -c '.spec.containers[0] | [.startupProbe, .readinessProbe, .livenessProbe]' <<< "${admin}")"
   # (the test CA of fxa.extraCaCerts: Go's SSL_CERT_DIR, besides the system's)
   out=$(admin_pod_of "$(admin_objs test-release --set fxa.extraCaCerts.configMap=my-ca --set fxa.extraCaCerts.key=root.pem)" admin)
   jq -e '(.spec.containers[0] | (.env[] | select(.name == "SSL_CERT_DIR") | .value == "/ffs-ca") and .volumeMounts == [{name: "ffs-ca", mountPath: "/ffs-ca", readOnly: true}])
     and .spec.volumes == [{name: "ffs-ca", configMap: {name: "my-ca"}}]' <<< "${out}" > /dev/null || fail "fxa.extraCaCerts: the admin UI without /ffs-ca: $(jq -c '.spec.containers[0].volumeMounts, .spec.volumes' <<< "${out}")"
   jq -e '(.spec.containers[0] | has("volumeMounts") | not) and (.spec | has("volumes") | not)' <<< "${admin}" > /dev/null || fail "no fxa.extraCaCerts: volumes in the admin UI"
-  check "admin UI with the accounts: compose's FxA block (FXA_DB_*, FXA_MAX_ACCOUNTS, FXA_AUTH_UPSTREAM, ..., ADMIN_GATE_EXPORT_PORT ${f}-admin:8081), Redis with its password, the servers' Services; gate 8081 on its Service; wait-fxa; SSL_CERT_DIR with fxa.extraCaCerts"
+  check "admin UI with the accounts: compose's FxA block (FXA_DB_*, FXA_MAX_ACCOUNTS, FXA_AUTH_UPSTREAM, ..., ADMIN_GATE_EXPORT_PORT ${f}-admin:8081), Redis with its password, the servers' Services; gate 8081 on its Service, Ready once it listens (tcpSocket); wait-fxa; SSL_CERT_DIR with fxa.extraCaCerts"
 
   # without sign-in with the accounts: no client in auth (compose with ADMIN_FXA_CLIENT_ID empty:
   # SERVICES_WITH_EMAIL_VERIFICATION with its trailing comma), the admin UI's OIDC its values
@@ -389,9 +397,21 @@ fxa_admin_lint() {
   grep -qF "admin.fxaSignIn needs admin.oidc.redirectUrl or admin.ingress.host" <<< "${out}" || fail "admin.fxaSignIn without a redirect URL: ${out}"
   out=$(helm template test-release "${CHART_DIR}" -f "${fxa}" "${signin[@]}" --set admin.oidc.redirectUrl=https://admin.example.test/callback 2>&1) && fail "a redirect URL not of /auth/callback: renders"
   grep -qF "admin.oidc.redirectUrl must be the admin UI's https://<host>/auth/callback" <<< "${out}" || fail "a redirect URL not of /auth/callback: ${out}"
+  # (https only: the accounts send the admins' codes there)
+  out=$(helm template test-release "${CHART_DIR}" -f "${fxa}" "${signin[@]}" --set admin.oidc.redirectUrl=http://admin.example.test/auth/callback 2>&1) && fail "an http:// redirect URL: renders"
+  grep -qF "admin.oidc.redirectUrl must be the admin UI's https://<host>/auth/callback" <<< "${out}" || fail "an http:// redirect URL: ${out}"
+  # (fxa.adminClientId without admin.fxaSignIn registers nothing: refused rather than ignored;
+  # with it and the admin UI off, as the admin UI's other values: kept for when it is on again)
+  for args in "" "--set admin.enabled=false"; do
+    # shellcheck disable=SC2086 # (its words)
+    out=$(helm template test-release "${CHART_DIR}" -f "${fxa}" --set fxa.adminClientId=0123456789abcdef ${args} 2>&1) && fail "fxa.adminClientId without admin.fxaSignIn (${args}): renders"
+    grep -qF "firefox-sync: fxa.adminClientId needs admin.fxaSignIn" <<< "${out}" || fail "fxa.adminClientId without admin.fxaSignIn (${args}): ${out}"
+  done
+  helm template test-release "${CHART_DIR}" -f "${fxa}" --set fxa.adminClientId=0123456789abcdef --set admin.fxaSignIn=true --set admin.enabled=false > /dev/null \
+    || fail "fxa.adminClientId and admin.fxaSignIn with the admin UI off: refused"
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "${signin[@]}" 2>&1) && fail "admin.fxaSignIn without the accounts: renders"
   grep -qF "admin.fxaSignIn needs fxa.enabled" <<< "${out}" || fail "admin.fxaSignIn without the accounts: ${out}"
-  check "admin.fxaSignIn: ADMIN_FXA_CLIENT_ID derived (sha256 of <namespace>/<release>/admin-oidc, 16 hex, the same on every render, another per release) or fxa.adminClientId; the redirect URL of admin.ingress.host; auth's, content's and the admin UI's env as compose's; refused without admin.allowed, a redirect URL, the accounts"
+  check "admin.fxaSignIn: ADMIN_FXA_CLIENT_ID derived (sha256 of <namespace>/<release>/admin-oidc, 16 hex, the same on every render, another per release) or fxa.adminClientId; the redirect URL of admin.ingress.host; auth's, content's and the admin UI's env as compose's; refused without admin.allowed, a redirect URL (https://), the accounts; fxa.adminClientId refused without it"
 }
 
 # the accounts' objects: the database, Redis, the keys, the auth pod and its init containers,

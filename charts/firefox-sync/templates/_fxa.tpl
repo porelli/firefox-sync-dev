@@ -204,9 +204,12 @@ firefox-sync.checkValues
 {{- if not (or $a.oidc.redirectUrl $a.ingress.host) }}
 {{- fail "firefox-sync: admin.fxaSignIn needs admin.oidc.redirectUrl or admin.ingress.host: the admin UI's public https://<host>/auth/callback, where the accounts send the admins back" }}
 {{- end }}
-{{- if and $a.oidc.redirectUrl (not (regexMatch "^https?://[^/]+(/.*)?/auth/callback$" $a.oidc.redirectUrl)) }}
+{{- if and $a.oidc.redirectUrl (not (regexMatch "^https://[^/]+(/.*)?/auth/callback$" $a.oidc.redirectUrl)) }}
 {{- fail (printf "firefox-sync: admin.oidc.redirectUrl must be the admin UI's https://<host>/auth/callback (the accounts register exactly that), not %s" $a.oidc.redirectUrl) }}
 {{- end }}
+{{- end }}
+{{- if and $f.enabled $f.adminClientId (not $a.fxaSignIn) }}
+{{- fail "firefox-sync: fxa.adminClientId needs admin.fxaSignIn: it is the admin UI's client for signing in with the accounts, registered only with it (without it, leave fxa.adminClientId empty)" }}
 {{- end }}
 {{- if $f.enabled }}
 {{- if not (and $f.contentUrl $f.authUrl $f.profileUrl) }}
