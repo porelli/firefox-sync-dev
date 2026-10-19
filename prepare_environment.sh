@@ -410,19 +410,13 @@ units_dir() {
 # that differ installed, the units of before kept first in quadlets.before-<UTC time>/; none
 # differ: nothing written (run again, nothing changes)
 render_units() {
-    local line key value stage file filename source target_dir changed=() removed=() backup
-    # load the values of .env (database names, users, FxA endpoints, etc.); not with
-    # `source`: unused sections keep placeholders like <REPLACE_WITH_...>, not shell
-    while IFS= read -r line || [ -n "${line}" ]; do
-        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
-        key=${line%%=*}
-        value=${line#*=}
-        case "${value}" in
-            \'*\') value=${value:1:${#value}-2} ;;
-            \"*\") value=${value:1:${#value}-2} ;;
-        esac
-        export "${key}=${value}"
-    done < ${SCRIPT_DIR}/.env
+    local key stage file filename source target_dir changed=() removed=() backup
+    # load the values of .env (database names, users, FxA endpoints, etc.) as compose reads
+    # them (env_plain: quotes, a comment after the value, export, CRLF); not with `source`:
+    # unused sections keep placeholders like <REPLACE_WITH_...>, not shell
+    for key in $(sed -n "s/^${ENV_LEAD}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p" ${SCRIPT_DIR}/.env | sort -u); do
+        export "${key}=$(env_plain "${key}")"
+    done
     mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
     # the images from .env only (not this shell's environment); unset: lts, as the compose
     # files (the admin UI's: IMAGE_REPOSITORY's admin-latest). podman needs the registry in

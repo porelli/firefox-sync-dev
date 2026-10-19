@@ -494,7 +494,8 @@ cp -p .env "${WORK}/rendered.env"
 backups=$(ls -d quadlets.before-* 2> /dev/null | wc -l)
 # as an admin edits .env (the same admin UI under a name of its own: a pin)
 podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:pinned
-sed -i 's|^ADMIN_STALE_DAYS=.*|ADMIN_STALE_DAYS=45|' .env
+# (with a comment after the value: dropped, as compose does)
+sed -i 's|^ADMIN_STALE_DAYS=.*|ADMIN_STALE_DAYS=45  # was 90|' .env
 # (a switch of the admin UI the units pass from .env, as compose: on its configuration page)
 sed -i 's|^ADMIN_INSECURE_COOKIE=.*|ADMIN_INSECURE_COOKIE=1|' .env
 grep -q '^ADMIN_IMAGE=' .env && sed -i 's|^ADMIN_IMAGE=.*|ADMIN_IMAGE=localhost/ffs-admin:pinned|' .env || echo 'ADMIN_IMAGE=localhost/ffs-admin:pinned' >> .env
