@@ -70,6 +70,20 @@ Firefox signs in with them, and syncs here, once about:config has
 
 see https://github.com/porelli/firefox-sync/blob/main/docs/firefox.md#self-hosted-accounts
 The accounts need about 3-4 GB of memory (fxa.resources: the requests of each pod).
+{{- if .Values.fxa.database.bundled }}
+{{- $fxaDb := include "firefox-sync.fxaDbImage" . }}
+
+Their database runs {{ $fxaDb }}: a helm upgrade that would move it to another major is refused
+unless fxa.database.allowMajorUpgrade=true (set it back to false after the move: --reuse-values
+keeps it) (docs/upgrading.md#database-majors).
+{{- if eq .Values.fxa.database.backend "mysql" }}
+{{- if eq (include "firefox-sync.imageMajor" $fxaDb) "8" }} On MySQL 8 with mysql_native_password, for
+accounts images without mozilla/fxa#21554; the move to MySQL 9: docs/upgrading.md#mysql-8-to-9.
+{{- else }} MySQL {{ include "firefox-sync.imageMajor" $fxaDb | default "lts" }} needs an accounts image with mozilla/fxa#21554 (ours);
+with another set fxa.database.image.mysql to docker.io/library/mysql:8.
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if not .Values.fxa.keys.existingSecret }}
 
 Their signing keys are on the PVC {{ $fullname }}-fxa-keys (kept on helm uninstall): losing

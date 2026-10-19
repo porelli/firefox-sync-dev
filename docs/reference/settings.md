@@ -181,9 +181,9 @@ The self-hosted Mozilla accounts, with `docker-compose.fxa.yml` in `COMPOSE_FILE
 | `FXA_AUTH_URL` | – | required | the public URL of the accounts API | |
 | `FXA_PROFILE_URL` | – | required | the public URL of the profile server | |
 | `FXA_DB` | – | `mysql` | the accounts database: `mysql` or `mariadb` ([MySQL or MariaDB](../accounts.md#mysql-or-mariadb)). With compose, `mariadb` also needs `docker-compose.fxa-mariadb.yml` in `COMPOSE_FILE` | |
-| `FXA_MYSQL_IMAGE` | – | unset: `mysql:lts` | with `FXA_DB=mysql`, the image of `fxa-db` and of its backups. Pins: [Database majors](../upgrading.md#database-majors) | |
-| `FXA_MYSQL_ARGS` | – | empty | extra options of `fxa-db`'s `mysqld`. On `mysql:8` for accounts images without mozilla/fxa#21554: `--mysql-native-password=ON --authentication-policy=mysql_native_password` | |
-| `FXA_MARIADB_IMAGE` | – | unset: `mariadb:lts` | with `FXA_DB=mariadb`, the image of `fxa-db` and of its backups | |
+| `FXA_MYSQL_IMAGE` | `fxa.database.image.mysql` | unset: `mysql:lts` (Helm `docker.io/library/mysql:lts`) | with `FXA_DB=mysql`, the image of `fxa-db` and of its backups. Pins: [Database majors](../upgrading.md#database-majors) | |
+| `FXA_MYSQL_ARGS` | – (from `fxa.database.image.mysql`: the native password options on a MySQL 8 pin, [Database majors](../upgrading.md#database-majors)) | empty | extra options of `fxa-db`'s `mysqld`. On `mysql:8` for accounts images without mozilla/fxa#21554: `--mysql-native-password=ON --authentication-policy=mysql_native_password` | |
+| `FXA_MARIADB_IMAGE` | `fxa.database.image.mariadb` | unset: `mariadb:lts` (Helm `docker.io/library/mariadb:lts`) | with `FXA_DB=mariadb`, the image of `fxa-db` and of its backups | |
 | `FXA_DB_CONTAINERS` | – | `1` | `0`: no `fxa-db` container, use your own MySQL or MariaDB server | |
 | `FXA_MYSQL_HOST` | – | `fxa-db` | the accounts' database server | |
 | `FXA_MYSQL_PORT` | – | `3306` | its port | |
@@ -220,6 +220,7 @@ Values of the chart with no `.env` counterpart, besides those in the tables abov
 | `nameOverride`, `fullnameOverride` | empty | the names of the chart's objects: [Limits](../install/helm.md#limits) |
 | `existingSecret` | empty: the chart generates `<release>-firefox-sync` | a Secret of your own: [existingSecret](../install/helm.md#existingsecret) |
 | `database.allowMajorUpgrade` | `false` | `true` lets one `helm upgrade` move the bundled MariaDB or MySQL to another major (never PostgreSQL); set it back to `false` after: [Database majors](../upgrading.md#database-majors) |
+| `fxa.database.allowMajorUpgrade` | `false` | the same for the bundled accounts database (`fxa.enabled`) |
 | `syncstorage.replicas` | `1` | keep 1: the migrations and the max users init run in its init containers |
 | `syncstorage.resources`, `syncstorage.initResources` | none | the Sync server and its init containers: [Resources](../install/helm.md#resources) |
 | `syncstorage.service.port` | `8000` | the Sync server's Service port |

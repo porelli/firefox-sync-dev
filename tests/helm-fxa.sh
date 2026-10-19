@@ -7,11 +7,16 @@
 #               the chart with the accounts on a throwaway kind cluster (fxa_e2e)
 #
 # PARITY_BASE_CHART=<dir>: chart 0.1.0 already extracted there (charts/firefox-sync of
-# PARITY_BASE, default e917067), for a checkout without that commit (a copy without .git,
-# a shallow clone): `git archive e917067 charts/firefox-sync | tar -x -C <dir>`
+# PARITY_BASE, default 2512e9a), for a checkout without that commit (a copy without .git,
+# a shallow clone): `git archive 2512e9a charts/firefox-sync | tar -x -C <dir>`
 
-# the commit of chart 0.1.0 (part 1): with fxa.enabled=false the chart renders what it did
-PARITY_BASE=${PARITY_BASE:-e917067}
+# the commit of chart 0.1.0 (part 1): with fxa.enabled=false the chart renders what it did.
+# Not part 1's own commit (e917067) any more: 0.1.0 was never published as a stable release,
+# and fxa changed it on purpose since (db-lts: mysql:lts and postgres:latest by default, the
+# major guard and the db-major init container, their NOTES; the admin UI's switches, rendered
+# only when set). 2512e9a is fxa as merged into helm-fxa, still version 0.1.0: the same
+# render as there, nothing else
+PARITY_BASE=${PARITY_BASE:-2512e9a}
 
 fxa_lint() {
   echo "=== The self-hosted accounts (fxa.*) ==="
@@ -203,7 +208,7 @@ fxa_lint() {
   }
   out=$(helpers -f "${fxa}")
   [[ "$(jq -r '[.fxa, .pairing, .db, .host, .oauth, .email, .allowlist] | join("|")' <<< "${out}")" == \
-    "ghcr.io/porelli/firefox-sync:fxa-mono-latest|ghcr.io/porelli/firefox-sync:fxa-channelserver-latest|test-release-firefox-sync-fxa-db 3306 root docker.io/library/mysql:8|api.example.test|http://test-release-firefox-sync-fxa-auth:9000/v1|api.example.test|@example.test,you@example.org" ]] \
+    "ghcr.io/porelli/firefox-sync:fxa-mono-latest|ghcr.io/porelli/firefox-sync:fxa-channelserver-latest|test-release-firefox-sync-fxa-db 3306 root docker.io/library/mysql:lts|api.example.test|http://test-release-firefox-sync-fxa-auth:9000/v1|api.example.test|@example.test,you@example.org" ]] \
     || fail "the helpers of the accounts: ${out}"
   [[ "$(jq -r '.mysql' <<< "${out}")" == '[{"name":"AUTH_MYSQL_HOST","value":"test-release-firefox-sync-fxa-db"},{"name":"AUTH_MYSQL_PORT","value":"3306"},{"name":"AUTH_MYSQL_USERNAME","value":"root"},{"name":"AUTH_MYSQL_PASSWORD","valueFrom":{"secretKeyRef":{"key":"FXA_MYSQL_PASSWORD","name":"test-release-firefox-sync"}}}]' ]] \
     || fail "fxaMysqlEnv AUTH_: $(jq -r '.mysql' <<< "${out}")"
@@ -303,7 +308,17 @@ fxa_ingress_lint() {
   fi
   ! grep -q 'fxa-keys.tar' <<< "$(notes -f "${fxa}" --set fxa.keys.existingSecret=mine)" || fail "NOTES: the keys' export with fxa.keys.existingSecret"
   ! grep -qi 'accounts' <<< "$(notes -f "${CHART_DIR}/ci/default-values.yaml")" || fail "NOTES without the accounts: names them"
-  check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL"
+  # the bundled accounts database: its image and the major guard; on MySQL 8 the native
+  # password and the move to 9, on lts the patch it needs; nothing with your own server
+  grep -q "^Their database runs docker.io/library/mysql:lts: a helm upgrade that would move it to another major is refused$" <<< "${out}" \
+    && grep -q "^unless fxa.database.allowMajorUpgrade=true" <<< "${out}" \
+    && grep -q "MySQL lts needs an accounts image with mozilla/fxa#21554 (ours);$" <<< "${out}" || fail "NOTES: the accounts database on mysql:lts: ${out}"
+  grep -q "On MySQL 8 with mysql_native_password, for" <<< "$(notes -f "${fxa}" --set fxa.database.image.mysql=docker.io/library/mysql:8)" \
+    || fail "NOTES: the accounts database on mysql:8 without its native password note"
+  out=$(notes -f "${fxa}" --set fxa.database.backend=mariadb)
+  grep -q "^Their database runs docker.io/library/mariadb:lts:" <<< "${out}" && ! grep -q 'mozilla/fxa#21554' <<< "${out}" || fail "NOTES: the accounts database on MariaDB: ${out}"
+  ! grep -q '^Their database runs' <<< "$(notes -f "${CHART_DIR}/ci/fxa-external-values.yaml")" || fail "NOTES: the bundled accounts database with your own server"
+  check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL; the accounts database's image, its major guard, MySQL 8's native password or lts' patch"
 }
 
 # the pairing server (fxa.pairing.enabled), compose's fxa-pairing: its env, its healthcheck as
@@ -357,7 +372,7 @@ fxa_backup_lint() {
   backup_spec() { helm template test-release "${CHART_DIR}" "$@" | manifests | jq -c --arg n "${f}-backup" '.[] | select(.kind == "CronJob" and .metadata.name == $n) | .spec.jobTemplate.spec.template.spec'; }
   pod=$(backup_spec -f "${fxa}" --set backup.enabled=true)
   [[ -n "${pod}" ]] || fail "no CronJob ${f}-backup with ci/fxa-values.yaml and backup.enabled"
-  jq -e --arg f "${f}" '(.initContainers | length == 1) and (.initContainers[0] | .name == "backup-accounts" and .image == "docker.io/library/mysql:8"
+  jq -e --arg f "${f}" '(.initContainers | length == 1) and (.initContainers[0] | .name == "backup-accounts" and .image == "docker.io/library/mysql:lts"
     and .command == ["sh", "-c", "sh /ffs-backup/backup.sh now || echo \"the accounts backup failed: recorded\""] and (has("args") | not)
     and ([.env[] | "\(.name)=\(.value // ("secret:" + .valueFrom.secretKeyRef.key))"] == ["BACKUP_SCOPE=accounts", "BACKUP_KEEP=7", "BACKUP_TIME=03:00",
       "FXA_DB_HOST=\($f)-fxa-db", "FXA_DB_PORT=3306", "FXA_DB_USER=root", "FXA_DB_PASSWORD=secret:FXA_MYSQL_PASSWORD"])
@@ -555,8 +570,23 @@ fxa_objects_lint() {
     | .spec.volumeClaimTemplates[0].metadata.name as $claim | .spec.template.spec.containers[0]
     | {image, args, env: [.env[] | {(.name): (.value // .valueFrom.secretKeyRef.key)}] | add, probe: .startupProbe.exec.command, mount: .volumeMounts[0], $claim}'; }
   # shellcheck disable=SC2016 # (compose's $$, literally)
-  [[ "$(fxa_db_spec)" == '{"args":["mysqld","--mysql-native-password=ON","--authentication-policy=mysql_native_password","--event-scheduler=ON"],"claim":"data","env":{"MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mysql:8","mount":{"mountPath":"/var/lib/mysql","name":"data","subPath":"data"},"probe":["sh","-c","mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]}' ]] \
+  [[ "$(fxa_db_spec)" == '{"args":["mysqld","--event-scheduler=ON"],"claim":"data","env":{"MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mysql:lts","mount":{"mountPath":"/var/lib/mysql","name":"data","subPath":"data"},"probe":["sh","-c","mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]}' ]] \
     || fail "fxa-db (mysql): $(fxa_db_spec)"
+  # compose's FXA_MYSQL_ARGS: mysql_native_password on a MySQL 8 pin alone (an accounts image
+  # without mozilla/fxa#21554), after --event-scheduler=ON as in compose's command; the
+  # defaults those of compose's FXA_MYSQL_IMAGE and FXA_MARIADB_IMAGE (mysql:lts, mariadb:lts)
+  local native='["mysqld","--event-scheduler=ON","--mysql-native-password=ON","--authentication-policy=mysql_native_password"]' pin want
+  for pin in docker.io/library/mysql:8 mysql:8.4 docker.io/library/mysql:8.4.7@sha256:00 docker.io/library/mysql:9 docker.io/library/mysql:9.7 docker.io/library/mysql:latest; do
+    want='["mysqld","--event-scheduler=ON"]'
+    [[ ${pin} =~ :8 ]] && want=${native}
+    [[ "$(fxa_db_spec --set fxa.database.image.mysql="${pin}" | jq -c '.args')" == "${want}" ]] || fail "fxa-db on ${pin}: $(fxa_db_spec --set fxa.database.image.mysql="${pin}" | jq -c '.args'), not ${want}"
+  done
+  [[ "$(fxa_db_spec --set fxa.database.backend=mariadb --set fxa.database.image.mariadb=docker.io/library/mariadb:11 | jq -c '.args')" == '["mariadbd","--event-scheduler=ON"]' ]] \
+    || fail "fxa-db on mariadb:11: not mariadbd --event-scheduler=ON"
+  [[ "$(python3 -c 'import sys, yaml; i = yaml.safe_load(open(sys.argv[1]))["fxa"]["database"]["image"]; print(i["mysql"], i["mariadb"])' "${CHART_DIR}/values.yaml")" \
+    == "docker.io/library/mysql:$(sed -n 's/^ *image: ${FXA_MYSQL_IMAGE:-mysql:\(.*\)}$/\1/p' "${REPO_ROOT}/docker-compose.fxa.yml" | sort -u) docker.io/library/mariadb:$(sed -n 's/^ *image: ${FXA_MARIADB_IMAGE:-mariadb:\(.*\)}$/\1/p' "${REPO_ROOT}/docker-compose.fxa-mariadb.yml" | sort -u)" ]] \
+    || fail "fxa.database.image: not compose's FXA_MYSQL_IMAGE and FXA_MARIADB_IMAGE defaults"
+  check "fxa-db: mysql:lts and mariadb:lts as compose's defaults; mysql_native_password only on a MySQL 8 pin (mysql:8, 8.4, 8.4.7@digest; none on 9, 9.7, latest, lts), as compose's FXA_MYSQL_ARGS"
   [[ "$(fxa_db_spec --set fxa.database.backend=mariadb)" == '{"args":["mariadbd","--event-scheduler=ON"],"claim":"data-mariadb","env":{"MARIADB_AUTO_UPGRADE":"true","MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mariadb:lts","mount":{"mountPath":"/var/lib/mysql","name":"data-mariadb","subPath":"data"},"probe":["healthcheck.sh","--connect","--innodb_initialized"]}' ]] \
     || fail "fxa-db (mariadb): $(fxa_db_spec --set fxa.database.backend=mariadb)"
   [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq '[.[] | select(.metadata.name | test("-fxa-db$"))] | length')" == 0 ]] \
@@ -567,7 +597,22 @@ fxa_objects_lint() {
     || ! grep -qF '{{- include "firefox-sync.checkFxaDbBackend" . }}' "${CHART_DIR}/templates/_fxa.tpl"; then
     fail "checkFxaDbBackend does not look the accounts database's StatefulSet up"
   fi
-  check "fxa-db: compose's command, env and healthcheck (mysql, mariadb), a volume each (data, data-mariadb: compose's fxa-db, fxa-db-mariadb), data in subPath data; none with your own server"
+  # the major guard of the bundled accounts database: Sync's dbMajorChange (tests/helm.sh lint
+  # checks its pairs) on the running db container's image, refused unless
+  # fxa.database.allowMajorUpgrade (a boolean); not a copy of its own
+  local guard
+  guard=$(awk '/define "firefox-sync.checkFxaDbBackend"/ {p = 1; next} p && /^\{\{- define / {p = 0} p' "${CHART_DIR}/templates/_fxa.tpl")
+  grep -qF 'include "firefox-sync.dbMajorChange" (dict "old" $running "new" $image)' <<< "${guard}" \
+    && grep -qF '(not .Values.fxa.database.allowMajorUpgrade)' <<< "${guard}" \
+    && grep -qF 'range $existing.spec.template.spec.containers' <<< "${guard}" \
+    || fail "checkFxaDbBackend: no major guard with dbMajorChange and fxa.database.allowMajorUpgrade"
+  [[ "$(grep -c 'define "firefox-sync.dbMajorChange"' "${CHART_DIR}"/templates/*.tpl | awk -F: '{n += $2} END {print n}')" == 1 ]] || fail "dbMajorChange defined more than once"
+  if helm template test-release "${CHART_DIR}" -f "${fxa}" --set fxa.database.allowMajorUpgrade=yes > /dev/null 2>&1; then
+    fail "fxa.database.allowMajorUpgrade=yes not refused by the schema"
+  fi
+  [[ "$(helm show values "${CHART_DIR}" | python3 -c 'import sys, yaml; print(yaml.safe_load(sys.stdin)["fxa"]["database"]["allowMajorUpgrade"])')" == False ]] \
+    || fail "fxa.database.allowMajorUpgrade not false by default"
+  check "fxa-db: compose's command, env and healthcheck (mysql, mariadb), a volume each (data, data-mariadb: compose's fxa-db, fxa-db-mariadb), data in subPath data; none with your own server; the major guard (dbMajorChange, fxa.database.allowMajorUpgrade false, a boolean)"
 
   # Redis: the image's user, its data in memory
   jq -e '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-redis") | .spec | .strategy.type == "Recreate"
@@ -771,8 +816,9 @@ fxa_base_parity() {
 # then, through the Ingresses over HTTPS (fxa_fixtures), test_fxa_flow.py, the client's
 # address in the rate limits and the avatars on their volume.
 # REPOSITORY, TAG: the Sync server's images, as tests/helm.sh; FXA_IMAGE (default REPOSITORY),
-# FXA_VERSION (default fxa-mono-latest): the accounts'; FXA_MARIADB_IMAGE: their MariaDB (as
-# tests/e2e-fxa.sh: the chart's lts when the accounts image has mozilla/fxa#21494, else mariadb:11)
+# FXA_VERSION (default fxa-mono-latest): the accounts'; FXA_MARIADB_IMAGE, FXA_MYSQL_IMAGE:
+# their database (as tests/e2e-fxa.sh: the chart's lts when the accounts image has
+# mozilla/fxa#21494, mozilla/fxa#21554, else mariadb:11, mysql:8)
 fxa_e2e() {
   local backend=${1:-}
   case "${backend}" in
@@ -781,24 +827,30 @@ fxa_e2e() {
   esac
   local repository=${REPOSITORY:-ghcr.io/porelli/firefox-sync} tag=${TAG:-latest} init_tag=${TAG:-latest}
   local fxa_image=${FXA_IMAGE:-${repository}}:${FXA_VERSION:-fxa-mono-latest}
-  local db_image redis_image=docker.io/library/redis:7-alpine
+  local db_image redis_image
   db_image=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["fxa"]["database"]["image"][sys.argv[2]])' \
     "${CHART_DIR}/values.yaml" "${backend}") || fail "no fxa.database.image.${backend} in values.yaml"
-  # MariaDB lts (12) needs mozilla/fxa#21494 in the accounts image (the label of our builds,
-  # upstream-patches.yml): MariaDB 11 without it, as tests/e2e-fxa.sh
-  local db_args=()
-  if [[ ${backend} == mariadb ]]; then
-    if [[ -n "${FXA_MARIADB_IMAGE:-}" ]]; then
-      db_image=${FXA_MARIADB_IMAGE}
-    else
-      docker image inspect "${fxa_image}" > /dev/null 2>&1 || docker pull -q "${fxa_image}" > /dev/null || fail "${fxa_image} not pulled"
-      if [[ " $(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${fxa_image}") " != *" mozilla/fxa#21494@"* ]]; then
-        db_image=docker.io/library/mariadb:11
-        echo "== ${fxa_image} without mozilla/fxa#21494 (label org.firefox-sync.upstream-patches): the accounts on ${db_image}"
-      fi
+  redis_image=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["fxa"]["redis"]["image"])' "${CHART_DIR}/values.yaml") \
+    || fail "no fxa.redis.image in values.yaml"
+  # the chart's lts needs a patch in the accounts image (the label of our builds,
+  # upstream-patches.yml), as tests/e2e-fxa.sh: MariaDB lts (12) mozilla/fxa#21494, else
+  # mariadb:11; MySQL lts (9) mozilla/fxa#21554, else mysql:8 (with mysql_native_password, the
+  # chart's for a MySQL 8 pin). FXA_MARIADB_IMAGE, FXA_MYSQL_IMAGE: that one
+  local db_args=() pr fallback given
+  case "${backend}" in
+    mariadb) pr=21494 fallback=docker.io/library/mariadb:11 given=${FXA_MARIADB_IMAGE:-} ;;
+    mysql) pr=21554 fallback=docker.io/library/mysql:8 given=${FXA_MYSQL_IMAGE:-} ;;
+  esac
+  if [[ -n "${given}" ]]; then
+    db_image=${given}
+  else
+    docker image inspect "${fxa_image}" > /dev/null 2>&1 || docker pull -q "${fxa_image}" > /dev/null || fail "${fxa_image} not pulled"
+    if [[ " $(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${fxa_image}") " != *" mozilla/fxa#${pr}@"* ]]; then
+      db_image=${fallback}
+      echo "== ${fxa_image} without mozilla/fxa#${pr} (label org.firefox-sync.upstream-patches): the accounts on ${db_image}"
     fi
-    db_args=(--set fxa.database.image.mariadb="${db_image}")
   fi
+  db_args=(--set fxa.database.image."${backend}"="${db_image}")
   ADMIN_TAG=${TAG:-latest}
   CLUSTER="ffs-helm-fxa-${backend}"
   REL=t
@@ -992,6 +1044,43 @@ fxa_e2e() {
   [[ "$(kubectl get pod "${FULL}-fxa-db-0" -o jsonpath='{.status.containerStatuses[0].ready}')" == true ]] || fail "fxa-db not running on its data after the refused upgrade"
   check "helm upgrade to fxa.database.backend=${other}: refused at render time (created with ${backend}, ${old_claim}); auth's Deployment (generation, spec), fxa-db and ${claim} unchanged"
 
+  # fxa-db as compose's FXA_MYSQL_IMAGE / FXA_MYSQL_ARGS: mysql_native_password (root on it)
+  # only on a MySQL 8 pin; on MySQL lts none, root on caching_sha2_password
+  local running_image args plugin
+  running_image=$(kubectl get sts "${FULL}-fxa-db" -o jsonpath='{.spec.template.spec.containers[0].image}')
+  args=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -c '.spec.template.spec.containers[0].args')
+  [[ "${running_image}" == "${db_image}" ]] || fail "fxa-db runs ${running_image}, not ${db_image}"
+  if [[ ${backend} == mysql ]]; then
+    plugin=$(kubectl exec "${FULL}-fxa-db-0" -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql -uroot -N -B -e "SELECT plugin FROM mysql.user WHERE user = \"root\" AND host = \"%\""')
+    if [[ ${db_image##*:} == 8* ]]; then
+      [[ "${args}" == '["mysqld","--event-scheduler=ON","--mysql-native-password=ON","--authentication-policy=mysql_native_password"]' && "${plugin}" == mysql_native_password ]] \
+        || fail "fxa-db on ${db_image}: args ${args}, root on ${plugin}"
+    else
+      [[ "${args}" == '["mysqld","--event-scheduler=ON"]' && "${plugin}" == caching_sha2_password ]] || fail "fxa-db on ${db_image}: args ${args}, root on ${plugin}"
+    fi
+    check "fxa-db on ${db_image}: ${args}, root on ${plugin}"
+  fi
+
+  # another major on this release: refused at render time (checkFxaDbBackend's lookup and
+  # dbMajorChange), nothing applied; fxa.database.allowMajorUpgrade=true renders it (a server
+  # dry run: lookup reads the cluster, nothing is changed)
+  local major_image=${running_image%:*}:latest
+  [[ ${running_image} == *:latest ]] && major_image=${running_image%:*}:lts
+  sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
+  local revision
+  revision=$(helm history "${REL}" -o json | jq -r 'last | .revision')
+  if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.image."${backend}"="${major_image}" --timeout 2m 2>&1); then
+    fail "helm upgrade to fxa.database.image.${backend}=${major_image} accepted"
+  fi
+  grep -qF "firefox-sync: fxa.database.image.${backend} is ${major_image} but the bundled accounts database ${FULL}-fxa-db runs ${running_image}; another major upgrades its data for good at the next start: set fxa.database.image.${backend} to ${running_image} to stay, or fxa.database.allowMajorUpgrade=true to move (a backup first), see docs/upgrading.md#database-majors" <<< "${out}" \
+    || fail "helm upgrade to ${major_image} refused, but not by the major guard: ${out}"
+  [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade changed fxa-db's StatefulSet"
+  [[ "$(helm history "${REL}" -o json | jq -r 'last | "\(.revision) \(.status)"')" == "${revision} deployed" ]] || fail "the refused upgrade left: $(helm history "${REL}" | tail -2)"
+  out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.image."${backend}"="${major_image}" --set fxa.database.allowMajorUpgrade=true --dry-run=server 2>&1) \
+    || fail "helm upgrade --dry-run=server with fxa.database.allowMajorUpgrade=true refused: ${out}"
+  [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the dry run changed fxa-db's StatefulSet"
+  check "helm upgrade to fxa.database.image.${backend}=${major_image} (running ${running_image}): refused at render time naming both, revision ${revision} still deployed, fxa-db unchanged; with fxa.database.allowMajorUpgrade=true it renders (server dry run)"
+
   # the accounts' pages and profiles: Ready (helm's --wait), after their init containers; the
   # avatars' volume 10001's, with the image's directory in it; Redis' password in their env
   local name want
@@ -1179,14 +1268,13 @@ PY
   # with the accounts (ADMIN_FXA_CLIENT_ID), max accounts, the health of every component
   # (Redis with its password), the public URLs and their certificates, the security history
   # (FXA_DB_SERVER as tests/e2e-fxa.sh sets it: the version the health table shows, a regex)
-  local fxa_db_server='MySQL 8' db_tag=${db_image##*:} admin_db_password fxa_mysql_password
-  if [[ ${backend} == mariadb ]]; then
-    case "${db_tag}" in
-      [0-9]*.[0-9]*) fxa_db_server="MariaDB ${db_tag//./\\.}" ;;
-      [0-9]*) fxa_db_server="MariaDB ${db_tag}\\." ;;
-      *) fxa_db_server='MariaDB [0-9]+\.[0-9]+' ;;
-    esac
-  fi
+  local fxa_db_server db_tag=${db_image##*:} admin_db_password fxa_mysql_password server=MySQL
+  [[ ${backend} == mariadb ]] && server=MariaDB
+  case "${db_tag}" in
+    [0-9]*.[0-9]*) fxa_db_server="${server} ${db_tag//./\\.}" ;;
+    [0-9]*) fxa_db_server="${server} ${db_tag}\\." ;;
+    *) fxa_db_server="${server} [0-9]+\\.[0-9]+" ;;
+  esac
   admin_db_password=$(kubectl get secret "${SECRET}" -o jsonpath='{.data.ADMIN_DB_PASSWORD}' | base64 -d)
   fxa_mysql_password=$(kubectl get secret "${SECRET}" -o jsonpath='{.data.FXA_MYSQL_PASSWORD}' | base64 -d)
   # (the databases as the admin UI has them: its env)

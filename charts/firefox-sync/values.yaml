@@ -109,7 +109,7 @@ fxa:
 
   # the accounts database: compose's fxa-db, or your own server (docs/databases.md#your-own-server)
   database:
-    # FXA_DB: mysql (MySQL 8, what Mozilla supports) or mariadb (docs/accounts.md#mysql-or-mariadb).
+    # FXA_DB: mysql or mariadb (docs/accounts.md#mysql-or-mariadb).
     # Independent of database.backend
     backend: mysql
     # FXA_DB_CONTAINERS: true runs the server (StatefulSet <release>-firefox-sync-fxa-db, as
@@ -118,9 +118,21 @@ fxa:
     # external.policyUser)
     bundled: true
     # the server's image, also the client of the backups and of the wait for the server
+    # (FXA_MYSQL_IMAGE, FXA_MARIADB_IMAGE): MySQL's and MariaDB's long-term major, as compose's.
+    # mysql:lts (MySQL 9) needs an accounts image with mozilla/fxa#21554 (ours); with another
+    # (Mozilla's, or ours from before) pin MySQL 8, docker.io/library/mysql:8: a MySQL 8 pin
+    # gets compose's FXA_MYSQL_ARGS, --mysql-native-password=ON
+    # --authentication-policy=mysql_native_password, any other image none. lts moves on to the
+    # next major on its own (an image pull): pin a major to choose when, e.g. mysql:9, mariadb:12
+    # (docs/upgrading.md#database-majors)
     image:
-      mysql: docker.io/library/mysql:8
+      mysql: docker.io/library/mysql:lts
       mariadb: docker.io/library/mariadb:lts
+    # helm upgrade refuses an image that would move the running bundled server to another major
+    # (its data upgraded for good at the next start), as database.allowMajorUpgrade: true lets
+    # one upgrade do it (a backup first; from MySQL 8, its users moved off mysql_native_password
+    # first, docs/upgrading.md#mysql-8-to-9), then set it back to false: --reuse-values keeps it
+    allowMajorUpgrade: false
     external:
       # FXA_MYSQL_HOST (required): a host name or an IPv4 address the pods reach
       host: ""
@@ -142,7 +154,7 @@ fxa:
   # the accounts' caches and rate limits (compose's fxa-redis), in memory: the sessions and
   # refresh tokens are in the database
   redis:
-    image: docker.io/library/redis:7-alpine
+    image: docker.io/library/redis:alpine
     resources:
       requests:
         memory: 64Mi

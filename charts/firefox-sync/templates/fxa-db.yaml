@@ -1,5 +1,5 @@
 {{- /*
-The accounts database, compose's fxa-db (MySQL 8; MariaDB with docker-compose.fxa-mariadb.yml):
+The accounts database, compose's fxa-db (MySQL; MariaDB with docker-compose.fxa-mariadb.yml):
 only with fxa.database.bundled, your own server otherwise. Its root password is
 FXA_MYSQL_PASSWORD, as compose's
 */ -}}
@@ -66,14 +66,9 @@ spec:
             - name: MARIADB_AUTO_UPGRADE
               value: "true"
             {{- end }}
-          {{- if eq $db.backend "mariadb" }}
-          # the default authentication is already mysql_native_password, the only one FxA's
-          # driver supports
-          args: [mariadbd, --event-scheduler=ON]
-          {{- else }}
-          # FxA uses the node mysql driver, which only supports mysql_native_password
-          args: [mysqld, --mysql-native-password=ON, --authentication-policy=mysql_native_password, --event-scheduler=ON]
-          {{- end }}
+          # compose's command (without db/mysql/keep-major.sh: the chart refuses another major at
+          # render time, checkFxaDbBackend); mysql_native_password only on a MySQL 8 pin (fxaDbArgs)
+          args: {{ include "firefox-sync.fxaDbArgs" . }}
           # compose's healthcheck (MySQL over TCP: during the first start the image runs a
           # temporary server on the socket only), with the timings of the Sync server's
           # databases: up to 30 minutes for the first start, restarted only after 5 minutes

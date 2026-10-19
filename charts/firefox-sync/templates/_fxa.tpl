@@ -57,6 +57,24 @@ wait and of its backups
 {{- end }}
 
 {{/*
+The bundled accounts database's args (a JSON list), compose's fxa-db command: mysqld
+--event-scheduler=ON ${FXA_MYSQL_ARGS}, where prepare_environment.sh writes FXA_MYSQL_ARGS
+(mysql_native_password, for an accounts image without mozilla/fxa#21554) only with a MySQL 8
+pin: so here, by the image, a MySQL 8 one (mysql:8, mysql:8.4.x) gets them, any other none
+(MySQL 9 refuses them). MariaDB: mariadbd --event-scheduler=ON (its default authentication is
+already mysql_native_password)
+*/}}
+{{- define "firefox-sync.fxaDbArgs" -}}
+{{- if eq .Values.fxa.database.backend "mariadb" }}
+{{- toJson (list "mariadbd" "--event-scheduler=ON") }}
+{{- else if eq (include "firefox-sync.imageMajor" (include "firefox-sync.fxaDbImage" .)) "8" }}
+{{- toJson (list "mysqld" "--event-scheduler=ON" "--mysql-native-password=ON" "--authentication-policy=mysql_native_password") }}
+{{- else }}
+{{- toJson (list "mysqld" "--event-scheduler=ON") }}
+{{- end }}
+{{- end }}
+
+{{/*
 The host of a URL, without its port: the host of an Ingress. Accepts a dict with "root" and "url"
 */}}
 {{- define "firefox-sync.fxaHost" -}}
@@ -273,8 +291,10 @@ compose's fxa-db and fxa-db-mariadb volumes)
 {{/*
 fxa.database.backend switched on a release whose bundled accounts database exists: the render
 fails before anything is applied (Kubernetes would refuse the StatefulSet's other volume only
-after the objects before it were changed). Read with lookup on install and upgrade; nothing to
-check where lookup returns nothing (helm template, a GitOps render)
+after the objects before it were changed). And on the same backend, an image of another major
+than the running one (dbMajorChange), unless fxa.database.allowMajorUpgrade. Read with lookup
+on install and upgrade; nothing to check where lookup returns nothing (helm template, a GitOps
+render)
 */}}
 {{- define "firefox-sync.checkFxaDbBackend" -}}
 {{- if .Values.fxa.database.bundled }}
@@ -287,6 +307,18 @@ check where lookup returns nothing (helm template, a GitOps render)
 {{- $new := include "firefox-sync.fxaDbClaim" . }}
 {{- if and $old (ne $old $new) }}
 {{- fail (printf "firefox-sync: fxa.database.backend is %s but the accounts database was created with %s (its volume %s); switching needs a dump and restore, see docs/backups.md#restore-on-kubernetes" .Values.fxa.database.backend (ternary "mariadb" "mysql" (eq $old "data-mariadb")) $old) }}
+{{- end }}
+{{- /* the same server, another image: refused when it moves the data to another major
+(firefox-sync.dbMajorChange, as checkDbMajor for the Sync databases), unless
+fxa.database.allowMajorUpgrade */}}
+{{- $running := "" }}
+{{- range $existing.spec.template.spec.containers }}
+{{- if eq .name "db" }}{{ $running = .image }}{{ end }}
+{{- end }}
+{{- $image := include "firefox-sync.fxaDbImage" . }}
+{{- $backend := .Values.fxa.database.backend }}
+{{- if and (eq $old $new) (not .Values.fxa.database.allowMajorUpgrade) (include "firefox-sync.dbMajorChange" (dict "old" $running "new" $image)) }}
+{{- fail (printf "firefox-sync: fxa.database.image.%s is %s but the bundled accounts database %s runs %s; another major upgrades its data for good at the next start: set fxa.database.image.%s to %s to stay, or fxa.database.allowMajorUpgrade=true to move (a backup first), see docs/upgrading.md#database-majors" $backend $image (include "firefox-sync.fxaDbHost" .) $running $backend $running) }}
 {{- end }}
 {{- end }}
 {{- end }}
