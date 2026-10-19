@@ -717,6 +717,15 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" docker.io/library/mariadb:lts "the backups of the accounts with the same MariaDB"
   "${QUADLET}" -dryrun -user > quadlet-fxa-mariadb-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the MariaDB accounts database"
+  # a setting of the accounts changed in .env, rendered again: the units of the install (with
+  # the accounts on MariaDB and the admin UI), only fxa-auth's changes
+  check "$(grep -cxF 'Environment="LOG_LEVEL=INFO"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "fxa-auth logs at INFO without FXA_LOG_LEVEL"
+  cp -p .env "${WORK}/fxa-mariadb.env"
+  echo 'FXA_LOG_LEVEL=DEBUG' >> .env
+  ./prepare_environment.sh --render-units < /dev/null > render-units-fxa.log 2>&1
+  check "$? $(sed -n 's/^  ✓ //p' render-units-fxa.log | paste -sd' ') $(grep -cxF 'Environment="LOG_LEVEL=DEBUG"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container") $(secrets_kept "${WORK}/fxa-mariadb.env" .env | sed 's/ [0-9]*$//')" \
+    "0 firefox-sync-fxa-auth.container 1 kept" "--render-units with the accounts on MariaDB: FXA_LOG_LEVEL in fxa-auth's unit alone, the secrets kept"
+  [ "${FAILED}" = 0 ] || cat render-units-fxa.log
   stop_quadlets
 fi
 

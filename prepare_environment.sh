@@ -450,6 +450,9 @@ render_units() {
     # fxa-db's extra options, none when not set
     FXA_MYSQL_ARGS=$(env_plain FXA_MYSQL_ARGS)
     export FXA_MYSQL_ARGS
+    # fxa-auth's log level, INFO when not set (as compose)
+    FXA_LOG_LEVEL=$(env_plain FXA_LOG_LEVEL)
+    export FXA_LOG_LEVEL=${FXA_LOG_LEVEL:-INFO}
     # the accounts' units: --arch only for another architecture than this host's (an emulated
     # image). With it podman 4 pulls the tag from the registry at every start, over the local
     # image: the units would not run the image whose label chose FXA_MYSQL_IMAGE above

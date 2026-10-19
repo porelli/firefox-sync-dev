@@ -89,7 +89,8 @@ Environment="RECOVERY_PHONE__TWILIO__CREDENTIAL_MODE="
 Environment="ACCOUNT_EVENTS_ENABLED=%FXA_ACCOUNT_EVENTS%"
 # never skip the sign-in code for a known IP address (Mozilla: 7 days), see docs/accounts.md#security-history
 Environment="IP_PROFILING_RECENCY=0"
-Environment="LOG_LEVEL=INFO"
+# FXA_LOG_LEVEL of .env, else INFO (as compose)
+Environment="LOG_LEVEL=%FXA_LOG_LEVEL%"
 Volume=firefox-sync-fxa-keys.volume:/fxa-keys
 Volume=%SCRIPT_DIR%/config/fxa:/fxa-config:ro,z
 PublishPort=%FXA_AUTH_EXPORT_PORT%:9000
