@@ -457,6 +457,16 @@ TPL
   rm -f "${values}"
   [[ "${numbers}" == "465 1000000 2000000" ]] || fail "numbers of a values file: ${numbers}"
   check "numbers of a values file as integers (dbGrowthMb 2000000, retentionDays 1000000, smtp.port 465)"
+  # the switches of compose's .env that are off when empty: rendered only when set (the
+  # default render as before them)
+  switches() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests | jq -cS '[.[]
+      | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin") | .spec.template.spec.containers[0].env[]
+      | select(.name == "ADMIN_INSECURE_COOKIE" or .name == "SMTP_INSECURE_AUTH") | {(.name): .value}] | add'
+  }
+  [[ "$(switches)" == null && "$(switches --set admin.insecureCookie=1 --set admin.smtp.insecureAuth=true)" == '{"ADMIN_INSECURE_COOKIE":"1","SMTP_INSECURE_AUTH":"true"}' ]] \
+    || fail "admin.insecureCookie, admin.smtp.insecureAuth: $(switches) / $(switches --set admin.insecureCookie=1 --set admin.smtp.insecureAuth=true)"
+  check "admin.insecureCookie, admin.smtp.insecureAuth: ADMIN_INSECURE_COOKIE, SMTP_INSECURE_AUTH only when set"
 
   external_lint
   ingress_lint

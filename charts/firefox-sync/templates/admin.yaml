@@ -160,6 +160,11 @@ spec:
               value: {{ $a.smtp.secure | toString | quote }}
             - name: SMTP_SENDER
               value: {{ $a.smtp.sender | quote }}
+            {{- /* only when set: the default render stays that of the chart before it */}}
+            {{- with $a.smtp.insecureAuth }}
+            - name: SMTP_INSECURE_AUTH
+              value: {{ . | toString | quote }}
+            {{- end }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "METRICS_TOKEN" "key" "ADMIN_METRICS_TOKEN" "optional" true) | nindent 12 }}
             - name: ADMIN_UPDATE_CHECK
               value: {{ $a.updateCheck | toString | quote }}
@@ -245,6 +250,10 @@ spec:
               value: {{ $a.allowed.users | quote }}
             - name: ADMIN_ALLOWED_GROUPS
               value: {{ $a.allowed.groups | quote }}
+            {{- with $a.insecureCookie }}
+            - name: ADMIN_INSECURE_COOKIE
+              value: {{ . | toString | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080

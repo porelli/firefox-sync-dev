@@ -495,14 +495,16 @@ backups=$(ls -d quadlets.before-* 2> /dev/null | wc -l)
 # as an admin edits .env (the same admin UI under a name of its own: a pin)
 podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:pinned
 sed -i 's|^ADMIN_STALE_DAYS=.*|ADMIN_STALE_DAYS=45|' .env
+# (a switch of the admin UI the units pass from .env, as compose: on its configuration page)
+sed -i 's|^ADMIN_INSECURE_COOKIE=.*|ADMIN_INSECURE_COOKIE=1|' .env
 grep -q '^ADMIN_IMAGE=' .env && sed -i 's|^ADMIN_IMAGE=.*|ADMIN_IMAGE=localhost/ffs-admin:pinned|' .env || echo 'ADMIN_IMAGE=localhost/ffs-admin:pinned' >> .env
 cp -p .env "${WORK}/edited.env"
 ./prepare_environment.sh --render-units < /dev/null > render-units.log 2>&1
 check "$?" 0 "prepare_environment.sh --render-units (quadlets)"
 check "$(secrets_kept "${WORK}/rendered.env" .env | sed 's/ [0-9]*$//') $(cmp -s .env "${WORK}/edited.env" && echo same)" "kept same" "--render-units keeps every password and secret, and .env as it is (quadlets)"
 # only the admin UI's unit changed (fast_admin_checks' line gone with it), the units of before kept
-check "$(sed -n 's/^  ✓ //p' render-units.log | paste -sd' ') $(grep -cxE 'Image=localhost/ffs-admin:pinned|Environment="ADMIN_STALE_DAYS=45"' "${QUADLET_DIR}/firefox-sync-admin.container") $(($(ls -d quadlets.before-* | wc -l) - backups)) $(grep -Hc '^Image=localhost/ffs-admin:pinned' quadlets.before-*/firefox-sync-admin.container 2> /dev/null | grep -c ':0$')" \
-  "firefox-sync-admin.container 2 1 $((backups + 1))" "--render-units writes the changed unit only, with ADMIN_IMAGE and the setting, the units of before kept (quadlets)"
+check "$(sed -n 's/^  ✓ //p' render-units.log | paste -sd' ') $(grep -cxE 'Image=localhost/ffs-admin:pinned|Environment="(ADMIN_STALE_DAYS=45|ADMIN_INSECURE_COOKIE=1)"' "${QUADLET_DIR}/firefox-sync-admin.container") $(($(ls -d quadlets.before-* | wc -l) - backups)) $(grep -Hc '^Image=localhost/ffs-admin:pinned' quadlets.before-*/firefox-sync-admin.container 2> /dev/null | grep -c ':0$')" \
+  "firefox-sync-admin.container 3 1 $((backups + 1))" "--render-units writes the changed unit only, with ADMIN_IMAGE and the settings, the units of before kept (quadlets)"
 ./prepare_environment.sh --render-units < /dev/null > render-units-again.log 2>&1
 check "$? $(grep -c 'nothing changed$' render-units-again.log) $(grep -c '✓' render-units-again.log) $(($(ls -d quadlets.before-* | wc -l) - backups)) $(cmp -s .env "${WORK}/edited.env" && echo same)" "0 1 0 1 same" \
   "--render-units again: nothing changes (quadlets)"
@@ -517,6 +519,7 @@ check "$?" 0 "the units started again, rendered again (quadlets)"
 check "$(hb) $(admin_up /login) $(admin_sign_in rendered) $(podman inspect -f '{{.ImageName}}' firefox-sync-admin)" "200 200 yes localhost/ffs-admin:pinned" \
   "the Sync server, the admin UI with the same password and the image pinned (quadlets rendered again)"
 check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')" all "admin UI reaches the Sync server and its databases, their passwords as before (quadlets rendered again)"
+check "$(curl -s -b "${WORK}/cookies-rendered" http://localhost:${ADMIN_PORT}/config | grep -q 'also over plain HTTP' && echo yes)" yes "ADMIN_INSECURE_COOKIE of .env reaches the admin UI (quadlets)"
 
 echo "== a backup restores, the way docs/backups.md#restore-with-quadlets says for the Quadlets"
 st_sql() { podman exec -e MYSQL_PWD="$(grep '^SYNC_STORAGE_DB_PASSWORD=' .env | cut -d= -f2)" firefox-sync-syncstorage-db \

@@ -544,7 +544,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			setting("Password", "SMTP_PASS", "FXA_SMTP_PASS", "not set", ""),
 			sender)
 		if configLookup("SMTP_INSECURE_AUTH") != "" {
-			email.Rows = append(email.Rows, setting("Password without TLS", "SMTP_INSECURE_AUTH", "", "", "allowed: for a test server only"))
+			email.Rows = append(email.Rows, setting("Password without TLS", "SMTP_INSECURE_AUTH", "ADMIN_SMTP_INSECURE_AUTH", "", "allowed: in clear to a server that offers no TLS"))
 		}
 	}
 	sends := "yes"
@@ -655,7 +655,8 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	metrics.Rows = append(metrics.Rows, prometheus,
 		setting("Metrics of the Sync server", "METRICS_LISTEN", "", ":8125", "statsd over UDP, inside the stack's network"),
-		fact("Health checks every", count("HEALTH_CHECK_SECONDS", "60", "second"), "", "HEALTH_CHECK_SECONDS").unset(),
+		// (HEALTH_CHECK_SECONDS of the container: the tests' rounds, no setting of .env)
+		fact("Health checks every", count("HEALTH_CHECK_SECONDS", "60", "second"), "the components, the blocks, the security history"),
 		fact("Public checks", onText[publicChecks()], "every hour the public https URLs, their certificates and the sign-up gate", "ADMIN_PUBLIC_CHECK").unset(),
 		fact("New releases", onText[updateChecks()], "every 12 hours on GitHub", "ADMIN_UPDATE_CHECK").unset())
 

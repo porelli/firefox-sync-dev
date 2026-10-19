@@ -272,9 +272,15 @@
             },
             "sender": {
               "type": "string"
+            },
+            "insecureAuth": {
+              "type": ["string", "boolean", "integer"]
             }
           },
           "additionalProperties": false
+        },
+        "insecureCookie": {
+          "type": ["string", "boolean", "integer"]
         },
         "oidc": {
           "type": "object",

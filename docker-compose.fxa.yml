@@ -409,6 +409,8 @@ services:
       FXA_PAIRING_URL: ${FXA_PAIRING_URL:-}
       # the security history of the accounts, as fxa-auth records it
       FXA_ACCOUNT_EVENTS: ${FXA_ACCOUNT_EVENTS:-false}
+      # accounts that did not confirm their email after this many hours are marked unconfirmed (empty: 72)
+      ADMIN_UNCONFIRMED_HOURS: ${ADMIN_UNCONFIRMED_HOURS:-}
       # the accounts pages, allowed to read the refusals (CORS)
       FXA_CONTENT_URL: ${FXA_CONTENT_URL}
       # the public checks (ADMIN_PUBLIC_CHECK), the sign-up gate through FXA_AUTH_URL
