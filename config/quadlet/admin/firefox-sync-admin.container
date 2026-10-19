@@ -44,7 +44,7 @@ Environment="SMTP_USER=%FXA_SMTP_USER%"
 Environment="SMTP_PASS=%FXA_SMTP_PASS%"
 Environment="SMTP_SECURE=%FXA_SMTP_SECURE%"
 Environment="SMTP_SENDER=%FXA_SMTP_SENDER%"
-# the SMTP password over a connection without TLS (any value; empty: refused)
+# the SMTP password over a connection without TLS (1, true or yes; empty, 0, false or no: refused)
 Environment="SMTP_INSECURE_AUTH=%ADMIN_SMTP_INSECURE_AUTH%"
 Environment="METRICS_TOKEN=%ADMIN_METRICS_TOKEN%"
 Environment="ADMIN_UPDATE_CHECK=%ADMIN_UPDATE_CHECK%"
@@ -80,7 +80,7 @@ Environment="ADMIN_AUTH_GROUPS_HEADER=%ADMIN_AUTH_GROUPS_HEADER%"
 Environment="ADMIN_TRUSTED_PROXIES=%ADMIN_TRUSTED_PROXIES%"
 Environment="ADMIN_ALLOWED_USERS=%ADMIN_ALLOWED_USERS%"
 Environment="ADMIN_ALLOWED_GROUPS=%ADMIN_ALLOWED_GROUPS%"
-# the session cookie also over plain HTTP (any value; empty: HTTPS and localhost only)
+# the session cookie also over plain HTTP (1, true or yes; empty, 0, false or no: HTTPS and localhost only)
 Environment="ADMIN_INSECURE_COOKIE=%ADMIN_INSECURE_COOKIE%"
 PublishPort=%ADMIN_EXPORT_PORT%:8080
 # exec form: the image has no shell for the default CMD-SHELL

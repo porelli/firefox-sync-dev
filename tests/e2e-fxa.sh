@@ -500,7 +500,7 @@ check "$? $(grep -c 'mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-11.log")"
 sed -i 's|^FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=mariadb:lts|' "${SETUP}/.env"
 (cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-mozilla-lts.log" 2>&1
 check "$? $(grep -c 'WARNING: the accounts on MariaDB lts (FXA_MARIADB_IMAGE=mariadb:lts) need an image with mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-lts.log")" "0 1" "Mozilla's images on MariaDB lts: a warning"
-rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade
+rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade-* "${SETUP}"/.env.before-setup-*
 # the accounts on MySQL, an install from before FXA_MYSQL_IMAGE (mysql:8 with mysql_native_password):
 # run again, or --upgrade, it stays there, whatever the accounts image
 printf '%s\n' "${answers[@]}" n n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-mysql.log" 2>&1
@@ -526,7 +526,7 @@ check "$? $(grep -c 'WARNING: the accounts on MySQL lts (FXA_MYSQL_IMAGE=mysql:l
 printf 'FXA_MYSQL_ARGS=%s\n' "${NATIVE_ARGS}" >> "${SETUP}/.env"
 (cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-lts-args.log" 2>&1
 check "$? $(grep -c 'WARNING: FXA_MYSQL_ARGS has --mysql-native-password=ON, which MySQL lts' "${WORK}/setup-fxa-mysql-lts-args.log")" "0 1" "mysql_native_password options on MySQL lts: a warning"
-rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade
+rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade-* "${SETUP}"/.env.before-setup-*
 # a new setup over the MySQL volume of an earlier install (its .env gone): kept on 8, native
 volume="$(basename "${SETUP}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')_fxa-db"
 docker volume create "${volume}" > /dev/null

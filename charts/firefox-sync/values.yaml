@@ -201,7 +201,7 @@ admin:
     # true: TLS from the start (port 465); false: STARTTLS
     secure: false
     sender: ""
-    # ADMIN_SMTP_INSECURE_AUTH: any value sends the password also to a server that offers no
+    # ADMIN_SMTP_INSECURE_AUTH: 1, true or yes sends the password also to a server that offers no
     # TLS, in clear (a relay you trust only); empty: refused
     insecureAuth: ""
   # ADMIN_OIDC_*: sign-in with OpenID Connect (docs/admin/signing-in.md#openid-connect); the client secret
@@ -231,7 +231,7 @@ admin:
   allowed:
     users: ""
     groups: ""
-  # ADMIN_INSECURE_COOKIE: any value sends the session cookie also over plain HTTP (an
+  # ADMIN_INSECURE_COOKIE: 1, true or yes sends the session cookie also over plain HTTP (an
   # Ingress without TLS, an http:// oidc.redirectUrl: anybody on the way can take it); empty:
   # HTTPS and http://localhost only (kubectl port-forward)
   insecureCookie: ""

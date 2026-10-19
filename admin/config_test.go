@@ -431,9 +431,9 @@ func TestRedactURL(t *testing.T) {
 // the page says what the program does with a variable, read with the program's own
 // rules, not parsed again its own way
 func TestConfigPageReadsLikeTheProgram(t *testing.T) {
-	// what the admin UI makes of them: insecure with any value, the release checks off
-	// with false only, implicit TLS with true only
-	t.Setenv("ADMIN_INSECURE_COOKIE", "false")
+	// what the admin UI makes of them: insecure with 1, true or yes (envSwitch), the release
+	// checks off with false only, implicit TLS with true only
+	t.Setenv("ADMIN_INSECURE_COOKIE", "Yes")
 	t.Setenv("ADMIN_UPDATE_CHECK", "0")
 	t.Setenv("SMTP_HOST", "smtp.example.com")
 	t.Setenv("SMTP_SECURE", "1")
@@ -471,7 +471,7 @@ func TestConfigPageReadsLikeTheProgram(t *testing.T) {
 	}
 	hints := page[strings.Index(page, `<section id="hints">`):strings.Index(page, `<nav class="chips"`)]
 	if !strings.Contains(hints, "ADMIN_INSECURE_COOKIE is set") {
-		t.Errorf("no hint of ADMIN_INSECURE_COOKIE=false: %s", hints)
+		t.Errorf("no hint of ADMIN_INSECURE_COOKIE=Yes: %s", hints)
 	}
 	// http://localhost is fine for Firefox; two parts on one host name are not
 	if strings.Contains(hints, "SYNC_PUBLIC_URL is http://localhost:8000") {
@@ -484,8 +484,11 @@ func TestConfigPageReadsLikeTheProgram(t *testing.T) {
 	// with true only: implicit TLS, the release checks off; no hint without the variable
 	t.Setenv("SMTP_SECURE", "true")
 	t.Setenv("ADMIN_UPDATE_CHECK", "false")
-	t.Setenv("ADMIN_INSECURE_COOKIE", "")
+	t.Setenv("ADMIN_INSECURE_COOKIE", "false")
 	t.Setenv("FXA_PROFILE_URL", "https://profile.example.com")
+	if auth, err = loadAuth(); err != nil || auth.insecureCookie {
+		t.Fatalf("ADMIN_INSECURE_COOKIE=false: %v, %v", auth, err)
+	}
 	page = configPage(t, true, func(app *App, _ *fakeFxa) { app.mailer = newMailer("") })
 	for setting, want := range map[string]string{
 		"Session cookie": "Secure (HTTPS, or http://localhost)",
@@ -509,6 +512,35 @@ func TestLoopbackURL(t *testing.T) {
 		"http://sync.example.com": false, "http://10.0.0.1": false, "localhost": false} {
 		if loopbackURL(raw) != want {
 			t.Errorf("%s: %v", raw, !want)
+		}
+	}
+}
+
+// the switches of .env that are off unless asked for: never on with false or 0, an error
+// for what is neither
+func TestEnvSwitch(t *testing.T) {
+	t.Setenv("ADMIN_PASSWORD", "correct-horse-battery")
+	for value, want := range map[string]bool{"": false, "0": false, "false": false, "FALSE": false, "no": false, "off": false,
+		"1": true, "true": true, "True": true, "yes": true, "on": true, " 1 ": true} {
+		t.Setenv("ADMIN_INSECURE_COOKIE", value)
+		t.Setenv("SMTP_INSECURE_AUTH", value)
+		on, err := envSwitch("ADMIN_INSECURE_COOKIE")
+		if err != nil || on != want {
+			t.Errorf("%q: %v, %v", value, on, err)
+		}
+		auth, err := loadAuth()
+		if err != nil || auth.insecureCookie != want {
+			t.Errorf("loadAuth with %q: %v", value, err)
+		}
+		t.Setenv("SMTP_HOST", "smtp.example.com")
+		if m := smtpServer(); m == nil || m.insecureAuth != want {
+			t.Errorf("SMTP_INSECURE_AUTH=%q: %+v", value, m)
+		}
+	}
+	for _, value := range []string{"maybe", "2", "enable"} {
+		t.Setenv("ADMIN_INSECURE_COOKIE", value)
+		if _, err := loadAuth(); err == nil || !strings.Contains(err.Error(), "ADMIN_INSECURE_COOKIE must be 1, true or yes") {
+			t.Errorf("ADMIN_INSECURE_COOKIE=%q: %v", value, err)
 		}
 	}
 }

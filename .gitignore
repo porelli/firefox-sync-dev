@@ -23,6 +23,9 @@
 /.env.before-upgrade
 /.env.upgrading
 /.env.before-setup
+/.env.before-setup-*
+/.env.before-upgrade-*
+/.env.setup
 # the Quadlet units of before, kept by prepare_environment.sh when it renders them again
 /quadlets.before-*/
 /config/nginx/syncstorage-rs.conf

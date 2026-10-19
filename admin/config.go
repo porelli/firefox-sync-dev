@@ -543,7 +543,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			setting("User", "SMTP_USER", "FXA_SMTP_USER", "none", ""),
 			setting("Password", "SMTP_PASS", "FXA_SMTP_PASS", "not set", ""),
 			sender)
-		if configLookup("SMTP_INSECURE_AUTH") != "" {
+		if server.insecureAuth {
 			email.Rows = append(email.Rows, setting("Password without TLS", "SMTP_INSECURE_AUTH", "ADMIN_SMTP_INSECURE_AUTH", "", "allowed: in clear to a server that offers no TLS"))
 		}
 	}

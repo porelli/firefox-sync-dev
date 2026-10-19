@@ -557,7 +557,7 @@ for pair in "${RENAMED_SETTINGS[@]}"; do
   [ -n "$(grep "^${pair#*=}=" "${ENV_FILE}" | cut -d= -f2-)" ] || continue
   [ "$(grep "^${pair%%=*}=" "${UP}/.env" | cut -d= -f2-)" = "$(grep "^${pair#*=}=" "${ENV_FILE}" | cut -d= -f2-)" ] || moved=${pair}
 done
-check "$(grep -cE "${OLD_RE}" "${UP}/.env") ${moved} $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log") $(cmp -s "${ENV_FILE}" "${UP}/.env.before-upgrade" && echo kept)" \
+check "$(grep -cE "${OLD_RE}" "${UP}/.env") ${moved} $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log") $(cmp -s "${ENV_FILE}" "$(ls -1 "${UP}"/.env.before-upgrade-* | tail -n 1)" && echo kept)" \
   "0 all $(grep -cE "${OLD_RE}" "${ENV_FILE}") kept" "--upgrade: no old name left, every value under its new name, each rename said, the old .env kept"
 cp "${UP}/.env" "${ENV_FILE}"
 # the old names gone from this shell too (REPOSITORY and POSTGRES_IMAGE are the test's own,

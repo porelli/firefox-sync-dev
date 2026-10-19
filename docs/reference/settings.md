@@ -144,7 +144,7 @@ How each way works: [Signing in](../admin/signing-in.md).
 | `ADMIN_TRUSTED_PROXIES` | `admin.trustedHeader.trustedProxies` | empty | the CIDRs of the proxy as the admin UI sees it. Required with the header: from other addresses it is ignored | |
 | `ADMIN_ALLOWED_USERS` | `admin.allowed.users` | empty: nobody by email | with OpenID Connect or the header, who is an admin: emails and `@domains`, comma-separated | |
 | `ADMIN_ALLOWED_GROUPS` | `admin.allowed.groups` | empty: none | the same, by group | |
-| `ADMIN_INSECURE_COOKIE` | `admin.insecureCookie` | empty: `Secure` only | any value: the session cookie also goes over plain HTTP other than `http://localhost`, where anybody on the way can take it. Needed for an `http://` `ADMIN_OIDC_REDIRECT_URL`; the Configuration page lists it as a setting that disagrees | |
+| `ADMIN_INSECURE_COOKIE` | `admin.insecureCookie` | empty: `Secure` only | `1`, `true` or `yes` (empty, `0`, `false` or `no`: off; anything else stops the admin UI): the session cookie also goes over plain HTTP other than `http://localhost`, where anybody on the way can take it. Needed for an `http://` `ADMIN_OIDC_REDIRECT_URL`; the Configuration page lists it as a setting that disagrees | |
 | `ADMIN_FXA_CLIENT_ID` | – | empty | sign in with the self-hosted accounts: an OAuth client id (16 hex characters), registered at every start with `ADMIN_OIDC_REDIRECT_URL`: [Self-hosted accounts](../admin/signing-in.md#self-hosted-accounts) | |
 | `ADMIN_FXA_CLIENT_SECRET` | – | empty | keep it empty: the accounts service refuses PKCE from clients with a secret, and the admin UI always uses PKCE | |
 
@@ -162,7 +162,7 @@ The alerts and the emails of the admin UI: [Alerts](../admin/alerts.md). The sam
 | `FXA_SMTP_PASS` | `admin.smtp.password` (Secret: `FXA_SMTP_PASS`) | empty | its password | |
 | `FXA_SMTP_SECURE` | `admin.smtp.secure` | `false` | `true`: TLS from the start (port 465); `false`: STARTTLS | |
 | `FXA_SMTP_SENDER` | `admin.smtp.sender` | `"Mozilla accounts <no-reply@<your domain>>"` | the From of the emails. Empty, the admin UI uses `ADMIN_ALERT_EMAIL` | |
-| `ADMIN_SMTP_INSECURE_AUTH` | `admin.smtp.insecureAuth` | empty: refused | any value: the admin UI sends `FXA_SMTP_PASS` also to an SMTP server that offers no TLS, in clear (a relay on the host or a network you trust only) | |
+| `ADMIN_SMTP_INSECURE_AUTH` | `admin.smtp.insecureAuth` | empty: refused | `1`, `true` or `yes` (as `ADMIN_INSECURE_COOKIE`): the admin UI sends `FXA_SMTP_PASS` also to an SMTP server that offers no TLS, in clear (a relay on the host or a network you trust only) | |
 
 `admin.password`, `admin.smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` end up in a Secret: how, with and without `existingSecret`, is in [The Secret](../install/helm.md#the-secret).
 

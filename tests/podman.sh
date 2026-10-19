@@ -294,7 +294,7 @@ check "$(grep -c 'Quadlets are only provided for MariaDB' setup-postgres-1.log) 
 echo "== where the Sync server listens: on this host only by default (nothing started)"
 # answers as setup, the port: the default, a port alone, another address, not a port
 port_setup() { printf '%s\n' ffs-e2e.invalid "" "$1" 1 mariadb 2 "" "${TAG}" "" | ./prepare_environment.sh > setup-port.log 2>&1; }
-rm -f .env
+rm -f .env .env.before-setup-*
 port_setup ""
 check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5000;$' config/nginx/syncstorage-rs.conf)" "0 127.0.0.1:5000 1" \
   "a new install: SYNC_EXPORT_PORT=127.0.0.1:5000, nginx proxies to it"
@@ -305,12 +305,34 @@ check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0
 # run again on an install from before (a port alone in its .env: every interface), it keeps it
 sed -i 's|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=5003|' .env
 port_setup ""
-check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5003;$' config/nginx/syncstorage-rs.conf) $(grep -c '^SYNC_EXPORT_PORT=5003$' .env.before-setup)" "0 5003 1 1" \
-  "run again on an install: its SYNC_EXPORT_PORT kept, the .env of before as .env.before-setup"
+newest_backup() { ls -1 "$1"-* 2> /dev/null | LC_ALL=C sort | tail -n 1; }
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5003;$' config/nginx/syncstorage-rs.conf) $(grep -c '^SYNC_EXPORT_PORT=5003$' "$(newest_backup .env.before-setup)")" "0 5003 1 1" \
+  "run again on an install: its SYNC_EXPORT_PORT kept, the .env of before as .env.before-setup-<time>"
+# every run on an .env keeps its own copy (3 runs over one), the first one's passwords too; .env
+# and its copies for this user only
+first_setup=$(ls -1 .env.before-setup-* | LC_ALL=C sort | head -n 1)
+check "$(ls -1 .env.before-setup-* | wc -l) $(grep -c '^SYNC_EXPORT_PORT=127.0.0.1:5000$' "${first_setup}") $(stat -c %a .env .env.before-setup-* | sort -u | paste -sd' ')" "3 1 600" \
+  "a copy of .env for each setup run on it, none overwritten, .env and the copies 0600"
 cp -p .env "${WORK}/port.env"
 port_setup localhost:5004
-check "$? $(grep -c "^ERROR: not a port or an IPv4 address and port: 'localhost:5004'" setup-port.log) $(cmp -s .env "${WORK}/port.env" && echo kept)" "1 1 kept" "not a port: refused, .env as it was"
-rm -f .env .env.before-setup
+check "$? $(grep -c "^ERROR: not a port or an address and port: 'localhost:5004'" setup-port.log) $(cmp -s .env "${WORK}/port.env" && echo kept)" "1 1 kept" "not a port: refused, .env as it was"
+port_setup 256.1.1.1:5004
+check "$? $(grep -c "^ERROR: not a port or an address and port: '256.1.1.1:5004'" setup-port.log)" "1 1" "an octet over 255: refused"
+port_setup '[::]:5005'
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://\[::1\]:5005;$' config/nginx/syncstorage-rs.conf)" "0 [::]:5005 1" "[::]:<port>: every interface (IPv6 too), nginx on [::1]"
+# a value of an .env of before this script does not know: kept, said
+sed -i 's|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=localhost:5006|' .env
+port_setup ""
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c "^WARNING: SYNC_EXPORT_PORT='localhost:5006' of .env is not" setup-port.log)" "0 localhost:5006 1" "an unknown SYNC_EXPORT_PORT of .env: kept, with a warning"
+# --render-units on a compose install: refused, nothing written; --fresh asks for it
+port_setup ""
+cp -p .env "${WORK}/port.env"
+./prepare_environment.sh --render-units < /dev/null > render-compose.log 2>&1
+check "$? $(grep -c '^ERROR: no Quadlet units in' render-compose.log) $(ls "${QUADLET_DIR}" 2> /dev/null | wc -l) $(cmp -s .env "${WORK}/port.env" && echo kept)" "1 1 0 kept" \
+  "--render-units without installed units (a compose install): refused, no unit written"
+QUADLET_DIR=${WORK}/fresh SYSTEMD_USER_DIR=${WORK}/fresh-timers ./prepare_environment.sh --render-units --fresh < /dev/null > render-fresh.log 2>&1
+check "$? $(ls "${WORK}/fresh"/firefox-sync-syncstorage.container "${WORK}/fresh-timers"/firefox-sync-backup.timer 2> /dev/null | wc -l)" "0 2" "--render-units --fresh renders the units of a compose .env"
+rm -rf .env .env.before-setup-* .env.before-upgrade-* "${WORK}/fresh" "${WORK}/fresh-timers"
 
 # the admin UI quadlet gets every setting of the compose ffs-admin service: the keys
 # only in compose (allowed: $2, a regex), then those only in the quadlet
@@ -373,7 +395,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   from_ts_sql "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the Quadlet upgrade by admin (password)')"
   check "$?" 0 "an audit event in the tokenserver database, as before (quadlets)"
   # the upgrade: the units stopped, the one-shot ones too, as docs/upgrading.md#quadlets says
-  STOP='systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
+  STOP='systemctl --user stop firefox-sync-backup.timer firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
   check "$(grep -cF "\`${STOP}\`" "${CODE}/docs/upgrading.md")" 1 "docs/upgrading.md says \`${STOP}\`"
   timeout 300 ${STOP}
   # the new files, the .env of the install kept
@@ -388,6 +410,8 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
     "kept 1 1" "--upgrade renders the units from the .env of the install, every secret kept, the units of before kept (quadlets)"
   check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env)" "1 0" \
     "--upgrade gives the Quadlets ADMIN_DB_PASSWORD, renames the old setting names (quadlets)"
+  check "$(stat -c %a .env .env.before-upgrade-* | sort -u | paste -sd' ') $(ls .env.before-upgrade-* | wc -l) $(cmp -s .env.before-upgrade-* "${FROM_ENV}" && echo before)" "600 1 before" \
+    "--upgrade: .env and .env.before-upgrade-<time> (the .env of before) 0600"
   [ "${FAILED}" = 0 ] || cat upgrade-quadlets.log
   # run again: nothing to change
   cp -p .env "${WORK}/upgraded.env"
@@ -427,6 +451,8 @@ fast_admin_checks
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 timeout 900 systemctl --user start firefox-sync-syncstorage.service
 check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service"
+# (docs/upgrading.md#quadlets: the backup timer again when the nightly backups are on; not here)
+[ -z "${UPGRADE_FROM:-}" ] || ! systemctl --user is-enabled -q firefox-sync-backup.timer 2> /dev/null || systemctl --user start firefox-sync-backup.timer
 for u in syncstorage-db tokenserver-db syncstorage-migrate tokenserver-db-init syncstorage; do
   printf '  %-22s %s\n' "${u}" "$(systemctl --user is-active "firefox-sync-${u}.service")"
 done
@@ -727,6 +753,33 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   check "$? $(sed -n 's/^  ✓ //p' render-units-fxa.log | paste -sd' ') $(grep -cxF 'Environment="LOG_LEVEL=DEBUG"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container") $(secrets_kept "${WORK}/fxa-mariadb.env" .env | sed 's/ [0-9]*$//')" \
     "0 firefox-sync-fxa-auth.container 1 kept" "--render-units with the accounts on MariaDB: FXA_LOG_LEVEL in fxa-auth's unit alone, the secrets kept"
   [ "${FAILED}" = 0 ] || cat render-units-fxa.log
+  # values written otherwise, as compose reads them: quoted with a comment, export; a name
+  # .env lacks is not taken from this shell. The same units, nothing appended to .env
+  units_sum() { cat "${QUADLET_DIR}"/firefox-sync-* | md5sum; }
+  sum=$(units_sum)
+  repo=$(env_of IMAGE_REPOSITORY)
+  sed -i -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=\"${repo}\"  # a mirror|" -e 's|^ADMIN_DB_NAME=|export ADMIN_DB_NAME=|' \
+    -e "s|^FXA_LOG_LEVEL=.*|FXA_LOG_LEVEL='DEBUG' # loud|" .env
+  cp -p .env "${WORK}/fxa-written.env"
+  ADMIN_TZ=Europe/Rome ADMIN_IMAGE=localhost/not-this:one ./prepare_environment.sh --render-units < /dev/null > render-units-quoted.log 2>&1
+  check "$? $(grep -c 'nothing changed$' render-units-quoted.log) $([ "$(units_sum)" = "${sum}" ] && echo same) $(cmp -s .env "${WORK}/fxa-written.env" && echo kept) $(grep -c 'ADMIN_DB_NAME=' .env) $(grep -cxF "Image=${repo}:admin-latest" "${QUADLET_DIR}/firefox-sync-admin.container")" \
+    "0 1 same kept 1 1" "quoted and commented values, export, this shell's ADMIN_TZ and ADMIN_IMAGE: the same units, .env as it was"
+  # a quoted PostgreSQL .env: refused, nothing changed
+  sed -i 's|^SYNC_IMAGE=.*|SYNC_IMAGE="syncstorage-rs-postgres" # pg|' .env
+  ./prepare_environment.sh --render-units < /dev/null > render-units-pg.log 2>&1
+  check "$? $(grep -c 'ERROR: the Quadlets are for MariaDB and MySQL only' render-units-pg.log) $([ "$(units_sum)" = "${sum}" ] && echo same)" "1 1 same" "a quoted SYNC_IMAGE of PostgreSQL: --render-units refuses"
+  cp -p "${WORK}/fxa-written.env" .env
+  # the units of before cannot be kept (one unreadable): nothing written
+  sed -i "s|^FXA_LOG_LEVEL=.*|FXA_LOG_LEVEL=TRACE|" .env
+  backups=$(ls -d quadlets.before-* 2> /dev/null | wc -l)
+  chmod 000 "${QUADLET_DIR}/firefox-sync-network.network"
+  ./prepare_environment.sh --render-units < /dev/null > render-units-nobackup.log 2>&1
+  rc=$?
+  chmod 644 "${QUADLET_DIR}/firefox-sync-network.network"
+  check "${rc} $(grep -c '^ERROR: could not keep the units of before' render-units-nobackup.log) $([ "$(units_sum)" = "${sum}" ] && echo same) $(ls -d quadlets.before-* 2> /dev/null | wc -l)" "1 1 same ${backups}" \
+    "the units of before not kept: --render-units writes no unit"
+  # .env, its copies and the units of before: this user only
+  check "$(stat -c %a .env .env.before-upgrade-* | sort -u | paste -sd' ') $(stat -c %a quadlets.before-* | sort -u | paste -sd' ')" "600 700" "--render-units: .env and its copies 0600, the units of before 0700"
   stop_quadlets
 fi
 

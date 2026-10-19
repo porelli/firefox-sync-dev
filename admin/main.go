@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -47,6 +48,25 @@ func env(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envSwitch: a switch of .env that is off unless asked for: 1, true, yes or on (any case);
+// empty, 0, false, no or off is off, anything else an error (ADMIN_INSECURE_COOKIE=false must
+// never turn it on)
+func envSwitch(name string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "", "0", "false", "no", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("%s must be 1, true or yes to turn it on (empty, 0, false or no: off), not %q", name, os.Getenv(name))
+}
+
+// switchOn: envSwitch, off when not valid (serve refuses to start then)
+func switchOn(name string) bool {
+	on, _ := envSwitch(name)
+	return on
 }
 
 func envInt(name string, fallback int) int {
