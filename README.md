@@ -57,7 +57,7 @@ Then [point your reverse proxy to it](docs/reverse-proxy.md) and [set up Firefox
 
 ## Documentation
 
-Everything else is in [docs/](docs/README.md).
+Everything else is in [docs/](docs/README.md), also published as a website: [porelli.github.io/firefox-sync-dev](https://porelli.github.io/firefox-sync-dev/).
 
 ## Credits
 

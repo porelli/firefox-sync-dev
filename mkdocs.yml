@@ -1,0 +1,110 @@
+# The documentation website: docs/ rendered with MkDocs and Material, published on GitHub Pages
+# by .github/workflows/docs.yml. docs/ stays the source, written for GitHub's renderer:
+# docs/hooks/repo_links.py bridges the differences. See docs/development/testing.md#docs-site.
+site_name: firefox-sync
+site_description: Self-host Firefox Sync, and optionally the Mozilla accounts, with Docker, Podman or Kubernetes.
+site_url: https://porelli.github.io/firefox-sync-dev/
+repo_url: https://github.com/porelli/firefox-sync-dev
+repo_name: porelli/firefox-sync-dev
+edit_uri: edit/main/docs/
+docs_dir: docs
+
+# Not pages: the build's own files.
+exclude_docs: |
+  /hooks/
+  /requirements.txt
+
+hooks:
+  - docs/hooks/repo_links.py
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.instant
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - toc:
+      permalink: true
+      # GitHub's heading ids, which the pages, the code and tests/check_markdown_links.py use
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+
+# --strict turns every warning into a failure: a link to a missing page or #anchor, a page
+# left out of the nav, a link the hook did not turn into a GitHub URL.
+validation:
+  omitted_files: warn
+  not_found: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+# The order and the groups of docs/README.md.
+nav:
+  - Home: README.md
+  - Setting up:
+      - Docker compose: install/compose.md
+      - Podman: install/podman.md
+      - Kubernetes with Helm: install/helm.md
+      - Reverse proxy: reverse-proxy.md
+      - Who can use your server: limits.md
+      - Set up Firefox: firefox.md
+      - Self-hosted accounts: accounts.md
+      - Databases: databases.md
+  - Running it:
+      - Backups: backups.md
+      - Upgrading: upgrading.md
+      - Migrating: migrating.md
+      - Troubleshooting: troubleshooting.md
+  - The admin UI:
+      - admin/README.md
+      - Signing in: admin/signing-in.md
+      - Accounts: admin/accounts.md
+      - Monitoring: admin/monitoring.md
+      - Alerts: admin/alerts.md
+      - Storage: admin/storage.md
+  - Reference:
+      - Settings: reference/settings.md
+      - Images: reference/images.md
+      - Database users: reference/database-users.md
+  - For contributors:
+      - Testing: development/testing.md
+      - Upstream patches: development/upstream-patches.md
+      - Releasing: development/releasing.md

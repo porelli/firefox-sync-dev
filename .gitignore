@@ -34,3 +34,6 @@
 /database-setup*.sql
 # go build output of admin/
 admin/admin
+# mkdocs build (mkdocs.yml)
+/site/
+__pycache__/

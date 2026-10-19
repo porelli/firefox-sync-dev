@@ -16,6 +16,7 @@ Every image build runs the CI tests before the multi-arch tags (for example `syn
 | [tests/migrate.sh](/tests/migrate.sh) `<scenario>` | the moves of [Migrating](../migrating.md) from other Sync servers (Mozilla's compose files, dan-r, jeena, NixOS, YunoHost) and the upgrades of older firefox-sync releases ([Upgrading](../upgrading.md#older-firefox-sync-releases)), read back with [migrate_client.py](/tests/migrate_client.py) | local only | the scenario; `PORT` |
 | [tests/test_upstream_patches.py](/tests/test_upstream_patches.py) | the decisions of `.github/scripts/upstream-patches.py` on fixtures, no network | CI: the jobs that pick the release | none |
 | [tests/check_markdown_links.py](/tests/check_markdown_links.py) and [its self-test](/tests/test_check_markdown_links.py) | the links of the docs, see [Links](#links) | CI: docs.yml, every push | `--code`, `--settings` |
+| [tests/check_site_anchors.py](/tests/check_site_anchors.py) | after `mkdocs build`, every anchor of the docs is an id of the site's page, see [Docs site](#docs-site) | CI: docs.yml, every push | `--site` |
 | `cd admin && go test ./...` | the admin UI's unit tests, see [Admin UI](#admin-ui) | CI: admin.yml `unit` | none |
 
 The end-to-end scripts finish with [tests/healthy.sh](/tests/healthy.sh): every container that keeps running is healthy, and the one-shot ones exited with 0. `tests/podman.sh` also checks that each long-running Quadlet has the healthcheck of its compose service (the same command and timings), and that no such service lacks one.
@@ -204,6 +205,30 @@ python3 -I tests/test_check_markdown_links.py
 ```
 
 [docs.yml](/.github/workflows/docs.yml) runs both, with `--code --settings`, on every push.
+
+## Docs site
+
+The pages of `docs/` are also a website, built with MkDocs and the Material theme from [mkdocs.yml](/mkdocs.yml). The markdown stays written for GitHub. [docs/hooks/repo_links.py](/docs/hooks/repo_links.py) bridges what MkDocs reads differently: it turns links to the code into GitHub URLs, re-indents the lists to 4 spaces, and renders `<details>` as collapsed blocks.
+
+To preview it, with the pinned versions of [docs/requirements.txt](/docs/requirements.txt):
+
+```bash
+python3 -m venv /tmp/mkdocs-venv
+/tmp/mkdocs-venv/bin/pip install -r docs/requirements.txt
+/tmp/mkdocs-venv/bin/mkdocs serve      # http://127.0.0.1:8000, rebuilt on every save
+```
+
+docs.yml builds it on every push:
+
+```bash
+mkdocs build --strict
+python3 -I tests/check_site_anchors.py
+```
+
+- `--strict` fails on any warning: a link to a missing page, file or `#anchor`, or a page left out of the `nav` of mkdocs.yml.
+- [check_site_anchors.py](/tests/check_site_anchors.py) checks that every anchor the link checker computes with GitHub's rules is an id of the built page.
+
+A new page goes into the `nav` too, in the place it has in [the index](../README.md). Pushes to the default branch publish the site on GitHub Pages, at <https://porelli.github.io/firefox-sync-dev/>; other branches only build it.
 
 ## The screenshot demo
 

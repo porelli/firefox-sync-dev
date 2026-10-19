@@ -1,5 +1,7 @@
 # firefox-sync documentation
 
+Self-host Firefox Sync with Docker, Podman or Kubernetes: your bookmarks, passwords, history and tabs stay on your own server instead of Mozilla's, and optionally the Mozilla accounts too. The images are built from Mozilla's code with as few changes as possible, see [why these images](reference/images.md#why-these-images).
+
 This is the index of every page. New here: read [What you need](#what-you-need), then follow [Choose your path](#choose-your-path).
 
 ## What you need
@@ -23,6 +25,10 @@ Each install page lists what its platform needs on top of this.
 1. Turn on the [backups](backups.md).
 
 Optional, at any time: [self-hosted accounts](accounts.md), the [admin UI](admin/README.md), [your own database server](databases.md#your-own-server).
+
+![The admin UI's overview](images/admin/overview.png)
+
+The [admin UI](admin/README.md): accounts, storage, health, setup checks and alerts.
 
 ## Every page
 
