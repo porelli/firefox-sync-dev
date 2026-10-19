@@ -293,6 +293,12 @@ fxa_objects_lint() {
     || fail "fxa-db (mariadb): $(fxa_db_spec --set fxa.database.backend=mariadb)"
   [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq '[.[] | select(.metadata.name | test("-fxa-db$"))] | length')" == 0 ]] \
     || fail "your own accounts server: fxa-db rendered"
+  # (a switch on a release with the bundled server: refused by checkFxaDbBackend, a lookup,
+  # so tested in the e2e; here that it looks the StatefulSet up)
+  if ! grep -qE '^\{\{- \$existing := lookup "apps/v1" "StatefulSet" \.Release\.Namespace \(include "firefox-sync\.fxaDbHost" \.\) \}\}$' "${CHART_DIR}/templates/_fxa.tpl" \
+    || ! grep -qF '{{- include "firefox-sync.checkFxaDbBackend" . }}' "${CHART_DIR}/templates/_fxa.tpl"; then
+    fail "checkFxaDbBackend does not look the accounts database's StatefulSet up"
+  fi
   check "fxa-db: compose's command, env and healthcheck (mysql, mariadb), a volume each (data, data-mariadb: compose's fxa-db, fxa-db-mariadb), data in subPath data; none with your own server"
 
   # Redis: the image's user, its data in memory
@@ -552,21 +558,24 @@ fxa_e2e() {
   kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=15m || fail "auth not Ready after restoring the password"
   check "password restored: auth Ready again"
 
-  # the other backend on this release: its volume (data, data-mariadb) is another claim of the
-  # StatefulSet, which Kubernetes refuses to change; the data of this one left as it is
-  local other=mariadb claim="data-${FULL}-fxa-db-0"
-  [[ ${backend} == mysql ]] || { other=mysql; claim="data-mariadb-${FULL}-fxa-db-0"; }
+  # the other backend on this release: refused at render time (checkFxaDbBackend's lookup),
+  # before anything is applied: auth's Deployment, fxa-db and its volume as they were
+  local other=mariadb old_claim=data claim="data-${FULL}-fxa-db-0" auth_before auth_after sts_before
+  [[ ${backend} == mysql ]] || { other=mysql; old_claim="data-mariadb"; claim="data-mariadb-${FULL}-fxa-db-0"; }
+  auth_before=$(kubectl get "${auth}" -o json | jq -cS '[.metadata.generation, .spec]')
+  sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
   if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.backend="${other}" --timeout 2m 2>&1); then
     fail "helm upgrade to fxa.database.backend=${other} accepted"
   fi
-  # (Kubernetes 1.37: spec.volumeClaimTemplates: field is immutable; before: Forbidden:
-  # updates to statefulset spec)
-  grep -qE 'volumeClaimTemplates: Invalid value: .*field is immutable|Forbidden: updates to statefulset spec' <<< "${out}" \
-    || fail "helm upgrade to ${other} refused, but not by the StatefulSet: ${out}"
+  grep -qF "firefox-sync: fxa.database.backend is ${other} but the accounts database was created with ${backend} (its volume ${old_claim}); switching needs a dump and restore, see HELM.md" <<< "${out}" \
+    || fail "helm upgrade to ${other} refused, but not by the chart's check: ${out}"
+  auth_after=$(kubectl get "${auth}" -o json | jq -cS '[.metadata.generation, .spec]')
+  [[ "${auth_after}" == "${auth_before}" ]] || fail "the refused upgrade changed auth's Deployment: $(diff <(jq . <<< "${auth_before}") <(jq . <<< "${auth_after}") | head -20)"
+  [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade changed fxa-db's StatefulSet"
   [[ "$(kubectl get pvc -o name | grep -- '-fxa-db-0$')" == "persistentvolumeclaim/${claim}" ]] \
     || fail "the accounts database's claims: $(kubectl get pvc -o name | paste -sd' ' -)"
   [[ "$(kubectl get pod "${FULL}-fxa-db-0" -o jsonpath='{.status.containerStatuses[0].ready}')" == true ]] || fail "fxa-db not running on its data after the refused upgrade"
-  check "helm upgrade to fxa.database.backend=${other}: refused (the StatefulSet's volumeClaimTemplates are immutable), ${claim} and fxa-db untouched"
+  check "helm upgrade to fxa.database.backend=${other}: refused at render time (created with ${backend}, ${old_claim}); auth's Deployment (generation, spec), fxa-db and ${claim} unchanged"
 
   echo ""
   echo "=== e2e of the accounts (${backend}) passed ==="

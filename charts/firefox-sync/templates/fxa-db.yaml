@@ -11,9 +11,9 @@ FXA_MYSQL_PASSWORD, as compose's
 {{- $check = list "healthcheck.sh" "--connect" "--innodb_initialized" }}
 {{- end }}
 {{- /* a volume per backend, as compose's fxa-db and fxa-db-mariadb: MariaDB cannot open
-MySQL's data files. volumeClaimTemplates cannot change, so a helm upgrade to the other
-backend is refused, the data left as it is */}}
-{{- $data := ternary "data-mariadb" "data" (eq $db.backend "mariadb") }}
+MySQL's data files. A helm upgrade to the other backend fails at render time
+(checkFxaDbBackend), the data left as it is */}}
+{{- $data := include "firefox-sync.fxaDbClaim" . }}
 apiVersion: v1
 kind: Service
 metadata:

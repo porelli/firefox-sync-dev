@@ -208,6 +208,37 @@ may be the same */ -}}
 {{- end }}
 {{- end }}
 {{- include "firefox-sync.checkExistingSecret" . }}
+{{- include "firefox-sync.checkFxaDbBackend" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+The volume of the bundled accounts database: data with MySQL, data-mariadb with MariaDB (as
+compose's fxa-db and fxa-db-mariadb volumes)
+*/}}
+{{- define "firefox-sync.fxaDbClaim" -}}
+{{- ternary "data-mariadb" "data" (eq .Values.fxa.database.backend "mariadb") }}
+{{- end }}
+
+{{/*
+fxa.database.backend switched on a release whose bundled accounts database exists: the render
+fails before anything is applied (Kubernetes would refuse the StatefulSet's other volume only
+after the objects before it were changed). Read with lookup on install and upgrade; nothing to
+check where lookup returns nothing (helm template, a GitOps render)
+*/}}
+{{- define "firefox-sync.checkFxaDbBackend" -}}
+{{- if .Values.fxa.database.bundled }}
+{{- $existing := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "firefox-sync.fxaDbHost" .) }}
+{{- if $existing }}
+{{- $old := "" }}
+{{- with $existing.spec.volumeClaimTemplates }}
+{{- $old = (first .).metadata.name }}
+{{- end }}
+{{- $new := include "firefox-sync.fxaDbClaim" . }}
+{{- if and $old (ne $old $new) }}
+{{- fail (printf "firefox-sync: fxa.database.backend is %s but the accounts database was created with %s (its volume %s); switching needs a dump and restore, see HELM.md" .Values.fxa.database.backend (ternary "mariadb" "mysql" (eq $old "data-mariadb")) $old) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 
