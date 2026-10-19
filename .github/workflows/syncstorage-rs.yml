@@ -37,6 +37,10 @@ on:
       - '.github/workflows/docs.yml'
       - 'tests/check_markdown_links.py'
       - 'tests/test_check_markdown_links.py'
+      - 'mkdocs.yml'
+      - 'docs/hooks/**'
+      - 'docs/requirements.txt'
+      - 'tests/check_site_anchors.py'
 
 # one run at a time per branch: a branch never cancels or waits for main's runs
 concurrency:
