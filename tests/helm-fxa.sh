@@ -1480,7 +1480,7 @@ PY
     fxa_job browser "${BROWSER_IMAGE}" "/tests/test_fxa_browser.py /tests/test_fxa_pairing.py" ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee \
       || fail "test_fxa_browser.py, test_fxa_pairing.py failed"
     got=$(kubectl logs job/fxa-test-browser | tail -1)
-    [[ "${got}" =~ ^[0-9]+\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_browser.py, test_fxa_pairing.py: not every test passed: ${got}"
+    [[ "${got}" =~ ^9\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_browser.py, test_fxa_pairing.py: not their 9 tests passed: ${got}"
     check "a real Firefox (test_fxa_browser.py) and the pairing server (test_fxa_pairing.py) through the Ingresses: ${got}"
   fi
 
@@ -1591,6 +1591,7 @@ PY
   # a Secret of yours (fxa.keys.existingSecret), exported as the NOTES say, the keys' volume
   # deleted: the same keys again; that Secret without openid-key.json stops auth at keys-copy
   keys_before=$(fxa_keys_hash)
+  secret_before=$(kubectl get secret "${SECRET}" -o json | jq -cS .data)
   helm uninstall "${REL}" --wait --timeout 5m > /dev/null || fail "helm uninstall failed"
   for name in "secret/${SECRET}" "pvc/${FULL}-fxa-keys" "pvc/${FULL}-fxa-profile-images" "pvc/${claim}"; do
     kubectl get "${name}" > /dev/null 2>&1 || fail "${name} gone with helm uninstall"
@@ -1599,8 +1600,9 @@ PY
   helm install "${install[@]}" --wait --timeout 20m > /dev/null || fail "helm install again did not get Ready"
   admin_test_env
   [[ "$(fxa_keys_hash)" == "${keys_before}" ]] || fail "helm install again: other keys, $(fxa_keys_hash), before ${keys_before}"
+  [[ "$(kubectl get secret "${SECRET}" -o json | jq -cS .data)" == "${secret_before}" ]] || fail "helm install again changed the kept Secret ${SECRET}'s data"
   upgrade_after "helm uninstall and install"
-  check "helm install again (the first one's values): the same keys (sha256), test_fxa_upgrade.py after: ${UPGRADE_AFTER}"
+  check "helm install again (the first one's values): the same keys (sha256), the kept Secret's data unchanged, test_fxa_upgrade.py after: ${UPGRADE_AFTER}"
   local keys_dir key_files=(secret-key.json public-key.json vapid-keys.json openid-key.json)
   keys_dir=$(mktemp -d)
   kubectl exec "${auth}" -c auth -- tar -C /fxa-keys -c "${key_files[@]}" | tar -x -C "${keys_dir}" || fail "the keys not exported from ${auth}"
