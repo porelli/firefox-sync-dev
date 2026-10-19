@@ -1,8 +1,8 @@
 # firefox-sync
 
-Self-hosted Firefox Sync: Mozilla's [syncstorage-rs](https://github.com/mozilla-services/syncstorage-rs) with its tokenserver, its databases (MariaDB, MySQL 8 or PostgreSQL, or your own server), and optionally an admin UI and nightly backups. Firefox signs in with Mozilla's accounts and stores its Sync data, encrypted by Firefox, on your cluster. The images are those of [porelli/firefox-sync](https://github.com/porelli/firefox-sync), which also runs with docker compose and Podman.
+Self-hosted Firefox Sync: Mozilla's [syncstorage-rs](https://github.com/mozilla-services/syncstorage-rs) with its tokenserver and its databases (MariaDB, MySQL or PostgreSQL, or your own server), and optionally an admin UI and nightly backups. Firefox stores its Sync data, encrypted by Firefox, on your cluster. The images are those of [porelli/firefox-sync](https://github.com/porelli/firefox-sync), which also runs with docker compose and Podman.
 
-The full guide: [HELM.md](https://github.com/porelli/firefox-sync/blob/main/HELM.md).
+The full guide: [Install with Helm](https://github.com/porelli/firefox-sync/blob/main/docs/install/helm.md).
 
 ## Install
 
@@ -27,7 +27,7 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
 ```
 
-Then set `identity.sync.tokenserver.uri` to `https://sync.example.com/1.0/sync/1.5` in Firefox ([Firefox setup](https://github.com/porelli/firefox-sync/blob/main/SYNC.md#firefox-setup)).
+Then set up Firefox: [Set up Firefox](https://github.com/porelli/firefox-sync/blob/main/docs/firefox.md).
 
 ## Values
 
@@ -36,7 +36,7 @@ Every value is described in [values.yaml](https://github.com/porelli/firefox-syn
 | Value | Default | |
 |---|---|---|
 | `syncDomain` | required | the public URL of the Sync server |
-| `maxUsers` | `"1"` | how many accounts can use it: `N`, `fixed:N`, `initial:N`, `unlimited` |
+| `maxUsers` | `"1"` | how many accounts can use it: [the forms](https://github.com/porelli/firefox-sync/blob/main/docs/limits.md#the-forms) |
 | `database.backend` | `mariadb` | `mariadb`, `mysql` or `postgres` |
 | `database.bundled` | `true` | `false`: your own server, `database.external.*` and `existingSecret` |
 | `existingSecret` | | a Secret of your own; required with your own server and with `helm template` or GitOps rendering |
@@ -48,5 +48,4 @@ Every value is described in [values.yaml](https://github.com/porelli/firefox-syn
 
 - The generated Secret (`<release>-firefox-sync`) is read back on upgrades and kept on `helm uninstall`, like the database volumes. Keep a copy off the cluster.
 - One Sync server replica: the migrations run in its init containers.
-- Release names: at most 24 characters with the bundled MariaDB or MySQL, 30 with PostgreSQL, 32 with the backups (or `fullnameOverride`): longer names are refused at render time.
-- Not in the chart yet: self-hosted Mozilla accounts.
+- Release names have a maximum length, which depends on the components: see [Limits](https://github.com/porelli/firefox-sync/blob/main/docs/install/helm.md#limits). Longer names are refused at render time.

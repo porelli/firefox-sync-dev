@@ -1,228 +1,36 @@
-# Podman Quadlet Files
+# Podman Quadlet files
 
-This directory contains Podman Quadlet files for systemd integration. Quadlets provide native systemd support for Podman containers.
+The units that run firefox-sync with rootless Podman and systemd. How to install and run them: [docs/install/podman.md](../../docs/install/podman.md).
 
-## What are Quadlets?
+## Files in this directory
 
-Quadlets are systemd unit files that Podman automatically converts into container configurations. They provide:
+Network and volumes:
 
-- **Native systemd integration**: Manage containers like any other systemd service
-- **Automatic dependency management**: Services start in the correct order
-- **Better logging**: Integrated with journald
-- **Automatic updates**: Built-in support for container updates
-- **User-level services**: Perfect for rootless Podman
+- `firefox-sync-network.network`: the containers' network
+- `firefox-sync-syncstorage-db.volume`, `firefox-sync-tokenserver-db.volume`: the volumes of the storage and tokenserver databases
 
-## Files in this Directory
+Containers:
 
-### Network and Volumes
-- `firefox-sync-network.network` - Creates the container network
-- `firefox-sync-syncstorage-db.volume` - Volume for syncstorage database
-- `firefox-sync-tokenserver-db.volume` - Volume for tokenserver database
+- `firefox-sync-syncstorage-db.container`, `firefox-sync-tokenserver-db.container`: the storage and tokenserver databases, MariaDB
+- `firefox-sync-syncstorage-migrate.container`: the database migrations, without exposing the service (runs once)
+- `firefox-sync-tokenserver-db-init.container`: the database initialization and `SYNC_MAX_USERS` (runs once, after the migrations)
+- `firefox-sync-syncstorage.container`: the Sync server, which starts only after the init succeeded
+- `firefox-sync-backup.container`, `firefox-sync-backups.volume` and `firefox-sync-backup.timer`: the nightly backups of the databases. The timer is a plain systemd unit, installed in `~/.config/systemd/user` and off until you turn it on ([Backups](../../docs/backups.md#the-backup-service))
 
-### Containers
-- `firefox-sync-syncstorage-db.container` - Syncstorage MariaDB database
-- `firefox-sync-tokenserver-db.container` - Tokenserver MariaDB database
-- `firefox-sync-syncstorage-migrate.container` - Database migrations, without exposing the service (runs once)
-- `firefox-sync-tokenserver-db-init.container` - Database initialization and SYNC_MAX_USERS (runs once, after the migrations)
-- `firefox-sync-syncstorage.container` - Main Firefox Sync service (starts only after the init succeeded)
-- `fxa/` - self-hosted Mozilla accounts (see [FXA.md](../../FXA.md)), installed only when chosen in `prepare_environment.sh`; `firefox-sync-fxa-policy.container` installs the sign-up policy before the accounts start; with `FXA_DB=mariadb` the files in `fxa/mariadb/` replace `firefox-sync-fxa-db.container` and its volume (see [FXA.md](../../FXA.md#mysql-or-mariadb))
-- `firefox-sync-backup.container`, `firefox-sync-backups.volume` and `firefox-sync-backup.timer` (installed in `~/.config/systemd/user`, off until `systemctl --user enable --now firefox-sync-backup.timer`) - nightly backups of the databases, `fxa/firefox-sync-backup-fxa.container` those of the accounts, see [ADMIN.md](../../ADMIN.md#backups)
-- `sync-mysql/` - with `SYNC_DB=mysql` (the `mysql` backend of `prepare_environment.sh`) these replace `firefox-sync-syncstorage-db.container` and `firefox-sync-tokenserver-db.container` with MySQL (`SYNC_MYSQL_IMAGE`, `mysql:lts` for new installs), and their volumes with `firefox-sync-*-db-mysql` (see [DATABASES.md](../../DATABASES.md#mariadb-or-mysql-containers))
-- `admin/firefox-sync-admin.container` - the optional [admin UI](../../ADMIN.md) (`fxa/admin/` with self-hosted accounts: it also manages them and is the sign-up gate), installed when enabled in `prepare_environment.sh`
+Subdirectories, installed only for the choices of `prepare_environment.sh`:
 
-### Your own database server
+- `sync-mysql/`: with `SYNC_DB=mysql`, these replace the two database units and their volumes with MySQL ones (`firefox-sync-*-db-mysql`)
+- `admin/firefox-sync-admin.container`: the optional [admin UI](../../docs/admin/README.md)
+- `fxa/`: the [self-hosted accounts](../../docs/accounts.md). `firefox-sync-fxa-policy.container` installs the sign-up policy before the accounts start, and `firefox-sync-backup-fxa.container` backs up their databases. `fxa/admin/` is the admin UI's unit with the accounts, where it also manages them and is the sign-up gate. With `FXA_DB=mariadb`, the files of `fxa/mariadb/` replace `firefox-sync-fxa-db.container` and its volume
 
-With `SYNC_DB_CONTAINERS=0` in `.env` (`prepare_environment.sh` asks) the `firefox-sync-syncstorage-db` and `firefox-sync-tokenserver-db` files are not installed, and they are removed from the other units' `After=` and `Requires=`; the same for `firefox-sync-fxa-db` with `FXA_DB_CONTAINERS=0`. The host names come from `.env` (`SYNC_TOKENSERVER_DB_HOST`, `SYNC_STORAGE_DB_HOST`, `FXA_MYSQL_HOST`). See [DATABASES.md](../../DATABASES.md).
+With your own database server (`SYNC_DB_CONTAINERS=0`, or `FXA_DB_CONTAINERS=0` for the accounts), the database units are not installed, and the other units no longer depend on them: see [Your own database server](../../docs/databases.md#with-quadlets).
 
-### Setup Script
-- `../../prepare_environment.sh` (choose Quadlets) - Automated setup that:
-  - Copies files to `~/.config/containers/systemd/`
-  - Replaces environment variables from your `.env` file
-  - Reloads systemd
+## The setup script
 
-## Quick Start
+`prepare_environment.sh`, from the root of the repository, with Quadlets as its deployment method:
 
-1. Run the main setup script and choose Quadlets (option 1, the default) when prompted:
-   ```bash
-   cd ../..
-   ./prepare_environment.sh
-   ```
-   
-   The script will automatically set up quadlets for you.
+- copies these files to `~/.config/containers/systemd/` (or `QUADLET_DIR`), and the timer to `~/.config/systemd/user/`;
+- replaces their `%VARIABLE%` placeholders with the values of your `.env`;
+- reloads systemd.
 
-2. Start the services (dependencies are started automatically):
-   ```bash
-   systemctl --user start firefox-sync-syncstorage.service
-   ```
-
-3. Services start on boot automatically through their `[Install]` section
-   (quadlets are generated units and cannot be enabled with `systemctl enable`)
-
-4. (Optional) Enable lingering to start services without login:
-   ```bash
-   loginctl enable-linger $USER
-   ```
-
-## Managing Services
-
-### Check Status
-```bash
-systemctl --user status firefox-sync-syncstorage.service
-```
-
-### Health
-Every unit that keeps running has the healthcheck of its compose service (`HealthCmd=` and the same timings): the databases and Redis answer, the Sync server, the admin UI and the accounts services answer their `/__heartbeat__` (the profile image worker its own, the profile images server its default avatar). `podman ps` shows `(healthy)` next to each; one by one:
-```bash
-podman healthcheck run firefox-sync-syncstorage; echo $?   # 0: healthy
-```
-The one-shot units (the migrations, the init container, `fxa-keys-owner`, `fxa-policy`, the backups of the timer) have none: `systemctl --user status <unit>` says how they ended.
-
-Podman 4.9 (Ubuntu 24.04) orders the units on the start of their container, not on its health (`Notify=healthy` needs Podman 5): where compose waits for a healthy database, the unit after it retries on its own (the migrations of the Sync server for 2 minutes, those of the accounts for 5), and `Restart=always` starts again what gave up.
-
-### View Logs
-```bash
-# Follow logs in real-time
-journalctl --user -u firefox-sync-syncstorage.service -f
-
-# View all logs
-journalctl --user -u firefox-sync-syncstorage.service
-
-# View logs from all firefox-sync services
-journalctl --user -u 'firefox-sync-*' -f
-```
-
-### Restart Services
-```bash
-systemctl --user restart firefox-sync-syncstorage.service
-```
-
-### Stop Services
-```bash
-systemctl --user stop firefox-sync-syncstorage.service
-systemctl --user stop firefox-sync-syncstorage-db.service
-systemctl --user stop firefox-sync-tokenserver-db.service
-```
-
-## Updating Configuration
-
-If you need to change settings (like SYNC_MAX_USERS):
-
-1. Edit your `.env` file in the project root
-2. Re-run the main setup script (it will update quadlets):
-   ```bash
-   cd ../..
-   ./prepare_environment.sh
-   ```
-   Choose option 1 (Quadlets) again when prompted
-3. Restart the affected services:
-   ```bash
-   systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-syncstorage.service
-   ```
-
-## Automatic Updates
-
-The quadlet files include `AutoUpdate=registry` which enables automatic container updates.
-
-To update containers:
-```bash
-# Check for updates
-podman auto-update --dry-run
-
-# Apply updates
-podman auto-update
-
-# Restart services to use new images
-systemctl --user restart firefox-sync-syncstorage.service
-```
-
-You can also set up a systemd timer for automatic updates:
-```bash
-systemctl --user enable --now podman-auto-update.timer
-```
-
-## Troubleshooting
-
-### Services Won't Start
-
-1. Check systemd status:
-   ```bash
-   systemctl --user status firefox-sync-syncstorage.service
-   ```
-
-2. Check for errors:
-   ```bash
-   journalctl --user -xe
-   ```
-
-3. Verify quadlet files were installed:
-   ```bash
-   ls -la ~/.config/containers/systemd/
-   ```
-
-4. Reload systemd:
-   ```bash
-   systemctl --user daemon-reload
-   ```
-
-### Environment Variables Not Working
-
-The setup script replaces `%VARIABLE%` placeholders with values from your `.env` file. If variables aren't being replaced:
-
-1. Ensure `.env` exists in the project root
-2. Check that variables are defined in `.env`
-3. Re-run `./prepare_environment.sh` and choose Quadlets (option 1)
-
-### Permission Issues
-
-For rootless Podman, ensure:
-1. You're running commands as your regular user (not root)
-2. Subuid/subgid are configured:
-   ```bash
-   grep $USER /etc/subuid /etc/subgid
-   ```
-
-### Port Conflicts
-
-If port 5000 (or your configured port) is in use:
-1. Edit `.env` and change `SYNC_EXPORT_PORT`
-2. Re-run `./prepare_environment.sh` from the project root
-3. Restart services
-
-## Advanced Configuration
-
-### Custom Quadlet Location
-
-By default, quadlets are installed to `~/.config/containers/systemd/`. To use a different location:
-
-```bash
-# Custom location (from the project root)
-QUADLET_DIR=/path/to/custom/location ./prepare_environment.sh
-```
-
-### Resource Limits
-
-You can add resource limits to container files:
-
-```ini
-[Container]
-# ... existing config ...
-Memory=2G
-CPUQuota=200%
-```
-
-### Additional Networks
-
-To connect containers to additional networks, add to the container file:
-
-```ini
-[Container]
-# ... existing config ...
-Network=firefox-sync-network.network
-Network=another-network.network
-```
-
-## More Information
-
-- [Podman Quadlet Documentation](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
-- [Main Podman Guide](../../PODMAN.md)
-- [Project README](../../README.md)
+Edit `.env` and run the script again rather than editing the installed units: the next run writes them again.
