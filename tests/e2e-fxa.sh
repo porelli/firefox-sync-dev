@@ -34,6 +34,9 @@
 #                    ffs-e2e-fxa, port 28653 and the other ports of .env-example; 1, 2...: -s<SLOT>
 #                    after the project, 1000 * SLOT added to 28653, the others at 28700-28706 + 1000 * SLOT
 #   INIT_TAG         tag suffix of the init image (default: TAG), e.g. one built from this tree
+#   DEMO             set to 1 for the demo of ADMIN.md's screenshots instead of the tests: a fresh
+#                    stack seeded by tests/demo_seed.py (a household, sign-ups on an allowlist,
+#                    a backup run), kept running (KEEP=1); the admin UI on ADMIN_EXPORT_PORT
 set -u
 
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -50,6 +53,7 @@ KEPT_ENV=${KEPT_ENV:-${HOME}/.cache/${PROJECT}.env}
 ONLY=${ONLY:-flow,admin,browser}
 PYTEST_ARGS=${PYTEST_ARGS:-}
 runs() { [ -z "${RERUN:-}" ] || [[ ",${ONLY}," == *",$1,"* ]]; }
+[ -n "${DEMO:-}" ] && KEEP=1
 
 rnd() { tr -dc '[:alnum:]' < /dev/urandom 2> /dev/null | head -c 32; }
 # the admin UI signs in with these accounts too (@example.com): its OAuth client, public
@@ -86,6 +90,8 @@ done | sed -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.fxa.test|" \
     -e "s|^FXA_ACCOUNT_EVENTS=.*|FXA_ACCOUNT_EVENTS=${FXA_ACCOUNT_EVENTS:-true}|" \
     -e "/^COMPOSE_FILE=/d" > "${ENV_FILE}"
 slot_fxa_ports "${ENV_FILE}"
+# the demo: sign-ups for its household (dave@example.net gets invited)
+[ -n "${DEMO:-}" ] && sed -i -e "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=@example.com,carol@example.org|" "${ENV_FILE}"
 # by default the accounts images of the registry under test, for this machine
 case "$(uname -m)" in aarch64|arm64) default_arch=arm64 ;; *) default_arch=amd64 ;; esac
 sed -i -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${REPOSITORY}|" -e "s|^FXA_ARCH=.*|FXA_ARCH=${default_arch}|" \
@@ -147,6 +153,7 @@ if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.external-db-fxa-test.yml")
   [ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.external-db-test.yml")
 fi
+[ -n "${DEMO:-}" ] && COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.demo.yml")
 # the server's name and version as the admin UI shows them, its client
 if [ "${FXA_DB}" = mariadb ]; then
   # a major (mariadb:11): MariaDB 11.x, a series (11.8): 11.8.x; lts or another name: any version
@@ -197,6 +204,7 @@ teardown() {
 trap teardown EXIT
 
 if [ -z "${RERUN:-}" ]; then
+if [ -z "${DEMO:-}" ]; then
 echo "== prepare_environment.sh with self-hosted accounts"
 SETUP=${WORK}/setup${SLOT_SUFFIX} && mkdir -p "${SETUP}" && cp -r "${CODE}/." "${SETUP}/" && rm -f "${SETUP}/.env"
 # answers: domain, compose dir, port, max users, backend, [deploy method], user, image tag, admin UI,
@@ -430,6 +438,7 @@ docker volume rm "${volume}" > /dev/null
 rm -f "${SETUP}/.env"
 printf '%s\n' "${answers[@]}" n n postgres | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-db-wrong.log" 2>&1
 check "$? $(grep -c "ERROR: mysql or mariadb" "${WORK}/setup-fxa-db-wrong.log")" "1 1" "prepare_environment.sh refuses another accounts database"
+fi
 
 echo "== ${PROJECT}: syncstorage ${REPOSITORY} ${TAG}, mozilla/fxa-mono ${FXA_VERSION}, accounts on ${FXA_DB}"
 if [ -z "${ADMIN_GIVEN}" ]; then
@@ -489,6 +498,22 @@ if [ "${FAILED}" != 0 ]; then
 fi
 else
   echo "== RERUN against the kept stack ${PROJECT} (${ONLY}) ${PYTEST_ARGS}"
+fi
+
+if [ -n "${DEMO:-}" ]; then
+  echo "== demo: tests/demo_seed.py fxa, a backup run"
+  dc run --rm -T --no-deps --user root \
+    -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
+    -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNC_PUBLIC_URL -e MAILPIT_URL=http://mailpit:8025 \
+    -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_DIRECT_URL=http://fxa-auth:9000 -e ADMIN_FXA_CLIENT_ID \
+    -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
+    --entrypoint python3 syncstorage /tests/demo_seed.py fxa < /dev/null
+  check "$?" 0 "demo seeded"
+  dc exec -T backup-fxa sh /ffs-backup/backup.sh now > "${WORK}/backup.log" 2>&1 &&
+    dc exec -T backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1
+  check "$?" 0 "a backup of the accounts and of Sync"
+  echo "the admin UI: http://${ADMIN_EXPORT_PORT}, its password ADMIN_PASSWORD in ${KEPT_ENV} (tear down: docker compose -p ${PROJECT} down -v)"
+  exit "${FAILED}"
 fi
 
 if runs flow; then

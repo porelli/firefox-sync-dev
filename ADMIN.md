@@ -30,6 +30,32 @@ With Mozilla's accounts there are no sign-ups to control and the server only kno
 
 The image (`ghcr.io/porelli/firefox-sync:admin-latest`, amd64 and arm64) is built from [admin/](/admin): a single Go program in a distroless image, no shell, running as an unprivileged user. Its only dependencies are the MariaDB/MySQL and PostgreSQL drivers, and for single sign-on [go-oidc](https://github.com/coreos/go-oidc) and [golang.org/x/oauth2](https://pkg.go.dev/golang.org/x/oauth2).
 
+## Screenshots
+
+A small demo server with self-hosted accounts: three people with their devices, one more invited (rebuilt with [tests/demo_seed.py](/tests/demo_seed.py), see [TESTING.md](TESTING.md#the-demo-of-the-screenshots)).
+
+The overview: nothing needs a look, the health, Sync places, accounts, Sync data and backups at a glance, then the accounts with their last sync, what they store and how they sign in (`2-step`), and a note:
+
+![Overview](docs/images/admin/overview.png)
+
+Sign-ups on an allowlist (a domain and some emails), max accounts, and the invitations: who was invited and whether they signed up yet:
+
+![Sign-ups and invitations](docs/images/admin/signups.png)
+
+One account: its status, devices and sessions, how it signs in, its note; further down its Sync data per collection, its emails and its security history:
+
+![Account](docs/images/admin/account.png)
+
+The health of each part, with the versions running, the databases, the email server and the public URLs with their certificates:
+
+![Health](docs/images/admin/health.png)
+
+With Mozilla's accounts the server knows only account ids, the notes say whose they are:
+
+![Overview with Mozilla's accounts](docs/images/admin/overview-sync-only.png)
+
+Also: [Activity](docs/images/admin/activity.png) (Sync requests, tokens, errors and database sizes over time, then the event log), [Configuration](docs/images/admin/configuration.png) (what the stack runs with, by part, and whether the settings agree), [Connect a device](docs/images/admin/connect.png) (the steps for Firefox with this server's values) and [the overview on a phone](docs/images/admin/overview-phone.png) (390 pixels wide: tabs at the top, cards for the rows).
+
 ## Setup
 
 `./prepare_environment.sh` asks "Enable the admin UI?" (default yes), generates `ADMIN_PASSWORD`, sets `COMPOSE_PROFILES=admin` and `SYNC_MAX_USERS=initial:<the number you gave>` in `.env`; with self-hosted accounts it also offers to sign in with them, see [Signing in](#signing-in). By hand:

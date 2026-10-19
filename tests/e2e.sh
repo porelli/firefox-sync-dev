@@ -35,6 +35,10 @@
 #                   the install from before below runs its compose files, its admin UI and its
 #                   init image (built from it), then upgrades to this tree. Default: this tree
 #                   without ADMIN_DB_PASSWORD (and SYNC_POSTGRES_APP_USER), the same layout
+#   DEMO            set to 1 for the demo of ADMIN.md's screenshots instead of the tests: a fresh
+#                   stack of this tree seeded by tests/demo_seed.py (three accounts of Mozilla's,
+#                   the mock FxA, with Sync data and notes; a backup run), kept running (KEEP=1);
+#                   the admin UI on PORT+20
 # The stack starts as an install from before ADMIN_DB_PASSWORD (the admin UI's tables in the
 # tokenserver database, as the Sync server's user), then is upgraded: they move into the admin
 # UI's own database, which the Sync server's users cannot read or change. That install's .env
@@ -131,6 +135,16 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
       -e "s|^SYNC_TOKENSERVER_DB_HOST=.*|SYNC_TOKENSERVER_DB_HOST=${EXTDB}|" \
       -e "s|^SYNC_STORAGE_DB_HOST=.*|SYNC_STORAGE_DB_HOST=${EXTDB}|" \
       -e "s|^SYNC_POSTGRES_HOST=.*|SYNC_POSTGRES_HOST=${EXTDB}|" "${ENV_FILE}"
+fi
+if [ -n "${DEMO:-}" ]; then
+  # and the password only: Dex and the trusted header of the tests need plain http cookies
+  printf 'services:\n  ffs-admin:\n    environment:\n%s' "$(printf '      %s: ""\n' ADMIN_OIDC_ISSUER ADMIN_OIDC_CLIENT_ID \
+    ADMIN_OIDC_CLIENT_SECRET ADMIN_OIDC_REDIRECT_URL ADMIN_OIDC_NAME ADMIN_AUTH_HEADER ADMIN_AUTH_GROUPS_HEADER ADMIN_TRUSTED_PROXIES \
+    ADMIN_ALLOWED_USERS ADMIN_ALLOWED_GROUPS)" > "${WORK}/demo.yml"
+  COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.demo.yml" -f "${WORK}/demo.yml")
+  # a public URL that looks like one, the email domain of Mozilla's accounts
+  sed -i -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.example.org|" -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.accounts.firefox.com|" \
+    -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=initial:10|" "${ENV_FILE}"
 fi
 set -a; source "${ENV_FILE}"; set +a
 # the admin UI's own database users, the Sync server's role in the PostgreSQL container
@@ -401,6 +415,17 @@ fi
 # a stack of an earlier KEEP=1 run of this project would make the fail-closed check pass
 # on its old containers: start from nothing
 dc down -v --remove-orphans > /dev/null 2>&1
+if [ -n "${DEMO:-}" ]; then
+  echo "== demo: a fresh stack, tests/demo_seed.py sync, a backup run"
+  KEEP=1
+  dc up -d > "${WORK}/up.log" 2>&1 || { tail -20 "${WORK}/up.log"; exit 1; }
+  check "$(wait_init) $(hb) $(admin_healthy)" "0 200 healthy" "the stack is up"
+  in_app "python3 /tests/demo_seed.py sync"
+  check "$?" 0 "demo seeded"
+  [ -z "${EXTDB}" ] && { dc exec -T backup sh /ffs-backup/backup.sh now > "${WORK}/backup.log" 2>&1; check "$?" 0 "a backup of Sync"; }
+  echo "the admin UI: http://127.0.0.1:$((PORT + 20)), its password ADMIN_PASSWORD in ${ENV_FILE} (tear down: docker compose -p ${PROJECT} down -v)"
+  exit "${FAILED}"
+fi
 echo "== fail closed: a failing init must keep syncstorage down"
 printf 'services:\n  tokenserver_db_init:\n    entrypoint: ["/bin/false"]\n' > "${WORK}/fail-init.yml"
 dc -f "${WORK}/fail-init.yml" up -d > /dev/null 2>&1

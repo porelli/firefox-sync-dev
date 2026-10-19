@@ -13,6 +13,10 @@ All can be run locally against any published tag, e.g. `TAG=latest tests/e2e.sh 
 
 Not run by the image builds, locally only: [`tests/migrate.sh`](/tests/migrate.sh) `<scenario>`, the database moves of [MIGRATING.md](MIGRATING.md) from other Sync servers (Mozilla's compose files, dan-r, jeena, NixOS, YunoHost) and the upgrades of older firefox-sync releases, run with the commands of the guide as written there and checked with a client of upstream's mock FxA ([`migrate_client.py`](/tests/migrate_client.py)).
 
+## The demo of the screenshots
+
+The screenshots of [ADMIN.md](ADMIN.md#screenshots) come from a demo, not from the leftovers of the tests: `DEMO=1 tests/e2e-fxa.sh` starts a fresh stack with self-hosted accounts and, instead of the tests, runs [`tests/demo_seed.py`](/tests/demo_seed.py) `fxa` through the public flows (sign-ups with the codes from Mailpit, devices, OAuth, the tokenserver, Sync writes, with Firefox's user agents): alice@example.com, bob@example.com and carol@example.org (two-step authentication on) with their devices and Sync data, dave@example.net invited, sign-ups on an allowlist, a note, a backup; `DEMO=1 tests/e2e.sh mysql` does the same with Mozilla's accounts (`demo_seed.py sync`, upstream's mock FxA: three account ids with Sync data and notes). Both leave the stack running ([`tests/docker-compose.demo.yml`](/tests/docker-compose.demo.yml) puts back the admin UI's defaults the tests shorten) and print where the admin UI listens, its password is `ADMIN_PASSWORD` of the env file they name. Then the pages in a browser at 1280×900 (390×844 for the phone; on another machine through an ssh tunnel to those ports), each PNG quantized to 128 colours (Pillow) to stay well under 150 KB, and `docker compose -p <project> down -v` with the project they name at the end.
+
 ## The Helm chart
 
 [`tests/helm.sh`](/tests/helm.sh), for the [Helm chart](HELM.md) (needs `helm`, `jq` and PyYAML; `lint` and `parity` also `docker compose`, for its config only, as `lint` runs `parity`; `e2e` also `kind`, `kubectl` and docker, which builds the init and admin images and hands the syncstorage image to the cluster with `docker save`):

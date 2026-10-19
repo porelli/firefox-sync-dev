@@ -1,0 +1,10 @@
+# The demo of ADMIN.md's screenshots (DEMO=1 of tests/e2e.sh and tests/e2e-fxa.sh, seeded by
+# tests/demo_seed.py): the admin UI with the defaults of an install, not the shortcuts of the
+# tests (every device inactive at once, alerts to the test sink, a cookie for plain http)
+services:
+  ffs-admin:
+    environment:
+      ADMIN_STALE_DAYS: 90
+      ADMIN_UNCONFIRMED_HOURS: 72
+      ADMIN_NOTIFY: ""
+      ADMIN_INSECURE_COOKIE: ""
