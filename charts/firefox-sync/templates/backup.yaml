@@ -3,8 +3,9 @@ The backups, compose's backup service (COMPOSE_PROFILES=backup, see docs/backups
 CronJob: config/backup/backup.sh (a copy in files/, kept identical) runs once a night
 (`backup.sh now`, compose's loop is the schedule here) in the database's image, as the
 stack's users, into the PVC <fullname>-backups. Each run is a row of ffs_backups in the admin
-UI's database, which its Backups card shows. With the self-hosted accounts (fxa.enabled) the
-same run dumps theirs first (compose's backup-fxa). One now:
+UI's database, which its Backups card shows. With the self-hosted accounts (fxa.enabled) and
+their bundled database (fxa.database.bundled) the same run dumps theirs first (compose's
+backup-fxa); with your own accounts server it does not, as compose's. One now:
   kubectl create job --from=cronjob/<fullname>-backup backup-now-$(date +%s)
 */ -}}
 {{- if .Values.backup.enabled }}
@@ -105,11 +106,13 @@ spec:
           restartPolicy: Never
           securityContext:
             {{- include "firefox-sync.backupPodSecurityContext" . | nindent 12 }}
-          {{- if .Values.fxa.enabled }}
+          {{- if and .Values.fxa.enabled .Values.fxa.database.bundled }}
           # the self-hosted accounts first, compose's backup-fxa (the Quadlets' Before=): in
-          # their database's image (its client), as its root (your own server: its user). Its
-          # result is left in /backups/.status, which the Sync scope records in the same run;
-          # a failed dump is recorded (and alerted) that way, and Sync is dumped all the same
+          # their database's image (its client), as its root. Its result is left in
+          # /backups/.status, which the Sync scope records in the same run; a failed dump is
+          # recorded (and alerted) that way, and Sync is dumped all the same. Not with your own
+          # accounts server, as compose's (docs/backups.md#your-own-database-server): its
+          # accounts' user cannot read ffs, the policy user's, every run would fail
           initContainers:
             - name: backup-accounts
               image: {{ include "firefox-sync.fxaDbImage" . }}

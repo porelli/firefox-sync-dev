@@ -133,6 +133,7 @@ What else to watch:
 
 - **The images.** `image.syncstorageTag`, `image.initTag` and `image.adminTag` follow `latest`. With `image.pullPolicy: IfNotPresent` (the default) a node that has `latest` does not pull a newer one. Either pin the tags and change them on upgrade, or set `image.pullPolicy: Always` and run `kubectl rollout restart deploy/ffs-firefox-sync-syncstorage` (the admin UI: `deploy/ffs-firefox-sync-admin`) to take the newest.
 - **The database images** (`database.image.<backend>`): see [Database majors](#database-majors). Pin PostgreSQL's major in your values from the first install.
+- **`admin.smtp.*` is now `smtp.*`.** Chart 0.2.0 moved it to the top level, shared with the self-hosted accounts: rename it in a values file of 0.1.0-dev.1. See [Notifications](reference/settings.md#notifications).
 - **The volumes of the database servers** keep their size and storage class: see [Database volumes](install/helm.md#database-volumes).
 - **existingSecret.** A key a new chart version needs goes into it before the upgrade, or the pods wait in `CreateContainerConfigError`. The release notes say so. (`ADMIN_DB_PASSWORD` and `POSTGRES_SYNC_PASSWORD` came during the pre-releases of 0.1.0.) The chart's own Secret gets a new key by itself. See [existingSecret](install/helm.md#existingsecret).
 

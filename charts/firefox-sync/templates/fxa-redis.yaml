@@ -37,7 +37,13 @@ spec:
     metadata:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-redis") | nindent 8 }}
-      {{- with include "firefox-sync.podAnnotations" (dict "root" .) }}{{ . | trim | nindent 6 }}{{ end }}
+      {{- /* a new pod when the chart's Secret changes (its FXA_REDIS_PASSWORD, read at the
+      start; existingSecret: restart it yourself), as the accounts' servers */}}
+      {{- $annotations := dict }}
+      {{- if not .Values.existingSecret }}
+      {{- $_ := set $annotations "checksum/secrets" (include "firefox-sync.secretData" . | sha256sum) }}
+      {{- end }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" . "annotations" $annotations) }}{{ . | trim | nindent 6 }}{{ end }}
     spec:
       {{- include "firefox-sync.podSpec" . | nindent 6 }}
       # the image's user redis (999, group 1000), by number: nothing to chown in /data

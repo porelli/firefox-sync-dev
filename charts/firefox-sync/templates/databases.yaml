@@ -3,6 +3,7 @@ The bundled databases, as compose's tokenserver_db and syncstorage_db (MariaDB, 
 with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.sync-postgres.yml)
 */ -}}
 {{- if .Values.database.bundled }}
+{{- include "firefox-sync.checkDbBackend" . }}
 {{- include "firefox-sync.checkDbMajor" . }}
 {{- $root := . }}
 {{- $backend := .Values.database.backend }}

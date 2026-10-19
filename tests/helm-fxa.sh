@@ -4,7 +4,9 @@
 #   fxa_lint    the template checks of the accounts, run by `tests/helm.sh lint`, which sources
 #               this file (it uses check, fail and manifests of tests/helm/lib.sh, and CHART_DIR)
 #   tests/helm-fxa.sh e2e <mysql|mariadb>
-#               the chart with the accounts on a throwaway kind cluster (fxa_e2e)
+#               the chart with the accounts on a throwaway kind cluster (fxa_e2e);
+#               EXTERNAL_DB=1 (mysql only): on your own server instead of the bundled one;
+#               SKIP_BROWSER=1: without the real Firefox (test_fxa_browser.py)
 #
 # PARITY_BASE_CHART=<dir>: chart 0.1.0 already extracted there (charts/firefox-sync of
 # PARITY_BASE, default 2512e9a), for a checkout without that commit (a copy without .git,
@@ -318,7 +320,11 @@ fxa_ingress_lint() {
   out=$(notes -f "${fxa}" --set fxa.database.backend=mariadb)
   grep -q "^Their database runs docker.io/library/mariadb:lts:" <<< "${out}" && ! grep -q 'mozilla/fxa#21554' <<< "${out}" || fail "NOTES: the accounts database on MariaDB: ${out}"
   ! grep -q '^Their database runs' <<< "$(notes -f "${CHART_DIR}/ci/fxa-external-values.yaml")" || fail "NOTES: the bundled accounts database with your own server"
-  check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL; the accounts database's image, its major guard, MySQL 8's native password or lts' patch"
+  # the GitOps hint (without existingSecret): the accounts' keys too, fxaGeneratedKeys (as checkSecretKeys)
+  keys=$(sed -n '/define "firefox-sync.fxaGeneratedKeys"/{n;p;}' "${CHART_DIR}/templates/_fxa.tpl")
+  [[ $(wc -w <<< "${keys}") -eq 9 && ${keys} == *FXA_REDIS_PASSWORD* ]] || fail "fxaGeneratedKeys not the nine keys with FXA_REDIS_PASSWORD: ${keys}"
+  grep -qxF "With the self-hosted accounts, also ${keys// /, }" <<< "$(notes -f "${fxa}")" || fail "NOTES: the existingSecret hint without the accounts' keys: $(notes -f "${fxa}")"
+  check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL; the accounts database's image, its major guard, MySQL 8's native password or lts' patch; the existingSecret hint with the accounts' nine keys"
 }
 
 # the pairing server (fxa.pairing.enabled), compose's fxa-pairing: its env, its healthcheck as
@@ -380,18 +386,21 @@ fxa_backup_lint() {
     and .securityContext == {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}})
     and ([.containers[] | .name] == ["backup"]) and (.containers[0].env[0] | .name == "BACKUP_SCOPE" and .value == "sync")' <<< "${pod}" > /dev/null \
     || fail "the backups of the accounts: $(jq -c '[.initContainers, [.containers[].name]]' <<< "${pod}")"
-  # (MariaDB's client with MariaDB; your own server as its user; the values of the backups)
+  # (MariaDB's client with MariaDB; the values of the backups)
   jq -e '.initContainers[0].image == "docker.io/library/mariadb:lts"' <<< "$(backup_spec -f "${fxa}" --set backup.enabled=true --set fxa.database.backend=mariadb)" > /dev/null \
     || fail "the accounts' backups on MariaDB: not its image"
-  pod=$(backup_spec -f "${CHART_DIR}/ci/fxa-external-values.yaml" --set backup.enabled=true --set backup.keep=3 --set backup.schedule='5 23 * * *' --set backup.resources.requests.cpu=5m)
-  [[ "$(jq -r '.initContainers[0] | [(.env[] | select(.name | test("^(BACKUP_KEEP|BACKUP_TIME|FXA_DB_HOST|FXA_DB_PORT|FXA_DB_USER)$")) | "\(.name)=\(.value)"), .resources.requests.cpu] | join(" ")' <<< "${pod}")" \
-    == "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq -r --arg f "${f}" '.[] | select(.kind == "Deployment" and .metadata.name == "\($f)-fxa-auth")
-      | .spec.template.spec.containers[0].env | map(select(.name | test("^MYSQL_(HOST|PORT|USERNAME)$")) | .value) | "BACKUP_KEEP=3 BACKUP_TIME=23:05 FXA_DB_HOST=\(.[0]) FXA_DB_PORT=\(.[1]) FXA_DB_USER=\(.[2]) 5m"')" ]] \
-    || fail "the accounts' backups with your own server, backup.keep, schedule, resources: $(jq -c '.initContainers[0] | [.env, .resources]' <<< "${pod}")"
-  # (none without the accounts: chart 0.1.0's CronJob)
-  jq -e '(has("initContainers") | not) and ([.containers[].name] == ["backup"])' <<< "$(backup_spec -f "${fxa}" --set backup.enabled=true --set fxa.enabled=false)" > /dev/null \
-    || fail "backup.enabled without the accounts: not the Sync scope alone"
-  check "backups with the accounts: init container backup-accounts (fxaDbImage, compose's backup-fxa env, backup.sh now, a failure recorded) before the Sync scope in ${f}-backup; your own server as its user; none without the accounts"
+  pod=$(backup_spec -f "${fxa}" --set backup.enabled=true --set backup.keep=3 --set backup.schedule='5 23 * * *' --set backup.resources.requests.cpu=5m)
+  [[ "$(jq -r '.initContainers[0] | [(.env[] | select(.name | test("^(BACKUP_KEEP|BACKUP_TIME)$")) | "\(.name)=\(.value)"), .resources.requests.cpu] | join(" ")' <<< "${pod}")" \
+    == "BACKUP_KEEP=3 BACKUP_TIME=23:05 5m" ]] \
+    || fail "the accounts' backups with backup.keep, schedule, resources: $(jq -c '.initContainers[0] | [.env, .resources]' <<< "${pod}")"
+  # (none with your own accounts server, as compose's: its accounts' user cannot read ffs; nor
+  # without the accounts: chart 0.1.0's CronJob)
+  for pod in "-f ${CHART_DIR}/ci/fxa-external-values.yaml" "-f ${fxa} --set fxa.database.bundled=false --set existingSecret=mine --set fxa.database.external.host=db" "-f ${fxa} --set fxa.enabled=false"; do
+    # shellcheck disable=SC2086 # (the arguments)
+    jq -e '(has("initContainers") | not) and ([.containers[].name] == ["backup"])' <<< "$(backup_spec ${pod} --set backup.enabled=true)" > /dev/null \
+      || fail "backup.enabled, ${pod}: not the Sync scope alone"
+  done
+  check "backups with the accounts: init container backup-accounts (fxaDbImage, compose's backup-fxa env, backup.sh now, a failure recorded) before the Sync scope in ${f}-backup; none with your own accounts server (its user cannot read ffs), nor without the accounts"
 }
 
 # the admin UI with the accounts: compose's ffs-admin block of docker-compose.fxa.yml (and the
@@ -620,6 +629,11 @@ fxa_objects_lint() {
     and .volumes == [{name: "data", emptyDir: {}}] and .containers[0].readinessProbe.exec.command == ["redis-cli", "ping"])' <<< "${objs}" > /dev/null \
     || fail "fxa-redis: not Recreate, uid 999/1000 with /data in an emptyDir and redis-cli ping"
   check "fxa-redis: Recreate, the image's redis (999, 1000), /data an emptyDir, redis-cli ping"
+  # a new Redis pod when the chart's Secret (its FXA_REDIS_PASSWORD) changes; none with existingSecret
+  redis_annotations() { jq -c '[.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-redis") | .spec.template.metadata.annotations // {} | keys]'; }
+  [[ "$(redis_annotations <<< "${objs}")" == '[["checksum/secrets"]]' ]] || fail "fxa-redis: not checksum/secrets alone: $(redis_annotations <<< "${objs}")"
+  [[ "$(fxa_objs --set existingSecret=mine | redis_annotations)" == '[[]]' ]] || fail "fxa-redis: checksum/secrets with existingSecret"
+  check "fxa-redis: checksum/secrets (none with existingSecret)"
 
   # Redis' password (chart-only): read by redis-server from stdin, never in the pod spec;
   # REDISCLI_AUTH of the probes and wait-redis, each <SUBSYSTEM>_REDIS_PASSWORD of auth
@@ -814,17 +828,28 @@ fxa_base_parity() {
 # server's too) on a throwaway kind cluster: the auth pod's init containers in compose's
 # order, its keys, its heartbeat, the sign-up policy, and fail closed on a wrong password;
 # then, through the Ingresses over HTTPS (fxa_fixtures), test_fxa_flow.py, the client's
-# address in the rate limits and the avatars on their volume.
+# address in the rate limits and the avatars on their volume; the admin UI's tests, the
+# backups and a restore of the accounts as docs/backups.md says, a real Firefox; then what
+# must survive (test_fxa_upgrade.py's sessions, refresh tokens and Sync data, the keys):
+# an upgrade (new auth pods migrate first), a refused policy (fail closed), a new Redis pod,
+# helm uninstall and install, the keys moved to fxa.keys.existingSecret; and turning the
+# accounts on in a release whose existingSecret lacks their keys (refused, nothing applied).
+# EXTERNAL_DB=1 (mysql): the accounts on your own server (a plain StatefulSet extdb-fxa, its
+# users from db/mysql/fxa-mysql.sql, the Secret ffs-own): install, flow, the admin UI's
+# tests, the backups (Sync's alone, as compose's), Firefox; the steps of the bundled server
+# and of survival are not rerun.
+# SKIP_BROWSER=1: test_fxa_pairing.py alone in Firefox's image, not test_fxa_browser.py.
 # REPOSITORY, TAG: the Sync server's images, as tests/helm.sh; FXA_IMAGE (default REPOSITORY),
 # FXA_VERSION (default fxa-mono-latest): the accounts'; FXA_MARIADB_IMAGE, FXA_MYSQL_IMAGE:
 # their database (as tests/e2e-fxa.sh: the chart's lts when the accounts image has
-# mozilla/fxa#21494, mozilla/fxa#21554, else mariadb:11, mysql:8)
+# mozilla/fxa#21494, mozilla/fxa#21554, else mariadb:11, mysql:8), also your own server's
 fxa_e2e() {
-  local backend=${1:-}
+  local backend=${1:-} external=${EXTERNAL_DB:-}
   case "${backend}" in
     mysql|mariadb) ;;
     *) echo "Usage: $0 e2e <mysql|mariadb>"; exit 1 ;;
   esac
+  [[ -z "${external}" || ${backend} == mysql ]] || { echo "EXTERNAL_DB=1: e2e mysql only (db/mysql/fxa-mysql.sql)"; exit 1; }
   local repository=${REPOSITORY:-ghcr.io/porelli/firefox-sync} tag=${TAG:-latest} init_tag=${TAG:-latest}
   local fxa_image=${FXA_IMAGE:-${repository}}:${FXA_VERSION:-fxa-mono-latest}
   local db_image redis_image
@@ -852,7 +877,7 @@ fxa_e2e() {
   fi
   db_args=(--set fxa.database.image."${backend}"="${db_image}")
   ADMIN_TAG=${TAG:-latest}
-  CLUSTER="ffs-helm-fxa-${backend}"
+  CLUSTER="ffs-helm-fxa-${backend}${external:+-extdb}"
   REL=t
   FULL="${REL}-firefox-sync"
   SECRET=${FULL}
@@ -865,16 +890,22 @@ fxa_e2e() {
   BROWSER_IMAGE="ffs-fxa-browser:src-$(cd "${SCRIPT_DIR}/browser" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
   POD_SELECTOR="app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-auth"
 
-  # the accounts image is about 5 GB in the node, on top of the Sync server's images
-  local free
+  # the tests in Firefox's image (tests/browser), tagged by its files as tests/e2e-fxa.sh does:
+  # built first, so that the free space below is what is left with it
+  docker image inspect "${BROWSER_IMAGE}" > /dev/null 2>&1 || docker build -q -t "${BROWSER_IMAGE}" "${SCRIPT_DIR}/browser" > /dev/null \
+    || fail "the Firefox test image (tests/browser) not built"
+  # the accounts image is about 5 GB in the node, on top of the Sync server's images; and the
+  # Firefox image's copy there (kind load)
+  local free need
   free=$(df -BG --output=avail "$(docker info -f '{{.DockerRootDir}}')" | tail -1 | tr -dc 0-9)
-  [[ "${free}" -ge 15 ]] || fail "${free} GB free for docker, the accounts' kind cluster needs 15 GB (vm.sh prune, docker system prune)"
+  need=$(( 15 + ($(docker image inspect -f '{{.Size}}' "${BROWSER_IMAGE}") + 999999999) / 1000000000 ))
+  [[ "${free}" -ge "${need}" ]] || fail "${free} GB free for docker, the accounts' kind cluster needs ${need} GB (15, and ${BROWSER_IMAGE} in the node; vm.sh prune, docker system prune)"
   [[ ${backend} != mysql ]] || mysqld_apparmor_check
   # the images go into the node with docker save --platform (Docker 27 and later)
   docker save --help 2> /dev/null | grep -q -- '--platform' \
     || fail "docker $(docker version -f '{{.Server.Version}}' 2> /dev/null) has no docker save --platform: Docker 27 or later is needed"
 
-  echo "=== e2e of the accounts on kind (${backend}) ==="
+  echo "=== e2e of the accounts on kind (${backend}${external:+, your own server}) ==="
   kind delete cluster --name "${CLUSTER}" > /dev/null 2>&1 || true
   trap 'rc=$?; if ((rc)); then diagnostics; fi; kind delete cluster --name "${CLUSTER}"' EXIT
   kind create cluster --name "${CLUSTER}" --wait 120s
@@ -897,9 +928,7 @@ fxa_e2e() {
     docker save --platform "${platform}" "${image}" | docker exec -i "${CLUSTER}-control-plane" ctr --namespace=k8s.io images import --digests \
       --snapshotter=overlayfs --local --discard-unpacked-layers - > /dev/null || fail "${image} not loaded"
   done
-  # the tests in Firefox's image (tests/browser), tagged by its files as tests/e2e-fxa.sh does
-  docker image inspect "${BROWSER_IMAGE}" > /dev/null 2>&1 || docker build -q -t "${BROWSER_IMAGE}" "${SCRIPT_DIR}/browser" > /dev/null \
-    || fail "the Firefox test image (tests/browser) not built"
+  # (Firefox's, built above)
   kind load docker-image --name "${CLUSTER}" "${BROWSER_IMAGE}" > /dev/null || fail "${BROWSER_IMAGE} not loaded"
   check "loaded from the host's docker: ${SYNC_IMAGE} ${fxa_image} ${PAIRING_IMAGE} ${BROWSER_IMAGE} ${db_image} ${redis_image}$([[ ${sync_db_image} == "${db_image}" ]] || echo " ${sync_db_image}") ${fixtures_images}"
   fxa_fixtures
@@ -944,8 +973,16 @@ fxa_e2e() {
     --set database.backend="${backend}" --set fxa.database.backend="${backend}"
     --set image.repository="${repository}" --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}"
     --set image.adminTag="${ADMIN_TAG}" --set fxa.image.repository="${fxa_image%:*}" --set fxa.image.tag="${fxa_image##*:}" "${db_args[@]}")
+  # the accounts' databases as root, in their server's pod (the bundled one, or your own)
+  DB_POD="${FULL}-fxa-db-0"
+  fxa_db_sql() { kubectl exec "${DB_POD}" -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" "$(command -v mariadb || command -v mysql)" -uroot -N -B -e "$1"' sh "$1"; }
+  if [[ -n "${external}" ]]; then
+    DB_POD=extdb-fxa-0 SECRET=ffs-own
+    fxa_extdb
+    install+=(--set fxa.database.bundled=false --set fxa.database.external.host=extdb-fxa --set existingSecret=ffs-own)
+  fi
   helm install "${install[@]}" --wait --timeout 20m || fail "helm install with the accounts did not get Ready"
-  check "helm install with the accounts (${backend}) Ready, in a namespace enforcing PodSecurity baseline"
+  check "helm install with the accounts (${backend}$([[ -z ${external} ]] || echo ", your own server extdb-fxa, existingSecret ffs-own")) Ready, in a namespace enforcing PodSecurity baseline"
   admin_test_env
 
   # the auth server only after its init containers, in compose's order, all succeeded
@@ -966,6 +1003,23 @@ fxa_e2e() {
   check "auth's /__heartbeat__ answers"
   kubectl logs "${auth}" -c policy | grep -q 'max accounts: unlimited' || fail "the policy's log: $(kubectl logs "${auth}" -c policy | tail -5)"
   check "the sign-up policy installed: max accounts: unlimited"
+  if [[ -n "${external}" ]]; then
+    # your own server: nothing of the bundled one; the policy as its own user, which may not
+    # CREATE USER (the administrator's SQL made ffs_admin); the accounts' user on the server's
+    # default authentication, or mysql_native_password for an image without mozilla/fxa#21554
+    ! kubectl get sts,svc,pvc -o name | grep -q -- '-fxa-db' || fail "a bundled accounts database with your own server: $(kubectl get sts,svc,pvc -o name | grep -- '-fxa-db')"
+    [[ "$(kubectl get networkpolicy -o name | paste -sd' ' -)" == "networkpolicy.networking.k8s.io/${FULL}-fxa-redis" ]] \
+      || fail "the NetworkPolicies with your own server: $(kubectl get networkpolicy -o name | paste -sd' ' -)"
+    out=$(kubectl logs "${auth}" -c policy)
+    ! grep -qi 'create user' <<< "${out}" || fail "the policy's log names CREATE USER: ${out}"
+    grep -q '^.*ffs_admin: created by the administrator of the database server, granting$' <<< "${out}" || fail "the policy did not find ffs_admin made by the administrator: ${out}"
+    [[ "$(fxa_db_sql "SELECT DEFINER FROM information_schema.triggers WHERE trigger_name = 'ffs_signup_policy'")" == "ffs_policy@%" ]] \
+      || fail "the sign-up policy's trigger: $(fxa_db_sql "SELECT DEFINER FROM information_schema.triggers WHERE trigger_name = 'ffs_signup_policy'")"
+    local fxa_plugin=caching_sha2_password
+    [[ ${db_image##*:} == 8* ]] && fxa_plugin=mysql_native_password
+    [[ "$(fxa_db_sql "SELECT plugin FROM mysql.user WHERE user = 'fxa'")" == "${fxa_plugin}" ]] || fail "fxa on $(fxa_db_sql "SELECT plugin FROM mysql.user WHERE user = 'fxa'")"
+    check "your own server: no ${FULL}-fxa-db, its NetworkPolicy neither (only fxa-redis'); the policy as ffs_policy (its trigger's DEFINER), no CREATE USER, ffs_admin the administrator's; fxa on ${fxa_plugin}"
+  fi
 
   # Redis' password (chart-only): auth's clients authenticate (requests that use its rate
   # limits and caches, then no NOAUTH error in Redis), a client without it is refused
@@ -1025,61 +1079,64 @@ fxa_e2e() {
   kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=15m || fail "auth not Ready after restoring the password"
   check "password restored: auth Ready again"
 
-  # the other backend on this release: refused at render time (checkFxaDbBackend's lookup),
-  # before anything is applied: auth's Deployment, fxa-db and its volume as they were
-  local other=mariadb old_claim=data claim="data-${FULL}-fxa-db-0" auth_before auth_after sts_before
-  [[ ${backend} == mysql ]] || { other=mysql; old_claim="data-mariadb"; claim="data-mariadb-${FULL}-fxa-db-0"; }
-  auth_before=$(kubectl get "${auth}" -o json | jq -cS '[.metadata.generation, .spec]')
-  sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
-  if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.backend="${other}" --timeout 2m 2>&1); then
-    fail "helm upgrade to fxa.database.backend=${other} accepted"
-  fi
-  grep -qF "firefox-sync: fxa.database.backend is ${other} but the accounts database was created with ${backend} (its volume ${old_claim}); switching needs a dump and restore, see docs/backups.md#restore-on-kubernetes" <<< "${out}" \
-    || fail "helm upgrade to ${other} refused, but not by the chart's check: ${out}"
-  auth_after=$(kubectl get "${auth}" -o json | jq -cS '[.metadata.generation, .spec]')
-  [[ "${auth_after}" == "${auth_before}" ]] || fail "the refused upgrade changed auth's Deployment: $(diff <(jq . <<< "${auth_before}") <(jq . <<< "${auth_after}") | head -20)"
-  [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade changed fxa-db's StatefulSet"
-  [[ "$(kubectl get pvc -o name | grep -- '-fxa-db-0$')" == "persistentvolumeclaim/${claim}" ]] \
-    || fail "the accounts database's claims: $(kubectl get pvc -o name | paste -sd' ' -)"
-  [[ "$(kubectl get pod "${FULL}-fxa-db-0" -o jsonpath='{.status.containerStatuses[0].ready}')" == true ]] || fail "fxa-db not running on its data after the refused upgrade"
-  check "helm upgrade to fxa.database.backend=${other}: refused at render time (created with ${backend}, ${old_claim}); auth's Deployment (generation, spec), fxa-db and ${claim} unchanged"
-
-  # fxa-db as compose's FXA_MYSQL_IMAGE / FXA_MYSQL_ARGS: mysql_native_password (root on it)
-  # only on a MySQL 8 pin; on MySQL lts none, root on caching_sha2_password
-  local running_image args plugin
-  running_image=$(kubectl get sts "${FULL}-fxa-db" -o jsonpath='{.spec.template.spec.containers[0].image}')
-  args=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -c '.spec.template.spec.containers[0].args')
-  [[ "${running_image}" == "${db_image}" ]] || fail "fxa-db runs ${running_image}, not ${db_image}"
-  if [[ ${backend} == mysql ]]; then
-    plugin=$(kubectl exec "${FULL}-fxa-db-0" -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql -uroot -N -B -e "SELECT plugin FROM mysql.user WHERE user = \"root\" AND host = \"%\""')
-    if [[ ${db_image##*:} == 8* ]]; then
-      [[ "${args}" == '["mysqld","--event-scheduler=ON","--mysql-native-password=ON","--authentication-policy=mysql_native_password"]' && "${plugin}" == mysql_native_password ]] \
-        || fail "fxa-db on ${db_image}: args ${args}, root on ${plugin}"
-    else
-      [[ "${args}" == '["mysqld","--event-scheduler=ON"]' && "${plugin}" == caching_sha2_password ]] || fail "fxa-db on ${db_image}: args ${args}, root on ${plugin}"
+  # (the bundled server alone)
+  if [[ -z "${external}" ]]; then
+    # the other backend on this release: refused at render time (checkFxaDbBackend's lookup),
+    # before anything is applied: auth's Deployment, fxa-db and its volume as they were
+    local other=mariadb old_claim=data claim="data-${FULL}-fxa-db-0" auth_before auth_after sts_before
+    [[ ${backend} == mysql ]] || { other=mysql; old_claim="data-mariadb"; claim="data-mariadb-${FULL}-fxa-db-0"; }
+    auth_before=$(kubectl get "${auth}" -o json | jq -cS '[.metadata.generation, .spec]')
+    sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
+    if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.backend="${other}" --timeout 2m 2>&1); then
+      fail "helm upgrade to fxa.database.backend=${other} accepted"
     fi
-    check "fxa-db on ${db_image}: ${args}, root on ${plugin}"
-  fi
+    grep -qF "firefox-sync: fxa.database.backend is ${other} but the accounts database was created with ${backend} (its volume ${old_claim}); switching needs a dump and restore, see docs/backups.md#restore-on-kubernetes" <<< "${out}" \
+      || fail "helm upgrade to ${other} refused, but not by the chart's check: ${out}"
+    auth_after=$(kubectl get "${auth}" -o json | jq -cS '[.metadata.generation, .spec]')
+    [[ "${auth_after}" == "${auth_before}" ]] || fail "the refused upgrade changed auth's Deployment: $(diff <(jq . <<< "${auth_before}") <(jq . <<< "${auth_after}") | head -20)"
+    [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade changed fxa-db's StatefulSet"
+    [[ "$(kubectl get pvc -o name | grep -- '-fxa-db-0$')" == "persistentvolumeclaim/${claim}" ]] \
+      || fail "the accounts database's claims: $(kubectl get pvc -o name | paste -sd' ' -)"
+    [[ "$(kubectl get pod "${FULL}-fxa-db-0" -o jsonpath='{.status.containerStatuses[0].ready}')" == true ]] || fail "fxa-db not running on its data after the refused upgrade"
+    check "helm upgrade to fxa.database.backend=${other}: refused at render time (created with ${backend}, ${old_claim}); auth's Deployment (generation, spec), fxa-db and ${claim} unchanged"
 
-  # another major on this release: refused at render time (checkFxaDbBackend's lookup and
-  # dbMajorChange), nothing applied; fxa.database.allowMajorUpgrade=true renders it (a server
-  # dry run: lookup reads the cluster, nothing is changed)
-  local major_image=${running_image%:*}:latest
-  [[ ${running_image} == *:latest ]] && major_image=${running_image%:*}:lts
-  sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
-  local revision
-  revision=$(helm history "${REL}" -o json | jq -r 'last | .revision')
-  if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.image."${backend}"="${major_image}" --timeout 2m 2>&1); then
-    fail "helm upgrade to fxa.database.image.${backend}=${major_image} accepted"
+    # fxa-db as compose's FXA_MYSQL_IMAGE / FXA_MYSQL_ARGS: mysql_native_password (root on it)
+    # only on a MySQL 8 pin; on MySQL lts none, root on caching_sha2_password
+    local running_image args plugin
+    running_image=$(kubectl get sts "${FULL}-fxa-db" -o jsonpath='{.spec.template.spec.containers[0].image}')
+    args=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -c '.spec.template.spec.containers[0].args')
+    [[ "${running_image}" == "${db_image}" ]] || fail "fxa-db runs ${running_image}, not ${db_image}"
+    if [[ ${backend} == mysql ]]; then
+      plugin=$(kubectl exec "${FULL}-fxa-db-0" -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql -uroot -N -B -e "SELECT plugin FROM mysql.user WHERE user = \"root\" AND host = \"%\""')
+      if [[ ${db_image##*:} == 8* ]]; then
+        [[ "${args}" == '["mysqld","--event-scheduler=ON","--mysql-native-password=ON","--authentication-policy=mysql_native_password"]' && "${plugin}" == mysql_native_password ]] \
+          || fail "fxa-db on ${db_image}: args ${args}, root on ${plugin}"
+      else
+        [[ "${args}" == '["mysqld","--event-scheduler=ON"]' && "${plugin}" == caching_sha2_password ]] || fail "fxa-db on ${db_image}: args ${args}, root on ${plugin}"
+      fi
+      check "fxa-db on ${db_image}: ${args}, root on ${plugin}"
+    fi
+
+    # another major on this release: refused at render time (checkFxaDbBackend's lookup and
+    # dbMajorChange), nothing applied; fxa.database.allowMajorUpgrade=true renders it (a server
+    # dry run: lookup reads the cluster, nothing is changed)
+    local major_image=${running_image%:*}:latest
+    [[ ${running_image} == *:latest ]] && major_image=${running_image%:*}:lts
+    sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
+    local revision
+    revision=$(helm history "${REL}" -o json | jq -r 'last | .revision')
+    if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.image."${backend}"="${major_image}" --timeout 2m 2>&1); then
+      fail "helm upgrade to fxa.database.image.${backend}=${major_image} accepted"
+    fi
+    grep -qF "firefox-sync: fxa.database.image.${backend} is ${major_image} but the bundled accounts database ${FULL}-fxa-db runs ${running_image}; another major upgrades its data for good at the next start: set fxa.database.image.${backend} to ${running_image} to stay, or fxa.database.allowMajorUpgrade=true to move (a backup first), see docs/upgrading.md#database-majors" <<< "${out}" \
+      || fail "helm upgrade to ${major_image} refused, but not by the major guard: ${out}"
+    [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade changed fxa-db's StatefulSet"
+    [[ "$(helm history "${REL}" -o json | jq -r 'last | "\(.revision) \(.status)"')" == "${revision} deployed" ]] || fail "the refused upgrade left: $(helm history "${REL}" | tail -2)"
+    out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.image."${backend}"="${major_image}" --set fxa.database.allowMajorUpgrade=true --dry-run=server 2>&1) \
+      || fail "helm upgrade --dry-run=server with fxa.database.allowMajorUpgrade=true refused: ${out}"
+    [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the dry run changed fxa-db's StatefulSet"
+    check "helm upgrade to fxa.database.image.${backend}=${major_image} (running ${running_image}): refused at render time naming both, revision ${revision} still deployed, fxa-db unchanged; with fxa.database.allowMajorUpgrade=true it renders (server dry run)"
   fi
-  grep -qF "firefox-sync: fxa.database.image.${backend} is ${major_image} but the bundled accounts database ${FULL}-fxa-db runs ${running_image}; another major upgrades its data for good at the next start: set fxa.database.image.${backend} to ${running_image} to stay, or fxa.database.allowMajorUpgrade=true to move (a backup first), see docs/upgrading.md#database-majors" <<< "${out}" \
-    || fail "helm upgrade to ${major_image} refused, but not by the major guard: ${out}"
-  [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade changed fxa-db's StatefulSet"
-  [[ "$(helm history "${REL}" -o json | jq -r 'last | "\(.revision) \(.status)"')" == "${revision} deployed" ]] || fail "the refused upgrade left: $(helm history "${REL}" | tail -2)"
-  out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.database.image."${backend}"="${major_image}" --set fxa.database.allowMajorUpgrade=true --dry-run=server 2>&1) \
-    || fail "helm upgrade --dry-run=server with fxa.database.allowMajorUpgrade=true refused: ${out}"
-  [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the dry run changed fxa-db's StatefulSet"
-  check "helm upgrade to fxa.database.image.${backend}=${major_image} (running ${running_image}): refused at render time naming both, revision ${revision} still deployed, fxa-db unchanged; with fxa.database.allowMajorUpgrade=true it renders (server dry run)"
 
   # the accounts' pages and profiles: Ready (helm's --wait), after their init containers; the
   # avatars' volume 10001's, with the image's directory in it; Redis' password in their env
@@ -1166,10 +1223,16 @@ fxa_e2e() {
   ingress_is "${FULL}-fxa-pairing" traefik pairing.fxa.test "${FULL}-fxa-pairing" 8000
   [[ "$(kubectl get ingress "${FULL}-fxa-pairing" -o json | jq -c '.spec.tls')" == '[{"hosts":["pairing.fxa.test"],"secretName":"fxa-test-tls"}]' ]] \
     || fail "Ingress ${FULL}-fxa-pairing: tls $(kubectl get ingress "${FULL}-fxa-pairing" -o json | jq -c '.spec.tls')"
-  fxa_job pairing "${BROWSER_IMAGE}" /tests/test_fxa_pairing.py || fail "test_fxa_pairing.py failed"
-  got=$(kubectl logs job/fxa-test-pairing | tail -1)
-  [[ "${got}" =~ ^1\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_pairing.py: ${got}"
-  check "pairing: ${FULL}-fxa-pairing as 65534 on a read-only root, its Ingress (pairing.fxa.test /: 8000, fxa-test-tls), test_fxa_pairing.py through it: ${got}"
+  # (with Firefox, below, test_fxa_pairing.py runs next to test_fxa_browser.py, as in tests/e2e-fxa.sh)
+  if [[ -n "${SKIP_BROWSER:-}" ]]; then
+    fxa_job pairing "${BROWSER_IMAGE}" /tests/test_fxa_pairing.py || fail "test_fxa_pairing.py failed"
+    got=$(kubectl logs job/fxa-test-pairing | tail -1)
+    [[ "${got}" =~ ^1\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_pairing.py: ${got}"
+    got=", test_fxa_pairing.py through it: ${got}"
+  else
+    got=""
+  fi
+  check "pairing: ${FULL}-fxa-pairing as 65534 on a read-only root, its Ingress (pairing.fxa.test /: 8000, fxa-test-tls)${got}"
 
   # the client's own address through the Ingress (Review Focus 3): alice's wrong passwords
   # from one pod block that pod, not alice from another one
@@ -1279,10 +1342,13 @@ PY
   fxa_mysql_password=$(kubectl get secret "${SECRET}" -o jsonpath='{.data.FXA_MYSQL_PASSWORD}' | base64 -d)
   # (the databases as the admin UI has them: its env)
   admin_env() { kubectl get "deploy/${FULL}-admin" -o json | jq -r --arg n "$1" '.spec.template.spec.containers[0].env[] | select(.name == $n) | .value'; }
-  local fxa_db_url admin_db_url
-  fxa_db_url="mysql://root:${fxa_mysql_password}@$(admin_env FXA_DB_HOST):$(admin_env FXA_DB_PORT)/fxa"
+  # (as the accounts' user, tests/e2e-fxa.sh's FXA_MYSQL_USER: root of the bundled server,
+  # fxa on your own)
+  local fxa_db_url admin_db_url fxa_user=root fxa_host="${FULL}-fxa-db"
+  [[ -z "${external}" ]] || fxa_user=fxa fxa_host=extdb-fxa
+  fxa_db_url="mysql://${fxa_user}:${fxa_mysql_password}@$(admin_env FXA_DB_HOST):$(admin_env FXA_DB_PORT)/fxa"
   admin_db_url="mysql://$(admin_env ADMIN_DB_USER):${admin_db_password}@$(admin_env TOKENSERVER_DB_HOST):$(admin_env TOKENSERVER_DB_PORT)/$(admin_env ADMIN_DB_NAME)"
-  [[ "${fxa_db_url}" == "mysql://root:${fxa_mysql_password}@${FULL}-fxa-db:3306/fxa" && "${admin_db_url}" == "mysql://ffs_admin_ui:${admin_db_password}@${FULL}-tokenserver-db:3306/ffs_admin" ]] \
+  [[ "${fxa_db_url}" == "mysql://${fxa_user}:${fxa_mysql_password}@${fxa_host}:3306/fxa" && "${admin_db_url}" == "mysql://ffs_admin_ui:${admin_db_password}@${FULL}-tokenserver-db:3306/ffs_admin" ]] \
     || fail "the admin UI's databases: ${fxa_db_url//${fxa_mysql_password}/***} ${admin_db_url//${admin_db_password}/***}"
   # (test-only: the tests look at the accounts database as root, as tests/e2e-fxa.sh on compose's
   # network; the chart's fxa.networkPolicy lets only the accounts' servers and the admin UI in,
@@ -1307,46 +1373,97 @@ PY
   # first (its init container, allowed into fxa-db by fxa.networkPolicy), then Sync, which
   # records both; the five dumps pass gzip -t; fxa's restored as docs/backups.md#restore-on-kubernetes says
   # (its restore(), in the container backup-accounts) into a scratch database, as
-  # tests/e2e-fxa.sh: the same accounts and procedures; the run on the admin UI's Backups card
+  # tests/e2e-fxa.sh: the same accounts and procedures; then all five over the real ones; the
+  # run on the admin UI's Backups card. With your own accounts server, Sync's alone
   kubectl create job --from="cronjob/${FULL}-backup" backup-now-1 > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
   wait_job backup-now-1 900 > /dev/null || fail "the backup-now-1 Job did not complete: $(kubectl logs job/backup-now-1 --all-containers 2>&1 | tail -20)"
-  got=$(kubectl logs job/backup-now-1 -c backup-accounts)
-  [[ "${got}" =~ backup\ accounts:\ ok:\ /backups/accounts/([0-9]{8}T[0-9]{6}Z), ]] || fail "backup-now-1: the accounts not dumped: ${got}"
-  local stamp=${BASH_REMATCH[1]}
-  kubectl logs job/backup-now-1 -c backup | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now-1: Sync not dumped: $(kubectl logs job/backup-now-1 -c backup)"
-  check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: complete, the accounts dumped first (backup-accounts, ${stamp}), then Sync"
-  # (docs/backups.md#restore-on-kubernetes's restore() and its command of the accounts, as they are there)
-  local backups_md="${REPO_ROOT}/docs/backups.md" restore_fn restore_cmd
-  restore_fn=$(sed -n '/^    restore() {/,/^    }$/p' "${backups_md}")
-  restore_cmd=$(sed -n "/^    restore restore-accounts 'run=/,/backup-accounts$/p" "${backups_md}")
-  [[ -n "${restore_fn}" && -n "${restore_cmd}" ]] || fail "docs/backups.md#restore-on-kubernetes: no restore() or no restore restore-accounts"
-  eval "${restore_fn}"
-  # shellcheck disable=SC2034 # (the page's restore() reads it)
-  local F=${FULL}
-  got=$(restore restore-ls "cd /backups/accounts/${stamp} && for f in *.sql.gz; do gzip -t \$f && echo \$f; done" backup-accounts 2>&1 | grep '\.sql\.gz$' | LC_ALL=C sort | paste -sd' ' -)
-  [[ "${got}" == "ffs.sql.gz fxa.sql.gz fxa_oauth.sql.gz fxa_profile.sql.gz pushbox.sql.gz" ]] || fail "accounts/${stamp}: ${got}"
-  check "accounts/${stamp}: the five databases (ffs fxa fxa_oauth fxa_profile pushbox), each passing gzip -t"
-  # (the accounts' databases as root, in the server's own pod)
-  fxa_db_sql() { kubectl exec "${FULL}-fxa-db-0" -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" "$(command -v mariadb || command -v mysql)" -uroot -N -B -e "$1"' sh "$1"; }
-  local accounts
-  accounts=$(fxa_db_sql "SELECT COUNT(*) FROM fxa.accounts")
-  [[ "${accounts}" =~ ^[1-9][0-9]*$ ]] || fail "no accounts to back up: ${accounts}"
-  routines() { fxa_db_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '$1'"; }
-  # (into the scratch database, fxa alone; MariaDB's client with MariaDB, as the page says)
-  restore_cmd=$(sed -e 's/for db in fxa fxa_oauth fxa_profile pushbox ffs; do/for db in fxa; do/' -e 's/CREATE DATABASE IF NOT EXISTS \$db/CREATE DATABASE IF NOT EXISTS ffs_restore_test/' \
-    -e 's/ \$db || exit 1$/ ffs_restore_test || exit 1/' <<< "${restore_cmd}")
-  [[ ${backend} == mariadb ]] && restore_cmd=${restore_cmd//mysql -h/mariadb -h}
-  [[ "$(grep -c ffs_restore_test <<< "${restore_cmd}")" == 2 ]] || fail "docs/backups.md's restore of the accounts not made a scratch one: ${restore_cmd}"
-  # shellcheck disable=SC2034 # (the page's command reads it)
-  local accounts_run=${stamp}
-  eval "${restore_cmd}" > /dev/null || fail "docs/backups.md's restore of the accounts (into ffs_restore_test) failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
-  [[ "$(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts")" == "${accounts}" ]] || fail "ffs_restore_test.accounts: $(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts"), fxa.accounts ${accounts}"
-  [[ "$(routines ffs_restore_test)" == "$(routines fxa)" ]] || fail "ffs_restore_test's procedures: $(routines ffs_restore_test), fxa's $(routines fxa)"
-  fxa_db_sql "DROP DATABASE ffs_restore_test" > /dev/null
-  kubectl delete job restore-ls restore-accounts --wait=true > /dev/null
-  check "fxa.sql.gz restored with docs/backups.md#restore-on-kubernetes's restore() (backup-accounts, as root) into ffs_restore_test: the same ${accounts} accounts and $(routines fxa) procedures as fxa; dropped"
-  fxa_client_pod backups-card
-  got=$(fxa_py backups-card <<'PY'
+  if [[ -n "${external}" ]]; then
+    # (your own accounts server: the Sync scope alone, as compose's backups,
+    # docs/backups.md#your-own-database-server: the accounts' user cannot read ffs there)
+    [[ "$(kubectl get cronjob "${FULL}-backup" -o json | jq -c '[.spec.jobTemplate.spec.template.spec | (.initContainers // [])[].name, .containers[].name]')" == '["backup"]' ]] \
+      || fail "the backups with your own accounts server: $(kubectl get cronjob "${FULL}-backup" -o json | jq -c '.spec.jobTemplate.spec.template.spec | [(.initContainers // [])[].name, .containers[].name]')"
+    kubectl logs job/backup-now-1 -c backup | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now-1: Sync not dumped: $(kubectl logs job/backup-now-1 -c backup)"
+    kubectl delete job backup-now-1 --wait=true > /dev/null
+    check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: the Sync scope alone with your own accounts server (no backup-accounts), complete"
+  else
+    got=$(kubectl logs job/backup-now-1 -c backup-accounts)
+    [[ "${got}" =~ backup\ accounts:\ ok:\ /backups/accounts/([0-9]{8}T[0-9]{6}Z), ]] || fail "backup-now-1: the accounts not dumped: ${got}"
+    local stamp=${BASH_REMATCH[1]}
+    kubectl logs job/backup-now-1 -c backup | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now-1: Sync not dumped: $(kubectl logs job/backup-now-1 -c backup)"
+    check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: complete, the accounts dumped first (backup-accounts, ${stamp}), then Sync"
+    # (docs/backups.md#restore-on-kubernetes's restore() and its command of the accounts, as they are there)
+    local backups_md="${REPO_ROOT}/docs/backups.md" restore_fn restore_cmd
+    restore_fn=$(sed -n '/^    restore() {/,/^    }$/p' "${backups_md}")
+    restore_cmd=$(sed -n "/^    restore restore-accounts 'run=/,/backup-accounts$/p" "${backups_md}")
+    [[ -n "${restore_fn}" && -n "${restore_cmd}" ]] || fail "docs/backups.md#restore-on-kubernetes: no restore() or no restore restore-accounts"
+    eval "${restore_fn}"
+    # shellcheck disable=SC2034 # (the page's restore() reads it)
+    local F=${FULL}
+    got=$(restore restore-ls "cd /backups/accounts/${stamp} && for f in *.sql.gz; do gzip -t \$f && echo \$f; done" backup-accounts 2>&1 | grep '\.sql\.gz$' | LC_ALL=C sort | paste -sd' ' -)
+    [[ "${got}" == "ffs.sql.gz fxa.sql.gz fxa_oauth.sql.gz fxa_profile.sql.gz pushbox.sql.gz" ]] || fail "accounts/${stamp}: ${got}"
+    check "accounts/${stamp}: the five databases (ffs fxa fxa_oauth fxa_profile pushbox), each passing gzip -t"
+    local accounts
+    accounts=$(fxa_db_sql "SELECT COUNT(*) FROM fxa.accounts")
+    [[ "${accounts}" =~ ^[1-9][0-9]*$ ]] || fail "no accounts to back up: ${accounts}"
+    routines() { fxa_db_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '$1'"; }
+    # (into the scratch database, fxa alone; MariaDB's client with MariaDB, as the page says)
+    local full_cmd=${restore_cmd}
+    [[ ${backend} == mariadb ]] && full_cmd=${full_cmd//mysql -h/mariadb -h}
+    restore_cmd=$(sed -e 's/for db in fxa fxa_oauth fxa_profile pushbox ffs; do/for db in fxa; do/' -e 's/CREATE DATABASE IF NOT EXISTS \$db/CREATE DATABASE IF NOT EXISTS ffs_restore_test/' \
+      -e 's/ \$db || exit 1$/ ffs_restore_test || exit 1/' <<< "${full_cmd}")
+    [[ "$(grep -c ffs_restore_test <<< "${restore_cmd}")" == 2 ]] || fail "docs/backups.md's restore of the accounts not made a scratch one: ${restore_cmd}"
+    # shellcheck disable=SC2034 # (the page's command reads it)
+    local accounts_run=${stamp}
+    eval "${restore_cmd}" > /dev/null || fail "docs/backups.md's restore of the accounts (into ffs_restore_test) failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
+    [[ "$(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts")" == "${accounts}" ]] || fail "ffs_restore_test.accounts: $(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts"), fxa.accounts ${accounts}"
+    [[ "$(routines ffs_restore_test)" == "$(routines fxa)" ]] || fail "ffs_restore_test's procedures: $(routines ffs_restore_test), fxa's $(routines fxa)"
+    fxa_db_sql "DROP DATABASE ffs_restore_test" > /dev/null
+    kubectl delete job restore-ls restore-accounts --wait=true > /dev/null
+    check "fxa.sql.gz restored with docs/backups.md#restore-on-kubernetes's restore() (backup-accounts, as root) into ffs_restore_test: the same ${accounts} accounts and $(routines fxa) procedures as fxa; dropped"
+
+    # the whole set once, as the page says, into empty databases: the accounts' servers and the
+    # admin UI stopped (its step 1), a run taken while nothing writes (the comparison exact),
+    # the five databases dropped, its command as it is (ffs last, its views and procedures with
+    # their DEFINER, the dumps' user), the servers started again (auth's init containers
+    # install the policy's trigger again)
+    local stopped="deploy/${FULL}-fxa-auth deploy/${FULL}-fxa-content deploy/${FULL}-fxa-profile deploy/${FULL}-admin" contents_before contents_after
+    # shellcheck disable=SC2086 # (the list)
+    kubectl scale ${stopped} --replicas=0 > /dev/null
+    for name in fxa-auth fxa-content fxa-profile admin; do
+      kubectl wait --for=delete pod -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=${name}" --timeout=5m > /dev/null || fail "${FULL}-${name} not stopped"
+    done
+    kubectl create job --from="cronjob/${FULL}-backup" backup-now-2 > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
+    wait_job backup-now-2 900 > /dev/null || fail "the backup-now-2 Job did not complete: $(kubectl logs job/backup-now-2 --all-containers 2>&1 | tail -20)"
+    [[ "$(kubectl logs job/backup-now-2 -c backup-accounts)" =~ backup\ accounts:\ ok:\ /backups/accounts/([0-9]{8}T[0-9]{6}Z), ]] \
+      || fail "backup-now-2: the accounts not dumped: $(kubectl logs job/backup-now-2 -c backup-accounts)"
+    accounts_run=${BASH_REMATCH[1]}
+    # (what the five hold: rows of a few tables, the views and procedures of ffs with their DEFINER, every routine and event)
+    contents() {
+      fxa_db_sql "SELECT CONCAT_WS(' ', (SELECT COUNT(*) FROM fxa.accounts), (SELECT COUNT(*) FROM fxa.sessionTokens), (SELECT COUNT(*) FROM fxa.devices),
+          (SELECT COUNT(*) FROM fxa_oauth.refreshTokens), (SELECT COUNT(*) FROM ffs.settings), (SELECT COUNT(*) FROM ffs.signup_allowlist));
+        SELECT CONCAT('view ', TABLE_NAME, ' ', DEFINER) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = 'ffs' ORDER BY 1;
+        SELECT CONCAT(ROUTINE_SCHEMA, ' ', ROUTINE_TYPE, ' ', ROUTINE_NAME, ' ', DEFINER) FROM information_schema.ROUTINES
+          WHERE ROUTINE_SCHEMA IN ('fxa', 'fxa_oauth', 'fxa_profile', 'pushbox', 'ffs') ORDER BY 1;
+        SELECT CONCAT('event ', EVENT_SCHEMA, ' ', EVENT_NAME) FROM information_schema.EVENTS ORDER BY 1" | sha256sum | cut -c1-16
+    }
+    local ffs_views
+    ffs_views=$(fxa_db_sql "SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = 'ffs'")
+    [[ "${ffs_views}" -gt 0 ]] || fail "ffs has no views to restore"
+    contents_before=$(contents)
+    fxa_db_sql "DROP DATABASE ffs; DROP DATABASE pushbox; DROP DATABASE fxa_profile; DROP DATABASE fxa_oauth; DROP DATABASE fxa" > /dev/null || fail "the accounts' databases not dropped"
+    eval "${full_cmd}" > /dev/null || fail "docs/backups.md's restore of the accounts failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
+    contents_after=$(contents)
+    [[ "${contents_after}" == "${contents_before}" ]] || fail "the accounts restored are not what was dumped (${contents_after}, before ${contents_before})"
+    # shellcheck disable=SC2086 # (the list)
+    kubectl scale ${stopped} --replicas=1 > /dev/null
+    for name in fxa-auth fxa-content fxa-profile admin; do
+      kubectl rollout status "deploy/${FULL}-${name}" --timeout 15m > /dev/null || fail "${FULL}-${name} not back after the restore"
+    done
+    [[ "$(fxa_db_sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'ffs_signup_policy'")" == 1 ]] || fail "the sign-up policy's trigger not installed again after the restore"
+    kubectl delete job backup-now-2 restore-accounts --wait=true > /dev/null
+    check "the accounts restored whole as docs/backups.md#restore-on-kubernetes says (${accounts_run}, into the five dropped): their rows, ffs' ${ffs_views} views and the procedures with their DEFINER, the events as dumped; the servers back, the policy's trigger again"
+    fxa_client_pod backups-card
+    got=$(fxa_py backups-card <<'PY'
 import re, time
 import test_fxa_admin as t
 admin, row = t.Admin(), ""
@@ -1359,10 +1476,106 @@ for _ in range(60):
 print(row)
 PY
 ) || fail "the admin UI's Backups card: ${got}"
-  [[ "${got}" == "Last backup of the "*", ok." ]] || fail "the admin UI's Backups card, scope accounts: '${got}'"
-  kubectl delete pod backups-card --wait=true > /dev/null
-  kubectl delete job backup-now-1 --wait=true > /dev/null
-  check "the admin UI's Backups card: a row of the scope accounts (${got})"
+    [[ "${got}" == "Last backup of the "*", ok." ]] || fail "the admin UI's Backups card, scope accounts: '${got}'"
+    kubectl delete pod backups-card --wait=true > /dev/null
+    kubectl delete job backup-now-1 --wait=true > /dev/null
+    check "the admin UI's Backups card: a row of the scope accounts (${got})"
+  fi
+
+  # a real Firefox, as tests/e2e-fxa.sh's (Firefox's image, as its own user): sign-up on one
+  # profile, Sync to a second one, the admin UI's sign-in with these accounts; the pairing
+  # server's websockets
+  if [[ -z "${SKIP_BROWSER:-}" ]]; then
+    fxa_job browser "${BROWSER_IMAGE}" "/tests/test_fxa_browser.py /tests/test_fxa_pairing.py" ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee \
+      || fail "test_fxa_browser.py, test_fxa_pairing.py failed"
+    got=$(kubectl logs job/fxa-test-browser | tail -1)
+    [[ "${got}" =~ ^9\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_browser.py, test_fxa_pairing.py: not their 9 tests passed: ${got}"
+    check "a real Firefox (test_fxa_browser.py) and the pairing server (test_fxa_pairing.py) through the Ingresses: ${got}"
+  fi
+
+  if [[ -n "${external}" ]]; then
+    echo ""
+    echo "=== e2e of the accounts (${backend}, your own server) passed ==="
+    return 0
+  fi
+
+  # what must survive what follows (test_fxa_upgrade.py, before): an account with its session
+  # and device, an OAuth refresh token, Sync data; FXA_OLD_LEVELS the schema levels now
+  # (dbMetadata), which the admin UI shows. Its "after" (upgrade_after) runs after each step
+  local old_levels
+  old_levels=$(fxa_levels)
+  fxa_job upgrade-before "${SYNC_IMAGE}" /tests/test_fxa_upgrade.py FXA_UPGRADE_PHASE=before UPGRADE_STATE=/state/upgrade.json \
+    FXA_OLD_LEVELS="${old_levels}" || fail "test_fxa_upgrade.py before failed"
+  got=$(kubectl logs job/fxa-test-upgrade-before | tail -1)
+  [[ "${got}" =~ ^2\ passed,\ 7\ skipped(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_upgrade.py before: not its 2 tests passed: ${got}"
+  check "test_fxa_upgrade.py before (${old_levels}): ${got}"
+
+  # migrations on every new auth pod: an upgrade that changes its pod, the new one ran the
+  # migrations (the patcher to each database's level), the schema at the image's
+  # target-patch.json; the Secret and the keys as they were, the sessions still work
+  local auth_pod keys_before secret_before db
+  auth_pod=$(fxa_auth_pod)
+  keys_before=$(fxa_keys_hash)
+  secret_before=$(kubectl get secret "${SECRET}" -o json | jq -cS .data)
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.resources.auth.requests.cpu=50m --wait --timeout 20m > /dev/null \
+    || fail "helm upgrade with fxa.resources.auth.requests.cpu=50m failed"
+  admin_test_env
+  got=$(fxa_auth_pod)
+  [[ -n "${got}" && "${got}" != "${auth_pod}" ]] || fail "helm upgrade: the auth pod is ${got:-none}, before ${auth_pod}"
+  [[ "$(kubectl get deploy "${FULL}-fxa-auth" -o json | jq -r '.spec.template.spec.containers[] | select(.name == "auth") | .resources.requests.cpu')" == 50m ]] \
+    || fail "helm upgrade: auth's cpu request not 50m"
+  [[ "$(kubectl get pod "${got}" -o json | jq -r '.status.initContainerStatuses[] | select(.name == "migrations") | .state.terminated.exitCode')" == 0 ]] \
+    || fail "the new auth pod's migrations: $(kubectl get pod "${got}" -o json | jq -c '.status.initContainerStatuses[] | select(.name == "migrations") | .state')"
+  out=$(kubectl logs "${got}" -c migrations)
+  for db in fxa fxa_oauth fxa_profile pushbox; do
+    grep -qE "^Successfully patched ${db} to [0-9]+$" <<< "${out}" || fail "the new auth pod's migrations did not patch ${db}: $(tail -5 <<< "${out}")"
+  done
+  [[ "$(fxa_levels)" == "$(fxa_target_levels)" ]] || fail "the schema levels $(fxa_levels), the image's target-patch.json $(fxa_target_levels)"
+  [[ "$(kubectl get secret "${SECRET}" -o json | jq -cS .data)" == "${secret_before}" ]] || fail "helm upgrade changed the Secret ${SECRET}'s data"
+  [[ "$(fxa_keys_hash)" == "${keys_before}" ]] || fail "helm upgrade changed the keys: $(fxa_keys_hash), before ${keys_before}"
+  upgrade_after "the upgrade"
+  check "helm upgrade (auth's cpu request): a new auth pod, its migrations 0 (Successfully patched fxa, fxa_oauth, fxa_profile, pushbox), the levels the image's target-patch.json ($(fxa_levels)); the Secret and the keys unchanged; test_fxa_upgrade.py after: ${UPGRADE_AFTER}"
+
+  # fail closed on the policy: a value it refuses stops the new auth pod at the policy (the
+  # old one gone first: Recreate), out of its Service. (Content and profile stay Ready: their
+  # probes are their own heartbeats, as compose's healthchecks, which do not ask auth.) The
+  # values again with helm upgrade: auth Ready
+  auth_pod=$(fxa_auth_pod)
+  kubectl set env "${auth}" -c policy FXA_MAX_ACCOUNTS=lots > /dev/null
+  kubectl wait --for=delete "pod/${auth_pod}" --timeout=5m > /dev/null || fail "the old auth pod ${auth_pod} still there"
+  wait_init_failed policy 600 || fail "the auth pod's policy did not fail on FXA_MAX_ACCOUNTS=lots"
+  # (Init:Error a moment, then Init:CrashLoopBackOff; between them its next run, Init:3/5)
+  wait_pod_status 'Init:(Error|CrashLoopBackOff)' 300 || fail "the auth pod is $(pod_status), not in Init:Error"
+  inits=$(kubectl get pods -l "${POD_SELECTOR}" -o json | jq -r '.items[0].status.initContainerStatuses[]
+    | "\(.name)=\(.state.terminated.exitCode // .lastState.terminated.exitCode // "none")"' | paste -sd' ' -) || true
+  [[ "${inits}" =~ migrations=0\ policy=[1-9] ]] || fail "expected the migrations to pass and the policy to fail: ${inits}"
+  [[ "$(kubectl get pods -l "${POD_SELECTOR}" -o name | wc -l)" == 1 ]] || fail "auth pods: $(kubectl get pods -l "${POD_SELECTOR}" -o name | paste -sd' ' -)"
+  for _ in $(seq 1 6); do
+    ready=$(kubectl get endpointslices -l "kubernetes.io/service-name=${FULL}-fxa-auth" -o json \
+      | jq '[.items[].endpoints[]? | select(.conditions.ready == true)] | length')
+    [[ "${ready}" == 0 ]] || fail "${FULL}-fxa-auth has ${ready} ready endpoints while the policy fails"
+    sleep 5
+  done
+  [[ "$(kubectl logs "$(fxa_auth_pod)" -c policy 2>&1; kubectl logs "$(fxa_auth_pod)" -c policy --previous 2>&1)" == *lots* ]] \
+    || fail "the policy's log does not name the refused value: $(kubectl logs "$(fxa_auth_pod)" -c policy 2>&1 | tail -3)"
+  for name in content profile; do
+    [[ "$(kubectl get deploy "${FULL}-fxa-${name}" -o jsonpath='{.status.readyReplicas}')" == 1 ]] || fail "${FULL}-fxa-${name} not Ready while auth is down"
+  done
+  check "FXA_MAX_ACCOUNTS=lots: the old auth pod gone, the new one in ${MATCHED_STATUS} (${inits}), no ready endpoint for 30 s; content and profile Ready (their own heartbeats)"
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --wait --timeout 20m > /dev/null || fail "helm upgrade did not put the policy's values back"
+  admin_test_env
+  [[ "$(kubectl get deploy "${FULL}-fxa-auth" -o json | jq -r '.spec.template.spec.initContainers[] | select(.name == "policy") | .env[] | select(.name == "FXA_MAX_ACCOUNTS") | .value')" != lots ]] \
+    || fail "helm upgrade --reuse-values left FXA_MAX_ACCOUNTS=lots"
+  kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=10m > /dev/null || fail "auth not Ready after helm upgrade"
+  check "helm upgrade --reuse-values: the policy's values back, auth Ready"
+
+  # Redis lost (emptyDir) when its pod moves signs nobody out
+  kubectl delete pod -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-redis" --wait=true > /dev/null
+  kubectl rollout status "deploy/${FULL}-fxa-redis" --timeout 5m > /dev/null || fail "fxa-redis not back"
+  kubectl wait --for=condition=Ready pod -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-redis" --timeout=5m > /dev/null \
+    || fail "fxa-redis not Ready"
+  upgrade_after "a new Redis pod"
+  check "kubectl delete pod of fxa-redis: Ready again, test_fxa_upgrade.py after: ${UPGRADE_AFTER}"
 
   # the admin UI off: the auth Ingress without the gate, the database still refuses what
   # the policy does not allow (straight to auth, and through the Ingress)
@@ -1382,12 +1595,60 @@ PY
   kubectl delete pod gate-off --wait=true > /dev/null
   check "admin.enabled=false: the auth Ingress has / alone; test_signup_refused_without_the_gate passes, a refused sign-up through it gets ${out}"
 
+  # the keys across helm uninstall and install: the Secret and the kept volumes stay, the same
+  # keys after an install with the values of the first one, the sessions still work. Then in
+  # a Secret of yours (fxa.keys.existingSecret), exported as the NOTES say, the keys' volume
+  # deleted: the same keys again; that Secret without openid-key.json stops auth at keys-copy
+  keys_before=$(fxa_keys_hash)
+  secret_before=$(kubectl get secret "${SECRET}" -o json | jq -cS .data)
+  helm uninstall "${REL}" --wait --timeout 5m > /dev/null || fail "helm uninstall failed"
+  for name in "secret/${SECRET}" "pvc/${FULL}-fxa-keys" "pvc/${FULL}-fxa-profile-images" "pvc/${claim}"; do
+    kubectl get "${name}" > /dev/null 2>&1 || fail "${name} gone with helm uninstall"
+  done
+  check "helm uninstall: secret/${SECRET}, pvc/${FULL}-fxa-keys, pvc/${FULL}-fxa-profile-images and pvc/${claim} kept"
+  helm install "${install[@]}" --wait --timeout 20m > /dev/null || fail "helm install again did not get Ready"
+  admin_test_env
+  [[ "$(fxa_keys_hash)" == "${keys_before}" ]] || fail "helm install again: other keys, $(fxa_keys_hash), before ${keys_before}"
+  [[ "$(kubectl get secret "${SECRET}" -o json | jq -cS .data)" == "${secret_before}" ]] || fail "helm install again changed the kept Secret ${SECRET}'s data"
+  upgrade_after "helm uninstall and install"
+  check "helm install again (the first one's values): the same keys (sha256), the kept Secret's data unchanged, test_fxa_upgrade.py after: ${UPGRADE_AFTER}"
+  local keys_dir key_files=(secret-key.json public-key.json vapid-keys.json openid-key.json)
+  keys_dir=$(mktemp -d)
+  kubectl exec "${auth}" -c auth -- tar -C /fxa-keys -c "${key_files[@]}" | tar -x -C "${keys_dir}" || fail "the keys not exported from ${auth}"
+  kubectl create secret generic ffs-fxa-keys --from-file="${keys_dir}" > /dev/null || fail "Secret ffs-fxa-keys not created"
+  helm uninstall "${REL}" --wait --timeout 5m > /dev/null || fail "helm uninstall failed"
+  kubectl delete pvc "${FULL}-fxa-keys" --wait=true > /dev/null || fail "pvc/${FULL}-fxa-keys not deleted"
+  helm install "${install[@]}" --set fxa.keys.existingSecret=ffs-fxa-keys --wait --timeout 20m > /dev/null \
+    || fail "helm install with fxa.keys.existingSecret=ffs-fxa-keys did not get Ready"
+  admin_test_env
+  ! kubectl get pvc "${FULL}-fxa-keys" > /dev/null 2>&1 || fail "pvc/${FULL}-fxa-keys with fxa.keys.existingSecret"
+  inits=$(kubectl get pods -l "${POD_SELECTOR}" -o json | jq -r '.items[0].status.initContainerStatuses[]
+    | "\(.name)=\(.state.terminated.exitCode // "none")"' | paste -sd' ' -) || true
+  [[ "${inits}" == "keys-copy=0 wait-db=0 migrations=0 policy=0 wait-redis=0" ]] || fail "the auth pod's init containers with fxa.keys.existingSecret: ${inits}"
+  [[ "$(fxa_keys_hash)" == "${keys_before}" ]] || fail "fxa.keys.existingSecret: other keys, $(fxa_keys_hash), before ${keys_before}"
+  upgrade_after "the keys moved to fxa.keys.existingSecret"
+  check "the keys exported (the NOTES' tar), their volume deleted, fxa.keys.existingSecret=ffs-fxa-keys: ${inits}, the same keys, test_fxa_upgrade.py after: ${UPGRADE_AFTER}"
+  kubectl create secret generic ffs-fxa-keys --from-file="${keys_dir}/secret-key.json" --from-file="${keys_dir}/public-key.json" \
+    --from-file="${keys_dir}/vapid-keys.json" --dry-run=client -o json | kubectl replace -f - > /dev/null || fail "Secret ffs-fxa-keys not replaced"
+  kubectl delete pod -l "${POD_SELECTOR}" --wait=true > /dev/null
+  wait_init_failed keys-copy 300 || fail "keys-copy did not fail without openid-key.json"
+  wait_pod_status 'Init:(Error|CrashLoopBackOff)' 300 || fail "the auth pod is $(pod_status), not in Init:Error"
+  out=$(kubectl logs "$(fxa_auth_pod)" -c keys-copy 2>&1; kubectl logs "$(fxa_auth_pod)" -c keys-copy --previous 2>&1) || true
+  grep -q "fxa.keys.existingSecret ffs-fxa-keys lacks: openid-key.json" <<< "${out}" || fail "keys-copy's log: ${out}"
+  check "fxa.keys.existingSecret without openid-key.json: auth in ${MATCHED_STATUS} at keys-copy, its log: $(grep -m1 lacks <<< "${out}")"
+  kubectl create secret generic ffs-fxa-keys --from-file="${keys_dir}" --dry-run=client -o json | kubectl replace -f - > /dev/null || fail "Secret ffs-fxa-keys not put back"
+  rm -rf "${keys_dir}"
+  kubectl delete pod -l "${POD_SELECTOR}" --wait=true > /dev/null
+  fxa_auth_ready 15m || fail "auth not Ready with ffs-fxa-keys put back"
+
   # fxa.volumeOwnerInit=false on new volumes: no root init container; auth writes its keys
   # and profile its avatars. (kind's local-path volumes are hostPath ones, a directory of
   # root's, 0777, where the kubelet applies no fsGroup: the fsGroup case itself is the docker
   # check before the install)
   helm uninstall "${REL}" --wait --timeout 5m > /dev/null || fail "helm uninstall failed"
-  # (the release's volumes: not the tests' state, which a completed test pod still holds)
+  # (the release's volumes, not the tests' state; the tests' Jobs first, their completed pods
+  # hold that volume)
+  fxa_delete_test_jobs
   kubectl get pvc -o name | { grep -vx persistentvolumeclaim/fxa-test-state || true; } | xargs -r kubectl delete --wait=true > /dev/null
   helm install "${install[@]}" --set fxa.volumeOwnerInit=false --wait --timeout 20m > /dev/null \
     || fail "helm install with fxa.volumeOwnerInit=false did not get Ready"
@@ -1403,6 +1664,24 @@ PY
   [[ "${got}" == *" .keep" ]] || fail "fxa.volumeOwnerInit=false: the avatars' volume: ${got}"
   check "fxa.volumeOwnerInit=false, new volumes: auth's init containers without keys-owner, its keys written; profile's without images-owner, the avatars' volume (${got% .keep}) seeded and written by 10001"
 
+  # the accounts turned on in a release whose existingSecret has the Sync server's keys alone:
+  # refused at render time, naming what it lacks, the release as it was
+  helm uninstall "${REL}" --wait --timeout 5m > /dev/null || fail "helm uninstall failed"
+  kubectl get secret "${SECRET}" -o json | jq '{apiVersion: "v1", kind: "Secret", metadata: {name: "ffs-own"}, type: "Opaque",
+    data: (.data | with_entries(select(.key | test("^(ADMIN_)?FXA_") | not)))}' | kubectl apply -f - > /dev/null || fail "Secret ffs-own not created"
+  helm install "${install[@]}" --set fxa.enabled=false --set admin.fxaSignIn=false --set existingSecret=ffs-own --wait --timeout 15m > /dev/null \
+    || fail "helm install without the accounts, existingSecret=ffs-own, did not get Ready"
+  ! kubectl get deploy,sts -o name | grep -q -- '-fxa-' || fail "the accounts without fxa.enabled: $(kubectl get deploy,sts -o name | grep -- '-fxa-')"
+  revision=$(helm history "${REL}" -o json | jq -r 'last | .revision')
+  if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.enabled=true --set admin.fxaSignIn=true --timeout 5m 2>&1); then
+    fail "helm upgrade --set fxa.enabled=true accepted with existingSecret ffs-own"
+  fi
+  want="firefox-sync: existingSecret ffs-own lacks FXA_ADMIN_DB_PASSWORD, FXA_AUTH_SECRET, FXA_CONTENT_SESSION_SECRET, FXA_FLOW_ID_KEY, FXA_MYSQL_PASSWORD, FXA_OAUTH_SECRET, FXA_PROFILE_SECRET, FXA_REDIS_PASSWORD, FXA_SESSION_TOKEN_HANDLE_KEY, which the self-hosted accounts need"
+  grep -qF "${want}" <<< "${out}" || fail "helm upgrade --set fxa.enabled=true refused, but not by the existingSecret check: ${out}"
+  [[ "$(helm history "${REL}" -o json | jq -r 'last | "\(.revision) \(.status)"')" == "${revision} deployed" ]] || fail "the refused upgrade left: $(helm history "${REL}" | tail -2)"
+  ! kubectl get deploy,sts -o name | grep -q -- '-fxa-' || fail "the refused upgrade created: $(kubectl get deploy,sts -o name | grep -- '-fxa-')"
+  check "existingSecret ffs-own with the Sync server's keys alone: helm upgrade --set fxa.enabled=true refused (${want#firefox-sync: }), revision ${revision} still deployed, nothing of the accounts"
+
   echo ""
   echo "=== e2e of the accounts (${backend}) passed ==="
 }
@@ -1416,6 +1695,94 @@ admin_test_env() {
   kubectl set env "${admin}" -c admin METRICS_FLUSH_SECONDS=5 HEALTH_CHECK_SECONDS=5 ALERT_INTERVAL_SECONDS=5 ADMIN_UPDATE_CHECK=false \
     ADMIN_STALE_DAYS=0 ADMIN_UNCONFIRMED_HOURS=0 > /dev/null || fail "kubectl set env ${admin} failed"
   kubectl rollout status "${admin}" --timeout 10m > /dev/null || fail "${admin} not rolled out with the test settings"
+}
+
+# fxa_auth_pod: the name of the auth pod (of POD_SELECTOR), the newest one
+fxa_auth_pod() {
+  kubectl get pods -l "${POD_SELECTOR}" --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}' 2> /dev/null
+}
+
+# fxa_auth_ready <timeout>: an auth pod exists (a moment after its pod was deleted) and is Ready
+fxa_auth_ready() {
+  for _ in $(seq 1 30); do [[ -n "$(fxa_auth_pod)" ]] && break; sleep 2; done
+  kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout="$1" > /dev/null
+}
+
+# fxa_keys_hash: the sha256 of the auth server's signing keys, the files fxa.keys.existingSecret
+# holds (oauth-clients.json is written from the values at every start; openid-oldKey.json is a
+# placeholder FxA writes next to a new openid-key.json, verifying nothing of ours)
+fxa_keys_hash() {
+  kubectl exec "deploy/${FULL}-fxa-auth" -c auth -- sh -c 'cd /fxa-keys && sha256sum secret-key.json public-key.json vapid-keys.json openid-key.json' | paste -sd' ' -
+}
+
+# fxa_levels: the schema-patch-level of each accounts database (dbMetadata), "fxa=201 fxa_oauth=..."
+# fxa_target_levels: those the auth image migrates to, its target-patch.json
+fxa_levels() {
+  local db
+  for db in fxa fxa_oauth fxa_profile pushbox; do
+    printf '%s=%s ' "${db}" "$(fxa_db_sql "SELECT value FROM ${db}.dbMetadata WHERE name = 'schema-patch-level'")"
+  done | sed 's/ $//'
+}
+fxa_target_levels() {
+  local db
+  for db in fxa fxa_oauth fxa_profile pushbox; do
+    printf '%s=%s ' "${db}" "$(kubectl exec "deploy/${FULL}-fxa-auth" -c auth -- cat "/fxa/packages/db-migrations/databases/${db}/target-patch.json" | jq -r .level)"
+  done | sed 's/ $//'
+}
+
+# upgrade_after <after what>: test_fxa_upgrade.py's after phase on the state of its before
+# (UPGRADE_AFTER: its result), but the admin UI's checks of a new release
+upgrade_after() {
+  fxa_job upgrade-after "${SYNC_IMAGE}" "/tests/test_fxa_upgrade.py -k \"old_session or old_refresh_token or sync_data_reads_back or new_sign_in or new_account\"" \
+    FXA_UPGRADE_PHASE=after UPGRADE_STATE=/state/upgrade.json || fail "test_fxa_upgrade.py after $1 failed"
+  UPGRADE_AFTER=$(kubectl logs job/fxa-test-upgrade-after | tail -1)
+  [[ "${UPGRADE_AFTER}" =~ ^5\ passed,\ 4\ deselected(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_upgrade.py after $1: not its 5 tests passed: ${UPGRADE_AFTER}"
+}
+
+# fxa_delete_test_jobs: the tests' Jobs and pods (label ffs-e2e): their completed pods hold
+# fxa-test-state, a PVC deleted under them would wait for ever
+fxa_delete_test_jobs() {
+  kubectl delete jobs,pods -l ffs-e2e --ignore-not-found --wait=true > /dev/null
+}
+
+# fxa_extdb: your own accounts server for EXTERNAL_DB=1, as tests/e2e-fxa.sh's: a plain
+# StatefulSet extdb-fxa (the database image of the e2e, its data in an emptyDir), as
+# docs/databases.md#server-requirements says (binary logging, on by default on MySQL, with
+# log_bin_trust_function_creators; mysql_native_password=ON only on MySQL 8, for an accounts
+# image without mozilla/fxa#21554), its users made by its administrator with
+# db/mysql/fxa-mysql.sql (user fxa, policy user ffs_policy; on MySQL 8 its "-- native:"
+# lines); the Secret ffs-own with the chart's keys as it generates them, the passwords of
+# those users and FXA_MYSQL_POLICY_PASSWORD
+fxa_extdb() {
+  local args='["--log-bin-trust-function-creators=ON"]' native="" data sql
+  if [[ ${db_image##*:} == 8* ]]; then
+    native=1 args='["--mysql-native-password=ON", "--log-bin-trust-function-creators=ON"]'
+  fi
+  kubectl create secret generic extdb-fxa-root --from-literal=password="$(rnd)" > /dev/null
+  jq -n --arg image "${db_image}" --argjson args "${args}" '{apiVersion: "apps/v1", kind: "StatefulSet", metadata: {name: "extdb-fxa"},
+    spec: {serviceName: "extdb-fxa", replicas: 1, selector: {matchLabels: {app: "extdb-fxa"}}, template: {metadata: {labels: {app: "extdb-fxa"}},
+      spec: {containers: [{name: "db", image: $image, imagePullPolicy: "IfNotPresent", args: $args,
+        env: [{name: "MYSQL_ROOT_PASSWORD", valueFrom: {secretKeyRef: {name: "extdb-fxa-root", key: "password"}}}],
+        ports: [{name: "mysql", containerPort: 3306}],
+        readinessProbe: {exec: {command: ["sh", "-c", "MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysql -uroot -h 127.0.0.1 -e \"SELECT 1\""]}, periodSeconds: 5},
+        volumeMounts: [{name: "data", mountPath: "/var/lib/mysql"}]}],
+        volumes: [{name: "data", emptyDir: {}}]}}}}' | kubectl apply -f - > /dev/null
+  jq -n '{apiVersion: "v1", kind: "Service", metadata: {name: "extdb-fxa"},
+    spec: {selector: {app: "extdb-fxa"}, ports: [{name: "mysql", port: 3306, targetPort: "mysql"}]}}' | kubectl apply -f - > /dev/null
+  kubectl rollout status sts/extdb-fxa --timeout 10m > /dev/null || fail "extdb-fxa (${db_image}) not Ready"
+  [[ "$(fxa_db_sql 'SELECT CONCAT(@@log_bin, " ", @@log_bin_trust_function_creators)')" == "1 1" ]] || fail "extdb-fxa: log_bin, log_bin_trust_function_creators $(fxa_db_sql 'SELECT @@log_bin, @@log_bin_trust_function_creators')"
+  # (the keys of the chart's own Secret, as a first install would generate them, and the policy user's)
+  data=$(helm template "${install[@]}" | manifests | jq -c --arg name "${FULL}" --arg policy "$(rnd | base64)" \
+    '.[] | select(.kind == "Secret" and .metadata.name == $name) | .data + {FXA_MYSQL_POLICY_PASSWORD: $policy}')
+  [[ -n "${data}" ]] || fail "the chart's Secret not rendered"
+  jq -n --argjson data "${data}" '{apiVersion: "v1", kind: "Secret", metadata: {name: "ffs-own"}, type: "Opaque", data: $data}' | kubectl apply -f - > /dev/null
+  key() { jq -r --arg k "$1" '.[$k]' <<< "${data}" | base64 -d; }
+  sql=$(if [[ -n "${native}" ]]; then sed -e "/^-- native: /{s/^-- native: //;n;d;}" "${REPO_ROOT}/db/mysql/fxa-mysql.sql"; else cat "${REPO_ROOT}/db/mysql/fxa-mysql.sql"; fi \
+    | sed -e "s|@FXA_USER@|fxa|g" -e "s|@FXA_PASSWORD@|$(key FXA_MYSQL_PASSWORD)|g" -e "s|@FXA_POLICY_USER@|ffs_policy|g" \
+      -e "s|@FXA_POLICY_PASSWORD@|$(key FXA_MYSQL_POLICY_PASSWORD)|g" -e "s|@FXA_ADMIN_PASSWORD@|$(key FXA_ADMIN_DB_PASSWORD)|g")
+  ! grep -q '@[A-Z_]*@' <<< "${sql}" || fail "db/mysql/fxa-mysql.sql: placeholders left: $(grep -o '@[A-Z_]*@' <<< "${sql}" | sort -u | paste -sd' ' -)"
+  kubectl exec -i extdb-fxa-0 -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysql -uroot' <<< "${sql}" || fail "db/mysql/fxa-mysql.sql failed on extdb-fxa"
+  check "your own server extdb-fxa (${db_image}, $(jq -r 'join(" ")' <<< "${args}")), binary logging on; db/mysql/fxa-mysql.sql$([[ -z ${native} ]] || echo " (its -- native: lines)") as root (fxa, ffs_policy, ffs_admin); Secret ffs-own"
 }
 
 # wait_init_failed <init container> <seconds>: in the only pod of POD_SELECTOR, that init
@@ -1474,14 +1841,14 @@ fxa_fixtures() {
 }
 
 # fxa_test_spec <image> <command (a JSON array)> [NAME=value]...: the pod spec of the tests,
-# as tests/e2e-fxa.sh's runs (as root, /tests, the CA at /caddy-ca, the state at /state, their
-# env with this release's hosts, a /dev/shm of 1 GiB: Firefox's --shm-size 1g), plus the env
-# given (over the same names)
+# as tests/e2e-fxa.sh's runs (as root, Firefox's image as its own user tester; /tests, the CA
+# at /caddy-ca, the state at /state, their env with this release's hosts, a /dev/shm of
+# 1 GiB: Firefox's --shm-size 1g), plus the env given (over the same names)
 fxa_test_spec() {
   local image=$1 command=$2 extra
   shift 2
   extra=$( (($#)) && printf '%s\n' "$@" | jq -Rn '[inputs | {name: sub("=.*"; ""), value: sub("^[^=]*="; "")}]' || echo '[]')
-  jq -n --arg image "${image}" --argjson command "${command}" --argjson extra "${extra}" --arg full "${FULL}" --arg secret "${SECRET}" '
+  jq -n --arg image "${image}" --argjson command "${command}" --argjson extra "${extra}" --arg full "${FULL}" --arg secret "${SECRET}" --arg browser "${BROWSER_IMAGE}" '
     ([{name: "FXA_CONTENT_URL", value: "https://accounts.fxa.test"}, {name: "FXA_AUTH_URL", value: "https://api.fxa.test"},
       {name: "FXA_PROFILE_URL", value: "https://profile.fxa.test"}, {name: "FXA_PAIRING_URL", value: "wss://pairing.fxa.test"},
       {name: "SYNC_PUBLIC_URL", value: "https://sync.fxa.test"}, {name: "MAILPIT_URL", value: "http://mailpit:8025"},
@@ -1490,8 +1857,8 @@ fxa_test_spec() {
       {name: "FXA_DIRECT_URL", value: "http://\($full)-fxa-auth:9000"}, {name: "ADMIN_FXA_CLIENT_ID", value: ""},
       {name: "REQUESTS_CA_BUNDLE", value: "/caddy-ca/root.crt"}, {name: "PYTHONPATH", value: "/app:/app/tools:/tests"},
       {name: "PYTHONDONTWRITEBYTECODE", value: "1"}] | map(select(.name as $n | $extra | map(.name) | index($n) | not))) + $extra
-    | {restartPolicy: "Never", securityContext: {runAsUser: 0},
-      containers: [{name: "test", image: $image, imagePullPolicy: "Never", command: $command, workingDir: "/app", env: .,
+    | {restartPolicy: "Never", securityContext: (if $image == $browser then {} else {runAsUser: 0} end),
+      containers: [{name: "test", image: $image, imagePullPolicy: "Never", command: $command, workingDir: (if $image == $browser then "/home/tester" else "/app" end), env: .,
         volumeMounts: [{name: "tests", mountPath: "/tests", readOnly: true}, {name: "ca", mountPath: "/caddy-ca", readOnly: true},
           {name: "state", mountPath: "/state"}, {name: "shm", mountPath: "/dev/shm"}]}],
       volumes: [{name: "tests", configMap: {name: "ffs-fxa-tests"}}, {name: "ca", configMap: {name: "fxa-test-ca"}},
@@ -1508,7 +1875,7 @@ fxa_job() {
   spec=$(fxa_test_spec "${image}" '["sh", "-c", "eval \"set -- ${PYTEST_ARGS}\" && exec python3 -m pytest -q -p no:cacheprovider \"$@\""]' \
     PYTEST_ARGS="${args}" "$@")
   kubectl delete job "fxa-test-${name}" --ignore-not-found --wait=true > /dev/null
-  jq -n --arg name "fxa-test-${name}" --argjson spec "${spec}" '{apiVersion: "batch/v1", kind: "Job", metadata: {name: $name},
+  jq -n --arg name "fxa-test-${name}" --argjson spec "${spec}" '{apiVersion: "batch/v1", kind: "Job", metadata: {name: $name, labels: {"ffs-e2e": $name}},
     spec: {backoffLimit: 0, template: {metadata: {labels: {"ffs-e2e": $name}}, spec: $spec}}}' | kubectl apply -f - > /dev/null
   wait_job "fxa-test-${name}" 1800
 }

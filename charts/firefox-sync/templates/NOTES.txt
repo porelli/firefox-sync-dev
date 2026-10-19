@@ -136,4 +136,8 @@ It must hold SYNC_MASTER_SECRET, METRICS_HASH_SECRET, ADMIN_PASSWORD, ADMIN_DB_P
 ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_NOTIFY; without existingSecret these four
 are those of smtp.password, admin.oidc.clientSecret, admin.metricsToken and admin.notify
 (empty: off).
+{{- if .Values.fxa.enabled }}
+With the self-hosted accounts, also {{ include "firefox-sync.fxaGeneratedKeys" . | splitList " " | join ", " }}
+(the admin UI also reads ADMIN_FXA_CLIENT_SECRET, when there: fxa.adminClientSecret).
+{{- end }}
 {{- end }}
