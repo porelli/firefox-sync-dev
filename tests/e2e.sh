@@ -1322,9 +1322,9 @@ if [ -z "${EXTDB}" ]; then
 
   # the commands of docs/backups.md#restore, as it writes them (firefox-sync_ the project,
   # 20261013T030000Z the run): each is checked to be there word for word, then run
-  ADMIN_MD=$(sed 's/^ *//' "${CODE}/ADMIN.md")
+  BACKUPS_MD=$(sed 's/^ *//' "${CODE}/docs/backups.md")
   # shellcheck disable=SC2001
-  documented() { [[ "${ADMIN_MD}" == *"$(sed 's/^ *//' <<< "$1")"* ]] && echo yes || echo "not in ADMIN.md: $1"; }
+  documented() { [[ "${BACKUPS_MD}" == *"$(sed 's/^ *//' <<< "$1")"* ]] && echo yes || echo "not in docs/backups.md: $1"; }
   as_here() { sed -e "s/firefox-sync_/${PROJECT}_/g" -e "s/20261013T030000Z/${2:-${RUN:-}}/g" -e 's/^docker compose /dc /' <<< "$1"; }
   # 1. the stack down, the databases' volumes gone (a new host), the copy of the backups
   # volume put back, the databases alone

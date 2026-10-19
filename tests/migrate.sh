@@ -1,7 +1,8 @@
 #!/bin/bash
-# Tests of docs/migrating.md: an account's data written through another Sync server, moved the
-# way docs/migrating.md says, then read back through firefox-sync with the same FxA uid and keys
-# (upstream's mock FxA, tests/migrate_client.py).
+# Tests of docs/migrating.md (and of docs/upgrading.md for the older firefox-sync releases): an
+# account's data written through another Sync server, moved the way docs/migrating.md says,
+# then read back through firefox-sync with the same FxA uid and keys (upstream's mock FxA,
+# tests/migrate_client.py).
 #
 # Usage: tests/migrate.sh <scenario>
 #   upstream-mysql           Mozilla's docker-compose.one-shot.mysql.yaml (MySQL 8.0,
@@ -26,9 +27,9 @@
 # The old stacks run their real compose files (fetched from GitHub at pinned commits, with
 # only what the test needs changed in an override: the mock FxA as accounts server, a node
 # URL, no published ports, a published image instead of a build), or reproduce the layout
-# where the original builds from source. The commands of docs/migrating.md are run as written
-# there: each one must be found, verbatim, in docs/migrating.md (guide()), so a command changed
-# in the guide must be changed here too.
+# where the original builds from source. The commands of the guide are run as written there:
+# each one must be found, verbatim, in docs/migrating.md or docs/upgrading.md (guide()), so a
+# command changed in the guide must be changed here too.
 # The new stack is a copy of this tree set up like a user's install (.env, COMPOSE_FILE),
 # with SYNC_MAX_USERS=2 and the admin UI; checked: the init container, the SQL of "Checking the
 # result", the client (same uids, on the new node, the data as written, writable), max users
@@ -50,7 +51,8 @@ set -u
 SCENARIO=${1:?usage: $0 <scenario>, see the top of $0}
 TESTS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CODE=$(dirname "${TESTS}")
-GUIDE=${CODE}/MIGRATING.md
+# the commands of the guide: moving from another server, and upgrading an older firefox-sync
+GUIDE=("${CODE}/docs/migrating.md" "${CODE}/docs/upgrading.md")
 # shellcheck source=tests/slot.sh
 source "${TESTS}/slot.sh"
 REPOSITORY=${REPOSITORY:-ghcr.io/porelli/firefox-sync-dev}
@@ -80,11 +82,11 @@ fail() { echo "FAIL: $1"; FAILED=1; return 1; }
 check() { if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (expected '$2', got '$1')"; fi; }
 rnd() { tr -dc '[:alnum:]' < /dev/urandom | head -c 24; }
 
-# a command (or lines run together in one shell) as docs/migrating.md has it, in the current directory
+# a command (or lines run together in one shell) as the guide has it, in the current directory
 guide() {
   local line
   for line in "$@"; do
-    grep -qF -- "${line}" "${GUIDE}" || { fail "command not in MIGRATING.md: ${line}"; return 1; }
+    grep -qF -- "${line}" "${GUIDE[@]}" || { fail "command not in docs/migrating.md or docs/upgrading.md: ${line}"; return 1; }
     echo "  \$ ${line}"
   done
   # (not on stdin: docker compose exec -T would read the next lines)
@@ -232,7 +234,7 @@ dst_load() {
       else
         # "with each file in turn", the command of the guide's comment
         local f line="# docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD=\"\$POSTGRES_SYNC_PASSWORD\" psql -h \"\$POSTGRES_SERVER\" -U \"\$POSTGRES_SYNC_USER\" -d \"\$POSTGRES_DATABASE\" -v ON_ERROR_STOP=1' < <file>"
-        grep -qF -- "${line}" "${GUIDE}" || fail "command not in MIGRATING.md: ${line}"
+        grep -qF -- "${line}" "${GUIDE[@]}" || fail "command not in docs/migrating.md or docs/upgrading.md: ${line}"
         for f in ${PG_FILES}; do
           line=${line#\# }
           echo "  \$ ${line%<file>}${f}"
@@ -682,14 +684,14 @@ EOF
     local cmd
     for cmd in "sudo mariadb-dump --single-transaction --no-tablespaces firefox_syncserver users nodes services __diesel_schema_migrations > tokenserver.sql" \
                "sudo mariadb-dump --single-transaction --no-tablespaces firefox_syncserver bso collections user_collections batch_uploads batch_upload_items __diesel_schema_migrations > syncstorage.sql"; do
-      grep -qF -- "${cmd}" "${GUIDE}" || { fail "command not in MIGRATING.md: ${cmd}"; continue; }
+      grep -qF -- "${cmd}" "${GUIDE[@]}" || { fail "command not in docs/migrating.md or docs/upgrading.md: ${cmd}"; continue; }
       echo "  \$ ${cmd}   (in the container, without sudo)"
       bash -o pipefail -c "docker exec ${ctr} ${cmd#sudo }"
       check "$?" 0 "dump: ${cmd##*> }"
     done
   else
     local cmd="sudo -u postgres pg_dump --no-owner --no-acl firefox_syncserver > syncserver.sql"
-    grep -qF -- "${cmd}" "${GUIDE}" || fail "command not in MIGRATING.md: ${cmd}"
+    grep -qF -- "${cmd}" "${GUIDE[@]}" || fail "command not in docs/migrating.md or docs/upgrading.md: ${cmd}"
     echo "  \$ ${cmd}   (in the container: docker exec -u postgres)"
     docker exec -u postgres "${ctr}" pg_dump --no-owner --no-acl firefox_syncserver > syncserver.sql
     check "$?" 0 "dump: syncserver.sql"
@@ -766,7 +768,7 @@ EOF
   for cmd in "sudo -u postgres pg_dump --no-owner --no-acl syncserver_rs_tokenserver > syncserver.sql" \
              "sudo -u postgres pg_dump --no-owner --no-acl --exclude-table=__diesel_schema_migrations syncserver_rs > syncstorage.sql" \
              "sudo -u postgres pg_dump --data-only --table=__diesel_schema_migrations syncserver_rs > syncstorage-migrations.sql"; do
-    grep -qF -- "${cmd}" "${GUIDE}" || { fail "command not in MIGRATING.md: ${cmd}"; continue; }
+    grep -qF -- "${cmd}" "${GUIDE[@]}" || { fail "command not in docs/migrating.md or docs/upgrading.md: ${cmd}"; continue; }
     echo "  \$ ${cmd}   (docker exec -u postgres)"
     bash -o pipefail -c "docker exec -u postgres ${ctr} ${cmd#sudo -u postgres }" < /dev/null
     check "$?" 0 "dump: ${cmd##*> }"

@@ -1313,7 +1313,7 @@ backup_restore() {
   [[ -z "${EXTERNAL}" ]] || kubectl delete sts,svc scratchdb --wait=false > /dev/null
 }
 
-# admin_md_restore <n>: the n-th command of ADMIN.md#restoring run in the backup container that
+# admin_md_restore <n>: the n-th command of docs/backups.md#restore run in the backup container that
 # restores $TOKENSERVER_DB_NAME (1: MariaDB, 2: PostgreSQL), as it is there
 admin_md_restore() {
   awk -v n="$1" '
@@ -1323,7 +1323,7 @@ admin_md_restore() {
       if (last) sub(/'"'"'$/, "", line)
       b = b line "\n"
       if (last) { on = 0; if (b ~ /\$TOKENSERVER_DB_NAME\.sql\.gz/ && ++i == n) printf "%s", b }
-    }' "${REPO_ROOT}/ADMIN.md"
+    }' "${REPO_ROOT}/docs/backups.md"
 }
 
 # backup_pod <name> <command, JSON> [VAR=value...]: a pod of the backup CronJob's spec (its

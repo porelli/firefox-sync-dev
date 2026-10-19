@@ -338,7 +338,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   check "$?" 0 "an audit event in the tokenserver database, as before (quadlets)"
   # the upgrade: the units stopped, the one-shot ones too, as docs/upgrading.md#with-quadlets says
   STOP='systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
-  check "$(grep -cF "\`${STOP}\`" "${CODE}/MIGRATING.md")" 1 "MIGRATING.md says \`${STOP}\`"
+  check "$(grep -cF "\`${STOP}\`" "${CODE}/docs/upgrading.md")" 1 "docs/upgrading.md says \`${STOP}\`"
   timeout 300 ${STOP}
   # (the images of this tree are local: what docs/upgrading.md#with-quadlets pulls is here already)
   podman tag localhost/ffs-admin:upgrade-to "${REPOSITORY}:admin-latest" && podman tag localhost/ffs-init:upgrade-to "${INIT_IMAGE}"
@@ -485,7 +485,7 @@ dump() { podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/m
 # shellcheck disable=SC2016 # (expanded in the database container)
 if [ "${SYNC_DB}" = mysql ]; then load='mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'; else load='mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'; fi
 # with set -o pipefail, as docs/backups.md#restore-with-quadlets says: a run that is not there fails, instead of loading nothing
-check "$(grep -cxF 'set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore' ADMIN.md)" 1 "ADMIN.md's Quadlet restore sets pipefail"
+check "$(grep -cxF 'set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore' "${CODE}/docs/backups.md")" 1 "docs/backups.md's Quadlet restore sets pipefail"
 missing=$( (set -o pipefail; dump "sync/20000101T000000Z/tokenserver.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${load}") >> restore.log 2>&1 || echo failed)
 check "${missing}" failed "a restore of a run that is not there fails (quadlets)"
 for db in tokenserver syncstorage; do
@@ -495,7 +495,7 @@ done
 # the admin UI's database, as its user (the line of docs/backups.md#restore-with-quadlets, the client of the image)
 # shellcheck disable=SC2016
 admin_load='mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
-check "$(grep -cF "dump sync/\$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c '${admin_load}'" ADMIN.md)" 1 "ADMIN.md's Quadlet restore of the admin UI's database"
+check "$(grep -cF "dump sync/\$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c '${admin_load}'" "${CODE}/docs/backups.md")" 1 "docs/backups.md's Quadlet restore of the admin UI's database"
 [ "${SYNC_DB}" = mysql ] && admin_load=${admin_load/#mariadb/mysql}
 (set -o pipefail; dump "sync/${run}/ffs_admin.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${admin_load}") >> restore.log 2>&1
 check "$?" 0 "ffs_admin restored from ${run} as its user (quadlets)"

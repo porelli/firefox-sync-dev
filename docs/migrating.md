@@ -77,7 +77,7 @@ This only works between syncstorage-rs servers (the Rust one) on the same kind o
 
     # PostgreSQL (COMPOSE_FILE=docker-compose.sync-postgres.yml): as the Sync server's role
     # SYNC_POSTGRES_APP_USER, created first. Not as SYNC_POSTGRES_USER, the superuser: what the dump
-    # brings (functions in a CHECK, an index, a view) would run with its rights (DATABASES.md)
+    # brings (functions in a CHECK, an index, a view) would run with its rights (reference/database-users.md)
     docker compose up -d --wait postgres_db
     docker compose run --rm sync_role_init
     docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" psql -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1' < syncserver.sql
@@ -99,7 +99,7 @@ To Kubernetes: load the dumps into docker compose as above, then follow [From do
     docker compose exec tokenserver_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
     # MySQL (SYNC_DB=mysql)
     docker compose exec tokenserver_db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
-    # PostgreSQL, as the Sync server's role (never SYNC_POSTGRES_USER on the Sync database, DATABASES.md)
+    # PostgreSQL, as the Sync server's role (never SYNC_POSTGRES_USER on the Sync database, reference/database-users.md)
     docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" psql -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" -d "$POSTGRES_DATABASE" -c "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
     ```
 - On desktop, `about:sync-log` shows syncs without errors, and a new profile signed in to the same account gets the bookmarks without any other device uploading them first.
