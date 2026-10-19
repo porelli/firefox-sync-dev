@@ -3,7 +3,7 @@ Description=Firefox Sync - Mozilla accounts - Redis
 After=firefox-sync-network.service
 
 [Container]
-Image=docker.io/library/redis:7-alpine
+Image=docker.io/library/redis:alpine
 ContainerName=firefox-sync-fxa-redis
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-redis

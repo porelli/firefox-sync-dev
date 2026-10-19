@@ -62,7 +62,9 @@ services:
     restart: unless-stopped
 
   fxa-redis:
-    image: redis:7-alpine
+    # the accounts' cache (sessions' last use, revoked tokens), no volume: lost on a recreate
+    # anyway, so it follows Redis's newest major
+    image: redis:alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
