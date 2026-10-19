@@ -33,7 +33,7 @@ class Ids(HTMLParser):
 
 
 def page_of(site, rel):
-    """docs/x/README.md -> site/x/index.html, docs/x/y.md -> site/x/y/index.html"""
+    """A folder's README of docs/ -> site/<folder>/index.html, any other page -> site/<folder>/<page>/index.html"""
     return site / rel.parent / ("index.html" if rel.name == "README.md" else f"{rel.stem}/index.html")
 
 

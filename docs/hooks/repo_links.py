@@ -88,7 +88,7 @@ def _rewrite(url):
     if repo_path == docs or repo_path.startswith(docs + "/"):
         src = repo_path[len(docs) + 1:]
         if src and _site_file(src):
-            if path.startswith("/"):  # /docs/x.md: relative, as MkDocs wants
+            if path.startswith("/"):  # /docs/x.md: relative, as MkDocs wants  # check-links: ignore
                 rel = posixpath.relpath(src, page_dir or ".")
                 return rel + sep + frag
             return url

@@ -242,6 +242,8 @@ class Checker:
                     path = self.root / rel
                     if not path.exists() and (self.root / name).parent.joinpath(ref).exists():
                         path = (self.root / name).parent / ref
+                    if name == "mkdocs.yml" and not path.exists():
+                        path = self.root / "docs" / rel  # the nav names pages from docs_dir
                     self.check_target(name, n, path, anchor[1:] if anchor else None, m.group(0))
 
     def check_settings(self):
