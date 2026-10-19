@@ -101,7 +101,7 @@ All the images are updated weekly to the latest tag available from Mozilla's off
     - GitHub [workflow](/.github/workflows/fxa.yml): Mozilla only publishes [`mozilla/fxa-mono`](https://hub.docker.com/r/mozilla/fxa-mono) for amd64, this builds the same releases for amd64 and arm64 and tests them on both before publishing
     - Base image: [Mozilla's](https://github.com/mozilla/fxa/blob/main/_dev/docker/mono/Dockerfile) container
     - source code: https://github.com/mozilla/fxa
-        - code changes: only the upstream pull requests listed in [upstream-patches.yml](/upstream-patches.yml), until they are in a release (today [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494), for MariaDB 12, see [FXA.md](FXA.md#mariadb-12)); the image lists them in its label `org.firefox-sync.upstream-patches`
+        - code changes: only the upstream pull requests listed in [upstream-patches.yml](/upstream-patches.yml), until they are in a release (today [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494), for MariaDB 12, see [FXA.md](FXA.md#mariadb-12), and [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554), for MySQL 9, see [FXA.md](FXA.md#mysql-9)); the image lists them in its label `org.firefox-sync.upstream-patches`
     - used by default with self-hosted accounts (`FXA_VERSION=fxa-mono-latest`); Mozilla's own image works too on amd64
 - [`ghcr.io/porelli/firefox-sync:fxa-channelserver-<release>` and `fxa-channelserver-latest`](https://github.com/porelli/firefox-sync/pkgs/container/firefox-sync/versions), amd64 and arm64: the optional QR code pairing server, built the same way from [Mozilla's channelserver](https://github.com/mozilla-services/channelserver)
 

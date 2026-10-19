@@ -44,8 +44,11 @@ database:
   bundled: true
 
   # The image of each backend's database server, also the client of the backups (and of the
-  # wait for the server): compose's images, POSTGRES_IMAGE for PostgreSQL. It pins the
-  # major of the install: the official PostgreSQL image keeps its data at
+  # wait for the server): compose's images (SYNC_MYSQL_IMAGE for MySQL, POSTGRES_IMAGE for
+  # PostgreSQL). MariaDB's and MySQL's lts move to their next long-term major by themselves:
+  # the server upgrades the data at its next start, with no way back but a backup; pin a
+  # major (e.g. docker.io/library/mysql:9) to choose when (HELM.md#upgrades). It pins the
+  # major of the install for PostgreSQL: the official PostgreSQL image keeps its data at
   # /var/lib/postgresql/<major>/docker and refuses to start on an older major's data, so
   # moving to a newer one needs a dump and restore (ADMIN.md#restoring) or pg_upgrade
   # (DATABASES.md#another-postgresql-major). With your own server (bundled: false) it is only
@@ -53,7 +56,7 @@ database:
   # official images), for the nodes whose runtime has no default registry or another one
   image:
     mariadb: docker.io/library/mariadb:lts
-    mysql: docker.io/library/mysql:8
+    mysql: docker.io/library/mysql:lts
     postgres: docker.io/library/postgres:18
 
   # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),

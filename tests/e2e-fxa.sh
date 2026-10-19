@@ -20,12 +20,18 @@
 #   FXA_ACCOUNT_EVENTS true (default here, off for users) records the security history of the
 #                    accounts: every test then also runs with it on, test_fxa_admin.py checks it
 #   SKIP_PULL        set to 1 to use the local images (e.g. an init image built from this tree)
-#   FXA_DB           mysql (default, MySQL 8) or mariadb (FXA_MARIADB_IMAGE, docker-compose.fxa-mariadb.yml)
+#   FXA_DB           mysql (default, FXA_MYSQL_IMAGE) or mariadb (FXA_MARIADB_IMAGE, docker-compose.fxa-mariadb.yml)
 #                    for the accounts database
+#   FXA_MYSQL_IMAGE  with FXA_DB=mysql (default: mysql:lts, MySQL 9 today, when the accounts image has
+#                    mozilla/fxa#21554 in its label org.firefox-sync.upstream-patches; else mysql:8 with
+#                    FXA_MYSQL_ARGS, as for the installs from before, e.g. with Mozilla's images)
+#   FXA_MYSQL_ARGS   with FXA_DB=mysql: fxa-db's extra options (default: none on lts; on mysql:8
+#                    --mysql-native-password=ON --authentication-policy=mysql_native_password, the
+#                    installs from before)
 #   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:lts, MariaDB 12 today, when the accounts image
 #                    has mozilla/fxa#21494 in its label org.firefox-sync.upstream-patches (upstream-patches.yml);
 #                    else mariadb:11, as for the installs from before, e.g. with Mozilla's images)
-#   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, MySQL 8
+#   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, FXA_MYSQL_IMAGE
 #                    (FXA_MARIADB_IMAGE with FXA_DB=mariadb) (SYNC_DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
 #                    DATABASES.md), container EXTDB, created with only the grants of
 #                    db/mysql/; kept with KEEP, reused by RERUN. fxa: only the accounts
@@ -103,21 +109,39 @@ sed -i -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${REPOSITORY}|" -e "s|^FXA_ARCH=.*|FXA_ARCH
 case "${FXA_DB:-mysql}" in mysql|mariadb) sed -i "s|^FXA_DB=.*|FXA_DB=${FXA_DB:-mysql}|" "${ENV_FILE}" ;; *) echo "FXA_DB: mysql or mariadb"; exit 2 ;; esac
 # MariaDB lts (12) needs mozilla/fxa#21494 in the accounts image (upstream-patches.yml, the
 # label our builds set; not in Mozilla's images nor in ours built before): MariaDB 11 without
-# it, what prepare_environment.sh warns about
-if [ "${FXA_DB:-mysql}" = mariadb ] && [ -z "${FXA_MARIADB_IMAGE:-}" ] && [ -z "${RERUN:-}" ]; then
-  fxa_tested=$(sed -n 's/^FXA_IMAGE=//p' "${ENV_FILE}"):$(sed -n 's/^FXA_VERSION=//p' "${ENV_FILE}")
+# it, what prepare_environment.sh warns about. MySQL lts (9) needs mozilla/fxa#21554 (mysql2):
+# MySQL 8 with mysql_native_password without it, what prepare_environment.sh writes then
+fxa_tested=$(sed -n 's/^FXA_IMAGE=//p' "${ENV_FILE}"):$(sed -n 's/^FXA_VERSION=//p' "${ENV_FILE}")
+fxa_label() {
   docker image inspect "${fxa_tested}" > /dev/null 2>&1 || [ -n "${SKIP_PULL:-}" ] ||
     docker pull -q --platform "linux/$(sed -n 's/^FXA_ARCH=//p' "${ENV_FILE}")" "${fxa_tested}" > /dev/null
-  fxa_patches=$(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${fxa_tested}" 2> /dev/null)
-  if [[ " ${fxa_patches} " == *" mozilla/fxa#21494@"* ]]; then
+  docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${fxa_tested}" 2> /dev/null
+}
+NATIVE_ARGS="--mysql-native-password=ON --authentication-policy=mysql_native_password"
+if [ "${FXA_DB:-mysql}" = mariadb ] && [ -z "${FXA_MARIADB_IMAGE:-}" ] && [ -z "${RERUN:-}" ]; then
+  if [[ " $(fxa_label) " == *" mozilla/fxa#21494@"* ]]; then
     FXA_MARIADB_IMAGE=mariadb:lts
   else
     FXA_MARIADB_IMAGE=mariadb:11
     echo "== ${fxa_tested} without mozilla/fxa#21494 (label org.firefox-sync.upstream-patches): the accounts on ${FXA_MARIADB_IMAGE}"
   fi
 fi
+if [ "${FXA_DB:-mysql}" = mysql ] && [ -z "${FXA_MYSQL_IMAGE:-}" ] && [ -z "${RERUN:-}" ]; then
+  if [[ " $(fxa_label) " == *" mozilla/fxa#21554@"* ]]; then
+    FXA_MYSQL_IMAGE=mysql:lts
+  else
+    FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_ARGS-${NATIVE_ARGS}}
+    echo "== ${fxa_tested} without mozilla/fxa#21554 (label org.firefox-sync.upstream-patches): the accounts on ${FXA_MYSQL_IMAGE} with mysql_native_password"
+  fi
+fi
+# a pinned mysql:8 runs as the installs from before, with mysql_native_password
+case "${FXA_MYSQL_IMAGE:-}" in *:8|*:8.*) FXA_MYSQL_ARGS=${FXA_MYSQL_ARGS-${NATIVE_ARGS}} ;; esac
 # written out, as prepare_environment.sh does for a new install (unset it is lts too)
 [ "${FXA_DB:-mysql}" = mariadb ] && sed -i "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:lts}|" "${ENV_FILE}"
+if [ "${FXA_DB:-mysql}" = mysql ] && [ -z "${RERUN:-}" ]; then
+  sed -i "s|^# FXA_MYSQL_IMAGE=.*|FXA_MYSQL_IMAGE=${FXA_MYSQL_IMAGE}|" "${ENV_FILE}"
+  [ -z "${FXA_MYSQL_ARGS:-}" ] || sed -i "s|^# FXA_MYSQL_ARGS=.*|FXA_MYSQL_ARGS=${FXA_MYSQL_ARGS}|" "${ENV_FILE}"
+fi
 # EXTERNAL_DB=1: a server elsewhere, its own container and network, reached by name
 EXTDB=${PROJECT}-extdb
 if [ -n "${EXTERNAL_DB:-}" ]; then
@@ -167,8 +191,18 @@ if [ "${FXA_DB}" = mariadb ]; then
   # binary logging is off by default on MariaDB: on, as DATABASES.md expects it may be
   EXTDB_ARGS=(--log-bin --log-bin-trust-function-creators=ON)
 else
-  FXA_DB_SERVER='MySQL 8' DB_CLIENT=mysql EXTDB_IMAGE=mysql:8
-  EXTDB_ARGS=(--mysql-native-password=ON --log-bin-trust-function-creators=ON)
+  # a major (mysql:8): MySQL 8.x; lts or another name: any version
+  FXA_MYSQL_IMAGE=${FXA_MYSQL_IMAGE:-mysql:lts}
+  case "${FXA_MYSQL_IMAGE##*:}" in
+    [0-9]*.[0-9]*) FXA_DB_SERVER="MySQL ${FXA_MYSQL_IMAGE##*:}" FXA_DB_SERVER=${FXA_DB_SERVER//./\\.} ;;
+    [0-9]*) FXA_DB_SERVER="MySQL ${FXA_MYSQL_IMAGE##*:}\\." ;;
+    *) FXA_DB_SERVER='MySQL [0-9]+\.[0-9]+' ;;
+  esac
+  DB_CLIENT=mysql EXTDB_IMAGE=${FXA_MYSQL_IMAGE}
+  # your own server as DATABASES.md says: mysql_native_password=ON only for an accounts image
+  # without mozilla/fxa#21554 (the accounts' user then on it, the "-- native:" lines)
+  EXTDB_ARGS=(--log-bin-trust-function-creators=ON)
+  [[ " ${FXA_MYSQL_ARGS:-} " == *" --mysql-native-password=ON "* ]] && EXTDB_ARGS=(--mysql-native-password=ON "${EXTDB_ARGS[@]}")
 fi
 # the admin UI under test: ADMIN_IMAGE as is (pulled when missing), or built from admin/
 ADMIN_GIVEN=${ADMIN_IMAGE:-}
@@ -218,6 +252,20 @@ printf '%s\n' "${answers[@]}" "" "" "" 5 | (cd "${SETUP}" && ./prepare_environme
 check "$?" 0 "prepare_environment.sh with self-hosted accounts"
 password='p@ss|w&rd\#1 $x'
 check "$(grep -cxF "FXA_SMTP_PASS='${password}'" "${SETUP}/.env")" 1 "SMTP password written as typed"
+# the accounts on MySQL: lts when the accounts image of .env has mozilla/fxa#21554, else MySQL 8
+# with mysql_native_password, as prepare_environment.sh reads its label (here, else the registry)
+setup_image=$(sed -n 's/^FXA_IMAGE=//p' "${SETUP}/.env"):$(sed -n 's/^FXA_VERSION=//p' "${SETUP}/.env")
+# (a local copy without it, the registry's with it: lts too, after a pull)
+setup_label="$(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${setup_image}" 2> /dev/null) $(
+  docker buildx imagetools inspect "${setup_image}" --format '{{json .Image}}' 2> /dev/null | grep -o '"org\.firefox-sync\.upstream-patches": *"[^"]*"' | head -n 1 | sed 's/.*: *"//; s/"$//')"
+if [[ " ${setup_label} " == *" mozilla/fxa#21554@"* ]]; then
+  SETUP_MYSQL_IMAGE=mysql:lts SETUP_MYSQL_ARGS="" SETUP_MYSQL2=yes
+else
+  SETUP_MYSQL_IMAGE=mysql:8 SETUP_MYSQL_ARGS=${NATIVE_ARGS} SETUP_MYSQL2=""
+fi
+SETUP_MYSQL="${SETUP_MYSQL_IMAGE} [${SETUP_MYSQL_ARGS}]"
+check "$(sed -n 's/^FXA_MYSQL_IMAGE=//p' "${SETUP}/.env") [$(sed -n 's/^FXA_MYSQL_ARGS=//p' "${SETUP}/.env")] $(grep -cE 'does not have mozilla/fxa#21554|could not read the labels of' "${WORK}/setup.log")" \
+  "${SETUP_MYSQL} $([ -n "${SETUP_MYSQL2}" ] && echo 0 || echo 1)" "the accounts on ${SETUP_MYSQL_IMAGE} for ${setup_image} ($([ -n "${SETUP_MYSQL2}" ] && echo with || echo without) mozilla/fxa#21554)"
 check "$(sed -n '/SELF-HOSTED MOZILLA ACCOUNTS/,$p' "${SETUP}/.env" | grep -v '^#' | grep -c REPLACE)" 0 "no placeholders left for the accounts"
 check "$(cd "${SETUP}" && docker compose config --services 2> /dev/null | grep -c '^fxa-')" 11 "compose stack with the accounts services (and the optional pairing server)"
 check "$(grep -c '^COMPOSE_PROFILES=admin$' "${SETUP}/.env")" 1 "admin UI enabled"
@@ -281,13 +329,26 @@ check "$?" 0 "prepare_environment.sh with PostgreSQL and self-hosted accounts"
 check "$(grep -c '^COMPOSE_FILE=docker-compose.sync-postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
 check "$(setup_compose config --services | grep -cxE 'postgres_db|fxa-auth|fxa-policy|ffs-admin')" 4 "compose stack with PostgreSQL, the accounts and the admin UI"
 check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE '^ +(TOKENSERVER_DB_TYPE: postgres|FXA_DB_HOST: fxa-db|MAX_USERS: "?initial:2"?)$')" 3 "admin UI for PostgreSQL and the accounts, with SYNC_MAX_USERS"
-# Sync on MySQL 8 containers (SYNC_DB=mysql), the same mysql images
+# Sync on MySQL containers (SYNC_DB=mysql), the same mysql images
 prepare_again mysql ""
 check "$?" 0 "prepare_environment.sh with MySQL for Sync and self-hosted accounts"
-check "$(env_value SYNC_DB) $(env_value SYNC_DB_TLS_VERIFY) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" \
-  "mysql false 1" "Sync on MySQL 8 in .env, with the accounts"
-check "$(setup_compose config | sed -n '/^  tokenserver_db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:8|source: tokenserver-db-mysql|- --disable-log-bin)$')" 3 \
-  "tokenserver_db on MySQL 8 without binary logging, in its own volume"
+check "$(env_value SYNC_DB) $(env_value SYNC_DB_TLS_VERIFY) $(env_value SYNC_MYSQL_IMAGE) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" \
+  "mysql false mysql:lts 1" "Sync on MySQL lts in .env, with the accounts"
+check "$(setup_compose config | sed -n '/^  tokenserver_db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:lts|source: tokenserver-db-mysql|- --disable-log-bin|FFS_MYSQL_IMAGE: mysql:lts)$')" 4 \
+  "tokenserver_db on MySQL lts without binary logging, in its own volume, the image chosen"
+# an install from before SYNC_MYSQL_IMAGE: run again, or --upgrade, it stays on MySQL 8
+sed -i '/^SYNC_MYSQL_IMAGE=/d' "${SETUP}/.env"
+printf '%s\n' "${answers[@]}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-mysql-again.log" 2>&1
+check "$? $(env_value SYNC_MYSQL_IMAGE) $(grep -c 'Sync databases of this install stay on MySQL 8' "${WORK}/setup-mysql-again.log")" "0 mysql:8 1" \
+  "prepare_environment.sh again on an install with Sync on MySQL 8 keeps it there"
+sed -i '/^SYNC_MYSQL_IMAGE=/d' "${SETUP}/.env"
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mysql-upgrade.log" 2>&1
+check "$? $(env_value SYNC_MYSQL_IMAGE) $(grep -c 'Sync databases stay on MySQL 8' "${WORK}/setup-mysql-upgrade.log") $(setup_compose --profile backup config | awk '/^  [a-z]/ { on = ($1 == "tokenserver_db:" || $1 == "syncstorage_db:" || $1 == "backup:") } on' | grep -cE '^ +image: mysql:8$')" \
+  "0 mysql:8 1 3" "prepare_environment.sh --upgrade pins Sync on MySQL 8 (the databases and the backups)"
+# without SYNC_MYSQL_IMAGE the compose default is lts: the containers check the major of their data
+sed -i '/^SYNC_MYSQL_IMAGE=/d' "${SETUP}/.env"
+check "$(setup_compose config | sed -n '/^  tokenserver_db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:lts|FFS_MYSQL_IMAGE: ""|- /ffs-db/keep-major.sh)$')" 3 \
+  "without SYNC_MYSQL_IMAGE: mysql:lts, the major of the data checked (db/mysql/keep-major.sh)"
 check "$(setup_compose config | sed -n '/^  tokenserver_db_init:/,/^  [a-z]/p' | grep -cE '^ +MARIADB_TLS_VERIFY: "?false"?$')" 1 "init container does not check MySQL's self-signed certificate"
 prepare_again mariadb "" ""
 check "$?" 0 "prepare_environment.sh with the admin UI, no admin emails (password only)"
@@ -327,8 +388,11 @@ check "$(grep -c "'tokenserver'@'%' IDENTIFIED BY '$(env_value SYNC_TOKENSERVER_
 # given; with the storage on another server, the commented statements for it)
 check "$(grep -c "'ffs_admin_\(ui\|sync\)'@'%' IDENTIFIED BY '$(env_value ADMIN_DB_PASSWORD)'" "${SETUP}/database-setup.sql") $(grep -cE "^GRANT (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, LOCK TABLES ON \`ffs_admin\`\.\* TO 'ffs_admin_ui'|SELECT, EXECUTE ON \`tokenserver\`\.\* TO 'ffs_admin_sync'|SELECT, DELETE ON \`sync_storage\`\.\* TO 'ffs_admin_sync')@'%';$" "${SETUP}/database-setup.sql")" \
   "6 3" "database-setup.sql with the admin UI's users (its database; the Sync data) and its database"
-check "$(grep -c "'fxa'@'%' IDENTIFIED WITH mysql_native_password BY '$(env_value FXA_MYSQL_PASSWORD)'" "${SETUP}/database-setup-fxa.sql") $(grep -c "'ffs_policy'@'%' IDENTIFIED BY '$(env_value FXA_MYSQL_POLICY_PASSWORD)'" "${SETUP}/database-setup-fxa.sql")" \
-  "2 2" "database-setup-fxa.sql with the generated passwords"
+# the accounts' user: the server's default (caching_sha2_password) with mozilla/fxa#21554 in the
+# image, else mysql_native_password, and the server it needs said
+if [ -n "${SETUP_MYSQL2}" ]; then fxa_auth="IDENTIFIED BY" fxa_needs="MySQL 8.4 or 9 with"; else fxa_auth="IDENTIFIED WITH mysql_native_password BY" fxa_needs="MySQL 8.4 started with mysql_native_password=ON"; fi
+check "$(grep -c "'fxa'@'%' ${fxa_auth} '$(env_value FXA_MYSQL_PASSWORD)'" "${SETUP}/database-setup-fxa.sql") $(grep -c "'ffs_policy'@'%' IDENTIFIED BY '$(env_value FXA_MYSQL_POLICY_PASSWORD)'" "${SETUP}/database-setup-fxa.sql") $(grep -c '^-- native:' "${SETUP}/database-setup-fxa.sql") $(grep -c "${fxa_needs}" "${WORK}/setup-external.log")" \
+  "2 2 0 1" "database-setup-fxa.sql with the generated passwords, ${fxa_auth} for the accounts"
 check "$(grep -c "'ffs_admin'@'%' IDENTIFIED BY '$(env_value FXA_ADMIN_DB_PASSWORD)'" "${SETUP}/database-setup-fxa.sql") $(grep -c 'CREATE USER ON' "${SETUP}/database-setup-fxa.sql")" \
   "2 0" "database-setup-fxa.sql creates ffs_admin, no CREATE USER for the policy user"
 check "$(grep -cE '(mysql|mariadb) -h db.example.org -P 3306 -u root -p < database-setup.sql' "${WORK}/setup-external.log")" 2 "prepare_environment.sh says how to run the SQL (MySQL, MariaDB)"
@@ -428,6 +492,40 @@ sed -i 's|^FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=mariadb:lts|' "${SETUP}/.env"
 (cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-mozilla-lts.log" 2>&1
 check "$? $(grep -c 'WARNING: the accounts on MariaDB lts (FXA_MARIADB_IMAGE=mariadb:lts) need an image with mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-lts.log")" "0 1" "Mozilla's images on MariaDB lts: a warning"
 rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade
+# the accounts on MySQL, an install from before FXA_MYSQL_IMAGE (mysql:8 with mysql_native_password):
+# run again, or --upgrade, it stays there, whatever the accounts image
+printf '%s\n' "${answers[@]}" n n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-mysql.log" 2>&1
+check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)]" "0 ${SETUP_MYSQL}" "prepare_environment.sh: the accounts on MySQL"
+check "$(setup_compose --profile backup config | awk '/^  [a-z]/ { on = ($1 == "fxa-db:" || $1 == "backup-fxa:") } on' | grep -cE "^ +image: ${SETUP_MYSQL_IMAGE}$") $(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE "^ +(- --event-scheduler=ON|FFS_MYSQL_IMAGE: ${SETUP_MYSQL_IMAGE}|- /ffs-db/keep-major.sh)$")" \
+  "2 3" "fxa-db and its backups on ${SETUP_MYSQL_IMAGE}, the image chosen"
+check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +- --(mysql-native-password=ON|authentication-policy=mysql_native_password)$')" "$([ -n "${SETUP_MYSQL2}" ] && echo 0 || echo 2)" \
+  "FXA_MYSQL_ARGS: fxa-db's options, $([ -n "${SETUP_MYSQL2}" ] && echo none || echo mysql_native_password)"
+sed -i -e '/^FXA_MYSQL_IMAGE=/d' -e '/^FXA_MYSQL_ARGS=/d' "${SETUP}/.env"
+printf '%s\n' "${answers[@]}" n n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-mysql-again.log" 2>&1
+check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c 'of this install stays on MySQL 8 with mysql_native_password' "${WORK}/setup-fxa-mysql-again.log")" "0 mysql:8 [${NATIVE_ARGS}] 1" \
+  "prepare_environment.sh again on an install with the accounts on MySQL 8 keeps it there, with mysql_native_password"
+check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:8|- --mysql-native-password=ON|- --authentication-policy=mysql_native_password)$')" 3 "fxa-db on MySQL 8 with mysql_native_password after running it again"
+sed -i -e '/^FXA_MYSQL_IMAGE=/d' -e '/^FXA_MYSQL_ARGS=/d' "${SETUP}/.env"
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-upgrade.log" 2>&1
+check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c 'stays on MySQL 8 with mysql_native_password' "${WORK}/setup-fxa-mysql-upgrade.log") $(grep -c 'MIGRATING.md#mysql-lts' "${WORK}/setup-fxa-mysql-upgrade.log")" \
+  "0 mysql:8 [${NATIVE_ARGS}] 1 $([ -n "${SETUP_MYSQL2}" ] && echo 2 || echo 1)" "prepare_environment.sh --upgrade pins the accounts on MySQL 8 with mysql_native_password$([ -n "${SETUP_MYSQL2}" ] && echo ", says the image can move to lts")"
+check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:8|- --mysql-native-password=ON|- --authentication-policy=mysql_native_password)$')" 3 "fxa-db on MySQL 8 with mysql_native_password after --upgrade"
+# MySQL lts with Mozilla's images (no mozilla/fxa#21554): a warning; the options on lts: another
+sed -i -e 's|^FXA_IMAGE=.*|FXA_IMAGE=docker.io/mozilla/fxa-mono|' -e 's|^FXA_VERSION=.*|FXA_VERSION=v1.347.3|' -e 's|^FXA_MYSQL_IMAGE=.*|FXA_MYSQL_IMAGE=mysql:lts|' -e '/^FXA_MYSQL_ARGS=/d' "${SETUP}/.env"
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-mozilla.log" 2>&1
+check "$? $(grep -c 'WARNING: the accounts on MySQL lts (FXA_MYSQL_IMAGE=mysql:lts) need an image' "${WORK}/setup-fxa-mysql-mozilla.log")" "0 1" "Mozilla's images on MySQL lts: a warning"
+printf 'FXA_MYSQL_ARGS=%s\n' "${NATIVE_ARGS}" >> "${SETUP}/.env"
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-lts-args.log" 2>&1
+check "$? $(grep -c 'WARNING: FXA_MYSQL_ARGS has --mysql-native-password=ON, which MySQL lts' "${WORK}/setup-fxa-mysql-lts-args.log")" "0 1" "mysql_native_password options on MySQL lts: a warning"
+rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade
+# a new setup over the MySQL volume of an earlier install (its .env gone): kept on 8, native
+volume="$(basename "${SETUP}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')_fxa-db"
+docker volume create "${volume}" > /dev/null
+printf '%s\n' "${answers[@]}" n n | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-fxa-mysql-volume.log" 2>&1
+check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c "found the accounts database$" "${WORK}/setup-fxa-mysql-volume.log") $(grep -c "earlier install (docker volume ${volume})" "${WORK}/setup-fxa-mysql-volume.log")" \
+  "0 mysql:8 [${NATIVE_ARGS}] 1 1" "prepare_environment.sh keeps MySQL 8 with mysql_native_password for the volume of an earlier install"
+docker volume rm "${volume}" > /dev/null
+rm -f "${SETUP}/.env"
 # a new setup over the MariaDB volume of an earlier install (its .env gone): kept on 11
 volume="$(basename "${SETUP}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')_fxa-db-mariadb"
 docker volume create "${volume}" > /dev/null
@@ -453,17 +551,24 @@ docker network rm "${EXTDB}" > /dev/null 2>&1
 if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   echo "== external database server ${EXTDB} (${EXTDB_IMAGE}) for $([ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && echo "Sync and ")the accounts"
   docker network create "${EXTDB}" > /dev/null
-  # as DATABASES.md says: native passwords for the accounts' driver, binary logging
-  # with the trigger and function of the sign-up policy and of SYNC_MAX_USERS
+  # as DATABASES.md says: binary logging with the trigger and function of the sign-up policy
+  # and of SYNC_MAX_USERS (and mysql_native_password=ON for an image without mozilla/fxa#21554)
   docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/mysql -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" \
     "${EXTDB_IMAGE}" "${EXTDB_ARGS[@]}" > /dev/null
   extdb_admin() { docker exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" "${DB_CLIENT}" -uroot -h 127.0.0.1 --protocol=tcp -sN "$@"; }
   for _ in $(seq 1 90); do extdb_admin -e 'SELECT 1' < /dev/null > /dev/null 2>&1 && break; sleep 2; done
   # one user for both: as DATABASES.md says, without the policy user's own lines
   if [ -z "${FXA_MYSQL_POLICY_USER}" ]; then
-    fxa_template() { grep -v "^[A-Z ]* USER [A-Z ]*'@FXA_POLICY_USER@'" "$1" | sed "s|@FXA_POLICY_USER@|@FXA_USER@|g"; }
+    fxa_policy_lines() { grep -v "^[A-Z ]* USER [A-Z ]*'@FXA_POLICY_USER@'" | sed "s|@FXA_POLICY_USER@|@FXA_USER@|g"; }
   else
-    fxa_template() { cat "$1"; }
+    fxa_policy_lines() { cat; }
+  fi
+  # with mysql_native_password: the "-- native:" lines instead of the ones after them, as
+  # prepare_environment.sh writes them for an accounts image without mozilla/fxa#21554
+  if [ "${EXTDB_ARGS[0]}" = --mysql-native-password=ON ]; then
+    fxa_template() { sed -e "/^-- native: /{s/^-- native: //;n;d;}" "$1" | fxa_policy_lines; }
+  else
+    fxa_template() { fxa_policy_lines < "$1"; }
   fi
   { [ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && sed -e "s|@SYNC_TOKENSERVER_DATABASE@|${SYNC_TOKENSERVER_DB_NAME}|g" -e "s|@SYNC_TOKENSERVER_USER@|${SYNC_TOKENSERVER_DB_USER}|g" \
         -e "s|@SYNC_TOKENSERVER_PASSWORD@|${SYNC_TOKENSERVER_DB_PASSWORD}|g" -e "s|@SYNC_STORAGE_DATABASE@|${SYNC_STORAGE_DB_NAME}|g" \
@@ -571,6 +676,18 @@ else
   ts_sql() { dc exec -T tokenserver_db mariadb -u"${SYNC_TOKENSERVER_DB_USER}" -p"${SYNC_TOKENSERVER_DB_PASSWORD}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" 2> /dev/null; }
   # the admin UI's own database (the event log, the backup runs), as its user
   admin_sql() { dc exec -T tokenserver_db mariadb -u"${ADMIN_DB_USER}" -p"${ADMIN_DB_PASSWORD}" "${ADMIN_DB_NAME}" -sN -e "$1" 2> /dev/null; }
+fi
+if [ "${FXA_DB}" = mysql ]; then
+  echo "== the accounts on ${FXA_MYSQL_IMAGE}${FXA_MYSQL_ARGS:+ ${FXA_MYSQL_ARGS}}"
+  [[ " ${FXA_MYSQL_ARGS:-} " == *" --mysql-native-password=ON "* ]] && fxa_plugin=mysql_native_password || fxa_plugin=caching_sha2_password
+  # the accounts' user as the server makes it (fxa-db), or database-setup-fxa.sql (your own);
+  # the admin UI's on caching_sha2_password whatever the server's default (fxa-policy)
+  check "$(fxa_sql "SELECT plugin FROM mysql.user WHERE user = '${FXA_MYSQL_USER}' AND host = '%'") $(fxa_sql "SELECT plugin FROM mysql.user WHERE user = 'ffs_admin'")" \
+    "${fxa_plugin} caching_sha2_password" "the accounts' user ${FXA_MYSQL_USER} on ${fxa_plugin}, ffs_admin on caching_sha2_password"
+  if [ "${FXA_DB_CONTAINERS:-1}" = 1 ]; then
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q fxa-db)") $(fxa_sql "SELECT VERSION()" | grep -cE "^${FXA_DB_SERVER#MySQL }")" "${FXA_MYSQL_IMAGE} 1" \
+      "fxa-db runs ${FXA_MYSQL_IMAGE} ($(fxa_sql "SELECT VERSION()"))"
+  fi
 fi
 echo "== the admin UI's user changes the accounts only through the procedures of fxa-policy"
 # (the errors too; not the warning of the MariaDB client about MYSQL_PWD)

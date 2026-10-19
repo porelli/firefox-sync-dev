@@ -1,6 +1,6 @@
 # Kubernetes with Helm
 
-The Helm chart [charts/firefox-sync](/charts/firefox-sync) runs the Sync server of [SYNC.md](SYNC.md) on Kubernetes: syncstorage-rs with its tokenserver, its migrations and the init container of `maxUsers`, the databases (MariaDB, MySQL 8 or PostgreSQL, or [your own server](DATABASES.md#kubernetes)), and optionally the [admin UI](ADMIN.md) and the nightly backups. The same images as docker compose and the Quadlets, the same settings under the names of the chart's values.
+The Helm chart [charts/firefox-sync](/charts/firefox-sync) runs the Sync server of [SYNC.md](SYNC.md) on Kubernetes: syncstorage-rs with its tokenserver, its migrations and the init container of `maxUsers`, the databases (MariaDB, MySQL or PostgreSQL, or [your own server](DATABASES.md#kubernetes)), and optionally the [admin UI](ADMIN.md) and the nightly backups. The same images as docker compose and the Quadlets, the same settings under the names of the chart's values.
 
 Not in the chart yet: the self-hosted Mozilla accounts ([FXA.md](FXA.md)). Firefox signs in with Mozilla's accounts; for your own accounts use docker compose or the Quadlets.
 
@@ -52,10 +52,10 @@ The settings, as in `.env`:
 |---|---|---|
 | `syncDomain` | `SYNC_PUBLIC_URL` | required |
 | `maxUsers` | `SYNC_MAX_USERS` | `"1"` (`initial:N` lets the admin UI manage it) |
-| `database.backend` | `SYNC_DB` (and the PostgreSQL compose file) | `mariadb`; `mysql` (8, 8.4 today) or `postgres` |
+| `database.backend` | `SYNC_DB` (and the PostgreSQL compose file) | `mariadb`; `mysql` or `postgres` |
 | `database.bundled` | `SYNC_DB_CONTAINERS` | `true`; `false`: [your own server](DATABASES.md#kubernetes) |
 | `database.image.postgres` | `SYNC_POSTGRES_IMAGE` | `docker.io/library/postgres:18` |
-| `database.image.mariadb`, `.mysql` | none (compose has them fixed) | `docker.io/library/mariadb:lts`, `docker.io/library/mysql:8` (8.4 today; not `mysql:lts`, MySQL 9) |
+| `database.image.mariadb`, `.mysql` | none for MariaDB (compose has it fixed), `SYNC_MYSQL_IMAGE` | `docker.io/library/mariadb:lts`, `docker.io/library/mysql:lts` (MySQL 9 today) |
 | `fxa.oauthServerUrl`, `fxa.emailDomain` | `FXA_OAUTH_SERVER_URL`, `FXA_EMAIL_DOMAIN` | Mozilla's accounts |
 | `image.repository`, `image.syncstorageTag`, `image.initTag`, `image.adminTag` | `IMAGE_REPOSITORY`, `SYNC_IMAGE_TAG`, `SYNC_INIT_IMAGE_TAG`, the tag of `ADMIN_IMAGE` | `ghcr.io/porelli/firefox-sync`, `latest` |
 | `admin.*` | `ADMIN_*`, `FXA_SMTP_*` | the admin UI off |
@@ -329,7 +329,7 @@ A setting changed in the version that runs, as the admin UI's commands do: `--re
 The Sync server stops, then starts again with its migrations and init container first (`strategy: Recreate`): a minute without Sync, which Firefox retries. The generated secrets are read back; never change `SYNC_MASTER_SECRET` or `METRICS_HASH_SECRET` in your `existingSecret` (every Firefox would have to sign in again), nor a database password the server already has.
 
 - **The images.** `image.syncstorageTag`, `image.initTag` and `image.adminTag` follow `latest`, published here only after the tests passed ([SYNC.md](SYNC.md#upgrades)). With `image.pullPolicy: IfNotPresent` (the default) a node that has `latest` does not pull a newer one: pin the tags and change them on upgrade, or set `image.pullPolicy: Always` and `kubectl rollout restart deploy/ffs-firefox-sync-syncstorage` (the admin UI: `deploy/ffs-firefox-sync-admin`) to take the newest.
-- **The database images** (`database.image.<backend>`). `mariadb:lts` upgrades its data at the first start on a new release (`MARIADB_AUTO_UPGRADE`), with no way back but a backup. `postgres:18` pins the major: the official image keeps its data at `/var/lib/postgresql/<major>/docker` and refuses to start on an older major's, so a newer major needs a dump and restore ([Restoring](#restoring)) or `pg_upgrade` ([DATABASES.md](DATABASES.md#another-postgresql-major)). With your own server, `database.image.<backend>` is only the backups' client: `pg_dump` must be at least the server's major.
+- **The database images** (`database.image.<backend>`). `mariadb:lts` upgrades its data at the first start on a new release (`MARIADB_AUTO_UPGRADE`), with no way back but a backup; `mysql:lts` too, when it moves to MySQL's next long-term major (the bundled MySQL's users are on `caching_sha2_password`, which every major has): pin a major (`docker.io/library/mysql:9`) to choose when. `postgres:18` pins the major: the official image keeps its data at `/var/lib/postgresql/<major>/docker` and refuses to start on an older major's, so a newer major needs a dump and restore ([Restoring](#restoring)) or `pg_upgrade` ([DATABASES.md](DATABASES.md#another-postgresql-major)). With your own server, `database.image.<backend>` is only the backups' client: `pg_dump` must be at least the server's major.
 - **The volumes of the database servers** keep their size and storage class: [Database volumes](#database-volumes).
 - **existingSecret**: a key a new chart version needs (its release notes say so; `ADMIN_DB_PASSWORD` and `POSTGRES_SYNC_PASSWORD` came during the pre-releases of 0.1.0) goes into it before the upgrade, or the pods wait in `CreateContainerConfigError`. The chart's own Secret gets it by itself.
 
@@ -348,7 +348,7 @@ The Sync server stops, then starts again with its migrations and init container 
 - `CreateContainerConfigError`: a key missing from your `existingSecret`, see [existingSecret](#existingsecret).
 - `helm install` fails with `firefox-sync: ...` before anything starts: the values are refused (a release name too long, `database.bundled=false` without `database.external.host` or `existingSecret`, the admin UI's Ingress on the Sync server's host...). The message says what to set.
 - `413 Request Entity Too Large` in `about:sync-log`: the body size of the Ingress, see [Ingress](#ingress).
-- The bundled MySQL in `CrashLoopBackOff` on kind or k3s, on an Ubuntu host with `mysql-server` installed: the host's AppArmor profile for `/usr/sbin/mysqld` also confines the `mysqld` of the `mysql:8` image, in pods that run unconfined. It denies `/etc/my.cnf`, `/usr/share/mysql-8.4` and the init file of the admin UI's users: the first start aborts half-way and every next one finds no `mysql.user`. Disable that profile (the host's own MySQL then runs unconfined too), then delete the PVC of the half-made database:
+- The bundled MySQL in `CrashLoopBackOff` on kind or k3s, on an Ubuntu host with `mysql-server` installed: the host's AppArmor profile for `/usr/sbin/mysqld` also confines the `mysqld` of the `mysql` image, in pods that run unconfined. It denies `/etc/my.cnf`, `/usr/share/mysql-8.4` and the init file of the admin UI's users: the first start aborts half-way and every next one finds no `mysql.user`. Disable that profile (the host's own MySQL then runs unconfined too), then delete the PVC of the half-made database:
 
     ```bash
     sudo ln -s /etc/apparmor.d/usr.sbin.mysqld /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld

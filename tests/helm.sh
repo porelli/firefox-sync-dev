@@ -150,7 +150,7 @@ lint() {
     fi
   done
   [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:18 ]] || fail "database.image.postgres is not docker.io/library/postgres:18 by default"
-  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:8, postgres:18), empty refused"
+  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:lts, postgres:18), empty refused"
 
   # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
@@ -179,7 +179,7 @@ lint() {
   names=""
   for backend in mariadb mysql postgres; do
     image=docker.io/library/mariadb:lts
-    [[ ${backend} == mysql ]] && image=docker.io/library/mysql:8
+    [[ ${backend} == mysql ]] && image=docker.io/library/mysql:lts
     [[ ${backend} == postgres ]] && image=docker.io/library/postgres:18
     docs=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
       --set backup.enabled=true | manifests)
@@ -788,7 +788,7 @@ e2e() {
   fi
   # A host with Ubuntu's mysql-server (the GitHub runners) has an AppArmor profile for
   # /usr/sbin/mysqld, and kind's pods run unconfined: the profile then takes the mysqld of the
-  # mysql:8 image too (docker's containers, in docker-default, are not). It denies /etc/my.cnf,
+  # mysql image too (docker's containers, in docker-default, are not). It denies /etc/my.cnf,
   # /usr/share/mysql-8.4 and the init file of admin-user.sh (/run/ffs-admin, errno 13): the
   # first start aborts half-way and every next one finds no mysql.user (CrashLoopBackOff)
   if [[ ${backend} == mysql && -e /etc/apparmor.d/usr.sbin.mysqld && ! -e /etc/apparmor.d/disable/usr.sbin.mysqld \
@@ -1438,8 +1438,8 @@ start_extdb() {
 extdb_server() {
   local name=$1 image port data env args probe
   if [[ "${BACKEND}" == mysql ]]; then
-    # binary logging on (MySQL 8's default): the trigger needs log_bin_trust_function_creators
-    image=mysql:8 port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
+    # binary logging on (MySQL's default): the trigger needs log_bin_trust_function_creators
+    image=mysql:lts port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
     probe='mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent'
   else
     image=postgres:18 port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'

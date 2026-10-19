@@ -141,11 +141,13 @@ render_sync_sql() {
     fi
 }
 
-# MariaDB 12 and later (FXA_MARIADB_IMAGE=mariadb:lts, the default) need accounts images with
-# mozilla/fxa#21494 (upstream-patches.yml): ours list it in their label
+# Accounts images and the upstream pull requests of upstream-patches.yml they need: MariaDB 12
+# and later (FXA_MARIADB_IMAGE=mariadb:lts, the default) need mozilla/fxa#21494, MySQL 9
+# (FXA_MYSQL_IMAGE=mysql:lts, the default) and MySQL without mysql_native_password need
+# mozilla/fxa#21554 (the mysql2 driver). Ours list what they have in their label
 # org.firefox-sync.upstream-patches, Mozilla's (docker.io/mozilla/fxa-mono) and ours built
-# before don't have it. The local image first (what starts), then the registry (docker buildx
-# imagetools or skopeo); only a warning. Here and not in the admin UI, which cannot inspect images
+# before don't have them. The local image first (what starts), then the registry (docker buildx
+# imagetools or skopeo). Here and not in the admin UI, which cannot inspect images
 image_label() { grep -o '"org\.firefox-sync\.upstream-patches": *"[^"]*"' | head -n 1 | sed 's/.*: *"//; s/"$//'; }
 fxa_image_patches_local() {
     local image=${1} runtime out
@@ -161,9 +163,43 @@ fxa_image_patches_remote() {
         || out=$(skopeo inspect "docker://${image}" 2> /dev/null) || return 1
     printf '%s' "${out}" | image_label
 }
-has_fxa_patch() { case " ${1} " in *" mozilla/fxa#21494@"*) return 0 ;; esac; return 1; }
+# has_fxa_patch <pull request> <label>: e.g. mozilla/fxa#21494 in "mozilla/fxa#21494@517651a..aa0b178 ..."
+has_fxa_patch() { case " ${2} " in *" ${1}@"*) return 0 ;; esac; return 1; }
+# fxa_image_has <pull request>: whether the accounts image of .env (FXA_IMAGE:FXA_VERSION) has
+# it: 0 yes, 1 no, 2 not known (no local copy and no answer of the registry). An older local
+# copy without it while the registry's has it: yes, and FXA_IMAGE_PULL=yes (pull before starting).
+# Asked once per image and pull request (FXA_IMAGE_ANSWERS)
+FXA_IMAGE_ANSWERS=""
+fxa_image_has() {
+    local pr=${1} image patches remote rc answer
+    image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
+    for answer in ${FXA_IMAGE_ANSWERS}; do
+        [ "${answer%=*}" = "${image}|${pr}" ] || continue
+        rc=${answer##*=}; FXA_IMAGE_PULL=${rc#?}; return "${rc%"${FXA_IMAGE_PULL}"}"
+    done
+    FXA_IMAGE_PULL=""
+    case "${image}" in
+        mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*) rc=1 ;;
+        *)
+            if patches=$(fxa_image_patches_local "${image}"); then
+                rc=1
+                if has_fxa_patch "${pr}" "${patches}"; then
+                    rc=0
+                # an older local copy: the registry's may have it, then a pull is enough
+                elif remote=$(fxa_image_patches_remote "${image}") && has_fxa_patch "${pr}" "${remote}"; then
+                    rc=0 FXA_IMAGE_PULL=yes
+                fi
+            elif patches=$(fxa_image_patches_remote "${image}"); then
+                has_fxa_patch "${pr}" "${patches}" && rc=0 || rc=1
+            else
+                rc=2
+            fi ;;
+    esac
+    FXA_IMAGE_ANSWERS="${FXA_IMAGE_ANSWERS} ${image}|${pr}=${rc}${FXA_IMAGE_PULL}"
+    return "${rc}"
+}
 fxa_mariadb_image_check() {
-    local db_image image patches remote
+    local db_image image rc
     [ "$(env_value FXA_DB)" = mariadb ] || return 0
     db_image=$(env_value FXA_MARIADB_IMAGE)
     db_image=${db_image:-mariadb:lts}
@@ -172,26 +208,21 @@ fxa_mariadb_image_check() {
         case "${db_image##*:}" in 10|10.*|11|11.*) return 0 ;; esac
     fi
     image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
-    case "${image}" in
-        mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*) patches="" ;;
-        *)
-            if patches=$(fxa_image_patches_local "${image}"); then
-                has_fxa_patch "${patches}" && return 0
-                # an older local copy: the registry's may have it, then a pull is enough
-                if remote=$(fxa_image_patches_remote "${image}") && has_fxa_patch "${remote}"; then
-                    echo "NOTE: your local ${image} does not have mozilla/fxa#21494, needed on MariaDB 12,"
-                    echo "  the registry's has it: pull it before starting (docker compose pull, podman pull)"
-                    echo ""
-                    return 0
-                fi
-            elif ! patches=$(fxa_image_patches_remote "${image}"); then
-                echo "NOTE: could not read the labels of ${image}: MariaDB 12 needs an accounts image with mozilla/fxa#21494"
-                echo "  (label org.firefox-sync.upstream-patches, see FXA.md#mysql-or-mariadb)"
-                echo ""
-                return 0
-            fi ;;
-    esac
-    has_fxa_patch "${patches}" && return 0
+    fxa_image_has mozilla/fxa#21494; rc=$?
+    if [ "${rc}" = 0 ]; then
+        if [ -n "${FXA_IMAGE_PULL}" ]; then
+            echo "NOTE: your local ${image} does not have mozilla/fxa#21494, needed on MariaDB 12,"
+            echo "  the registry's has it: pull it before starting (docker compose pull, podman pull)"
+            echo ""
+        fi
+        return 0
+    fi
+    if [ "${rc}" = 2 ]; then
+        echo "NOTE: could not read the labels of ${image}: MariaDB 12 needs an accounts image with mozilla/fxa#21494"
+        echo "  (label org.firefox-sync.upstream-patches, see FXA.md#mysql-or-mariadb)"
+        echo ""
+        return 0
+    fi
     if [ "$(env_value FXA_DB_CONTAINERS)" = 0 ]; then
         echo "WARNING: if your MariaDB server is 12 or later, the accounts need an image with mozilla/fxa#21494,"
     else
@@ -202,6 +233,62 @@ fxa_mariadb_image_check() {
     echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11 (FXA_MARIADB_IMAGE=mariadb:11), see FXA.md#mysql-or-mariadb"
     echo ""
 }
+# the options of fxa-db (FXA_MYSQL_ARGS) for accounts images without mozilla/fxa#21554: their
+# driver speaks mysql_native_password only, which MySQL 8.4 has off by default and MySQL 9 not
+# at all (mysqld 9 refuses these options and does not start)
+FXA_MYSQL_NATIVE_ARGS="--mysql-native-password=ON --authentication-policy=mysql_native_password"
+# a MySQL image of major 8 (mysql:8, mysql:8.4, a registry before it)
+mysql_8() { case "${1##*:}" in 8|8.*) return 0 ;; esac; return 1; }
+# the accounts on MySQL in fxa-db: the image of .env, its options and the accounts image agree
+fxa_mysql_image_check() {
+    local db_image args image rc native=no
+    [ "$(env_value FXA_DB)" != mariadb ] || return 0
+    [ "$(env_value FXA_DB_CONTAINERS)" != 0 ] || return 0
+    db_image=$(env_plain FXA_MYSQL_IMAGE); db_image=${db_image:-mysql:lts}
+    args=$(env_plain FXA_MYSQL_ARGS)
+    case " ${args} " in *" --mysql-native-password=ON "*) native=yes ;; esac
+    image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
+    if ! mysql_8 "${db_image}" && [ "${native}" = yes ]; then
+        echo "WARNING: FXA_MYSQL_ARGS has --mysql-native-password=ON, which MySQL ${db_image##*:} (FXA_MYSQL_IMAGE=${db_image})"
+        echo "  refuses: fxa-db would not start. On MySQL 9 the accounts need an image with mozilla/fxa#21554 and"
+        echo "  their users on caching_sha2_password first: MIGRATING.md#mysql-lts (or FXA_MYSQL_IMAGE=mysql:8)"
+        echo ""
+        return 0
+    fi
+    fxa_image_has mozilla/fxa#21554; rc=$?
+    if [ "${rc}" = 0 ]; then
+        if [ -n "${FXA_IMAGE_PULL}" ]; then
+            echo "NOTE: your local ${image} does not have mozilla/fxa#21554, needed on MySQL ${db_image##*:},"
+            echo "  the registry's has it: pull it before starting (docker compose pull, podman pull)"
+            echo ""
+        elif [ "${native}" = yes ] && [ "${UPGRADING:-}" = yes ]; then
+            echo "NOTE: ${image} has mozilla/fxa#21554 (caching_sha2_password): the accounts database can move"
+            echo "  from MySQL 8 with mysql_native_password to MySQL lts, when you choose: MIGRATING.md#mysql-lts"
+            echo ""
+        fi
+        return 0
+    fi
+    # without it: only mysql_native_password, on MySQL 8 with the options
+    mysql_8 "${db_image}" && [ "${native}" = yes ] && return 0
+    if [ "${rc}" = 2 ]; then
+        echo "NOTE: could not read the labels of ${image}: MySQL ${db_image##*:} without mysql_native_password"
+        echo "  needs an accounts image with mozilla/fxa#21554 (label org.firefox-sync.upstream-patches, FXA.md#mysql-or-mariadb)"
+        echo ""
+        return 0
+    fi
+    echo "WARNING: the accounts on MySQL ${db_image##*:} (FXA_MYSQL_IMAGE=${db_image}${args:+, FXA_MYSQL_ARGS=${args}}) need an image"
+    echo "  with mozilla/fxa#21554, which ${image} does not have (Mozilla's images, or ours built before it):"
+    echo "  they cannot log in. Use our images (FXA_IMAGE=ghcr.io/porelli/firefox-sync, FXA_VERSION=fxa-mono-latest)"
+    echo "  or FXA_MYSQL_IMAGE=mysql:8 with FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}"
+    echo "  (on a new database only: MySQL 8 cannot open MySQL 9's data), see FXA.md#mysql-or-mariadb"
+    echo ""
+}
+# the accounts of this install self-hosted (prepare_environment.sh wrote their passwords)
+fxa_installed() {
+    local pw
+    pw=$(env_plain FXA_MYSQL_PASSWORD)
+    [ -n "${pw}" ] && [[ "${pw}" != *"<REPLACE_WITH_"* ]]
+}
 
 # ./prepare_environment.sh --upgrade: the .env of an install that runs (docker compose), given
 # the settings of this release that need a value of their own (MIGRATING.md), nothing else
@@ -210,7 +297,9 @@ fxa_mariadb_image_check() {
 # container (SYNC_POSTGRES_APP_USER, SYNC_POSTGRES_APP_PASSWORD), and in COMPOSE_FILE the new name of
 # docker-compose.postgres.yml (docker-compose.sync-postgres.yml), and with the accounts on
 # MariaDB FXA_MARIADB_IMAGE=mariadb:11, the major they run (the compose default is now
-# mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, FXA.md). A value already set is kept; the
+# mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, FXA.md), on MySQL
+# FXA_MYSQL_IMAGE=mysql:8 and FXA_MYSQL_ARGS with mysql_native_password, Sync on MySQL
+# SYNC_MYSQL_IMAGE=mysql:8 (the default is now mysql:lts, 9; MIGRATING.md#mysql-lts). A value already set is kept; the
 # old file is kept as .env.before-upgrade. With your own database server database-setup.sql
 # is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
 # First the settings of RENAMED_SETTINGS get their new names, their values as they are.
@@ -336,6 +425,24 @@ upgrade_env() {
         echo "FXA_MARIADB_IMAGE=mariadb:11: the accounts database stays on MariaDB 11. To move it to"
         echo "  MariaDB lts, 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
     fi
+    # the accounts on MySQL, from before FXA_MYSQL_IMAGE: on 8 with mysql_native_password, they
+    # stay there. Unset it is now mysql:lts (9), which would upgrade their data at the next start
+    # (fxa-db refuses, db/mysql/keep-major.sh), and where their users, created with
+    # mysql_native_password, could not log in at all. Your own server: the backups' client
+    if [ "$(env_value FXA_DB)" != mariadb ] && fxa_installed && ! env_has FXA_MYSQL_IMAGE; then
+        set_value FXA_MYSQL_IMAGE mysql:8
+        env_has FXA_MYSQL_ARGS || set_value FXA_MYSQL_ARGS "${FXA_MYSQL_NATIVE_ARGS}"
+        echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
+        echo "  stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9 (its users first, a backup, no"
+        echo "  way back): MIGRATING.md#mysql-lts"
+    fi
+    # Sync on MySQL containers, from before SYNC_MYSQL_IMAGE: on 8, they stay there (unset it
+    # is now mysql:lts, 9)
+    if [ "$(env_value SYNC_DB)" = mysql ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && ! env_has SYNC_MYSQL_IMAGE; then
+        set_value SYNC_MYSQL_IMAGE mysql:8
+        echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases stay on MySQL 8. To move them to MySQL lts, 9"
+        echo "  (a backup first, there is no way back): MIGRATING.md#mysql-lts"
+    fi
     old_names_in_environment
     if [ "${#changed[@]}" = 0 ]; then
         rm -f "${env_file}.upgrading"
@@ -349,6 +456,7 @@ upgrade_env() {
         echo "Your own database server: run database-setup.sql there first, as its administrator (DATABASES.md)."
     fi
     fxa_mariadb_image_check
+    fxa_installed && UPGRADING=yes fxa_mysql_image_check
     echo "Then: docker compose pull && docker compose up -d"
     exit 0
 }
@@ -390,7 +498,7 @@ read -e -p "Database backend [mariadb/mysql/postgres] [${DEFAULT_DATABASE_BACKEN
 DATABASE_BACKEND=${DATABASE_BACKEND:-${DEFAULT_DATABASE_BACKEND}}
 case "${DATABASE_BACKEND}" in
     mariadb|postgres) SYNC_DB=mariadb ;;
-    # MySQL 8 containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
+    # MySQL containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
     mysql|MySQL) DATABASE_BACKEND=mysql; SYNC_DB=mysql ;;
     *)
         echo "ERROR: unknown database backend '${DATABASE_BACKEND}'"
@@ -538,7 +646,7 @@ if [ "${EXTERNAL_DB}" = "yes" ]; then
     fi
 fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    read -r -e -p "Use an existing MySQL 8 or MariaDB 11.4+ server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See DATABASES.md (y/N): " EXTERNAL_FXA_DB
+    read -r -e -p "Use an existing MySQL 8.4/9 or MariaDB 11.4+ server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See DATABASES.md (y/N): " EXTERNAL_FXA_DB
     case "${EXTERNAL_FXA_DB}" in y|Y|yes) EXTERNAL_FXA_DB=yes ;; *) EXTERNAL_FXA_DB=no ;; esac
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Accounts database server host${DB_HOST:+ [${DB_HOST}]}: " FXA_MYSQL_HOST
@@ -557,7 +665,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Is that server MySQL or MariaDB? (mysql/mariadb) [mysql]: " FXA_DB
     else
-        read -r -e -p "Accounts database: mysql (MySQL 8, what Mozilla supports) or mariadb (MariaDB lts, see FXA.md) [mysql]: " FXA_DB
+        read -r -e -p "Accounts database: mysql (MySQL lts, what Mozilla runs) or mariadb (MariaDB lts, see FXA.md) [mysql]: " FXA_DB
     fi
     case "${FXA_DB}" in
         ""|mysql|MySQL) FXA_DB=mysql ;;
@@ -654,28 +762,43 @@ SYNC_METRICS_HASH_SECRET=$(generate_random_string 24)
 ADMIN_PASSWORD=$(generate_random_string 24)
 ADMIN_DB_PASSWORD=$(generate_random_string 32)
 
-# the accounts database of an install on MariaDB, its volume left (the .env gone, or for
-# MySQL): "<runtime> volume <name>" (compose: <project>_fxa-db-mariadb, Quadlets: firefox-sync-fxa-db-mariadb)
-fxa_mariadb_volume() {
-    local project runtime volume
+# a database volume of an earlier install (the .env gone, or for another database):
+# "<runtime> volume <name>", for any of the names given (compose: <project>_<name>, Quadlets:
+# firefox-sync-<name>), e.g. db_volume fxa-db-mariadb
+db_volume() {
+    local project runtime volume name
     project=$(basename "${SCRIPT_DIR}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
     for runtime in docker podman; do
         command -v "${runtime}" > /dev/null 2>&1 || continue
-        for volume in "${project}_fxa-db-mariadb" firefox-sync-fxa-db-mariadb; do
-            ${runtime} volume inspect "${volume}" > /dev/null 2>&1 && { echo "${runtime} volume ${volume}"; return 0; }
+        for name in "$@"; do
+            for volume in "${project}_${name}" "firefox-sync-${name}"; do
+                ${runtime} volume inspect "${volume}" > /dev/null 2>&1 && { echo "${runtime} volume ${volume}"; return 0; }
+            done
         done
     done
     return 1
 }
 
-# run again on an install: its databases stay on the PostgreSQL or MariaDB versions they run
+# run again on an install: its databases stay on the PostgreSQL, MariaDB or MySQL versions they run
 PREVIOUS_SYNCSTORAGE_IMAGE="" PREVIOUS_POSTGRES_IMAGE=""
 PREVIOUS_FXA_DB="" PREVIOUS_FXA_MARIADB_IMAGE=""
+PREVIOUS_FXA_MYSQL=no PREVIOUS_FXA_MYSQL_IMAGE="" PREVIOUS_FXA_MYSQL_ARGS=""
+PREVIOUS_SYNC_MYSQL=no PREVIOUS_SYNC_MYSQL_IMAGE=""
 if [ -f "${SCRIPT_DIR}/.env" ]; then
     PREVIOUS_SYNCSTORAGE_IMAGE=$(env_value SYNC_IMAGE)
     PREVIOUS_POSTGRES_IMAGE=$(env_value SYNC_POSTGRES_IMAGE)
     PREVIOUS_FXA_DB=$(env_value FXA_DB)
     PREVIOUS_FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
+    # the accounts on MySQL (FXA_DB=mysql is also in .env-example: with their passwords)
+    if [ "${PREVIOUS_FXA_DB}" != mariadb ] && fxa_installed; then
+        PREVIOUS_FXA_MYSQL=yes
+        PREVIOUS_FXA_MYSQL_IMAGE=$(env_plain FXA_MYSQL_IMAGE)
+        PREVIOUS_FXA_MYSQL_ARGS=$(env_plain FXA_MYSQL_ARGS)
+    fi
+    if [ "$(env_value SYNC_DB)" = mysql ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ]; then
+        PREVIOUS_SYNC_MYSQL=yes
+        PREVIOUS_SYNC_MYSQL_IMAGE=$(env_plain SYNC_MYSQL_IMAGE)
+    fi
 fi
 
 # prepare .env file
@@ -701,6 +824,17 @@ if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
     # with the accounts, set below with theirs
     [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml|"
+    # MySQL lts for new installs (9 today), written out (also the default when unset). One that
+    # ran MySQL before SYNC_MYSQL_IMAGE, or whose MySQL volumes are still there, runs 8: pinned,
+    # so that its data does not move to 9 by itself
+    SYNC_MYSQL_IMAGE=mysql:lts
+    if [ "${PREVIOUS_SYNC_MYSQL}" = yes ]; then
+        SYNC_MYSQL_IMAGE=${PREVIOUS_SYNC_MYSQL_IMAGE:-mysql:8}
+        [ -n "${PREVIOUS_SYNC_MYSQL_IMAGE}" ] || PINNED_SYNC_MYSQL=yes
+    elif SYNC_MYSQL_VOLUME=$(db_volume syncstorage-db-mysql tokenserver-db-mysql); then
+        SYNC_MYSQL_IMAGE=mysql:8
+    fi
+    apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=$(sed_escape "${SYNC_MYSQL_IMAGE}")|"
 fi
 if [ "${EXTERNAL_DB}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|"
@@ -763,10 +897,34 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         if [ "${PREVIOUS_FXA_DB}" = "mariadb" ]; then
             FXA_MARIADB_IMAGE=${PREVIOUS_FXA_MARIADB_IMAGE:-mariadb:11}
             [ -n "${PREVIOUS_FXA_MARIADB_IMAGE}" ] || PINNED_FXA_MARIADB=yes
-        elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MARIADB_VOLUME=$(fxa_mariadb_volume); then
+        elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MARIADB_VOLUME=$(db_volume fxa-db-mariadb); then
             FXA_MARIADB_IMAGE=mariadb:11
         fi
         apply_sed ${SCRIPT_DIR}/.env "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=$(sed_escape "${FXA_MARIADB_IMAGE}")|"
+    fi
+    # MySQL lts for new installs (9 today), written out (also the default when unset), when the
+    # accounts image has mozilla/fxa#21554; else MySQL 8 with mysql_native_password, the only
+    # authentication of the images without it (Mozilla's, ours from before). One that ran MySQL
+    # before FXA_MYSQL_IMAGE, or whose fxa-db volume is still there, runs 8 like that: pinned,
+    # its users are on mysql_native_password (MIGRATING.md#mysql-lts). Your own server: the
+    # image is the backups' client, and without the patch the accounts' user is created with
+    # mysql_native_password in database-setup-fxa.sql
+    if [ "${FXA_DB}" = "mysql" ]; then
+        fxa_image_has mozilla/fxa#21554; FXA_MYSQL2=$?
+        FXA_MYSQL_IMAGE=mysql:lts FXA_MYSQL_ARGS=""
+        if [ "${PREVIOUS_FXA_MYSQL}" = yes ]; then
+            if [ -n "${PREVIOUS_FXA_MYSQL_IMAGE}" ]; then
+                FXA_MYSQL_IMAGE=${PREVIOUS_FXA_MYSQL_IMAGE} FXA_MYSQL_ARGS=${PREVIOUS_FXA_MYSQL_ARGS}
+            else
+                FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS} PINNED_FXA_MYSQL=yes
+            fi
+        elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MYSQL_VOLUME=$(db_volume fxa-db); then
+            FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}
+        elif [ "${FXA_MYSQL2}" != 0 ]; then
+            FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}
+        fi
+        apply_sed ${SCRIPT_DIR}/.env "s|^# FXA_MYSQL_IMAGE=.*|FXA_MYSQL_IMAGE=$(sed_escape "${FXA_MYSQL_IMAGE}")|"
+        [ -z "${FXA_MYSQL_ARGS}" ] || apply_sed ${SCRIPT_DIR}/.env "s|^# FXA_MYSQL_ARGS=.*|FXA_MYSQL_ARGS=$(sed_escape "${FXA_MYSQL_ARGS}")|"
     fi
     if [ -n "${ADMIN_ALLOWED_USERS:-}" ]; then
         # the admin UI signs in with these accounts: a public OAuth client (PKCE, no secret:
@@ -840,10 +998,18 @@ fi
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
 [ "${EXTERNAL_DB}" = "yes" ] && render_sync_sql "${DATABASE_BACKEND}"
 if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
-    render_sql ${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql ${SCRIPT_DIR}/database-setup-fxa.sql \
+    fxa_template=${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql
+    # MySQL and an accounts image without mozilla/fxa#21554: their user on mysql_native_password
+    # (the commented lines of fxa-mysql.sql instead of those after them)
+    if [ "${FXA_DB}" = mysql ] && [ "${FXA_MYSQL2}" != 0 ]; then
+        fxa_template=${SCRIPT_DIR}/database-setup-fxa.native
+        sed -e "/^-- native: /{s/^-- native: //;n;d;}" "${SCRIPT_DIR}/db/mysql/fxa-mysql.sql" > "${fxa_template}"
+    fi
+    render_sql "${fxa_template}" ${SCRIPT_DIR}/database-setup-fxa.sql \
         FXA_USER="$(env_value FXA_MYSQL_USER)" FXA_PASSWORD="$(env_value FXA_MYSQL_PASSWORD)" \
         FXA_POLICY_USER="$(env_value FXA_MYSQL_POLICY_USER)" FXA_POLICY_PASSWORD="$(env_value FXA_MYSQL_POLICY_PASSWORD)" \
         FXA_ADMIN_PASSWORD="$(env_value FXA_ADMIN_DB_PASSWORD)"
+    [ "${fxa_template}" = "${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql" ] || rm -f "${fxa_template}"
 fi
 
 # prepare nginx example
@@ -878,20 +1044,29 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         export "${key}=${value}"
     done < ${SCRIPT_DIR}/.env
     mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
-    # from .env only (not this shell's environment); unset: lts, as docker-compose.fxa-mariadb.yml.
-    # podman needs the registry in the image name (compose is fine with mariadb:lts): a first
-    # part with a dot or a port, or localhost, is one
-    FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
-    FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:lts}
-    first=${FXA_MARIADB_IMAGE%%/*}
-    if [ "${first}" != "${FXA_MARIADB_IMAGE}" ] && { [[ "${first}" == *[.:]* ]] || [ "${first}" = localhost ]; }; then
-        :
-    elif [[ "${FXA_MARIADB_IMAGE}" == */* ]]; then
-        FXA_MARIADB_IMAGE=docker.io/${FXA_MARIADB_IMAGE}
-    else
-        FXA_MARIADB_IMAGE=docker.io/library/${FXA_MARIADB_IMAGE}
-    fi
-    export FXA_MARIADB_IMAGE
+    # the database images from .env only (not this shell's environment); unset: lts, as the
+    # compose files. podman needs the registry in the image name (compose is fine with
+    # mariadb:lts): a first part with a dot or a port, or localhost, is one
+    podman_image() {
+        local image first
+        image=$(env_plain "${1}")
+        image=${image:-${2}}
+        first=${image%%/*}
+        if [ "${first}" != "${image}" ] && { [[ "${first}" == *[.:]* ]] || [ "${first}" = localhost ]; }; then
+            :
+        elif [[ "${image}" == */* ]]; then
+            image=docker.io/${image}
+        else
+            image=docker.io/library/${image}
+        fi
+        export "${1}=${image}"
+    }
+    podman_image FXA_MARIADB_IMAGE mariadb:lts
+    podman_image FXA_MYSQL_IMAGE mysql:lts
+    podman_image SYNC_MYSQL_IMAGE mysql:lts
+    # fxa-db's extra options, none when not set
+    FXA_MYSQL_ARGS=$(env_plain FXA_MYSQL_ARGS)
+    export FXA_MYSQL_ARGS
 
     # the database containers: the .env names (syncstorage_db) are compose's, here the
     # containers are reached by their names. Your own server: none of them
@@ -1021,7 +1196,12 @@ if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         echo "  MariaDB 11.4 or later (12: with our accounts images, FXA.md), with binary logging: log_bin_trust_function_creators=ON"
     else
         echo "  mysql -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
-        echo "  MySQL 8.4 started with mysql_native_password=ON and log_bin_trust_function_creators=ON"
+        if [ "${FXA_MYSQL2}" = 0 ]; then
+            echo "  MySQL 8.4 or 9 with log_bin_trust_function_creators=ON"
+        else
+            echo "  MySQL 8.4 started with mysql_native_password=ON and log_bin_trust_function_creators=ON: the accounts"
+            echo "  image has no mozilla/fxa#21554, its driver speaks mysql_native_password only (FXA.md#mysql-or-mariadb)"
+        fi
     fi
 fi
 [ "${EXTERNAL_DB}" = "yes" ] || [ "${EXTERNAL_FXA_DB}" = "yes" ] && echo ""
@@ -1035,7 +1215,36 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         echo "  its data stays on MariaDB 11. Already on 12: set FXA_MARIADB_IMAGE=mariadb:lts. A new install: remove the volume"
         echo "  (its accounts are lost) and run this again. Moving it to lts: FXA.md#moving-to-a-newer-mariadb"
     fi
+    if [ "${PINNED_FXA_MYSQL:-}" = "yes" ]; then
+        echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
+        echo "  of this install stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9: MIGRATING.md#mysql-lts"
+    fi
+    if [ -n "${FXA_MYSQL_VOLUME:-}" ]; then
+        echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: found the accounts database"
+        echo "  of an earlier install (${FXA_MYSQL_VOLUME}), its data stays on MySQL 8 with mysql_native_password."
+        echo "  Already on 9: set FXA_MYSQL_IMAGE=mysql:lts and remove FXA_MYSQL_ARGS. A new install: remove the volume"
+        echo "  (its accounts are lost) and run this again. Moving it to lts: MIGRATING.md#mysql-lts"
+    elif [ "${FXA_DB}" = mysql ] && [ "${EXTERNAL_FXA_DB}" != yes ] && [ "${PREVIOUS_FXA_MYSQL}" != yes ] && [ "${FXA_MYSQL2}" != 0 ]; then
+        if [ "${FXA_MYSQL2}" = 2 ]; then
+            echo "NOTE: could not read the labels of $(env_value FXA_IMAGE):$(env_value FXA_VERSION): MySQL lts (9) needs"
+        else
+            echo "NOTE: $(env_value FXA_IMAGE):$(env_value FXA_VERSION) does not have mozilla/fxa#21554 (Mozilla's images, ours"
+            echo "  built before it), which MySQL lts (9) needs"
+        fi
+        echo "  an accounts image with mozilla/fxa#21554 (the mysql2 driver): fxa-db runs MySQL 8 with mysql_native_password"
+        echo "  (FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}), see FXA.md#mysql-or-mariadb"
+    fi
     fxa_mariadb_image_check
+    [ "${FXA_DB}" = mysql ] && fxa_mysql_image_check
+fi
+if [ "${PINNED_SYNC_MYSQL:-}" = "yes" ]; then
+    echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases of this install stay on MySQL 8. To move them to MySQL lts, 9:"
+    echo "  MIGRATING.md#mysql-lts"
+fi
+if [ -n "${SYNC_MYSQL_VOLUME:-}" ]; then
+    echo "SYNC_MYSQL_IMAGE=mysql:8: found the Sync databases of an earlier install (${SYNC_MYSQL_VOLUME}), their data"
+    echo "  stays on MySQL 8. Already on 9: set SYNC_MYSQL_IMAGE=mysql:lts. A new install: remove the volumes and run"
+    echo "  this again. Moving them to lts: MIGRATING.md#mysql-lts"
 fi
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then

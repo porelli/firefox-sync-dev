@@ -6,8 +6,8 @@ After=firefox-sync-network.service firefox-sync-fxa-db.service
 Before=firefox-sync-backup.service
 
 [Container]
-# the client of the accounts database: mysqldump
-Image=docker.io/library/mysql:8
+# the client of the accounts database: mysqldump, the image of fxa-db
+Image=%FXA_MYSQL_IMAGE%
 ContainerName=firefox-sync-backup-fxa
 Network=firefox-sync-network.network
 Volume=firefox-sync-backups.volume:/backups

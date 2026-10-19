@@ -2,7 +2,7 @@
 # End-to-end test of the firefox-sync stack (docker compose), isolated from anything
 # else running on the host: own compose project, loopback-only port, own volumes.
 #
-# Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL 8
+# Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL (SYNC_MYSQL_IMAGE)
 # Runs with the admin UI and the backups (COMPOSE_PROFILES=admin,backup, BACKUP_KEEP=1; with
 # EXTERNAL_DB=1 the admin UI only, your own backups record their runs), with Mozilla's accounts
 # (mock): Sync part only. At the end a backup is restored as ADMIN.md#restoring says, into
@@ -25,11 +25,15 @@
 #                   10.231.4.0/24 SYNC_DB=mysql);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
 #                   gateway (the host) at .1 is not
-#   SYNC_DB         mysql: the mysql backend on MySQL 8 containers (docker-compose.sync-mysql.yml)
+#   SYNC_DB         mysql: the mysql backend on MySQL containers (docker-compose.sync-mysql.yml)
 #                   instead of MariaDB (default mariadb); own project, PORT 28654 and TEST_SUBNET 10.231.4.0/24
+#   SYNC_MYSQL_IMAGE the MySQL of SYNC_DB=mysql and of EXTERNAL_DB=1 with mysql (default: mysql:lts);
+#                   mysql:8 as the installs from before: SYNC_DB=mysql then also checks that
+#                   without it (the default, lts) the containers refuse to upgrade the data, and that
+#                   --upgrade pins it
 #   EXTERNAL_DB     set to 1 for a database server outside the stack (SYNC_DB_CONTAINERS=0, DATABASES.md),
-#                   created with only the grants of db/<engine>/sync.sql: MySQL 8 with binary logging
-#                   for mysql, a PostgreSQL 18 owner that is no superuser for postgres; on its own
+#                   created with only the grants of db/<engine>/sync.sql: MySQL with binary logging
+#                   for mysql, a PostgreSQL owner that is no superuser for postgres; on its own
 #                   network (EXTDB_SUBNET, default: 10.232.1.0/24 mysql, 10.232.2.0/24 postgres)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the install from before below runs its compose files, its admin UI and its
@@ -63,15 +67,17 @@ case ${BACKEND}:${SYNC_DB} in
   mysql:mariadb)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28651 + SLOT_PORTS))}; NET=$((1 + SLOT_NET)) ;;
   postgres:mariadb) COMPOSE=${CODE}/docker-compose.sync-postgres.yml; PORT=${PORT:-$((28652 + SLOT_PORTS))}; NET=$((2 + SLOT_NET)) ;;
   # (28653 is tests/e2e-fxa.sh's)
-  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28654 + SLOT_PORTS))}; NET=$((4 + SLOT_NET)); PROJECT=${PROJECT}-mysql84 ;;
+  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28654 + SLOT_PORTS))}; NET=$((4 + SLOT_NET)); PROJECT=${PROJECT}-mysqldb ;;
   postgres:*) echo "SYNC_DB is for the mysql backend"; exit 2 ;;
   mysql:*) echo "SYNC_DB: mariadb or mysql"; exit 2 ;;
   *) echo "unknown backend ${BACKEND}"; exit 2 ;;
 esac
 PROJECT=${PROJECT}${SLOT_SUFFIX}
 if [ "${SYNC_DB}" = mysql ] && [ -n "${EXTERNAL_DB:-}" ]; then
-  echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL 8"; exit 2
+  echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL (SYNC_MYSQL_IMAGE)"; exit 2
 fi
+SYNC_MYSQL_IMAGE=${SYNC_MYSQL_IMAGE:-mysql:lts} MYSQL_TESTED=${SYNC_MYSQL_IMAGE:-mysql:lts}
+case "${SYNC_MYSQL_IMAGE##*:}" in 8|8.*) MYSQL_PINNED=8 ;; *) MYSQL_PINNED="" ;; esac
 # the admin UI trusts the X-Test-Email header of the containers (tests/docker-compose.test.yml),
 # not of the gateway: what comes from the host
 export TEST_SUBNET=${TEST_SUBNET:-10.231.${NET}.0/24}
@@ -121,6 +127,8 @@ DB_CLIENT=mariadb
 if [ "${SYNC_DB}" = mysql ]; then
   COMPOSE_EXTRA=(-f "${CODE}/docker-compose.sync-mysql.yml")
   DATABASE_SERVER=MySQL DB_CLIENT=mysql
+  # written out, as prepare_environment.sh does
+  sed -i "s|^# SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=${SYNC_MYSQL_IMAGE}|" "${ENV_FILE}"
 fi
 if [ -n "${EXTERNAL_DB:-}" ]; then
   # a server elsewhere: its own container and network, reached by name
@@ -331,7 +339,7 @@ start_extdb() {
   if [ "${BACKEND}" = mysql ]; then
     # binary logging is on by default: the trigger needs log_bin_trust_function_creators
     docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/mysql \
-      -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" mysql:8 --log-bin-trust-function-creators=ON > /dev/null || return 1
+      -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" "${SYNC_MYSQL_IMAGE}" --log-bin-trust-function-creators=ON > /dev/null || return 1
   else
     docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/postgresql \
       -e POSTGRES_PASSWORD="${EXTDB_ROOT}" postgres:18 > /dev/null || return 1
@@ -392,7 +400,7 @@ teardown() {
     docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${INIT_TAG}" > /dev/null 2>&1
     [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
     [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
-    [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mysql:8' && docker rmi mysql:8 > /dev/null 2>&1
+    [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx "${SYNC_MYSQL_IMAGE}" && docker rmi "${SYNC_MYSQL_IMAGE}" > /dev/null 2>&1
     docker rmi busybox > /dev/null 2>&1
   fi
   rm -rf "${WORK}"
@@ -407,7 +415,7 @@ echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
 
 if [ -n "${EXTDB}" ]; then
-  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo mysql:8 || echo postgres:18))"
+  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo "${SYNC_MYSQL_IMAGE}" || echo postgres:18))"
   start_extdb
   check "$?" 0 "external database server with the databases and users of db/${BACKEND}/sync.sql"
 fi
@@ -523,9 +531,13 @@ check "${both_said}" 1 "it names them, and what to run"
 [ "${both_said}" = 1 ] || { tail -5 <<< "${both_logs}"; tail -5 "${WORK}/both.log"; }
 echo "== ./prepare_environment.sh --upgrade renames the old setting names"
 UP=${WORK}/upgrade
+# SYNC_DB=mysql on mysql:8: as an install from before SYNC_MYSQL_IMAGE, which --upgrade pins
+[ "${SYNC_DB}" = mysql ] && [ -n "${MYSQL_PINNED}" ] && sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"
 mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
 (cd "${UP}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
 check "$?" 0 "./prepare_environment.sh --upgrade" || cat "${WORK}/upgrade.log"
+[ "${SYNC_DB}" = mysql ] && [ -n "${MYSQL_PINNED}" ] && check "$(grep '^SYNC_MYSQL_IMAGE=' "${UP}/.env") $(grep -c 'the Sync databases stay on MySQL 8' "${WORK}/upgrade.log")" \
+  "SYNC_MYSQL_IMAGE=mysql:8 1" "--upgrade pins the Sync databases of an install from before on MySQL 8"
 # each value under its new name, as it was under the old one (the empty ones it may fill in)
 moved=all
 for pair in "${RENAMED_SETTINGS[@]}"; do
@@ -737,15 +749,43 @@ if [ -n "${EXTDB}" ]; then
 fi
 
 if [ "${SYNC_DB}" = mysql ]; then
-  echo "== database containers on MySQL 8 (SYNC_DB=mysql)"
+  echo "== database containers on MySQL ${SYNC_MYSQL_IMAGE} (SYNC_DB=mysql)"
   for db in syncstorage_db tokenserver_db; do
-    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "${db}")")" mysql:8 "${db} runs mysql:8"
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "${db}")")" "${SYNC_MYSQL_IMAGE}" "${db} runs ${SYNC_MYSQL_IMAGE}"
     check "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Name}}{{end}}{{end}}' "$(dc ps -a -q "${db}")")" \
       "${PROJECT}_${db//_/-}-mysql" "${db} in its own volume, not MariaDB's"
   done
   # no binary logging (docker-compose.sync-mysql.yml), the trigger without log_bin_trust_function_creators
-  check "$(sql "SELECT VERSION() LIKE '8.4.%', @@log_bin, @@log_bin_trust_function_creators;")" "$(printf '1\t0\t0')" "MySQL 8.4 without binary logging"
+  mysql_version=$(sql "SELECT VERSION();")
+  check "$(sql "SELECT @@log_bin, @@log_bin_trust_function_creators;") $([ -z "${MYSQL_PINNED}" ] || [[ "${mysql_version}" == "${MYSQL_PINNED}".* ]] && echo yes)" "$(printf '0\t0') yes" \
+    "MySQL ${mysql_version} without binary logging"
   check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "SYNC_MAX_USERS trigger created by the init container"
+  if [ -n "${MYSQL_PINNED}" ]; then
+    echo "== without SYNC_MYSQL_IMAGE (the default, mysql:lts): the MySQL ${MYSQL_PINNED} data is not upgraded"
+    # an install from before SYNC_MYSQL_IMAGE with the new files, without --upgrade
+    sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"; unset SYNC_MYSQL_IMAGE
+    dc up -d --no-deps --force-recreate tokenserver_db > /dev/null 2>&1
+    for _ in $(seq 1 60); do dc logs tokenserver_db 2>&1 | grep -q 'keep-major.sh: ' && break; sleep 2; done
+    # (said at each of its restarts)
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q tokenserver_db)") $(dc logs tokenserver_db 2>&1 | grep -q "keep-major.sh: this database is MySQL ${MYSQL_PINNED}, the image is MySQL" && echo said)" "mysql:lts said" \
+      "tokenserver_db on mysql:lts refuses the MySQL ${MYSQL_PINNED} data, and says why"
+    check "$(dc logs tokenserver_db 2>&1 | grep -ciE 'upgrad(e|ing) (the )?(data dictionary|server)|Server upgrade from')" 0 "the data not upgraded"
+    printf 'SYNC_MYSQL_IMAGE=mysql:%s\n' "${MYSQL_PINNED}" >> "${ENV_FILE}"; export SYNC_MYSQL_IMAGE=mysql:${MYSQL_PINNED}
+    dc up -d --no-deps --force-recreate tokenserver_db > /dev/null 2>&1
+    for _ in $(seq 1 60); do [ "$(state tokenserver_db Health.Status)" = healthy ] && break; sleep 2; done
+    check "$(state tokenserver_db Health.Status) $(sql "SELECT VERSION();" | cut -d. -f1)" "healthy ${MYSQL_PINNED}" "back on mysql:${MYSQL_PINNED}: its data as it was"
+    dc up -d > /dev/null 2>&1
+    check "$(hb)" 200 "/__heartbeat__ again"
+    echo "== MIGRATING.md#mysql-lts: SYNC_MYSQL_IMAGE=mysql:lts, MySQL upgrades the data"
+    users_before=$(sql "SELECT COUNT(*) FROM users;")
+    sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"; printf 'SYNC_MYSQL_IMAGE=mysql:lts\n' >> "${ENV_FILE}"; export SYNC_MYSQL_IMAGE=mysql:lts
+    dc up -d > "${WORK}/up-mysql-lts.log" 2>&1 || tail -5 "${WORK}/up-mysql-lts.log"
+    for _ in $(seq 1 90); do [ "$(state tokenserver_db Health.Status)" = healthy ] && [ "$(state syncstorage_db Health.Status)" = healthy ] && break; sleep 2; done
+    check "$(hb) $(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q tokenserver_db)") $(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q syncstorage_db)")" "200 mysql:lts mysql:lts" \
+      "the Sync databases on mysql:lts"
+    check "$([ "$(sql "SELECT VERSION();" | cut -d. -f1)" != "${MYSQL_PINNED}" ] && echo newer) $(sql "SELECT COUNT(*) FROM users;")" "newer ${users_before}" \
+      "MySQL $(sql "SELECT VERSION();") on the data of MySQL ${MYSQL_PINNED}, every user kept"
+  fi
 fi
 
 echo "== tokenserver node"
@@ -1023,7 +1063,7 @@ else
   # test that the dumps restore with only the documented grants
   echo "== backup and restore with EXTERNAL_DB (only documented grants)"
   if [ "${BACKEND}" = mysql ]; then
-    BACKUP_IMAGE="mysql:8"
+    BACKUP_IMAGE="${SYNC_MYSQL_IMAGE}"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   else
     BACKUP_IMAGE="${SYNC_POSTGRES_IMAGE:-postgres:18}"
@@ -1374,6 +1414,6 @@ echo "== every container that keeps running healthy, the one-shot ones exited 0"
 [ -z "${EXTDB}" ] || dc up -d > /dev/null 2>&1
 check "$(compose_healthy 300 dc)" "all healthy" "every long-running container healthy (docker compose ps), the one-shot ones exited 0"
 
-RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL 8)")
+RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL, ${MYSQL_TESTED})")
 [ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"
 exit ${FAILED}

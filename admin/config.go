@@ -377,7 +377,8 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	} else {
 		name := a.deployment.dbServer(components, "Tokenserver database", "MariaDB", "MariaDB", tsHost)
 		if configLookup("SYNC_DB") == "mysql" {
-			name = a.deployment.dbServer(components, "Tokenserver database", "MySQL", "MySQL 8", tsHost)
+			// the image is SYNC_MYSQL_IMAGE (lts or a pinned major), not known here: the version once checked
+			name = a.deployment.dbServer(components, "Tokenserver database", "MySQL", "MySQL", tsHost)
 		}
 		user, userVar := syncUser("TOKENSERVER_DB_USER", "SYNC_TOKENSERVER_DB_USER")
 		syncGroup.Rows = append(syncGroup.Rows,
@@ -423,7 +424,8 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		accounts.Intro = "Mozilla's accounts: Firefox signs in at accounts.firefox.com, the server only knows the account ids. Self-hosted accounts: docker-compose.fxa.yml, see FXA.md."
 	} else {
 		fxaHost := shown("FXA_DB_HOST", "fxa-db")
-		dbName := a.deployment.dbServer(components, "Accounts database", "MySQL", "MySQL 8", fxaHost)
+		// the image is FXA_MYSQL_IMAGE (lts or a pinned major), not known here: the version once checked
+		dbName := a.deployment.dbServer(components, "Accounts database", "MySQL", "MySQL", fxaHost)
 		if configLookup("FXA_DB") == "mariadb" {
 			// the image is FXA_MARIADB_IMAGE, not known here: the version once checked
 			dbName = a.deployment.dbServer(components, "Accounts database", "MariaDB", "MariaDB", fxaHost)

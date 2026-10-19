@@ -70,7 +70,10 @@ ALLOWED_DIFFERENCES = {
     "external-postgres:syncstorage/POSTGRES_PASSWORD": "as migrate's",
     # the backups
     "mysql:backup/MARIADB_TLS_VERIFY": "bundled MySQL: false (the chart's one value, the init container's) where compose's backup "
-    "inherits true; no effect: the backup image is mysql:8, backup.sh reads it with the MariaDB client only",
+    "inherits true; no effect: the backup image is MySQL's, backup.sh reads it with the MariaDB client only",
+    "mysql:db/FFS_MYSQL_IMAGE": "compose-only: SYNC_MYSQL_IMAGE as set in .env (empty: the compose file's default), for "
+    "db/mysql/keep-major.sh; the chart's image is always database.image.mysql, chosen in the values (HELM.md#upgrades)",
+    "mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
     # the databases
     "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
     "the MySQL image ignores them",
@@ -86,6 +89,9 @@ ALLOWED_COMMANDS = {
                       "compose's entrypoint script only adds SYNC_STATSD_* (env here) before exec /app/bin/syncserver"),
     "*:backup": ([["sh", "/ffs-backup/backup.sh"], ["now"]],
                  "a CronJob runs backup.sh now at backup.schedule; compose's container runs backup.sh loop"),
+    "mysql:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mysqld", "--disable-log-bin"]],
+                 "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
+                 "SYNC_MYSQL_IMAGE unset in .env); the chart has no unset: database.image.mysql"),
 }
 
 # probes with other timings than compose's healthcheck, the chart's exactly:

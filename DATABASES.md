@@ -1,6 +1,6 @@
 # Your own database server
 
-By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml), or [MySQL 8](#mariadb-or-mysql-containers)), one PostgreSQL container ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`); the [Helm chart](HELM.md) the same servers as StatefulSets. You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
+By default the stack starts its own databases: two MariaDB containers ([docker-compose.yml](/docker-compose.yml), or [MySQL](#mariadb-or-mysql-containers)), one PostgreSQL container ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)), and with [self-hosted accounts](FXA.md) one MySQL (or [MariaDB](FXA.md#mysql-or-mariadb)) container (`fxa-db`); the [Helm chart](HELM.md) the same servers as StatefulSets. You can use a MariaDB, MySQL or PostgreSQL server you already run instead.
 
 What changes:
 - `SYNC_DB_CONTAINERS=0` (and `FXA_DB_CONTAINERS=0` for the accounts) in `.env`: those containers are not started, everything else is the same. With the Helm chart `database.bundled: false`, see [Kubernetes](#kubernetes).
@@ -11,14 +11,14 @@ What changes:
 
 ## MariaDB or MySQL containers
 
-This section is about the database containers of the stack, not your own server. The two Sync databases (`syncstorage_db`, `tokenserver_db`) run on MariaDB (`mariadb:lts`) by default. With `SYNC_DB=mysql` they run on MySQL 8 (`mysql:8`, 8.4 today) instead, which is what upstream syncstorage-rs is developed and tested on. On MariaDB upstream's tokenserver test `test_user_creation` failed because MariaDB orders the nodes differently: our images have the fix proposed upstream ([mozilla-services/syncstorage-rs#2638](https://github.com/mozilla-services/syncstorage-rs/pull/2638), see [upstream-patches.yml](/upstream-patches.yml)), and `tests/e2e.sh` skips that test only for images without it (their label `org.firefox-sync.upstream-patches` does not list it). The images (`syncstorage-rs-mysql`, `syncstorage-rs-mysql-init`) and the `MARIADB_*` settings of `.env` stay the same.
+This section is about the database containers of the stack, not your own server. The two Sync databases (`syncstorage_db`, `tokenserver_db`) run on MariaDB (`mariadb:lts`) by default. With `SYNC_DB=mysql` they run on MySQL (`SYNC_MYSQL_IMAGE`, `mysql:lts` by default, MySQL 9 today) instead, what upstream syncstorage-rs is developed and tested on (MySQL 8 there). On MariaDB upstream's tokenserver test `test_user_creation` failed because MariaDB orders the nodes differently: our images have the fix proposed upstream ([mozilla-services/syncstorage-rs#2638](https://github.com/mozilla-services/syncstorage-rs/pull/2638), see [upstream-patches.yml](/upstream-patches.yml)), and `tests/e2e.sh` skips that test only for images without it (their label `org.firefox-sync.upstream-patches` does not list it). The images (`syncstorage-rs-mysql`, `syncstorage-rs-mysql-init`) and the `MARIADB_*` settings of `.env` stay the same.
 
 - `prepare_environment.sh`: answer `mysql` to the database backend question. It writes `SYNC_DB=mysql` and `SYNC_DB_TLS_VERIFY=false`, and adds [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml) to `COMPOSE_FILE`. With Quadlets the units of [config/quadlet/sync-mysql/](/config/quadlet/sync-mysql) replace the two MariaDB units.
 - By hand: `SYNC_DB=mysql` in `.env` and `COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml` (with the accounts `docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml`; with the Podman socket `-f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml`).
 - Choose it before the first start. MySQL gets its own volumes (`syncstorage-db-mysql` and `tokenserver-db-mysql`, Quadlets: `firefox-sync-syncstorage-db-mysql` and `firefox-sync-tokenserver-db-mysql`), so it never opens MariaDB's data files. If you switch an existing install, MariaDB's data stays in its volumes and Sync starts with empty databases. Moving the data takes a dump and a reload, which is not tested here. Also, MariaDB's dumps use its `uca1400` collations, which MySQL rejects (see [Moving an existing install](#moving-an-existing-install)). Going back to MariaDB finds MariaDB's volumes as you left them.
 - No binary logging (`--disable-log-bin`), the same as the MariaDB containers. No replica reads the log, and MySQL would keep 30 days of every change (`binlog_expire_logs_seconds`). With binary logging on, the init container could only create the max users procedure and trigger with `log_bin_trust_function_creators=ON` (`ERROR 1419`). If you want binary logs (a replica, point-in-time recovery), replace `--disable-log-bin` with `--log-bin-trust-function-creators=ON` in the `command` (Quadlets: `Exec=`). That combination is what the `EXTERNAL_DB=1` tests run.
-- The users use MySQL 8.4's default `caching_sha2_password`, with no `mysql_native_password`. The Sync server and the admin UI connect without TLS, the same as with your own MySQL server. The init container's MariaDB client connects over TLS without checking MySQL's self-signed certificate, on the stack's own network (`SYNC_DB_TLS_VERIFY=false`, which `docker-compose.sync-mysql.yml` sets for compose; without it the init fails with `ERROR 2026`).
-- `mysql:8` follows MySQL 8, 8.4 today, its last long-term release; not `mysql:lts`, which is MySQL 9 (the self-hosted accounts do not support it, see below).
+- The users use MySQL's default `caching_sha2_password`, with no `mysql_native_password`. The Sync server and the admin UI connect without TLS, the same as with your own MySQL server. The init container's MariaDB client connects over TLS without checking MySQL's self-signed certificate, on the stack's own network (`SYNC_DB_TLS_VERIFY=false`, which `docker-compose.sync-mysql.yml` sets for compose; without it the init fails with `ERROR 2026`).
+- `SYNC_MYSQL_IMAGE` in `.env` is the image of both and of the backups: `mysql:lts` when it is not set, and what `prepare_environment.sh` writes for new installs; `./prepare_environment.sh --upgrade` (or running it again, or a new setup over the MySQL volumes of an earlier install) writes `mysql:8` for the installs from before. `lts` moves to MySQL's next long-term major when MySQL releases it, and MySQL upgrades the data at its first start on it, with no way back but a backup: with `SYNC_MYSQL_IMAGE` not set the containers refuse to start on data of another major ([db/mysql/keep-major.sh](/db/mysql/keep-major.sh)); pin a major (`mysql:9`) to choose when. Moving from 8: [MIGRATING.md](MIGRATING.md#mysql-lts).
 - The Helm chart: `database.backend: mysql`, the same server (`database.image.mysql`), without binary logging, its certificate not checked. On kind or k3s on an Ubuntu host with `mysql-server`, see [HELM.md](HELM.md#troubleshooting) (AppArmor).
 
 ## Another PostgreSQL major
@@ -33,10 +33,10 @@ With your own database server (`EXTERNAL_DB=1`): `SYNC_POSTGRES_IMAGE` picks the
 
 | Component | Supported | Tested |
 |---|---|---|
-| Sync server | MariaDB 10.10+, MySQL 8.0 and 8.4, PostgreSQL 11+ | MariaDB `lts` (12 today), MySQL 8 (8.4), PostgreSQL 18 |
-| Accounts | MySQL 8.0 and 8.4, MariaDB 11.4 and later (12: with our accounts images) | MySQL 8 (8.4), MariaDB `lts` (12) and 11 (11.8) (and 11.4 once) |
+| Sync server | MariaDB 10.10+, MySQL 8.0 and later, PostgreSQL 11+ | MariaDB `lts` (12 today), MySQL `lts` (9) and 8 (8.4), PostgreSQL 18 |
+| Accounts | MySQL 8.4 and 9 (9: with our accounts images), MariaDB 11.4 and later (12: with our accounts images) | MySQL `lts` (9) and 8 (8.4, with `mysql_native_password`), MariaDB `lts` (12) and 11 (11.8) (and 11.4 once) |
 
-Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). On MariaDB 12 and later the accounts need our accounts images: Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`), and our images have the fix proposed upstream ([MariaDB 12](FXA.md#mariadb-12)). With Mozilla's own images, MariaDB 11.4 to 11.8. The `fxa-db` container of the stack runs `FXA_MARIADB_IMAGE`: `mariadb:lts` for new installs and when it is not set, `mariadb:11` for the installs from before it once `prepare_environment.sh --upgrade` ran ([MySQL or MariaDB](FXA.md#mysql-or-mariadb)). MySQL 9 does not work either: it has no `mysql_native_password`, the only one the accounts' driver supports.
+Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here (`FXA_DB=mariadb`, see [MySQL or MariaDB](FXA.md#mysql-or-mariadb)). On MariaDB 12 and later the accounts need our accounts images: Mozilla's migrations drop foreign keys by MySQL's names, which MariaDB 12 no longer gives them (`ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY deviceCommands_ibfk_1`), and our images have the fix proposed upstream ([MariaDB 12](FXA.md#mariadb-12)). With Mozilla's own images, MariaDB 11.4 to 11.8. The `fxa-db` container of the stack runs `FXA_MARIADB_IMAGE`: `mariadb:lts` for new installs and when it is not set, `mariadb:11` for the installs from before it once `prepare_environment.sh --upgrade` ran ([MySQL or MariaDB](FXA.md#mysql-or-mariadb)). MySQL 9, and MySQL 8.4 without `mysql_native_password=ON`, need our accounts images too: Mozilla's driver speaks `mysql_native_password` only, MySQL 9 does not have it, and ours have the `mysql2` driver proposed upstream ([MySQL 9](FXA.md#mysql-9)). With Mozilla's own images, MySQL 8.4 with `mysql_native_password=ON`. The `fxa-db` container runs `FXA_MYSQL_IMAGE` (and `FXA_MYSQL_ARGS`): `mysql:lts` for new installs with our images and when it is not set, `mysql:8` with `mysql_native_password` for the others and for the installs from before once `prepare_environment.sh --upgrade` ran.
 
 ## Server requirements
 
@@ -46,9 +46,9 @@ Mozilla supports MySQL only for the accounts; MariaDB passes the same tests here
     - A server elsewhere: its host name or address.
     - Kubernetes (the Helm chart): a host name or IPv4 address the pods resolve and reach (a Service of type `ExternalName` works too). They connect from the pod network, or from the nodes' addresses when the cluster masquerades traffic leaving it: allow those in the firewall and the users' host part.
 - **Plain connections, on a trusted network only.** The Sync server cannot use TLS to its database (its MySQL driver is built without TLS, its PostgreSQL driver connects without it), and neither can the accounts' driver. So the server must accept connections without TLS from these users: `host` lines (not `hostssl`) in PostgreSQL's `pg_hba.conf` (per user, so the other applications can keep `hostssl`), `require_secure_transport=OFF` on MySQL and MariaDB. That one is server-wide: on a server that enforces TLS for other applications, turning it off lets all of them connect without it. Either give those applications' accounts `REQUIRE SSL` (`ALTER USER 'app'@'%' REQUIRE SSL;`, per account) before turning it off, or leave it on and use a server or instance of its own for this stack. Keep the database on the same host, or on a private network or VPN you trust.
-- **MariaDB and MySQL with binary logging** (the default on MySQL 8, `log_bin` on MariaDB): set `log_bin_trust_function_creators=ON`, otherwise the users below cannot create the max users trigger and the sign-up policy's function and trigger (`ERROR 1419`). On MySQL `SET PERSIST log_bin_trust_function_creators = ON;`, on MariaDB `SET GLOBAL log_bin_trust_function_creators = 1;` and the same in `my.cnf`. On managed services (RDS, Cloud SQL...) set it in the parameter group. Granting `SUPER` instead works too, but is not recommended.
+- **MariaDB and MySQL with binary logging** (the default on MySQL, `log_bin` on MariaDB): set `log_bin_trust_function_creators=ON`, otherwise the users below cannot create the max users trigger and the sign-up policy's function and trigger (`ERROR 1419`). On MySQL `SET PERSIST log_bin_trust_function_creators = ON;`, on MariaDB `SET GLOBAL log_bin_trust_function_creators = 1;` and the same in `my.cnf`. On managed services (RDS, Cloud SQL...) set it in the parameter group. Granting `SUPER` instead works too, but is not recommended.
 - **MariaDB and MySQL:** `explicit_defaults_for_timestamp=ON`, the default since MySQL 8.0 and MariaDB 10.10.
-- **The accounts on MySQL 8.4:** start it with `mysql_native_password=ON` (`--mysql-native-password=ON` or in `my.cnf`). On 8.0 it is on by default. MariaDB needs nothing: `db/mysql/fxa-mariadb.sql` creates the user with `mysql_native_password` explicitly.
+- **The accounts on MySQL with an image without mozilla/fxa#21554** (Mozilla's, ours from before, [MySQL 9](FXA.md#mysql-9)): MySQL 8.4 started with `mysql_native_password=ON` (`--mysql-native-password=ON` or in `my.cnf`), and the accounts' user on it (`prepare_environment.sh` writes `database-setup-fxa.sql` so for such an image). With our images: nothing, MySQL 8.4 or 9 with its default `caching_sha2_password`. MariaDB needs nothing: `db/mysql/fxa-mariadb.sql` creates the user with `mysql_native_password` explicitly (MariaDB has no `caching_sha2_password`; both drivers speak it).
 - **PostgreSQL:** a `host` line for the containers' addresses with `scram-sha-256`, e.g. `host syncserver syncserver 172.16.0.0/12 scram-sha-256`.
 
 ## Databases and users
@@ -59,7 +59,7 @@ The SQL is in [db/mysql/](/db/mysql) (MariaDB and MySQL) and [db/postgres/](/db/
 mysql -h db.example.com -u root -p < database-setup.sql          # MySQL
 mariadb -h db.example.com -u root -p < database-setup.sql        # MariaDB (its client may not install a mysql command)
 psql -h db.example.com -U postgres -f database-setup.sql         # PostgreSQL
-mysql -h db.example.com -u root -p < database-setup-fxa.sql      # the accounts, MySQL 8
+mysql -h db.example.com -u root -p < database-setup-fxa.sql      # the accounts, MySQL
 mariadb -h db.example.com -u root -p < database-setup-fxa.sql    # the accounts, MariaDB 11.4 and later
 ```
 
@@ -124,20 +124,20 @@ REVOKE ALL ON DATABASE @ADMIN_DATABASE@ FROM PUBLIC;
 - For a database that already exists: `ALTER DATABASE syncserver OWNER TO syncserver;`.
 - PostgreSQL 11 to 14 let every role create objects in the `public` schema of every database. Close it in the new database, as a superuser: `psql -h db.example.com -U postgres -d syncserver -c 'REVOKE CREATE ON SCHEMA public FROM PUBLIC; ALTER SCHEMA public OWNER TO syncserver;'` (since PostgreSQL 15 that is the default, and the database owner owns `public`).
 
-### The accounts on MySQL 8 or MariaDB 11: [db/mysql/fxa-mysql.sql](/db/mysql/fxa-mysql.sql), [db/mysql/fxa-mariadb.sql](/db/mysql/fxa-mariadb.sql)
+### The accounts on MySQL or MariaDB: [db/mysql/fxa-mysql.sql](/db/mysql/fxa-mysql.sql), [db/mysql/fxa-mariadb.sql](/db/mysql/fxa-mariadb.sql)
 
-`prepare_environment.sh` asks whether your server is MySQL or MariaDB and sets `FXA_DB`, which picks the file. They differ in the first two lines only. On MariaDB:
+`prepare_environment.sh` asks whether your server is MySQL or MariaDB and sets `FXA_DB`, which picks the file. They differ in the lines of the accounts' user only. On MariaDB:
 
 ```sql
 CREATE USER IF NOT EXISTS '@FXA_USER@'@'%' IDENTIFIED VIA mysql_native_password USING PASSWORD('@FXA_PASSWORD@');
 ALTER USER '@FXA_USER@'@'%' IDENTIFIED VIA mysql_native_password USING PASSWORD('@FXA_PASSWORD@');
 ```
 
-On MySQL, and the rest of both:
+On MySQL, and the rest of both (for an accounts image without mozilla/fxa#21554, `IDENTIFIED WITH mysql_native_password BY` in the first two lines, the file's `-- native:` lines: [MySQL 9](FXA.md#mysql-9)):
 
 ```sql
-CREATE USER IF NOT EXISTS '@FXA_USER@'@'%' IDENTIFIED WITH mysql_native_password BY '@FXA_PASSWORD@';
-ALTER USER '@FXA_USER@'@'%' IDENTIFIED WITH mysql_native_password BY '@FXA_PASSWORD@';
+CREATE USER IF NOT EXISTS '@FXA_USER@'@'%' IDENTIFIED BY '@FXA_PASSWORD@';
+ALTER USER '@FXA_USER@'@'%' IDENTIFIED BY '@FXA_PASSWORD@';
 GRANT ALL PRIVILEGES ON `fxa`.* TO '@FXA_USER@'@'%';
 GRANT ALL PRIVILEGES ON `fxa_oauth`.* TO '@FXA_USER@'@'%';
 GRANT ALL PRIVILEGES ON `fxa_profile`.* TO '@FXA_USER@'@'%';
@@ -153,7 +153,7 @@ CREATE USER IF NOT EXISTS 'ffs_admin'@'%' IDENTIFIED BY '@FXA_ADMIN_PASSWORD@';
 ALTER USER 'ffs_admin'@'%' IDENTIFIED BY '@FXA_ADMIN_PASSWORD@';
 ```
 
-- `FXA_MYSQL_USER` (`fxa`): Mozilla's migrations create the four databases, their tables and about 400 procedures, and the accounts services use them. It must use `mysql_native_password`.
+- `FXA_MYSQL_USER` (`fxa`): Mozilla's migrations create the four databases, their tables and about 400 procedures, and the accounts services use them. On MySQL the server's default `caching_sha2_password` with our accounts images, `mysql_native_password` with the others (and on MariaDB).
 - `FXA_MYSQL_POLICY_USER` (`ffs_policy`): `fxa-policy` installs the [sign-up policy](ADMIN.md#who-can-sign-up-self-hosted-accounts) at every start: the database `ffs` (with the sign-up settings and `FXA_MAX_ACCOUNTS` in `ffs.settings`), a trigger on `fxa.accounts` that checks both through `ffs.signup_refusal`, views and procedures that read the security history, read and delete tokens, disable and delete accounts, turn off two-step authentication, remove recovery keys, confirm emails and prune expired tokens with its privileges (they call Mozilla's own procedures, hence `EXECUTE` on `fxa`), and the grants of the admin UI's user (hence `WITH GRANT OPTION`): `SELECT` on a few columns of `fxa.accounts` and on the views (which leave out every secret), `EXECUTE` on those procedures, nothing that changes the accounts' tables directly. `SELECT` on `fxa_profile` and `pushbox` lets the admin UI show the size of all five databases, `DELETE` there removes the profile and the push messages of a deleted account. When a procedure it calls is missing (a newer FxA release, or no `EXECUTE`), `fxa-policy` logs a warning naming it and the accounts keep working, but what needs it in the admin UI answers with an error (ADMIN.md, Disabling an account).
 - Upgrading from a version whose script had no `EXECUTE` in the policy user's grant on `fxa`: run ``GRANT EXECUTE ON `fxa`.* TO '@FXA_POLICY_USER@'@'%' WITH GRANT OPTION;`` once, then restart `fxa-policy`.
 - Upgrading from a version whose script had only `SELECT` on `fxa_profile` and `pushbox`: run ``GRANT DELETE ON `fxa_profile`.* TO '@FXA_POLICY_USER@'@'%'; GRANT DELETE ON `pushbox`.* TO '@FXA_POLICY_USER@'@'%';`` once, otherwise deleting an account in the admin UI fails (and changes nothing).
@@ -169,14 +169,14 @@ All in `.env`. `prepare_environment.sh` writes them when you answer `y`. The Hel
 | Setting | Default | Your own server |
 |---|---|---|
 | `SYNC_DB_CONTAINERS` | `1` | `0`: no `syncstorage_db`, `tokenserver_db` or `postgres_db` container |
-| `SYNC_DB` | `mariadb` | not used: it picks the database containers, `mysql` for [MySQL 8](#mariadb-or-mysql-containers) |
+| `SYNC_DB` | `mariadb` | not used: it picks the database containers, `mysql` for [MySQL](#mariadb-or-mysql-containers) |
 | `SYNC_DB_TLS_VERIFY` | `true` | `false`: the init container's client checks the server's certificate, and MySQL's own is self-signed (the Sync server itself does not use TLS) |
 | `SYNC_TOKENSERVER_DB_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD` | `tokenserver_db`, `3306`, `tokenserver`, `tokenserver` | your server and the names of the SQL above |
 | `SYNC_STORAGE_DB_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD` | `syncstorage_db`, `3306`, `syncstorage`, `syncstorage` | the same server, or another one |
 | `SYNC_POSTGRES_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD` | `postgres_db`, `5432`, `syncserver`, `syncserver` | your server, with PostgreSQL |
 | `FXA_DB_CONTAINERS` | `1` | `0`: no `fxa-db` container |
 | `FXA_DB` | `mysql` | `mariadb` with a MariaDB server: the SQL above and the client in the instructions |
-| `FXA_MYSQL_HOST`, `FXA_MYSQL_PORT` | `fxa-db`, `3306` | your MySQL 8 or MariaDB 11 server |
+| `FXA_MYSQL_HOST`, `FXA_MYSQL_PORT` | `fxa-db`, `3306` | your MySQL or MariaDB server |
 | `FXA_MYSQL_USER`, `FXA_MYSQL_PASSWORD` | `root` | `fxa` and its password |
 | `FXA_MYSQL_POLICY_USER`, `FXA_MYSQL_POLICY_PASSWORD` | empty: `FXA_MYSQL_USER` and `FXA_MYSQL_PASSWORD` | `ffs_policy` and its password |
 | `FXA_ADMIN_DB_PASSWORD` | generated | the password of the user `ffs_admin` of the accounts (the admin UI reads them as it) in `database-setup-fxa.sql` |
@@ -221,7 +221,7 @@ An install from before `ADMIN_DB_PASSWORD` (its `.env` has none) keeps working a
 
 If it cannot read them (a grant missing on your own server), it copies nothing, leaves them where they are and the setup check says why: nothing is lost, and the next start tries again. If it copied them but cannot drop them (no `EXECUTE`, an init image from before), they stay in the tokenserver database, within the Sync server's reach, until you drop them as the tokenserver user (`DROP TABLE ffs_events, ffs_metrics, ffs_gauges, ffs_account_notes, ffs_schema_levels, ffs_jobs, ffs_backups;`); the setup check says so too. If `ffs_admin_ui` cannot create its tables in `ffs_admin` (its grant missing), the admin UI does not start and says why, the old tables untouched. Your own backup jobs that record their runs: they now write into `ffs_admin` as `ffs_admin_ui` ([ADMIN.md](ADMIN.md#your-own-database-servers)).
 
-`tests/e2e.sh` checks this upgrade from a checkout of the release before (`UPGRADE_FROM`: its compose files, admin UI and init image), with MariaDB, MySQL 8 and PostgreSQL, and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
+`tests/e2e.sh` checks this upgrade from a checkout of the release before (`UPGRADE_FROM`: its compose files, admin UI and init image), with MariaDB, MySQL and PostgreSQL, and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
 
 ## docker compose
 
@@ -308,6 +308,8 @@ With docker compose. Not covered by the tests: check the result before you remov
 - `ERROR 1419 ... You do not have the SUPER privilege and binary logging is enabled` (init container or `fxa-policy`): set `log_bin_trust_function_creators=ON`.
 - `ERROR 2026 ... self-signed certificate in certificate chain`, then "Timeout waiting for database connection" in the init container: set `SYNC_DB_TLS_VERIFY=false` (Helm: `database.external.tlsVerify: false`).
 - "Timeout waiting for database connection", or the migrations never finish: the containers cannot reach the server. Check the host (not `localhost`), the port, the server's listen address, the firewall and the users' host part. Test from the stack's network: `docker compose run --rm --no-deps --entrypoint mariadb tokenserver_db_init --host=... --user=... -p --skip-ssl-verify-server-cert -e 'SELECT 1'`. With the Helm chart: `kubectl logs deploy/<release>-firefox-sync-syncstorage -c wait-db` (the server answers) and `-c migrate` (the login).
-- `ER_NOT_SUPPORTED_AUTH_MODE` from the accounts (fxa-migrations, fxa-auth): `FXA_MYSQL_USER` must use `mysql_native_password`, and MySQL 8.4 needs `mysql_native_password=ON`.
+- `ER_NOT_SUPPORTED_AUTH_MODE` from the accounts (fxa-migrations, fxa-auth): the accounts image has no [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) (Mozilla's, ours from before, [MySQL 9](FXA.md#mysql-9)): `FXA_MYSQL_USER` must use `mysql_native_password`, on MySQL 8.4 with `mysql_native_password=ON` (`fxa-db`: `FXA_MYSQL_IMAGE=mysql:8` with `FXA_MYSQL_ARGS`). Use our images for MySQL 9.
+- `Plugin 'mysql_native_password' is not loaded` (MySQL 9, also for `root`): a user still on `mysql_native_password`, e.g. an install from before moved to `mysql:lts` without step 2 of [MIGRATING.md](MIGRATING.md#mysql-lts). Back on `FXA_MYSQL_IMAGE=mysql:8` the data no longer opens (MySQL 9 upgraded it): restore the backup of that step, or start MySQL 9 once with `--skip-grant-tables`, `FLUSH PRIVILEGES` and the `ALTER USER` of step 2.
+- `keep-major.sh: this database is MySQL 8, the image is MySQL 9` (a MySQL container that does not start): `FXA_MYSQL_IMAGE` (or `SYNC_MYSQL_IMAGE`) is not set and its default `mysql:lts` is another major than the data: `./prepare_environment.sh --upgrade` pins it ([MIGRATING.md](MIGRATING.md#older-firefox-sync-releases)).
 - `ER_CANT_DROP_FIELD_OR_KEY: Can't DROP FOREIGN KEY ..._ibfk_1` from fxa-migrations: the server is MariaDB 12 and the accounts image does not have [mozilla/fxa#21494](https://github.com/mozilla/fxa/pull/21494) (Mozilla's images, or ours from before, [MariaDB 12](FXA.md#mariadb-12)): use our current images, or MariaDB 11.4 to 11.8 on a new database.
 - `Access denied` from PostgreSQL, or `no pg_hba.conf entry`: add a `host` line for the containers' addresses.

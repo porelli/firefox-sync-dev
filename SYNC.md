@@ -6,7 +6,7 @@
 
 - Docker with the compose plugin, Podman ([PODMAN.md](PODMAN.md)), or Kubernetes 1.27+ with Helm ([HELM.md](HELM.md))
 - A host name with HTTPS behind a reverse proxy, e.g. `firefox-sync.example.com`, proxied to `127.0.0.1:${SYNC_EXPORT_PORT}` (`5000` by default); on Kubernetes an Ingress, or your proxy in front of the Sync server's Service
-- A database: by default the containers of the stack (the chart's pods on Kubernetes), MariaDB. It can be MySQL 8 or PostgreSQL instead, or a server you already run, see [DATABASES.md](DATABASES.md)
+- A database: by default the containers of the stack (the chart's pods on Kubernetes), MariaDB. It can be MySQL or PostgreSQL instead, or a server you already run, see [DATABASES.md](DATABASES.md)
 
 ## Setup
 
@@ -14,9 +14,9 @@
 
 1. clone this repository
 1. run `./prepare_environment.sh` to prepare your `.env` file and the config examples with your values
-    - you can choose between MariaDB (default, [docker-compose.yml](/docker-compose.yml)), MySQL 8 (`mysql`: the same file with [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml), what upstream syncstorage-rs is developed and tested on, see [DATABASES.md](DATABASES.md#mariadb-or-mysql-containers)) and PostgreSQL ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)) as database backend. For MySQL and PostgreSQL, the script sets `COMPOSE_FILE` in `.env` so that `docker compose` picks the right files automatically
+    - you can choose between MariaDB (default, [docker-compose.yml](/docker-compose.yml)), MySQL (`mysql`, `mysql:lts`: the same file with [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml), what upstream syncstorage-rs is developed and tested on, see [DATABASES.md](DATABASES.md#mariadb-or-mysql-containers)) and PostgreSQL ([docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml)) as database backend. For MySQL and PostgreSQL, the script sets `COMPOSE_FILE` in `.env` so that `docker compose` picks the right files automatically
     - you can pin the syncstorage image to a specific tag (default: `latest`)
-    - you can also self-host Mozilla accounts (see [FXA.md](FXA.md)): the script asks for the host names and your SMTP server and sets everything up. Their database is MySQL 8 by default, or MariaDB `lts` ([MySQL or MariaDB](FXA.md#mysql-or-mariadb))
+    - you can also self-host Mozilla accounts (see [FXA.md](FXA.md)): the script asks for the host names and your SMTP server and sets everything up. Their database is MySQL by default (`lts` with our accounts images, 8 with the others), or MariaDB `lts` ([MySQL or MariaDB](FXA.md#mysql-or-mariadb))
     - you can use a MariaDB, MySQL or PostgreSQL server you already run instead of the database containers: the script writes the SQL for the databases and users, see [DATABASES.md](DATABASES.md)
     - coming from another self-hosted Sync server (Mozilla's compose files, other images, NixOS, YunoHost, the Python syncserver, fxa-selfhosting): see [MIGRATING.md](MIGRATING.md)
 1. set up your reverse proxy

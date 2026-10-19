@@ -19,7 +19,15 @@
 #                    fxa-mono-latest, this machine), as in tests/e2e-fxa.sh
 #   REPOSITORY, TAG  syncstorage images (default: ghcr.io/porelli/firefox-sync, latest)
 #   ADMIN_IMAGE      admin UI and sign-up policy image, used as is (default: built from admin/)
-#   FXA_DB           mysql (default, MySQL 8) or mariadb (FXA_MARIADB_IMAGE) for the accounts
+#   FXA_DB           mysql (default) or mariadb (FXA_MARIADB_IMAGE) for the accounts. MySQL: the
+#                    install runs mysql:8 with mysql_native_password as those from before
+#                    FXA_MYSQL_IMAGE did; the new files without these settings in .env: fxa-db
+#                    refuses to upgrade its data (db/mysql/keep-major.sh), prepare_environment.sh
+#                    --upgrade pins it back on mysql:8, then the accounts are upgraded
+#   FXA_MYSQL_TO     with FXA_DB=mysql, after the upgrade of the accounts: the move of
+#                    MIGRATING.md#mysql-lts to this image (the users on caching_sha2_password,
+#                    the native options dropped, a backup, the image); default: mysql:lts when the
+#                    new accounts image has mozilla/fxa#21554, else none; keep: none
 #   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:11, as the installs from before
 #                    MariaDB 12 have it; mariadb:lts (12) needs FXA_FROM with mozilla/fxa#21494)
 #   FXA_MARIADB_FROM with FXA_DB=mariadb: the install starts on this MariaDB (e.g. mariadb:11)
@@ -32,6 +40,8 @@
 #                    has it: then docker compose up -d alone must not upgrade, the pull must
 #   SKIP_PULL        set to 1 to use the local images (the FxA images are pulled when missing;
 #                    the docker compose pull of the upgrade runs anyway, as FXA.md says)
+#   FXA_NEW_LOCAL    set to 1 when the new accounts image is a local build in no registry: the
+#                    pull of the upgrade leaves it out
 #   KEEP             set to 1 to leave the upgraded stack running (project ffs-fxa-upgrade)
 #   SLOT             runs next to each other on one host (tests/slot.sh): 1, 2...: -s<SLOT> after
 #                    the project, port 28663 + 1000 * SLOT, the others at 28700-28706 + 1000 * SLOT
@@ -60,6 +70,8 @@ if [ -n "${FXA_MARIADB_FROM:-}" ]; then
   [ "${MARIADB_TO}" != "${FXA_MARIADB_FROM}" ] || { echo "FXA_MARIADB_FROM: the same as FXA_MARIADB_IMAGE"; exit 2; }
 fi
 MARIADB_INSTALLED=${FXA_MARIADB_FROM:-${FXA_MARIADB_IMAGE:-mariadb:11}}
+# MySQL: the installs from before (mysql:8, their users on mysql_native_password)
+NATIVE_ARGS="--mysql-native-password=ON --authentication-policy=mysql_native_password"
 case "$(uname -m)" in aarch64|arm64) native=arm64 ;; *) native=amd64 ;; esac
 case "${FXA_FROM}" in
   docker.io/mozilla/*|mozilla/*) from_arch=${FXA_FROM_ARCH:-amd64} ;;
@@ -101,6 +113,8 @@ done | sed -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.fxa.test|" \
     -e "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=@example.com|" \
     -e "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|" \
     -e "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${MARIADB_INSTALLED}|" \
+    -e "s|^# FXA_MYSQL_IMAGE=.*|FXA_MYSQL_IMAGE=mysql:8|" \
+    -e "s|^# FXA_MYSQL_ARGS=.*|FXA_MYSQL_ARGS=${NATIVE_ARGS}|" \
     -e "s|^FXA_IMAGE=.*|FXA_IMAGE=${INSTALLED%:*}|" \
     -e "s|^FXA_VERSION=.*|FXA_VERSION=${INSTALLED##*:}|" \
     -e "s|^FXA_ARCH=.*|FXA_ARCH=${from_arch}|" \
@@ -194,7 +208,8 @@ wait_up() {
   fi
 }
 
-# the Python tests of one phase, in the syncstorage-rs image (PyFxA), the state kept in WORK
+# the Python tests of one phase (before, after; and what is said of it), in the syncstorage-rs
+# image (PyFxA), the state kept in WORK
 upgrade_tests() {
   mkdir -p "${WORK}/state"
   dc run --rm -T --no-deps --user root \
@@ -207,7 +222,7 @@ upgrade_tests() {
     -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
     --entrypoint /bin/sh syncstorage \
     -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_upgrade.py > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
-  check "$?" 0 "$1 the upgrade: tests/test_fxa_upgrade.py"
+  check "$?" 0 "${2:-$1 the upgrade}: tests/test_fxa_upgrade.py"
 }
 
 echo "== ${PROJECT}: accounts ${FXA_FROM} (${from_arch}) -> ${NEW} (${NEW_ARCH}), on ${FXA_DB}${MARIADB_TO:+ ${MARIADB_INSTALLED} -> ${MARIADB_TO}}${FXA_SAME_TAG:+, the older release installed as ${NEW}}"
@@ -225,6 +240,16 @@ else
 fi
 pull_image "${FXA_FROM}" "${from_arch}" || { echo "FAIL: pull ${FXA_FROM}"; exit 1; }
 new_release=$(release_of "${NEW}" "${NEW_ARCH}") old_release=$(release_of "${FXA_FROM}" "${from_arch}")
+# MIGRATING.md#mysql-lts after the upgrade: with an image that has mozilla/fxa#21554
+MYSQL_TO=""
+if [ "${FXA_DB}" = mysql ]; then
+  MYSQL_TO=${FXA_MYSQL_TO:-}
+  if [ -z "${MYSQL_TO}" ] && [[ " $(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${NEW}" 2> /dev/null) " == *" mozilla/fxa#21554@"* ]]; then
+    MYSQL_TO=mysql:lts
+  fi
+  [ "${MYSQL_TO}" != keep ] || MYSQL_TO=""
+  echo "accounts database: mysql:8 with mysql_native_password${MYSQL_TO:+, then ${MYSQL_TO} (MIGRATING.md#mysql-lts)}"
+fi
 echo "releases: ${old_release:-?} -> ${new_release:-?}"
 [ -n "${new_release}" ] || { echo "FAIL: no release in ${NEW} (label org.opencontainers.image.version or /fxa/packages/version.json)"; exit 1; }
 if [ -n "${old_release}" ] && [ "${old_release}" != "${new_release}" ] &&
@@ -249,6 +274,25 @@ old_db_version=$(fxa_sql "SELECT VERSION()")
 echo "accounts database: ${old_db_version}"
 upgrade_tests before
 
+if [ "${FXA_DB}" = mysql ]; then
+  echo "== the new files with the .env of before FXA_MYSQL_IMAGE: fxa-db does not upgrade the data, --upgrade pins it"
+  sed -i -e '/^FXA_MYSQL_IMAGE=/d' -e '/^FXA_MYSQL_ARGS=/d' "${ENV_FILE}"; unset FXA_MYSQL_IMAGE FXA_MYSQL_ARGS
+  dc up -d --no-deps fxa-db > "${WORK}/up-unpinned.log" 2>&1
+  for _ in $(seq 1 60); do dc logs fxa-db 2>&1 | grep -q 'keep-major.sh: ' && break; sleep 2; done
+  # (said at each of its restarts)
+  check "$(image_of fxa-db) $(dc logs fxa-db 2>&1 | grep -q 'keep-major.sh: this database is MySQL 8, the image is MySQL' && echo said)" "mysql:lts said" \
+    "without FXA_MYSQL_IMAGE fxa-db on mysql:lts refuses the MySQL 8 data, and says why"
+  UP=${WORK}/prepare && mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
+  (cd "${UP}" && ./prepare_environment.sh --upgrade) > "${WORK}/prepare-upgrade.log" 2>&1
+  check "$? $(grep '^FXA_MYSQL_IMAGE=' "${UP}/.env") [$(sed -n 's/^FXA_MYSQL_ARGS=//p' "${UP}/.env")] $(grep -c 'stays on MySQL 8 with mysql_native_password' "${WORK}/prepare-upgrade.log")" \
+    "0 FXA_MYSQL_IMAGE=mysql:8 [${NATIVE_ARGS}] 1" "prepare_environment.sh --upgrade pins the accounts on MySQL 8 with mysql_native_password"
+  cp "${UP}/.env" "${ENV_FILE}"
+  set -a; source "${ENV_FILE}"; set +a
+  dc up -d --no-deps fxa-db > "${WORK}/up-pinned.log" 2>&1
+  for _ in $(seq 1 60); do [ "$(state fxa-db Health.Status)" = healthy ] && break; sleep 2; done
+  check "$(state fxa-db Health.Status) $(fxa_sql "SELECT VERSION()")" "healthy ${old_db_version}" "fxa-db back on mysql:8, its data as it was"
+fi
+
 echo "== upgrade as FXA.md says: a backup, FXA_VERSION in .env, docker compose pull, docker compose up -d"
 dc exec -T backup-fxa sh /ffs-backup/backup.sh now > "${WORK}/backup.log" 2>&1
 check "$?" 0 "a backup of the accounts before the upgrade"
@@ -268,7 +312,11 @@ migrations_before=$(state fxa-migrations StartedAt)
 # may be a local build)
 MARIADB_SERVICES=()
 [ -z "${MARIADB_TO}" ] || MARIADB_SERVICES=(fxa-db backup-fxa)
-dc pull -q "${FXA_SERVICES[@]}" "${MARIADB_SERVICES[@]}" || { echo "FAIL: docker compose pull of ${NEW}"; exit 1; }
+# (FXA_NEW_LOCAL: a local build, in no registry: the accounts image as it is)
+PULLED=("${FXA_SERVICES[@]}")
+[ -z "${FXA_NEW_LOCAL:-}" ] || PULLED=()
+[ $((${#PULLED[@]} + ${#MARIADB_SERVICES[@]})) = 0 ] ||
+  dc pull -q "${PULLED[@]}" "${MARIADB_SERVICES[@]}" || { echo "FAIL: docker compose pull of ${NEW}"; exit 1; }
 dc up -d > "${WORK}/upgrade.log" 2>&1 || { echo "FAIL: compose up with the new release"; tail -10 "${WORK}/upgrade.log"; }
 echo "== waiting for the new release"
 wait_up "upgraded"
@@ -297,6 +345,44 @@ if [ -n "${MARIADB_TO}" ]; then
   new_db_server=${new_db_server//./\\.}
 fi
 upgrade_tests after
+if [ -n "${MYSQL_TO}" ]; then
+  echo "== MIGRATING.md#mysql-lts: 2. the users on caching_sha2_password"
+  native_users() { fxa_sql "SELECT CONCAT(user, '@', host) FROM mysql.user WHERE plugin = 'mysql_native_password' ORDER BY 1" | paste -sd' '; }
+  # ffs_admin: fxa-policy gives it caching_sha2_password itself
+  check "$(native_users)" "root@% root@localhost" "on mysql_native_password: root (FXA_MYSQL_USER) only"
+  fxa_sql "ALTER USER 'root'@'%' IDENTIFIED WITH caching_sha2_password BY '${FXA_MYSQL_PASSWORD}';
+    ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY '${FXA_MYSQL_PASSWORD}'" > /dev/null
+  check "$? [$(native_users)]" "0 []" "every user on caching_sha2_password"
+  echo "== 3. FXA_MYSQL_ARGS removed, fxa-db restarted on MySQL 8 without mysql_native_password"
+  sed -i '/^FXA_MYSQL_ARGS=/d' "${ENV_FILE}"; unset FXA_MYSQL_ARGS
+  dc up -d > "${WORK}/up-no-native.log" 2>&1 || { echo "FAIL: compose up without mysql_native_password"; tail -10 "${WORK}/up-no-native.log"; }
+  wait_up "without mysql_native_password"
+  check "$(fxa_sql "SELECT @@authentication_policy") $(fxa_sql "SELECT COUNT(*) FROM information_schema.plugins WHERE plugin_name = 'mysql_native_password' AND plugin_status = 'ACTIVE'")" "*,, 0" \
+    "fxa-db on the server's defaults (caching_sha2_password)"
+  upgrade_tests after "after the upgrade, without mysql_native_password"
+  echo "== 4. a backup, FXA_MYSQL_IMAGE=${MYSQL_TO}, docker compose pull, docker compose up -d"
+  dc exec -T backup-fxa sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1
+  check "$?" 0 "a backup of the accounts before ${MYSQL_TO}"
+  sed -i '/^FXA_MYSQL_IMAGE=/d' "${ENV_FILE}"; printf 'FXA_MYSQL_IMAGE=%s\n' "${MYSQL_TO}" >> "${ENV_FILE}"
+  export FXA_MYSQL_IMAGE=${MYSQL_TO}
+  dc pull -q fxa-db backup-fxa || { echo "FAIL: docker compose pull of ${MYSQL_TO}"; exit 1; }
+  dc up -d > "${WORK}/up-mysql-lts.log" 2>&1 || { echo "FAIL: compose up on ${MYSQL_TO}"; tail -10 "${WORK}/up-mysql-lts.log"; }
+  wait_up "on ${MYSQL_TO}"
+  errors_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  new_db_version=$(fxa_sql "SELECT VERSION()")
+  echo "accounts database: ${old_db_version} -> ${new_db_version}"
+  check "$(image_of fxa-db) $(dc --profile backup config 2> /dev/null | sed -n '/^  backup-fxa:/,/^  [a-z]/p' | sed -n 's/^ *image: //p')" "${MYSQL_TO} ${MYSQL_TO}" "fxa-db (and its backups) on ${MYSQL_TO}"
+  check "$([ "${old_db_version%%.*}" != "${new_db_version%%.*}" ] && [ "$(printf '%s\n' "${old_db_version}" "${new_db_version}" | sort -V | tail -n 1)" = "${new_db_version}" ] && echo yes)" yes \
+    "the accounts database on a newer major version (${old_db_version} -> ${new_db_version})"
+  check "$(dc exec -T fxa-db cat /var/lib/mysql/mysql_upgrade_history 2> /dev/null | grep -o '"version":"[^"]*"' | tail -n 1)" "\"version\":\"${new_db_version}\"" \
+    "MySQL upgraded the data in place at the first start on ${MYSQL_TO}"
+  check "[$(native_users)] $(fxa_sql "SELECT plugin FROM mysql.user WHERE user = 'ffs_admin'")" "[] caching_sha2_password" "no user on mysql_native_password on ${MYSQL_TO}"
+  new_db_server="MySQL ${new_db_version}"
+  new_db_server=${new_db_server//./\\.}
+  upgrade_tests after "after the upgrade, on ${MYSQL_TO}"
+  dc exec -T backup-fxa sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1
+  check "$?" 0 "a backup of the accounts on ${MYSQL_TO}"
+fi
 # with FXA_MARIADB_FROM the database restarted on its new version during the up: the admin UI's
 # errors of then (the accounts database unreachable) are expected, the ones after it are not
 admin_errors() { dc logs ${errors_since:+--since "${errors_since}"} ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|schema levels|rendering [^:]*): '; }

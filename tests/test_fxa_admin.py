@@ -475,8 +475,8 @@ def test_health_and_sizes(admin):
     # versions from /__version__ (our syncstorage images fill it in since APP_BUILD_REVISION 2)
     assert re.search(r"<td>Accounts API</td><td>[^<]*<span[^>]*>up</span></td><td>\d+\.\d+", health), health
     assert re.search(r"Databases: .*Tokenserver \d", page), page[:3000]
-    # FXA_DB_SERVER: set by e2e-fxa.sh, MariaDB with FXA_DB=mariadb
-    for component, v in (("Accounts database", os.environ.get("FXA_DB_SERVER") or r"MySQL 8"), ("Accounts Redis", r"Redis \d"), ("Profile server", r"\d+\.\d+")):
+    # FXA_DB_SERVER: set by e2e-fxa.sh from FXA_MYSQL_IMAGE (MariaDB with FXA_DB=mariadb)
+    for component, v in (("Accounts database", os.environ.get("FXA_DB_SERVER") or r"MySQL \d+\.\d+"), ("Accounts Redis", r"Redis \d"), ("Profile server", r"\d+\.\d+")):
         assert re.search(r"<td>" + component + r"</td><td>[^<]*<span[^>]*>up</span></td><td>" + v, health), (component, health)
 
 
@@ -1257,8 +1257,8 @@ def test_configuration_page(admin):
                            ("Pairing server", "wss://pairing.fxa.test"), ("SMTP server", "mailpit")):
         assert config_row(page, setting).startswith(value + " "), (setting, config_row(page, setting))
     accounts = page.split('id="accounts-settings"')[1].split("</section>")[0]
-    # the version the health check read from the server (8.4.6), the image's before the first check
-    assert re.match((os.environ.get("FXA_DB_SERVER") or r"MySQL 8") + r"[.\d]* FXA_DB ", config_row(accounts, "Database")), config_row(accounts, "Database")
+    # the version the health check read from the server (9.7.2, 8.4.6)
+    assert re.match((os.environ.get("FXA_DB_SERVER") or r"MySQL \d+\.\d+") + r"[.\d]* FXA_DB ", config_row(accounts, "Database")), config_row(accounts, "Database")
     # the settings of fxa-auth, given to the admin UI for this page (not the defaults)
     assert config_row(page, "Access token lifetime") == "60 minutes FXA_ACCESS_TOKEN_LIFETIME of the access tokens of Firefox"
     assert config_row(page, "Client IP address").startswith("2 FXA_CLIENT_ADDRESS_DEPTH")

@@ -1,13 +1,19 @@
--- Self-hosted Mozilla accounts on your MySQL 8.0/8.4 server (DATABASES.md); MariaDB: fxa-mariadb.sql.
+-- Self-hosted Mozilla accounts on your MySQL 8.4 or 9.x server (DATABASES.md); MariaDB: fxa-mariadb.sql.
 -- Run as an administrator of the server. prepare_environment.sh fills in the placeholders
 -- from .env and writes the result to database-setup-fxa.sql.
 -- The server needs (my.cnf, or the parameter group of a managed service):
---   mysql_native_password=ON           (8.4: FxA's driver supports nothing else)
 --   log_bin_trust_function_creators=ON (the sign-up policy's function and trigger)
 -- The database names are fixed: fxa, fxa_oauth, fxa_profile, pushbox and ffs.
+-- The accounts' user has the server's default authentication (caching_sha2_password): accounts
+-- images with mozilla/fxa#21554 (the mysql2 driver; ours, FXA.md#mysql-or-mariadb). The images
+-- without it (Mozilla's, ours from before) speak mysql_native_password only: a MySQL 8.4 server
+-- with mysql_native_password=ON, and the "-- native:" lines instead of the ones after them
+-- (prepare_environment.sh does that for such an image)
 -- (again: a new password after prepare_environment.sh ran again)
-CREATE USER IF NOT EXISTS '@FXA_USER@'@'%' IDENTIFIED WITH mysql_native_password BY '@FXA_PASSWORD@';
-ALTER USER '@FXA_USER@'@'%' IDENTIFIED WITH mysql_native_password BY '@FXA_PASSWORD@';
+-- native: CREATE USER IF NOT EXISTS '@FXA_USER@'@'%' IDENTIFIED WITH mysql_native_password BY '@FXA_PASSWORD@';
+CREATE USER IF NOT EXISTS '@FXA_USER@'@'%' IDENTIFIED BY '@FXA_PASSWORD@';
+-- native: ALTER USER '@FXA_USER@'@'%' IDENTIFIED WITH mysql_native_password BY '@FXA_PASSWORD@';
+ALTER USER '@FXA_USER@'@'%' IDENTIFIED BY '@FXA_PASSWORD@';
 -- the migrations create these 4 databases and ~400 procedures; the accounts services use them
 GRANT ALL PRIVILEGES ON `fxa`.* TO '@FXA_USER@'@'%';
 GRANT ALL PRIVILEGES ON `fxa_oauth`.* TO '@FXA_USER@'@'%';

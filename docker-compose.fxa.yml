@@ -18,8 +18,9 @@ x-fxa: &fxa
   platform: linux/${FXA_ARCH:-amd64}
   restart: unless-stopped
 
-# the accounts database: fxa-db (MySQL 8, MariaDB with docker-compose.fxa-mariadb.yml), or
-# your own MySQL 8 or MariaDB 11.4+ server (12 with our images; FXA_DB_CONTAINERS=0, DATABASES.md)
+# the accounts database: fxa-db (MySQL, MariaDB with docker-compose.fxa-mariadb.yml), or your own
+# MySQL 8.4 or 9 (9 with our images) or MariaDB 11.4+ server (12 with our images;
+# FXA_DB_CONTAINERS=0, DATABASES.md)
 x-fxa-mysql: &fxa-mysql
   MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
   MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
@@ -28,14 +29,26 @@ x-fxa-mysql: &fxa-mysql
 
 services:
   fxa-db:
-    image: mysql:8
+    # FXA_MYSQL_IMAGE: mysql:lts by default, MySQL's newest long-term major (9 today), for
+    # accounts images with https://github.com/mozilla/fxa/pull/21554 (the mysql2 driver,
+    # caching_sha2_password; applied to our images until it is in a release,
+    # upstream-patches.yml). The installs from before, and the images without it (Mozilla's,
+    # ours from before), run mysql:8 with FXA_MYSQL_ARGS=--mysql-native-password=ON
+    # --authentication-policy=mysql_native_password: their driver speaks nothing else, and
+    # MySQL 9 has no such plugin (nor these options: it refuses to start with them).
+    # prepare_environment.sh writes both (--upgrade: mysql:8 for the installs from before);
+    # moving to lts: MIGRATING.md#mysql-lts. On data of another major the container does not
+    # start unless FXA_MYSQL_IMAGE is set (db/mysql/keep-major.sh)
+    image: ${FXA_MYSQL_IMAGE:-mysql:lts}
     # 0: your own server (DATABASES.md); compose then skips the dependency on it
     deploy:
       replicas: ${FXA_DB_CONTAINERS:-1}
     environment:
       MYSQL_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD}
-    # FxA uses the node mysql driver, which only supports mysql_native_password
-    command: [mysqld, --mysql-native-password=ON, --authentication-policy=mysql_native_password, --event-scheduler=ON]
+      FFS_MYSQL_IMAGE: ${FXA_MYSQL_IMAGE:-}
+      FFS_MYSQL_SETTING: FXA_MYSQL_IMAGE
+    # (a string: FXA_MYSQL_ARGS are words of their own, none when it is empty)
+    command: sh /ffs-db/keep-major.sh docker-entrypoint.sh mysqld --event-scheduler=ON ${FXA_MYSQL_ARGS:-}
     healthcheck:
       # over TCP: during the first start the image runs a temporary server on the socket only
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
@@ -45,6 +58,7 @@ services:
       retries: 10
     volumes:
       - fxa-db:/var/lib/mysql
+      - ./db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
     restart: unless-stopped
 
   fxa-redis:
@@ -418,8 +432,9 @@ services:
   # volume: the sync backup service records the result. Run one now:
   # docker compose exec backup-fxa sh /ffs-backup/backup.sh now
   backup-fxa:
-    # the client of fxa-db (mysqldump; mariadb-dump with docker-compose.fxa-mariadb.yml)
-    image: mysql:8
+    # the client of fxa-db (mysqldump; mariadb-dump with docker-compose.fxa-mariadb.yml), the
+    # same image as fxa-db
+    image: ${FXA_MYSQL_IMAGE:-mysql:lts}
     profiles: [backup]
     entrypoint: [sh, /ffs-backup/backup.sh]
     command: [loop]

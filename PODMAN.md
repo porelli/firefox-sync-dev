@@ -132,7 +132,7 @@ Answer `mysql` to the database backend question of `prepare_environment.sh` (`SY
 
 #### Your own database server
 
-To use a MariaDB or MySQL server you already run, answer `y` to "Use an existing database server instead of starting one?" in `prepare_environment.sh` (and for the accounts, a MySQL 8.0/8.4 or MariaDB 11.4 or later server, 12 with our accounts images). The database units are then not installed, the other units don't depend on them, and the script writes `database-setup.sql` for your server. A server on this host is `host.containers.internal` for the containers, not `localhost`. See [DATABASES.md](DATABASES.md).
+To use a MariaDB or MySQL server you already run, answer `y` to "Use an existing database server instead of starting one?" in `prepare_environment.sh` (and for the accounts, a MySQL 8.4 or 9 or MariaDB 11.4 or later server, MySQL 9 and MariaDB 12 with our accounts images). The database units are then not installed, the other units don't depend on them, and the script writes `database-setup.sql` for your server. A server on this host is `host.containers.internal` for the containers, not `localhost`. See [DATABASES.md](DATABASES.md).
 
 #### Admin UI
 
@@ -198,7 +198,7 @@ export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
 # MariaDB, with longer healthcheck timings for rootless
 docker compose -f docker-compose.yml -f docker-compose.podman.yml up -d
 
-# MySQL 8 (SYNC_DB=mysql, see DATABASES.md)
+# MySQL (SYNC_DB=mysql, SYNC_MYSQL_IMAGE, see DATABASES.md)
 docker compose -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml up -d
 
 # PostgreSQL

@@ -11,7 +11,7 @@ Self-hosted accounts run with docker compose or the Podman Quadlets only: the [H
 - The accounts image, about 5 GB unpacked: by default amd64 and arm64 builds of Mozilla's releases from this repository (`fxa-mono-latest`, the newest release that passed the tests on both architectures, built by [fxa.yml](/.github/workflows/fxa.yml) from Mozilla's sources, with only the upstream pull requests of [upstream-patches.yml](/upstream-patches.yml) applied, see [MariaDB 12](#mariadb-12)). Pin a release with `FXA_VERSION=fxa-mono-v1.347.1`, or use Mozilla's own image (amd64 only) with `FXA_IMAGE=docker.io/mozilla/fxa-mono` and `FXA_VERSION=v1.347.1`.
 - 3-4 GB of RAM for the whole stack.
 - An SMTP server: new accounts and new sign-ins are confirmed with a code sent by email.
-- A database: by default the `fxa-db` container, MySQL 8 (8.4 today). It can be MariaDB instead, see [MySQL or MariaDB](#mysql-or-mariadb). Or your own MySQL 8.0/8.4 or MariaDB 11.4 or later server (MariaDB 12 with our accounts images, not MySQL 9): `prepare_environment.sh` asks, see [DATABASES.md](DATABASES.md).
+- A database: by default the `fxa-db` container, MySQL `lts` (MySQL 9 today) with our accounts images, MySQL 8 with `mysql_native_password` with the others (see [MySQL 9](#mysql-9)). It can be MariaDB instead, see [MySQL or MariaDB](#mysql-or-mariadb). Or your own MySQL 8.4 or 9 (9 with our accounts images) or MariaDB 11.4 or later server (MariaDB 12 with our accounts images): `prepare_environment.sh` asks, see [DATABASES.md](DATABASES.md).
 - Four host names behind your reverse proxy, with HTTPS:
 
   | host name | `.env` | proxy to |
@@ -86,7 +86,9 @@ To check it works, open `about:sync-log`: the newest logs show no errors. To go 
 
 ## MySQL or MariaDB
 
-Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL 8 (`mysql:8`, 8.4 today) by default. If you would rather run only MariaDB, the stack can use MariaDB for the accounts: `mariadb:lts` (MariaDB 12 today), with our accounts images, as the Sync databases. Every release is tested on it here with the same tests as on MySQL (sign-up, sync, the sign-up policy and the admin UI, a real Firefox), on `mariadb:lts` and on `mariadb:11`, and the sign-up policy needs no change.
+Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL by default: `FXA_MYSQL_IMAGE` in `.env` (`fxa-db` and the backups of the accounts), `mysql:lts` (MySQL 9 today) when it is not set, and what `prepare_environment.sh` writes for new installs with our accounts images (see [MySQL 9](#mysql-9)); with an image without [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) it writes `mysql:8` and `FXA_MYSQL_ARGS=--mysql-native-password=ON --authentication-policy=mysql_native_password`, and so does `./prepare_environment.sh --upgrade` (or running it again, or a new setup over the `fxa-db` volume of an earlier install) for the installs from before: their users are on `mysql_native_password`, which MySQL 9 does not have. Moving them to `lts`: [MIGRATING.md](MIGRATING.md#mysql-lts). `lts` moves to MySQL's next long-term major when MySQL releases it, and MySQL upgrades the data at the first start on it, with no way back but a backup; with `FXA_MYSQL_IMAGE` not set, `fxa-db` refuses to start on data of another major than its image's ([db/mysql/keep-major.sh](/db/mysql/keep-major.sh)): set it, to the major the data has or to `mysql:lts`. To choose when, pin a major (`FXA_MYSQL_IMAGE=mysql:9`).
+
+If you would rather run only MariaDB, the stack can use MariaDB for the accounts: `mariadb:lts` (MariaDB 12 today), with our accounts images, as the Sync databases. Every release is tested on it here with the same tests as on MySQL (sign-up, sync, the sign-up policy and the admin UI, a real Firefox), on `mariadb:lts` and on `mariadb:11`, and the sign-up policy needs no change.
 
 - `prepare_environment.sh` asks, with `mysql` as the default. It does not follow the Sync server's choice: Sync uses MariaDB by default, so that would move most new installs off what Mozilla supports.
 - By hand: `FXA_DB=mariadb` in `.env`, and with docker compose `docker-compose.fxa-mariadb.yml` at the end of `COMPOSE_FILE`, e.g. `COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml`. The Quadlets get `config/quadlet/fxa/mariadb/` in place of the MySQL unit.
@@ -95,6 +97,12 @@ Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL 8 (`m
 - MariaDB 12 needs our accounts images, see [below](#mariadb-12); with Mozilla's own image use `FXA_MARIADB_IMAGE=mariadb:11`.
 - Choose it before the first start. MariaDB gets its own volume (`fxa-db-mariadb`, Quadlets: `firefox-sync-fxa-db-mariadb`) because it cannot open MySQL's data files. Switching an existing install leaves the MySQL data in `fxa-db` and starts with empty accounts. Moving the data needs a dump and a reload, and that is not tested here.
 - Mozilla could release a migration that works on MySQL only. Releases are published once they pass on MySQL, and a MariaDB failure does not hold them back. With MariaDB, pin `FXA_VERSION` and upgrade after a release passed the `test-mariadb` jobs of [fxa.yml](/.github/workflows/fxa.yml).
+
+### MySQL 9
+
+Mozilla's accounts used the `mysql` driver of Node.js, which speaks `mysql_native_password` only: MySQL 8.4 has it off by default (`--mysql-native-password=ON`), and MySQL 9 removed it (`mysqld` 9 refuses that option and does not start). [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) replaces it with `mysql2`, which speaks `caching_sha2_password`, MySQL's default, and `mysql_native_password` too (MariaDB, the pinned MySQL 8). Until a release includes it, the accounts images built here have it, as for [MariaDB 12](#mariadb-12) (label `mozilla/fxa#21554@...`; for the releases the pull request does not apply to, the same change ported to them, `upstream-patches/fxa-mysql2/`).
+
+Mozilla's own images and ours built before don't have it: with them `fxa-db` runs `mysql:8` with `FXA_MYSQL_ARGS=--mysql-native-password=ON --authentication-policy=mysql_native_password`, and your own server MySQL 8.4 with `mysql_native_password=ON` (and the accounts' user on it, the `-- native:` lines of [db/mysql/fxa-mysql.sql](/db/mysql/fxa-mysql.sql)). `prepare_environment.sh` reads the label as for MariaDB 12, writes those for an image without it (or when it cannot read it), and warns (also with `--upgrade`) when `FXA_MYSQL_IMAGE` is not 8 with such an image, or `FXA_MYSQL_ARGS` has `--mysql-native-password=ON` on MySQL 9.
 
 ### MariaDB 12
 
@@ -199,6 +207,9 @@ FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.1 FXA_IMAGE=ghcr.io/po
 FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.1 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_SAME_TAG=1 tests/fxa-upgrade.sh
 # an install on MariaDB 11 moved to lts (12) with the steps of "Moving to a newer MariaDB" (the new image with mozilla/fxa#21494)
 FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.3 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 FXA_MARIADB_IMAGE=mariadb:lts tests/fxa-upgrade.sh
+# on MySQL (the default) the install runs mysql:8 with mysql_native_password as those from before, goes through
+# --upgrade, and with a new image that has mozilla/fxa#21554 moves to mysql:lts as MIGRATING.md#mysql-lts says
+FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.3 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev tests/fxa-upgrade.sh
 ```
 
 ## Credits

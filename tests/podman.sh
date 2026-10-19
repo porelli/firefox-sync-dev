@@ -15,8 +15,9 @@
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
 #   SYNC_DB     mariadb (default) or mysql: the Sync databases of the compose and quadlet phases
-#               (MySQL 8, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/); the MySQL
-#               quadlets are rendered and checked in any case
+#               (MySQL, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/: compose as an
+#               install from before on mysql:8, pinned by --upgrade; the quadlets on mysql:lts); the
+#               MySQL quadlets are rendered and checked in any case
 #   ADMIN_IMAGE     admin UI image to test, used as is, pulled when not here (default: built from admin/)
 #   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1, or a digest (default: REPOSITORY:fxa-mono-latest)
@@ -166,6 +167,12 @@ compose_test() {
   admin_password=$(env_of ADMIN_DB_PASSWORD)
   check "$(echo "${admin_password}" | grep -cE '^[A-Za-z0-9]{32}$')" 1 "prepare_environment.sh generates ADMIN_DB_PASSWORD (${backend})"
   sed -i 's|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=|' .env
+  # MySQL: a new install is on mysql:lts; one from before ran mysql:8 without SYNC_MYSQL_IMAGE
+  # (--upgrade pins it below)
+  if [ "${backend}" = mysql ]; then
+    check "$(env_of SYNC_MYSQL_IMAGE)" mysql:lts "prepare_environment.sh writes SYNC_MYSQL_IMAGE=mysql:lts (mysql, compose)"
+    sed -i 's|^SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=mysql:8|' .env
+  fi
   # PostgreSQL: before, the Sync server connected as SYNC_POSTGRES_USER, the container's superuser
   sync_role=$(env_of SYNC_POSTGRES_APP_USER) sync_role_password=$(env_of SYNC_POSTGRES_APP_PASSWORD)
   if [ "${backend}" = postgres ]; then
@@ -191,6 +198,7 @@ compose_test() {
   check "$?" 0 "an audit event in the tokenserver database, as before (${backend})"
   # an install from before docker-compose.sync-postgres.yml had the old name in COMPOSE_FILE
   [ "${backend}" = postgres ] && sed -i 's|^COMPOSE_FILE=docker-compose.sync-postgres.yml$|COMPOSE_FILE=docker-compose.postgres.yml|' .env
+  [ "${backend}" != mysql ] || sed -i '/^SYNC_MYSQL_IMAGE=/d' .env
   # the upgrade, as MIGRATING.md says: prepare_environment.sh --upgrade fills in what is missing
   ./prepare_environment.sh --upgrade > "upgrade-${backend}.log" 2>&1
   check "$?" 0 "prepare_environment.sh --upgrade (${backend})"
@@ -202,6 +210,8 @@ compose_test() {
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
   [ "${backend}" != postgres ] || check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:18" "--upgrade writes SYNC_POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"
   [ "${backend}" != mysql ] || check "$(env_of FXA_DB | grep -c mariadb)" "0" "no FXA_MARIADB_IMAGE for MariaDB backend without accounts (${backend})"
+  [ "${backend}" != mysql ] || check "$(env_of SYNC_MYSQL_IMAGE) $(grep -c 'Sync databases stay on MySQL 8' "upgrade-${backend}.log") $(env_of FXA_MYSQL_IMAGE)" "mysql:8 1 " \
+    "--upgrade pins the Sync databases of an install from before on MySQL 8, nothing for the accounts it has not (mysql)"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
   timeout 600 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" up -d >> "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up (${backend})"
@@ -516,8 +526,8 @@ setup mysql 1
 check "$?" 0 "prepare_environment.sh (quadlets, MySQL)"
 check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup -f docker-compose.yml -f docker-compose.sync-mysql.yml)" same "the MySQL Quadlets' healthchecks are compose's"
 check "$(grep -c '^SYNC_DB=mysql$' .env) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml$' .env)" "1 1" "SYNC_DB=mysql in .env, with the compose overlay"
-check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
-  "docker.io/library/mysql:8 docker.io/library/mysql:8" "MySQL 8 database units"
+check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | paste -sd' ') $(env_of SYNC_MYSQL_IMAGE)" \
+  "docker.io/library/mysql:lts docker.io/library/mysql:lts docker.io/library/mysql:lts mysql:lts" "MySQL lts database and backup units for a new install"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db*.volume 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
   "firefox-sync-syncstorage-db-mysql.volume firefox-sync-tokenserver-db-mysql.volume" "MySQL's own volumes, not MariaDB's"
 check "$(grep -hcxE 'Exec=sh /ffs-db/admin-user\.sh mysqld --disable-log-bin|HealthCmd=mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) -p[A-Za-z0-9]+ --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
@@ -567,7 +577,7 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
   podman rm -f "${EXTDB}" > /dev/null 2>&1
   podman network rm -f firefox-sync > /dev/null 2>&1
 
-  # the accounts on your own MySQL server: only what is installed (no MySQL 8 here)
+  # the accounts on your own MySQL server: only what is installed (no MySQL here)
   # answers: ..., admin host, your own server for Sync? the accounts? host, port, user, policy user
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" \
     n y fxa-mysql.invalid "" "" "" | ./prepare_environment.sh > setup-fxa-external.log 2>&1
@@ -606,6 +616,17 @@ if [ -z "${SKIP_FXA:-}" ]; then
   # admin emails, admin host, [your own server for Sync? the accounts? the accounts database]
   fxa_db_answers=()
   [ "${FXA_DB}" = mariadb ] && fxa_db_answers=(n n mariadb)
+  # one pull up front, otherwise every unit pulls the 5 GB image at the same time; before
+  # prepare_environment.sh, which reads its label (mozilla/fxa#21554: MySQL lts)
+  case "$(uname -m)" in aarch64|arm64) fxa_arch=arm64 ;; *) fxa_arch=amd64 ;; esac
+  fxa_image=$(grep '^IMAGE_REPOSITORY=' .env-example | cut -d= -f2):$(grep '^FXA_VERSION=' .env-example | cut -d= -f2)
+  if [ -n "${FXA_TEST_IMAGE:-}" ]; then
+    # the candidate, under the name the quadlets use
+    podman pull -q --arch "${fxa_arch}" "${FXA_TEST_IMAGE}" > /dev/null && podman tag "${FXA_TEST_IMAGE}" "${fxa_image}"
+  else
+    podman pull -q --arch "${fxa_arch}" "${fxa_image}" > /dev/null
+  fi
+  fxa_pulled=$?
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test 'p%ss|w&rd' "" "@fxa.invalid" \
     "me@fxa.invalid" "" "${fxa_db_answers[@]}" \
     | ./prepare_environment.sh > setup-fxa-quadlets.log 2>&1
@@ -615,8 +636,19 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
     "every long-running service has a healthcheck, the Quadlets with the accounts compose's (${FXA_DB})"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
-  [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:lts || expected_image=docker.io/library/mysql:8
-  check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
+  # MySQL: lts when the accounts image of .env has mozilla/fxa#21554, else 8 with mysql_native_password
+  if [ "${FXA_DB}" = mariadb ]; then
+    expected_image=docker.io/library/mariadb:lts expected_exec=mariadbd
+  elif [ "$(env_of FXA_MYSQL_IMAGE)" = mysql:lts ]; then
+    expected_image=docker.io/library/mysql:lts expected_exec="mysqld --event-scheduler=ON "
+    check "[$(env_of FXA_MYSQL_ARGS)] $(grep -c 'does not have mozilla/fxa#21554' setup-fxa-quadlets.log)" "[] 0" "the accounts on MySQL lts: no mysql_native_password"
+  else
+    expected_image=docker.io/library/mysql:8 expected_exec="mysqld --event-scheduler=ON --mysql-native-password=ON --authentication-policy=mysql_native_password"
+    check "$(env_of FXA_MYSQL_IMAGE) $(grep -cE 'does not have mozilla/fxa#21554|could not read the labels of' setup-fxa-quadlets.log)" "mysql:8 1" \
+      "the accounts on MySQL 8 with mysql_native_password, for an accounts image without mozilla/fxa#21554 (said)"
+  fi
+  check "$(fxa_db_image) $(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" "${expected_image} ${expected_image}" "accounts database ${FXA_DB} and its backups"
+  [ "${FXA_DB}" = mariadb ] || check "$(sed -n 's/^Exec=//p' "${QUADLET_DIR}/firefox-sync-fxa-db.container")" "${expected_exec}" "fxa-db's options (FXA_MYSQL_ARGS)"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   # no pairing server in the quadlets
   check "$(env_keys_diff "-f docker-compose.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL|TOKENSERVER_DB_PASSWORD|STORAGE_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "|" "admin quadlet with the accounts passes every setting of the compose service"
@@ -640,16 +672,9 @@ if [ -z "${SKIP_FXA:-}" ]; then
   "${QUADLET}" -dryrun -user > quadlet-fxa-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the accounts files"
   fast_admin_checks
-  # one pull up front, otherwise every unit pulls the 5 GB image at the same time
-  fxa_arch=$(grep '^FXA_ARCH=' .env | cut -d= -f2)
-  fxa_image=$(grep '^FXA_IMAGE=' .env | cut -d= -f2):$(grep '^FXA_VERSION=' .env | cut -d= -f2)
-  if [ -n "${FXA_TEST_IMAGE:-}" ]; then
-    # the candidate, under the name the quadlets use
-    podman pull -q --arch "${fxa_arch}" "${FXA_TEST_IMAGE}" > /dev/null && podman tag "${FXA_TEST_IMAGE}" "${fxa_image}"
-  else
-    podman pull -q --arch "${fxa_arch}" "${fxa_image}" > /dev/null
-  fi
-  check "$?" 0 "pull mozilla/fxa-mono ${FXA_TEST_IMAGE:-${fxa_image}}"
+  check "${fxa_pulled}" 0 "pull mozilla/fxa-mono ${FXA_TEST_IMAGE:-${fxa_image}}"
+  check "$(grep '^FXA_IMAGE=' .env | cut -d= -f2):$(grep '^FXA_VERSION=' .env | cut -d= -f2) $(grep '^FXA_ARCH=' .env | cut -d= -f2)" "${fxa_image} ${fxa_arch}" \
+    "the accounts image pulled is the one of .env"
   # (all of them, as at boot: WantedBy=default.target)
   timeout 1200 systemctl --user start firefox-sync-syncstorage.service firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \
     firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service firefox-sync-admin.service
