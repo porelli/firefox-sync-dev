@@ -126,7 +126,7 @@ lint() {
   [[ $(echo "${output}" | grep -c 'drop: \["NET_RAW"\]') -eq 2 ]] || fail "mariadb: NET_RAW not dropped on migrate and syncstorage"
   check "mariadb: migrate and syncstorage without NET_RAW"
   # database.image.<backend>: the database server, wait-db, the backups and the PVC's binding
-  # Job (compose's POSTGRES_IMAGE: postgres_db and backup), postgres:18 by default
+  # Job (compose's SYNC_POSTGRES_IMAGE: postgres_db and backup), postgres:latest by default
   for backend in mariadb mysql postgres; do
     images() {
       helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --set backup.enabled=true "$@" \
@@ -142,8 +142,53 @@ lint() {
       fail "an empty database.image.${backend} not refused by the schema"
     fi
   done
-  [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:18 ]] || fail "database.image.postgres is not docker.io/library/postgres:18 by default"
-  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:8, postgres:18), empty refused"
+  [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:latest ]] || fail "database.image.postgres is not docker.io/library/postgres:latest by default"
+  check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:lts, postgres:latest), empty refused"
+
+  # the guard of a database major change (lookup of the running StatefulSet at install and
+  # upgrade, which helm template cannot do): included, its comparison on its own in a copy of
+  # the chart, allowMajorUpgrade in the schema
+  grep -q '^{{- include "firefox-sync.checkDbMajor" . }}$' "${CHART_DIR}/templates/databases.yaml" || fail "databases.yaml does not run checkDbMajor"
+  grep -q 'lookup "apps/v1" "StatefulSet"' "${CHART_DIR}/templates/_helpers.tpl" || fail "checkDbMajor does not read the running StatefulSet"
+  major_change() {
+    local d out
+    d=$(mktemp -d)
+    cp -r "${CHART_DIR}" "${d}/chart"
+    sed -e "s|@OLD@|$1|" -e "s|@NEW@|$2|" > "${d}/chart/templates/zz-major.yaml" <<'TPL'
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: major}
+data:
+  change: '{{ include "firefox-sync.dbMajorChange" (dict "old" "@OLD@" "new" "@NEW@") }}'
+TPL
+    out=$(helm template test-release "${d}/chart" -f "${CHART_DIR}/ci/default-values.yaml" --show-only templates/zz-major.yaml 2>&1 | manifests | jq -r '.[0].data.change') || true
+    rm -rf "${d}"
+    echo "${out}"
+  }
+  for c in "docker.io/library/mysql:8 docker.io/library/mysql:lts true" "docker.io/library/mysql:8 docker.io/library/mysql:8 -" \
+    "mysql:8.4 docker.io/library/mysql:8 -" "docker.io/library/mysql:8 docker.io/library/mysql:9 true" \
+    "docker.io/library/mysql:lts docker.io/library/mysql:9 -" "docker.io/library/mysql:lts mysql:lts -" \
+    "docker.io/library/mariadb:11 docker.io/library/mariadb:lts true" "docker.io/library/mariadb:lts docker.io/library/mariadb:latest true" \
+    "docker.io/library/postgres:latest docker.io/library/postgres:alpine true" "docker.io/library/postgres:18 docker.io/library/postgres:latest true" \
+    "docker.io/library/postgres:18 docker.io/library/postgres:18-alpine -" "docker.io/library/mariadb:lts docker.io/library/mysql:lts -" \
+    "docker.io/library/mysql:8@sha256:00 docker.io/library/mysql:9 true"; do
+    read -r old new want <<< "${c}"
+    [[ "$(major_change "${old}" "${new}")" == "${want/-/}" ]] || fail "dbMajorChange ${old} -> ${new}: '$(major_change "${old}" "${new}")', not '${want/-/}'"
+  done
+  if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.allowMajorUpgrade=yes > /dev/null 2>&1; then
+    fail "database.allowMajorUpgrade=yes not refused by the schema"
+  fi
+  check "checkDbMajor: run by the databases, reads the running StatefulSet; dbMajorChange on 13 pairs; allowMajorUpgrade a boolean"
+  # the bundled PostgreSQL: the db-major init container (db/postgres/keep-major.sh) with the
+  # server's image and its data, before the server
+  pg=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=postgres --show-only templates/databases.yaml | manifests)
+  [[ "$(jq -c '.[] | select(.kind == "StatefulSet") | .spec.template.spec | [(.initContainers | map(.name)), .initContainers[0].image == .containers[0].image,
+      (.initContainers[0].command | index("/ffs-db/keep-major.sh") != null), (.initContainers[0].volumeMounts | map([.name, .mountPath, .readOnly]))]' <<< "${pg}")" \
+    == '[["db-major"],true,true,[["data","/var/lib/postgresql",null],["db-scripts","/ffs-db",true]]]' ]] \
+    || fail "postgres: the db-major init container: $(jq -c '.[] | select(.kind == "StatefulSet") | .spec.template.spec.initContainers' <<< "${pg}")"
+  [[ "$(jq -r '.[] | select(.kind == "ConfigMap") | .data["keep-major.sh"]' <<< "${pg}")" == "$(cat "${CHART_DIR}/files/postgres-keep-major.sh")" ]] \
+    || fail "postgres: the db-scripts ConfigMap is not files/postgres-keep-major.sh"
+  check "postgres: the db-major init container runs keep-major.sh with the server's image on its data"
 
   # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
@@ -172,8 +217,8 @@ lint() {
   names=""
   for backend in mariadb mysql postgres; do
     image=docker.io/library/mariadb:lts
-    [[ ${backend} == mysql ]] && image=docker.io/library/mysql:8
-    [[ ${backend} == postgres ]] && image=docker.io/library/postgres:18
+    [[ ${backend} == mysql ]] && image=docker.io/library/mysql:lts
+    [[ ${backend} == postgres ]] && image=docker.io/library/postgres:latest
     docs=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" \
       --set backup.enabled=true | manifests)
     cron=$(echo "${docs}" | jq '.[] | select(.kind == "CronJob" and .metadata.name == "test-release-firefox-sync-backup")')
@@ -405,6 +450,16 @@ lint() {
   rm -f "${values}"
   [[ "${numbers}" == "465 1000000 2000000" ]] || fail "numbers of a values file: ${numbers}"
   check "numbers of a values file as integers (dbGrowthMb 2000000, retentionDays 1000000, smtp.port 465)"
+  # the switches of compose's .env that are off when empty: rendered only when set (the
+  # default render as before them)
+  switches() {
+    helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "$@" | manifests | jq -cS '[.[]
+      | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin") | .spec.template.spec.containers[0].env[]
+      | select(.name == "ADMIN_INSECURE_COOKIE" or .name == "SMTP_INSECURE_AUTH") | {(.name): .value}] | add'
+  }
+  [[ "$(switches)" == null && "$(switches --set admin.insecureCookie=1 --set smtp.insecureAuth=true)" == '{"ADMIN_INSECURE_COOKIE":"1","SMTP_INSECURE_AUTH":"true"}' ]] \
+    || fail "admin.insecureCookie, smtp.insecureAuth: $(switches) / $(switches --set admin.insecureCookie=1 --set smtp.insecureAuth=true)"
+  check "admin.insecureCookie, smtp.insecureAuth: ADMIN_INSECURE_COOKIE, SMTP_INSECURE_AUTH only when set"
 
   external_lint
   ingress_lint
@@ -460,10 +515,9 @@ pods_lint() {
     [[ -z "${bad}" ]] || fail "${backend}: pods without nodeSelector, tolerations, affinity, imagePullSecrets or podAnnotations: ${bad}"
     jq -e '[.[] | select(.w | endswith("-admin")) | .s.metadata.annotations["checksum/admin-secrets"] | test("^[0-9a-f]{64}$")] == [true]' <<< "${pods}" > /dev/null \
       || fail "${backend}: podAnnotations lost the admin UI's checksum/admin-secrets"
-    if [[ ${backend} != postgres ]]; then
-      jq -e '[.[] | select(.w | startswith("StatefulSet/")) | .s.metadata.annotations["checksum/db-scripts"] | test("^[0-9a-f]{64}$")] == [true, true]' <<< "${pods}" > /dev/null \
-        || fail "${backend}: podAnnotations replaced the databases' checksum/db-scripts"
-    fi
+    # (PostgreSQL: one server, its keep-major.sh)
+    jq -e --argjson n "$([[ ${backend} == postgres ]] && echo 1 || echo 2)" '[.[] | select(.w | startswith("StatefulSet/")) | .s.metadata.annotations["checksum/db-scripts"] | test("^[0-9a-f]{64}$")] == [range($n) | true]' <<< "${pods}" > /dev/null \
+      || fail "${backend}: podAnnotations replaced the databases' checksum/db-scripts"
     # resources: each where it belongs (empty by default: none)
     jq -e '[.[] | .s.spec | (.initContainers // [])[], .containers[] | .resources // empty] == []' <<< "$(pod_specs --set database.backend="${backend}")" > /dev/null \
       || fail "${backend}: resources by default"
@@ -472,7 +526,7 @@ pods_lint() {
     bad=$(jq -r '.[] | .w as $w | .s.spec | (.initContainers // [])[], .containers[] | "\($w | sub("^[A-Za-z]+/test-release-firefox-sync-"; "") | sub("-[0-9a-f]{8}$"; ""))/\(.name)=\(.resources.requests.cpu // "none")"' <<< "${pods}" | sort | paste -sd' ' -)
     local want="admin/admin=3m admin/wait-sync=3m backup-volume/bind=5m backup/backup=5m"
     if [[ ${backend} == postgres ]]; then
-      want+=" postgres/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/sync-role=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m"
+      want+=" postgres/db-major=4m postgres/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/sync-role=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m"
     else
       want+=" storage-db/db=4m syncstorage/db-init=2m syncstorage/migrate=2m syncstorage/syncstorage=1m syncstorage/wait-db=2m tokenserver-db/db=4m"
     fi
@@ -614,7 +668,7 @@ notes() {
   echo "${out}"
 }
 
-# the names of the roles and databases (compose's POSTGRES_SYNC_USER, ADMIN_DB_NAME,
+# the names of the roles and databases (compose's SYNC_POSTGRES_APP_USER, ADMIN_DB_NAME,
 # ADMIN_DB_USER, ADMIN_DB_SYNC_USER) and your own database server (database.bundled=false)
 external_lint() {
   echo "Testing the names of the roles and databases..."
@@ -690,7 +744,13 @@ external_lint() {
   notes --set database.backend=mysql "${ext[@]}" | grep -q 'do not check the server.s certificate (tlsVerify false' || fail "NOTES: nothing on tlsVerify false"
   notes --set database.backend=mysql "${ext[@]}" --set database.external.tlsVerify=true | grep -q 'from a CA the images trust' || fail "NOTES: nothing on tlsVerify true"
   check "your own MariaDB/MySQL: MARIADB_TLS_VERIFY false unless tlsVerify (NOTES says which), the bundled ones unchanged"
-  # PostgreSQL: compose's POSTGRES_* of your own server, POSTGRES_USER the owner (no Sync role)
+  # the bundled PostgreSQL on latest: NOTES says to pin its major (a chart cannot read it)
+  notes --set database.backend=postgres | grep -q '^database.image.postgres is docker.io/library/postgres:latest: pin the major' \
+    || fail "NOTES: nothing on pinning the bundled PostgreSQL's major"
+  ! notes --set database.backend=postgres --set database.image.postgres=docker.io/library/postgres:17 | grep -q 'pin the major' \
+    || fail "NOTES: the PostgreSQL pin note with a pinned major"
+  check "NOTES: the bundled PostgreSQL on latest, pin its major (not when pinned)"
+  # PostgreSQL: compose's SYNC_POSTGRES_* of your own server, POSTGRES_USER the owner (no Sync role)
   out=$(env_values SYNC_TOKENSERVER__DATABASE_URL --set database.backend=postgres "${ext[@]}")
   [[ "${out}" == 'postgres://syncserver:$(POSTGRES_PASSWORD)@db.example.test:5432/syncserver' ]] || fail "postgres, bundled=false: the URL: ${out}"
   local pg=(--set database.backend=postgres "${ext[@]}" --set database.external.port=6432 --set database.external.postgresDatabase=pg_db
@@ -835,7 +895,7 @@ e2e() {
   trap 'rc=$?; if ((rc)); then diagnostics; fi; kind delete cluster --name "${CLUSTER}"' EXIT
   kind create cluster --name "${CLUSTER}" --wait 120s
   kubectl config use-context "kind-${CLUSTER}" > /dev/null
-  # the namespace at PodSecurity baseline (HELM.md#what-you-need), enforced: every pod of the
+  # the namespace at PodSecurity baseline (docs/install/helm.md#requirements), enforced: every pod of the
   # chart (and of the tests) is admitted under it, a refused one fails the run
   kubectl label ns default pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/enforce-version=latest > /dev/null
   load_images "${repository}" "${flavor}" "${init_dir}"
@@ -856,6 +916,8 @@ e2e() {
   check "mock FxA is up"
 
   local db_args=(--set backup.enabled=true)
+  # the bundled MySQL as an install from before mysql:lts: on 8, moved below (checkDbMajor)
+  [[ ${backend} == mysql && -z "${EXTERNAL}" ]] && db_args+=(--set database.image.mysql=docker.io/library/mysql:8)
   if [[ -n "${EXTERNAL}" ]]; then
     start_extdb
     # your own server: its names (not the defaults), the passwords in your Secret, the
@@ -941,6 +1003,71 @@ e2e() {
   client_flow flow-2 "-k first_sign_in" || fail "client flow after the upgrade failed"
   check "client flow after the upgrade passed"
 
+  # another major of the bundled database: refused at render time, nothing applied; MySQL
+  # moves with database.allowMajorUpgrade (8 to lts, its data upgraded in place)
+  if [[ -z "${EXTERNAL}" ]]; then
+    local revision sts_image other refused
+    revision=$(helm history "${REL}" -o json | jq length)
+    sts_image() { kubectl get sts "$1" -o jsonpath='{.spec.template.spec.containers[?(@.name=="db")].image}'; }
+    case ${backend} in
+      mysql) other=docker.io/library/mysql:lts ;;
+      mariadb) other=docker.io/library/mariadb:latest ;;
+      postgres) other=docker.io/library/postgres:alpine ;;
+    esac
+    local db_sts=${FULL}-tokenserver-db
+    [[ ${backend} == postgres ]] && db_sts=${FULL}-postgres
+    local running
+    running=$(sts_image "${db_sts}")
+    for allow in false true; do
+      [[ ${allow} == true && ${backend} != postgres ]] && continue
+      if refused=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image."${backend}"="${other}" \
+          --set database.allowMajorUpgrade="${allow}" 2>&1); then
+        fail "helm upgrade to ${other} on ${running} (allowMajorUpgrade=${allow}) not refused"
+      fi
+      grep -q "firefox-sync: database.image.${backend} is ${other} but the bundled .* runs ${running}" <<< "${refused}" \
+        || fail "the refusal does not name both images: ${refused}"
+    done
+    [[ "$(helm history "${REL}" -o json | jq length) $(sts_image "${db_sts}")" == "${revision} ${running}" ]] \
+      || fail "the refused upgrade changed the release or the StatefulSet"
+    check "helm upgrade from ${running} to ${other} refused at render time (also allowMajorUpgrade=true for PostgreSQL), nothing applied"
+    if [[ ${backend} == postgres ]]; then
+      # a pin to another major goes through the render (from latest, not comparable), the
+      # db-major init container then refuses the data and says what to pin; back on the
+      # running image, it starts again (a StatefulSet does not replace a broken pod by itself)
+      helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image.postgres=docker.io/library/postgres:17 > /dev/null \
+        || fail "helm upgrade to postgres:17 not rendered"
+      local said="" i
+      for i in $(seq 1 90); do
+        said=$(kubectl logs "${db_sts}-0" -c db-major 2> /dev/null | grep -c 'keep-major.sh: this database is PostgreSQL 18 (/var/lib/postgresql/18/docker), the image is PostgreSQL 17' || true)
+        [[ "${said}" -ge 1 ]] 2> /dev/null && break
+        sleep 2
+      done
+      [[ "${said}" -ge 1 && "$(kubectl get pod "${db_sts}-0" -o jsonpath='{.status.containerStatuses[0].ready}')" != true ]] \
+        || fail "postgres:17 on 18's data: the db-major init container did not refuse ($(kubectl logs "${db_sts}-0" -c db-major 2>&1 | tail -3))"
+      kubectl logs "${db_sts}-0" -c db-major 2> /dev/null | grep -q 'Set database.image.postgres to the major of the data, postgres:18' \
+        || fail "db-major does not say what to pin"
+      helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image.postgres="${running}" > /dev/null || fail "helm upgrade back to ${running}"
+      kubectl delete pod "${db_sts}-0" --wait=true > /dev/null
+      kubectl rollout status "sts/${db_sts}" --timeout=10m > /dev/null || fail "PostgreSQL not back on ${running}"
+      kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=10m > /dev/null || fail "syncstorage not Ready after PostgreSQL came back"
+      check "postgres:17 on 18's data: refused by the db-major init container, which says what to pin; back on ${running}"
+    fi
+    if [[ ${backend} == mysql ]]; then
+      helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image.mysql="${other}" --set database.allowMajorUpgrade=true \
+        --wait --timeout 10m || fail "helm upgrade to ${other} with allowMajorUpgrade did not get Ready"
+      kubectl rollout status "sts/${db_sts}" --timeout=10m > /dev/null && kubectl rollout status "sts/${FULL}-storage-db" --timeout=10m > /dev/null \
+        || fail "the MySQL StatefulSets did not roll out on ${other}"
+      kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=10m > /dev/null || fail "syncstorage not Ready on ${other}"
+      local version
+      version=$(sql "SELECT VERSION();" 2> /dev/null | tail -n 1)
+      [[ "$(sts_image "${db_sts}") ${version%%.*}" =~ ^${other}\ (9|[1-9][0-9])$ ]] \
+        || fail "the bundled MySQL is not on a newer major: $(sts_image "${db_sts}") ${version}"
+      sql "DELETE FROM users;" || fail "could not empty the users table"
+      client_flow flow-2b "-k first_sign_in" || fail "client flow on ${other} failed"
+      check "allowMajorUpgrade: the bundled MySQL moved from 8 to ${other} (${version}), the client flow passes"
+    fi
+  fi
+
   admin_toggle
   reinstall
 
@@ -948,7 +1075,7 @@ e2e() {
   echo "=== e2e (${backend}) passed ==="
 }
 
-# helm uninstall, then helm install with the same release name and values (HELM.md#upgrades):
+# helm uninstall, then helm install with the same release name and values (docs/upgrading.md#helm):
 # the Secret (helm.sh/resource-policy: keep) and the PVCs (the databases', the backups') are
 # still there, the new install takes them as they are, and alice's Sync data of the client
 # flow is read back
@@ -988,7 +1115,7 @@ admin_toggle() {
     --set image.adminTag="${ADMIN_TAG}" "${admin_args[@]}" --wait --timeout 10m || fail "helm upgrade with the admin UI did not get Ready"
   check "admin UI on: Ready"
   # PodSecurity restricted (a dry run of the label: the API server names the pods it would
-  # refuse): the admin UI's pod meets it, the others need baseline (HELM.md#what-you-need)
+  # refuse): the admin UI's pod meets it, the others need baseline (docs/install/helm.md#requirements)
   local restricted
   restricted=$(kubectl label --dry-run=server --overwrite ns default pod-security.kubernetes.io/enforce=restricted 2>&1 | grep '^Warning: ' || true)
   echo "${restricted}" | sed -E 's/^/  restricted: /; s/(.{400}).*/\1.../'
@@ -1026,7 +1153,7 @@ admin_toggle() {
     kill "${pf}"; fail "sign-in with the Secret's ADMIN_PASSWORD refused: $(head -c 500 <<< "${page}")"
   fi
   check "signed in to the admin UI with the Secret's ADMIN_PASSWORD"
-  # a backup now, the command of the overview's help; restored as ADMIN.md#restoring says
+  # a backup now, the command of the overview's help; restored as docs/backups.md#restore says
   backup_restore
   # the first health check runs at the start, the version once the Sync server answered
   deadline=$(( $(date +%s) + 180 ))
@@ -1097,11 +1224,11 @@ admin_token_off() {
 }
 
 # backup_restore: a run of the backup CronJob now (kubectl create job --from=cronjob/...,
-# as the admin UI says), then its dumps restored the way ADMIN.md#restoring says on a new
+# as the admin UI says), then its dumps restored the way docs/backups.md#restore says on a new
 # host: into empty database servers like the chart's (pods of the StatefulSets' spec, with
 # empty volumes), by pods of the backup's own spec (its variables, its volume: compose's
 # `docker compose run --rm --no-deps --entrypoint sh backup -c '...'`), as the stack's users,
-# with ADMIN.md's commands. The same users and Sync items there as in the chart's databases
+# with the commands of docs/backups.md#restore. The same users and Sync items there as in the chart's databases
 backup_restore() {
   kubectl create job --from="cronjob/${FULL}-backup" backup-now > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
   wait_job backup-now 300 || fail "the backup-now Job did not complete"
@@ -1115,7 +1242,7 @@ backup_restore() {
   check "a run in the backups volume: ${run}"
 
   # 1. empty database servers, as on a new host (the chart's spec, empty volumes; your own:
-  # one more like it, with DATABASES.md's SQL)
+  # one more like it, with the SQL of docs/databases.md#create-the-databases-and-users)
   local servers ts st ts_ip st_ip
   if [[ -n "${EXTERNAL}" ]]; then
     servers=
@@ -1144,10 +1271,10 @@ backup_restore() {
   [[ -z "${EXTERNAL}" ]] || like="your own, with its SQL"
   check "empty database servers like ${like}: ${ts} ${st}"
 
-  # 4. the tokenserver (PostgreSQL: the one database), with ADMIN.md's commands
+  # 4. the tokenserver (PostgreSQL: the one database), with the commands of docs/backups.md#restore
   local restore
   restore=$(admin_md_restore "$([[ "${BACKEND}" == postgres ]] && echo 2 || echo 1)")
-  [[ -n "${restore}" ]] || fail "no restore command of step 4 in ADMIN.md#restoring"
+  [[ -n "${restore}" ]] || fail "no restore command of step 4 in docs/backups.md#restore"
   [[ "${BACKEND}" == mysql ]] && restore=$(sed 's/^\( *\)mariadb /\1mysql /' <<< "${restore}")
   if [[ "${BACKEND}" == postgres && -z "${EXTERNAL}" ]]; then
     # into the empty database as the Sync server's role, which sync_role_init creates first:
@@ -1166,12 +1293,12 @@ backup_restore() {
   check "the restore of a run that is not there fails, loads nothing"
   backup_pod restore-tokenserver "$(jq -nc --arg c "${restore//20261013T030000Z/${run}}" '["sh", "-c", $c]')" "TOKENSERVER_DB_HOST=${ts_ip}" \
     || fail "the restore of the tokenserver (step 4) failed"
-  check "the tokenserver restored as its user (ADMIN.md#restoring step 4)"
+  check "the tokenserver restored as its user (docs/backups.md#restore step 4)"
   # 6. the storage, "as in step 4 with $STORAGE_DB_NAME..." (PostgreSQL: in the one dump)
   if [[ "${BACKEND}" != postgres ]]; then
     backup_pod restore-storage "$(jq -nc --arg c "$(sed 's/TOKENSERVER_DB_/STORAGE_DB_/g' <<< "${restore//20261013T030000Z/${run}}")" '["sh", "-c", $c]')" \
       "STORAGE_DB_HOST=${st_ip}" || fail "the restore of the storage (step 6) failed"
-    check "the storage restored as its user (ADMIN.md#restoring step 6)"
+    check "the storage restored as its user (docs/backups.md#restore step 6)"
   fi
 
   local bso=bso users_now items_now
@@ -1191,7 +1318,7 @@ backup_restore() {
   [[ -z "${EXTERNAL}" ]] || kubectl delete sts,svc scratchdb --wait=false > /dev/null
 }
 
-# admin_md_restore <n>: the n-th command of ADMIN.md#restoring run in the backup container that
+# admin_md_restore <n>: the n-th command of docs/backups.md#restore run in the backup container that
 # restores $TOKENSERVER_DB_NAME (1: MariaDB, 2: PostgreSQL), as it is there
 admin_md_restore() {
   awk -v n="$1" '
@@ -1201,7 +1328,7 @@ admin_md_restore() {
       if (last) sub(/'"'"'$/, "", line)
       b = b line "\n"
       if (last) { on = 0; if (b ~ /\$TOKENSERVER_DB_NAME\.sql\.gz/ && ++i == n) printf "%s", b }
-    }' "${REPO_ROOT}/ADMIN.md"
+    }' "${REPO_ROOT}/docs/backups.md"
 }
 
 # backup_pod <name> <command, JSON> [VAR=value...]: a pod of the backup CronJob's spec (its
@@ -1331,7 +1458,7 @@ database_users() {
 }
 
 # EXTERNAL_DB=1: who the Sync server is on your own server (the users of its SQL, no
-# administrator, no superuser), and the admin UI's users reaching only what DATABASES.md says
+# administrator, no superuser), and the admin UI's users reaching only what docs/reference/database-users.md#the-admin-uis-own-database says
 external_users() {
   local pod_ip=$1 users
   if [[ "${BACKEND}" == mysql ]]; then
@@ -1379,7 +1506,7 @@ extdb_admin() {
 # EXTERNAL_DB=1: a database server the chart does not manage, mirroring tests/e2e.sh's
 # start_extdb (a plain StatefulSet and Service extdb, a test fixture: MySQL 8 with binary
 # logging, or PostgreSQL 18 administered by a role that is no superuser), the databases and
-# users of DATABASES.md (db/<engine>/sync.sql with its placeholders filled in) under names
+# users of docs/databases.md#create-the-databases-and-users (db/<engine>/sync.sql with its placeholders filled in) under names
 # other than the defaults, and the Secret of existingSecret with the same passwords
 start_extdb() {
   EXT_ADMIN_DB=own_admin EXT_ADMIN_USER=own_admin_ui EXT_ADMIN_SYNC=own_admin_sync
@@ -1400,7 +1527,7 @@ start_extdb() {
   fi
   ! grep -q '@[A-Z_]*@' "${EXT_SQL}" || fail "placeholders left in db/${BACKEND}/sync.sql: $(grep -o '@[A-Z_]*@' "${EXT_SQL}" | sort -u | paste -sd' ' -)"
   extdb_server extdb
-  check "your own database server (${EXTDB_IMAGE}, not the chart's) with DATABASES.md's SQL (db/${BACKEND}/sync.sql) run as the administrator$([[ ${BACKEND} == postgres ]] && echo ' (CREATEROLE, CREATEDB, no superuser)')"
+  check "your own database server (${EXTDB_IMAGE}, not the chart's) with the SQL of docs/databases.md#create-the-databases-and-users (db/${BACKEND}/sync.sql) run as the administrator$([[ ${BACKEND} == postgres ]] && echo ' (CREATEROLE, CREATEDB, no superuser)')"
   # your Secret: the stack's secrets and the passwords of that SQL
   local keys=(--from-literal=SYNC_MASTER_SECRET="$(rnd)" --from-literal=METRICS_HASH_SECRET="$(rnd)" --from-literal=ADMIN_PASSWORD="$(rnd)"
     --from-literal=ADMIN_DB_PASSWORD="${admin}" --from-literal=ADMIN_METRICS_TOKEN=e2e-token)
@@ -1418,11 +1545,11 @@ start_extdb() {
 extdb_server() {
   local name=$1 image port data env args probe
   if [[ "${BACKEND}" == mysql ]]; then
-    # binary logging on (MySQL 8's default): the trigger needs log_bin_trust_function_creators
-    image=mysql:8 port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
+    # binary logging on (MySQL's default): the trigger needs log_bin_trust_function_creators
+    image=mysql:lts port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
     probe='mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent'
   else
-    image=postgres:18 port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'
+    image=postgres:latest port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'
     probe='pg_isready -h 127.0.0.1 -U postgres'
   fi
   EXTDB_IMAGE=${image}

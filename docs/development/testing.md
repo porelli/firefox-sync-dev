@@ -1,0 +1,200 @@
+# Testing
+
+For contributors: what each test script in [tests/](/tests) covers, which workflow runs it, and how to run it locally. Users only need the one-line "Tested" verdicts of the pages they follow.
+
+## The scripts
+
+Every image build runs the CI tests before the multi-arch tags (for example `syncstorage-rs-mysql-latest`) are published. They can all run locally against any published tag, for example `TAG=latest tests/e2e.sh mysql`.
+
+| Script | What it covers | Where | Main variables |
+|---|---|---|---|
+| [tests/e2e.sh](/tests/e2e.sh) `<mysql\|postgres>` | the docker compose stack with Mozilla's accounts: start-up order, max users, domain changes, a Firefox-like sign-in and sync ([test_client_flow.py](/tests/test_client_flow.py), upstream's mock FxA), upstream's storage and tokenserver integration tests, the admin UI, an upgrade from an install before `ADMIN_DB_PASSWORD`, a restore | CI: syncstorage-rs.yml, admin.yml | `TAG`, `SYNC_DB`, `SYNC_MYSQL_IMAGE`, `EXTERNAL_DB`, `UPGRADE_FROM`, `DEMO` |
+| [tests/e2e-fxa.sh](/tests/e2e-fxa.sh) | the stack with self-hosted accounts behind an HTTPS proxy and a mail catcher, see [Accounts](#accounts) | CI: fxa.yml, syncstorage-rs.yml, admin.yml | `FXA_DB`, `FXA_MYSQL_IMAGE`, `FXA_MARIADB_IMAGE`, `EXTERNAL_DB`, `DEMO` |
+| [tests/podman.sh](/tests/podman.sh) | rootless Podman, with Quadlets (also with self-hosted accounts) and with docker compose on the Podman socket, set up with `prepare_environment.sh` | CI: syncstorage-rs.yml, fxa.yml, admin.yml | `SYNC_DB`, `FXA_DB`, `EXTERNAL_DB`, `UPGRADE_FROM` |
+| [tests/fxa-upgrade.sh](/tests/fxa-upgrade.sh) | the self-hosted accounts upgraded in place from an older release, see [Accounts](#accounts) | CI: fxa.yml `test-upgrade` | `FXA_FROM`, `FXA_IMAGE`, `FXA_VERSION`, `FXA_SAME_TAG`, `FXA_DB`, `FXA_MARIADB_FROM`, `FXA_MYSQL_TO` |
+| [tests/helm.sh](/tests/helm.sh) `<lint\|parity\|e2e>` | the Helm chart, see [Helm chart](#helm-chart) | CI: helm.yml | `EXTERNAL_DB`, `SKIP_BUILD`, `REPOSITORY`, `TAG` |
+| [tests/migrate.sh](/tests/migrate.sh) `<scenario>` | the moves of [Migrating](../migrating.md) from other Sync servers (Mozilla's compose files, dan-r, jeena, NixOS, YunoHost) and the upgrades of older firefox-sync releases ([Upgrading](../upgrading.md#older-firefox-sync-releases)), read back with [migrate_client.py](/tests/migrate_client.py) | local only | the scenario; `PORT` |
+| [tests/test_upstream_patches.py](/tests/test_upstream_patches.py) | the decisions of `.github/scripts/upstream-patches.py` on fixtures, no network | CI: the jobs that pick the release | none |
+| [tests/check_markdown_links.py](/tests/check_markdown_links.py) and [its self-test](/tests/test_check_markdown_links.py) | the links of the docs, see [Links](#links) | CI: docs.yml, every push | `--code`, `--settings` |
+| `cd admin && go test ./...` | the admin UI's unit tests, see [Admin UI](#admin-ui) | CI: admin.yml `unit` | none |
+
+The end-to-end scripts finish with [tests/healthy.sh](/tests/healthy.sh): every container that keeps running is healthy, and the one-shot ones exited with 0. `tests/podman.sh` also checks that each long-running Quadlet has the healthcheck of its compose service (the same command and timings), and that no such service lacks one.
+
+`EXTERNAL_DB=1` runs the same on a database server outside the stack, with only the documented grants ([Database users](../reference/database-users.md)): MySQL (`SYNC_MYSQL_IMAGE`) with binary logging, or PostgreSQL set up by a role that is no superuser, with an owner that is no superuser. `tests/e2e-fxa.sh` and `tests/podman.sh` take it too: one MySQL (`FXA_MYSQL_IMAGE`), or MariaDB with `FXA_DB=mariadb`, for Sync and the accounts. `EXTERNAL_DB=fxa` puts only the accounts there.
+
+Tests that work around an upstream bug read the image's label: see [Upstream patches](upstream-patches.md#in-the-tests).
+
+## Test matrix
+
+The defaults follow each database's long-term tag (`mariadb:lts`, `mysql:lts`; PostgreSQL has none: `postgres:latest`, pinned per install at setup). The older majors are those the installs from before stay on ([Database majors](../upgrading.md#database-majors)). Which workflow and job runs what:
+
+| Component | Database | Stack's container | Your own server (`EXTERNAL_DB=1`) |
+|---|---|---|---|
+| Sync | MariaDB `lts` | syncstorage-rs.yml `test`, admin.yml `e2e`, helm.yml `e2e` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`: one MariaDB server for Sync and the accounts) |
+| Sync | MySQL `lts` | syncstorage-rs.yml and admin.yml `e2e` (`SYNC_DB=mysql`), helm.yml `e2e` | syncstorage-rs.yml and admin.yml, helm.yml |
+| Sync | MySQL 8 (installs from before) | syncstorage-rs.yml `test` (`SYNC_DB=mysql`, `SYNC_MYSQL_IMAGE=mysql:8`) | syncstorage-rs.yml `test` (`SYNC_MYSQL_IMAGE=mysql:8`) |
+| Sync | PostgreSQL `latest` (its major pinned) | syncstorage-rs.yml and admin.yml `test`/`e2e`, helm.yml `e2e` | the same |
+| Accounts | MySQL `lts` (images with mozilla/fxa#21554) | fxa.yml `test` (amd64, arm64), admin.yml `e2e-fxa` once `fxa-mono-latest` has it | admin.yml `e2e-fxa` (`EXTERNAL_DB=1`) |
+| Accounts | MySQL 8 with `mysql_native_password` (installs from before, images without it) | fxa.yml `test` (`FXA_MYSQL_IMAGE=mysql:8`), syncstorage-rs.yml `test-fxa` (Mozilla's images), fxa.yml `test-upgrade` (then to `lts`) | admin.yml `e2e-fxa` while `fxa-mono-latest` has no mozilla/fxa#21554 |
+| Accounts | MariaDB `lts` (needs mozilla/fxa#21494) | fxa.yml `test-mariadb`, admin.yml `e2e-fxa` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`) |
+| Accounts | MariaDB 11 (installs from before) | fxa.yml `test-mariadb` (`mariadb:11`) | - |
+| Podman, Quadlets | the defaults (MariaDB `lts`, the accounts on MySQL as above) | syncstorage-rs.yml, fxa.yml and admin.yml `test-podman`/`podman` | - |
+
+Redis (the accounts' cache, no volume) follows `redis:alpine` in every run with the accounts.
+
+Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mysql` and `SYNC_MYSQL_IMAGE=mysql:8`, `e2e-fxa` with `FXA_MYSQL_IMAGE=mysql:8` or `FXA_DB=mariadb FXA_MARIADB_IMAGE=mariadb:11`, `fxa-upgrade` with `FXA_FROM=<an older accounts image>` (and `FXA_MYSQL_TO`).
+
+## The Sync server and Podman
+
+`tests/e2e.sh`:
+
+- with `SYNC_DB=mysql`, the stack on MySQL (`SYNC_MYSQL_IMAGE`: `mysql:lts`, or `mysql:8` as the installs from before; then it also checks that `lts` refuses their data, that `--upgrade` pins them, and the move to `lts`);
+- the upgrade from an install before `ADMIN_DB_PASSWORD` (with `UPGRADE_FROM=<checkout>`, that release's own files and images), which moves the admin UI's event log out of the Sync server's users' reach;
+- the Sync MariaDB containers of an install from before `SYNC_MARIADB_IMAGE`, pinned by `--upgrade` to the major of their data.
+
+`tests/podman.sh`:
+
+- the Quadlets and docker compose on the Podman socket, both set up with `prepare_environment.sh`;
+- the MySQL Quadlets as rendered; with `SYNC_DB=mysql`, the compose phase as an install from before on `mysql:8` (pinned by `--upgrade`) and the Quadlets on `mysql:lts`;
+- `--upgrade` renaming the old setting names and `docker-compose.postgres.yml`;
+- with `UPGRADE_FROM=<checkout>`, the Quadlet upgrade steps of [Upgrading](../upgrading.md#quadlets) (the `systemctl --user stop` line is read from that page): the old release where this tree is, the files swapped as `git pull` does, `--upgrade` keeping every secret, no `SET PASSWORD`;
+- `--render-units` on the running Quadlets (a setting, an `ADMIN_IMAGE` pin, `ADMIN_INSECURE_COOKIE`), and with the accounts on MariaDB (`FXA_LOG_LEVEL`): only the changed units written, the secrets kept, a second run changing nothing, the stack started again;
+- where the Sync server listens: `SYNC_EXPORT_PORT` of a new install on `127.0.0.1` (the answers, nginx, `PublishPort`, `ss`), an upgraded one keeping its value.
+
+## Accounts
+
+`tests/e2e-fxa.sh` starts the stack with a test reverse proxy (Caddy, HTTPS with its own CA) and a mail catcher (Mailpit). No Mozilla service is involved.
+
+- [test_fxa_flow.py](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token and syncs, then signs in again as a second device.
+- [test_fxa_admin.py](/tests/test_fxa_admin.py) checks the sign-up policy and the admin UI ([Admin UI](#admin-ui)).
+- [test_fxa_browser.py](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [tests/browser](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it.
+- [test_fxa_pairing.py](/tests/test_fxa_pairing.py) checks the pairing server's websocket channel.
+- It runs with the newest Mozilla accounts release every week, and on amd64 and arm64 for the [accounts images](/.github/workflows/fxa.yml).
+- The accounts database is MySQL, `FXA_MYSQL_IMAGE`: by default `mysql:lts` for an accounts image with mozilla/fxa#21554 in its label, else `mysql:8` with `FXA_MYSQL_ARGS` (`mysql_native_password`).
+- With `FXA_DB=mariadb` it is MariaDB, `FXA_MARIADB_IMAGE`: by default `mariadb:lts`, or `mariadb:11` for an accounts image without mozilla/fxa#21494. `tests/podman.sh` takes `FXA_DB` too, for the Quadlets.
+- `db/mysql/keep-major.sh` refuses MariaDB 11 data on `mariadb:lts` without `SYNC_MARIADB_IMAGE`, and says what to set.
+
+`tests/fxa-upgrade.sh` upgrades an install in place with the steps of [Upgrading](../upgrading.md#self-hosted-accounts):
+
+1. It starts the stack on an older release (`FXA_FROM`), where [test_fxa_upgrade.py](/tests/test_fxa_upgrade.py) signs up, registers a device, gets a refresh token and syncs.
+1. Then a backup, the new `FXA_VERSION`, `docker compose pull` and `docker compose up -d`. With `FXA_SAME_TAG=1` the older release is installed under the new tag, as an install following `fxa-mono-latest` has it, and `docker compose up -d` without the pull must keep it.
+1. After it: the migrations ran up to the levels of the new image's `target-patch.json`; the sign-up policy and the admin UI's procedures are installed again; the old session, device and refresh token still work; the Sync data reads back on the same tokenserver user; a new sign-in and a new sign-up work; the admin UI is all up, shows the new release and recorded each migrated schema as an event.
+1. On MySQL the install runs `mysql:8` with `mysql_native_password`, as those from before: the new files without its settings (`fxa-db` refuses to upgrade the data), `--upgrade`, the upgrade, then, with a new image that has mozilla/fxa#21554, the move to `mysql:lts` of [MySQL 8 to 9](../upgrading.md#mysql-8-to-9) (`FXA_MYSQL_TO`).
+
+[fxa.yml](/.github/workflows/fxa.yml) runs it from the published `fxa-mono-latest` to every new release before publishing it (amd64; not for a rebuild of a release older than the published one). It upgrades to `FXA_IMAGE:FXA_VERSION` (default: `IMAGE_REPOSITORY`, `fxa-mono-latest`), reads the release the admin UI must show from that image, and refuses a target older than `FXA_FROM`. Locally, for example:
+
+```bash
+# from Mozilla's own image (amd64, emulated on arm64) with older schemas
+FXA_FROM=docker.io/mozilla/fxa-mono:v1.345.2 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_VERSION=fxa-mono-v1.347.3 tests/fxa-upgrade.sh
+# from one of our older builds on MariaDB
+FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.1 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_DB=mariadb tests/fxa-upgrade.sh
+# from an older fxa-mono-latest
+FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.1 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_SAME_TAG=1 tests/fxa-upgrade.sh
+# an install on MariaDB 11 moved to lts (12), with the new image that has mozilla/fxa#21494
+FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.3 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 FXA_MARIADB_IMAGE=mariadb:lts tests/fxa-upgrade.sh
+# on MySQL: mysql:8 with mysql_native_password, --upgrade, then the move to mysql:lts
+FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.3 FXA_IMAGE=ghcr.io/porelli/firefox-sync-dev tests/fxa-upgrade.sh
+```
+
+Our builds are in the registry of the repository whose fxa.yml built them; the examples use the development builds.
+
+## Admin UI
+
+What each script checks of the admin UI. The pages themselves: [The admin UI](../admin/README.md).
+
+`tests/e2e-fxa.sh`, with [test_fxa_admin.py](/tests/test_fxa_admin.py), against the full stack:
+
+- the SMTP health row and a test email; the public URLs through the HTTPS proxy and the sign-up gate (the probe creates no account with open sign-ups); the schema levels;
+- invitations, Connect a device, the Configuration page (the accounts' values, no secret);
+- sign-ups refused through the gate and directly, the allowlist, closing and reopening sign-ups;
+- the accounts list, disabling an account, max users and max accounts (full: the gate, the database refusal, the line, the health row, the event and Prometheus; room again; no limit);
+- `FXA_MAX_ACCOUNTS` like `SYNC_MAX_USERS`: written by `prepare_environment.sh`, refused when not valid, kept from the page with `initial:`, replaced by a plain number, `ffs.signup_refusal` with 0 and unlimited;
+- what an account stores, the metrics and the event log, health and database sizes, the badges, rate-limit blocks lifted;
+- signing out a session, a device of a session, a device of a refresh token, and everywhere (a new sign-in works at once); disabling also ends a password reset started before; the audit trail names the account and the admin; `ffs_admin` cannot delete FxA's tokens itself;
+- the alerts by email (in the mail catcher) and to a webhook (`ADMIN_NOTIFY`, [notify_sink.py](/tests/notify_sink.py)), with the setup check of the accounts' SMTP server;
+- Prometheus, the password and form checks, `X-Forwarded-For` spoofing, the confirm pages;
+- two-step authentication on through the accounts API and off from the admin UI, recovery keys, secondary emails, an email confirmed from the admin UI;
+- the security history (`FXA_ACCOUNT_EVENTS=true`): each kind of event, its alerts and Prometheus, then nothing more recorded once it is off;
+- a Sync client after its data was reset, deleting an account (refused while enabled or with a wrong email; then gone everywhere), orphans purged, pruning and deleting old unconfirmed accounts;
+- Needs attention, the badge lists, the search by part of an email and by account id;
+- the backups of the accounts and of Sync (five dumps passing `gzip -t`, both runs recorded), the dump of `fxa` restored into a scratch database, and that `ffs_admin` reads the views but no secret column; with the accounts on MySQL, MariaDB and your own server.
+
+A real Firefox ([test_fxa_browser.py](/tests/test_fxa_browser.py)) follows an invitation's link, sees the error of a refused sign-up, finds its two devices and bookmarks in the admin UI, checks the pages at 360 pixels wide, and disables the account through the confirm page with the CSP enforced.
+
+`tests/e2e.sh` and `tests/podman.sh`, with [test_admin_sync.py](/tests/test_admin_sync.py):
+
+- `SYNC_MAX_USERS=N`, `initial:N`, `unlimited` and `0`;
+- the admin UI and the gate start with compose and the Quadlets and reach every component (`ffs_up`); the container healthcheck; signing in over `http://localhost`;
+- the Sync server's metrics (restarted with a new admin UI container), the pruning of metrics and events, the event filters and pages;
+- labels, the tokenserver rows after a key change, resetting Sync data (one collection, all of it, the slot freed), the storage report and its purge, deleting the Sync data of an account id;
+- the schema levels, the setup checks, the accounts per node, Connect a device, the Configuration page (no secret);
+- no SMTP row without `FXA_SMTP_HOST`, no public checks with `ADMIN_PUBLIC_CHECK=false`, the alerts to a webhook and a Slack-style destination ([the webhook schema](../admin/alerts.md#webhook-schema)), the Sync server going down and back up, no background errors in the logs;
+- with `COMPOSE_PROFILES=backup` and `BACKUP_KEEP=1`: two runs (one copy kept, the dumps passing `gzip -t`, mode 0600), a failed run and its alert, `ffs_backup_age_seconds`; the errors by kind and the error-rate and growth rows;
+- an install from before `ADMIN_DB_PASSWORD` upgraded: the tables move into `ffs_admin` once, the old ones are dropped, and the Sync server's users cannot read, add to or delete from the event log (`e2e.sh`: MariaDB, MySQL, PostgreSQL and your own servers);
+- `ffs_admin_sync` changes the tokenserver only through the init container's procedures, `ffs_admin_ui` cannot read the Sync databases, and a procedure the Sync server's user swaps in with `SQL SECURITY INVOKER` cannot reach the audit trail;
+- at the end, a restore as [Restore](../backups.md#restore) says, as on a new host: every table has the same rows, the triggers and procedures are back, and two accounts read back what they stored (MariaDB, MySQL 8 and PostgreSQL). `tests/podman.sh` does the same for the Quadlets ([Restore with Quadlets](../backups.md#restore-with-quadlets)), and checks the backup timer and the admin UI units' variables.
+
+`tests/e2e.sh` also signs in through [Dex](https://dexidp.io) with OpenID Connect and with a trusted header ([test_admin_auth.py](/tests/test_admin_auth.py)): an allowed user or group gets in; anybody else, a replayed callback, a tampered state or code are refused; a header that changes or disappears ends the session; forms need the session token; the event log says who signed in and how.
+
+The unit tests (`cd admin && go test ./...`) cover the backups' age and failures, each line of Needs attention, the thresholds and limits alerting once per state, the errors by kind of real captured statsd packets ([admin/testdata/statsd-packets.jsonl](/admin/testdata/statsd-packets.jsonl)), the error-rate spike and growth rules, the limits' forms, the security history, each `ADMIN_NOTIFY` destination against a local server (escaping, length limits, retries, timeouts, no token in errors, logs or pages), that every POST form is behind a confirm page or a known one-click form, and that every variable the admin UI reads is classified as a secret or not.
+
+## Helm chart
+
+[tests/helm.sh](/tests/helm.sh) needs `helm`, `jq` and PyYAML. `lint` and `parity` also need `docker compose` (for its config only). `e2e` also needs `kind`, `kubectl` and docker, which builds the init and admin images and hands the syncstorage image to the cluster with `docker save`.
+
+- `lint`: `helm lint` with each values file of [charts/firefox-sync/ci/](/charts/firefox-sync/ci), then checks of the renders: probes on every long-running container, the values the schema refuses, the database images and their major checks, the Secret (generated, read back, `helm.sh/resource-policy: keep`, `existingSecret`), names over Kubernetes' limits, your own database server, the Ingresses, the backups' CronJob, what every pod has (no service account token, seccomp `RuntimeDefault`, nothing PodSecurity `baseline` refuses, the scheduling values, each `resources`), the NOTES, and [chart-version.sh](/.github/scripts/chart-version.sh). Then `parity`.
+- `parity [case...]`: [helm_parity.py](/tests/helm_parity.py), the chart against compose: per compose service and chart container the same variables and values (hosts and secrets aside), the same commands, probes with the timings of compose's healthchecks, the copied scripts byte-identical, for each backend, with the admin UI and the backups on and off.
+- `e2e <mariadb|mysql|postgres>`: the chart on a throwaway kind cluster (`ffs-helm-<backend>`, its namespace enforcing PodSecurity `baseline`), with the init and admin images built from the tree (`SKIP_BUILD=1`: the published ones of `REPOSITORY` and `TAG`):
+    - `helm install --wait`, the client flow, the database users' grants, a wrong database password stopping the pod in its init containers, `helm upgrade` keeping every secret;
+    - the admin UI on and off with `helm upgrade`, signed in with the Secret's `ADMIN_PASSWORD` through a port-forward, the overview with the `kubectl` commands, `/metrics` with `admin.metricsToken`; its pod meets PodSecurity `restricted`;
+    - a backup with `kubectl create job --from=cronjob/...`, its dumps restored with the commands of [Restore](../backups.md#restore) into empty database servers like the chart's (the MariaDB and PostgreSQL blocks, in that order). The steps of [Restore on Kubernetes](../backups.md#restore-on-kubernetes) as a whole were run by hand on kind, not in CI;
+    - `helm uninstall` and `helm install` with the same release name and values: the same Secret and PVCs, and the client's Sync data read back.
+- `EXTERNAL_DB=1` (mysql, postgres): on a database server of its own in the cluster, which the chart does not manage (`database.bundled=false`, `existingSecret`). With MySQL on an Ubuntu host with `mysql-server`, it stops first while the host's AppArmor profile for `mysqld` is loaded ([Troubleshooting](../troubleshooting.md#kubernetes)).
+
+[helm.yml](/.github/workflows/helm.yml) runs `ct lint`, kubeconform with each `ci/` values file, `tests/helm.sh lint`, and `e2e` on MariaDB, MySQL and PostgreSQL and on your own MySQL and PostgreSQL server: on every push that changes the chart, its tests, the compose files, `db/`, the backups, the admin UI or [docs/backups.md](../backups.md), and every week. Publishing the chart: [Releasing](releasing.md#the-helm-chart).
+
+<!-- helm-fxa: tests/helm-fxa.sh goes here -->
+
+## Docs that tests read
+
+Some tests read commands from the docs and check them word for word, so a page and its commands stay in step. Change such a command only together with its test.
+
+| Test | Page | What it reads |
+|---|---|---|
+| `tests/e2e.sh` | [backups.md](../backups.md#restore) | the compose restore commands |
+| `tests/helm.sh` | [backups.md](../backups.md#restore) | the blocks starting `--entrypoint sh backup -c '` that contain `$TOKENSERVER_DB_NAME.sql.gz`: the first is MariaDB, the second PostgreSQL |
+| `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; the Quadlet `systemctl --user stop` line, exactly once |
+| `tests/migrate.sh` | [migrating.md](../migrating.md), [upgrading.md](../upgrading.md#older-firefox-sync-releases) | every command it runs, with `grep -qF` in either page |
+
+## Links
+
+[tests/check_markdown_links.py](/tests/check_markdown_links.py) checks every tracked markdown file (but `tests/browser`):
+
+- relative links, resolved from the file's directory, and repository-absolute ones (`/db/...`), resolved from the root;
+- `#anchors`, against GitHub's slugs of the headings (outside code fences, from their rendered text, duplicates suffixed `-1`, `-2`) and `<a id>`/`<a name>`;
+- absolute `https://github.com/porelli/firefox-sync/blob/main/...` URLs, against the tree.
+
+With `--code` it also checks the doc references of the other tracked text files (`docs/....md#anchor`, or a bare `NAME.md`), such as the admin UI's help links, the scripts' messages and the chart's NOTES. With `--settings` it checks that every setting of [.env-example](/.env-example) and every top-level key of [values.yaml](/charts/firefox-sync/values.yaml) appears in [Settings](../reference/settings.md).
+
+```bash
+python3 -I tests/check_markdown_links.py --code --settings
+python3 -I tests/test_check_markdown_links.py
+```
+
+[docs.yml](/.github/workflows/docs.yml) runs both, with `--code --settings`, on every push.
+
+## The screenshot demo
+
+The screenshots of the docs come from a demo, not from the leftovers of the tests.
+
+1. Start it, with self-hosted accounts or with Mozilla's:
+
+    ```bash
+    DEMO=1 tests/e2e-fxa.sh     # demo_seed.py fxa: alice, bob and carol (two-step authentication on) with devices and Sync data, dave invited, an allowlist, a note, a backup
+    DEMO=1 tests/e2e.sh mysql   # demo_seed.py sync: upstream's mock FxA, three account ids with Sync data and notes
+    ```
+
+    Instead of the tests, [tests/demo_seed.py](/tests/demo_seed.py) goes through the public flows (sign-ups with the codes from Mailpit, devices, OAuth, the tokenserver, Sync writes, with Firefox's user agents). Both leave the stack running ([tests/docker-compose.demo.yml](/tests/docker-compose.demo.yml) puts back the admin UI's defaults the tests shorten), and print where the admin UI listens. Its password is `ADMIN_PASSWORD` of the env file they name.
+1. Take the pages in a browser at 1280×900 (390×844 for the phone; from another machine, through an ssh tunnel to those ports).
+1. Quantize each PNG to 128 colours (Pillow) to stay well under 150 KB, and put it in [docs/images/admin/](/docs/images/admin).
+1. Run `docker compose -p <project> down -v` with the project they named.

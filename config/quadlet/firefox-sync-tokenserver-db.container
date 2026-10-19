@@ -3,7 +3,9 @@ Description=Firefox Sync - Tokenserver Database
 After=firefox-sync-network.service
 
 [Container]
-Image=docker.io/library/mariadb:lts
+# SYNC_MARIADB_IMAGE of .env (prepare_environment.sh: mariadb:lts, the major of the data for
+# the installs from before; AutoUpdate=registry follows the tag, lts too: pin a major to choose)
+Image=%SYNC_MARIADB_IMAGE%
 ContainerName=firefox-sync-tokenserver-db
 Network=firefox-sync-network.network
 Volume=firefox-sync-tokenserver-db.volume:/var/lib/mysql

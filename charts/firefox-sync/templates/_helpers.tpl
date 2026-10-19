@@ -234,7 +234,7 @@ Return the name of the secret containing database passwords
 {{- end }}
 
 {{/*
-maxUsers as compose's MAX_USERS: a string, also when given as a number (maxUsers: 5,
+maxUsers as SYNC_MAX_USERS of .env (MAX_USERS of the init container): a string, also when given as a number (maxUsers: 5,
 --set maxUsers=5); int64 first, so that a large number is not printed as a float (1e+06)
 */}}
 {{- define "firefox-sync.maxUsers" -}}
@@ -254,7 +254,7 @@ as an integer, never 2e+06; empty for nil
 {{- end }}
 
 {{/*
-PostgreSQL: the Sync server's own role (compose's POSTGRES_SYNC_USER, database.postgresSyncUser,
+PostgreSQL: the Sync server's own role (SYNC_POSTGRES_APP_USER of .env, database.postgresSyncUser,
 syncserver_app as prepare_environment.sh names it), no superuser, created by the sync-role init
 container before the migrations. Empty with your own server (compose: also an install from
 before it): the Sync server is POSTGRES_USER, the owner there
@@ -356,10 +356,88 @@ docker-compose.sync-postgres.yml), for the migrate init container and the server
 
 {{/*
 The image of the bundled database, also the client of wait-db and of the backups: as compose
-(database.image.<backend>, compose's POSTGRES_IMAGE for PostgreSQL)
+(database.image.<backend>, compose's SYNC_POSTGRES_IMAGE for PostgreSQL)
 */}}
 {{- define "firefox-sync.dbImage" -}}
 {{- index .Values.database.image .Values.database.backend }}
+{{- end }}
+
+{{/*
+The major of an image's tag ("9" of docker.io/library/mysql:9.7, "" of :lts or :latest), and
+its name and tag without the registry ("mysql:lts"), for checkDbMajor
+*/}}
+{{- define "firefox-sync.imageMajor" -}}
+{{- $tag := regexReplaceAll "^.*:" (regexReplaceAll "@.*$" (last (splitList "/" .)) "") "" }}
+{{- regexFind "^[0-9]+" $tag }}
+{{- end }}
+{{- define "firefox-sync.imageNameTag" -}}
+{{- regexReplaceAll "@.*$" (last (splitList "/" .)) "" }}
+{{- end }}
+
+{{/*
+"true" when the image old -> new moves the data to another major (dict "old" "new"): two
+numbered majors that differ, a numbered major to a tag without one (lts, latest), or one tag
+without a major to another; to a numbered major from lts or latest is the pin of
+docs/upgrading.md#database-majors. Another server (a backend switch) is not a major change of this one
+*/}}
+{{- define "firefox-sync.dbMajorChange" -}}
+{{- $oldNameTag := include "firefox-sync.imageNameTag" .old }}
+{{- $newNameTag := include "firefox-sync.imageNameTag" .new }}
+{{- if and .old (eq (first (splitList ":" $oldNameTag)) (first (splitList ":" $newNameTag))) }}
+{{- $om := include "firefox-sync.imageMajor" .old }}
+{{- $nm := include "firefox-sync.imageMajor" .new }}
+{{- if and $om $nm }}{{ if ne $om $nm }}true{{ end }}
+{{- else if $om }}true
+{{- else if not $nm }}{{ if ne $oldNameTag $newNameTag }}true{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+A new database.image.<backend> on a release whose bundled database runs: the render fails
+before anything is applied when it would move the data to another major. MariaDB and MySQL
+upgrade their data in place at the first start on a newer major, with no way back but a
+backup; PostgreSQL cannot open another major's data at all. The running image is read with
+lookup (install and upgrade; nothing to check where lookup returns nothing: helm template, a
+GitOps render), the change as dbMajorChange says (a pin from lts goes through: the server
+refuses one older than its data). database.allowMajorUpgrade lets MariaDB and MySQL move (lts to lts), never PostgreSQL;
+a PostgreSQL whose server is not up (its db-major init container refused a wrong pin) may change
+*/}}
+{{- define "firefox-sync.checkDbMajor" -}}
+{{- if .Values.database.bundled }}
+{{- $root := . }}
+{{- $backend := .Values.database.backend }}
+{{- $new := include "firefox-sync.dbImage" . }}
+{{- $dbs := ternary (list "tokenserver") (list "tokenserver" "storage") (eq $backend "postgres") }}
+{{- range $dbs }}
+{{- $name := include "firefox-sync.dbHost" (dict "root" $root "db" .) }}
+{{- $existing := lookup "apps/v1" "StatefulSet" $root.Release.Namespace $name }}
+{{- if $existing }}
+{{- $old := "" }}
+{{- range $existing.spec.template.spec.containers }}
+{{- if eq .name "db" }}{{ $old = .image }}{{ end }}
+{{- end }}
+{{- /* PostgreSQL not up on that image (e.g. refused by db-major after a wrong pin): nothing
+of its data changed, going back to its major must stay possible */}}
+{{- $up := true }}
+{{- if eq $backend "postgres" }}
+{{- $up = false }}
+{{- with lookup "v1" "Pod" $root.Release.Namespace (printf "%s-0" $name) }}
+{{- range (.status.containerStatuses | default list) }}
+{{- if and (eq .name "db") .ready }}{{ $up = true }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $up (include "firefox-sync.dbMajorChange" (dict "old" $old "new" $new)) }}
+{{- if eq $backend "postgres" }}
+{{- fail (printf "firefox-sync: database.image.postgres is %s but the bundled PostgreSQL (%s) runs %s, and PostgreSQL cannot open another major's data; set database.image.postgres to %s, a newer major needs a dump and restore or pg_upgrade, see docs/upgrading.md#database-majors" $new $name $old $old) }}
+{{- else if not $root.Values.database.allowMajorUpgrade }}
+{{- fail (printf "firefox-sync: database.image.%s is %s but the bundled database %s runs %s; another major upgrades its data for good at the next start: set database.image.%s to %s to stay, or database.allowMajorUpgrade=true to move (a backup first), see docs/upgrading.md#database-majors" $backend $new $name $old $backend $old) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -377,10 +455,10 @@ UI's Ingress a host of its own; the self-hosted accounts', firefox-sync.checkFxa
 {{- define "firefox-sync.checkValues" -}}
 {{- if not .Values.database.bundled }}
 {{- if not .Values.database.external.host }}
-{{- fail "firefox-sync: database.bundled=false needs database.external.host, your database server (DATABASES.md)" }}
+{{- fail "firefox-sync: database.bundled=false needs database.external.host, your database server (docs/databases.md#your-own-server)" }}
 {{- end }}
 {{- if not .Values.existingSecret }}
-{{- fail "firefox-sync: database.bundled=false needs existingSecret, a Secret with the passwords of the users that DATABASES.md's SQL created on your server (and the stack's secrets): the chart cannot generate passwords your server knows" }}
+{{- fail "firefox-sync: database.bundled=false needs existingSecret, a Secret with the passwords of the users that the SQL of docs/databases.md#create-the-databases-and-users created on your server (and the stack's secrets): the chart cannot generate passwords your server knows" }}
 {{- end }}
 {{- end }}
 {{- range $key := list "port" "storagePort" }}

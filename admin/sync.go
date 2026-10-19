@@ -247,7 +247,7 @@ func (s *SyncDB) User(ctx context.Context, uid string) (*SyncUser, error) {
 	return nil, nil
 }
 
-// maxUsersEditable tells from MAX_USERS (as in .env) whether the admin UI manages the
+// maxUsersEditable tells from MAX_USERS (SYNC_MAX_USERS of .env) whether the admin UI manages the
 // limit: with initial:N the init container sets it only when there is none yet. N or
 // fixed:N is set again on every start, so a change here would not last: read-only, and
 // so when MAX_USERS is not given.

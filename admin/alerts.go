@@ -169,7 +169,7 @@ func smtpServer() *Mailer {
 	return &Mailer{
 		host: host, port: env("SMTP_PORT", "587"), user: env("SMTP_USER", ""), pass: env("SMTP_PASS", ""),
 		implicitTLS:  env("SMTP_SECURE", "false") == "true",
-		insecureAuth: env("SMTP_INSECURE_AUTH", "") != "",
+		insecureAuth: switchOn("SMTP_INSECURE_AUTH"),
 	}
 }
 

@@ -5,6 +5,8 @@
 
 # Set the locale to UTF-8
 export LC_CTYPE=C
+# set by the script itself only (env_file_read): one exported in the shell would redirect every read of .env
+unset ENV_READ
 
 # Detect container runtime
 detect_runtime() {
@@ -43,7 +45,7 @@ sed_escape() {
     printf '%s' "${1}" | sed -e 's/[\\/&|]/\\&/g'
 }
 
-# The Sync server's settings, renamed to the SYNC_ prefix (MIGRATING.md#renamed-settings):
+# The Sync server's settings, renamed to the SYNC_ prefix (docs/upgrading.md#renamed-settings):
 # new=old. The old names still work, compose and the Quadlets read them when the new one is
 # not set, and will be removed in a later release; --upgrade renames them in .env
 RENAMED_SETTINGS=(
@@ -85,12 +87,14 @@ old_name() {
     done
 }
 
-# a value of .env, as it is written (not with `source`: it is no shell script); env_value
+# a value of .env, as compose reads it (not with `source`: it is no shell script); env_value
 # of a renamed setting reads the old name when the new one is not set, as compose does
-# (a line of compose's .env may be indented or start with export; CRLF line ends)
+# (a line of compose's .env may be indented or start with export; CRLF line ends). ENV_READ:
+# another file to read (the copy --upgrade and the setup edit before it replaces .env)
 ENV_LEAD='[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}'
-env_line() { grep "^${ENV_LEAD}${1}=" ${SCRIPT_DIR}/.env | sed -e "s/^[^=]*=//" | tr -d '\r'; }
-env_has() { grep -q "^${ENV_LEAD}${1}=" ${SCRIPT_DIR}/.env; }
+env_file_read() { printf '%s' "${ENV_READ:-${SCRIPT_DIR}/.env}"; }
+env_line() { grep "^${ENV_LEAD}${1}=" "$(env_file_read)" | sed -e "s/^[^=]*=//" | tr -d '\r'; }
+env_has() { grep -q "^${ENV_LEAD}${1}=" "$(env_file_read)"; }
 # the value as compose reads it: the last line; quoted, what is between the quotes (a
 # comment after them dropped), otherwise without a comment ( # ...) and the spaces around
 env_plain() {
@@ -107,14 +111,25 @@ env_plain() {
     esac
     printf '%s' "${v}"
 }
+# env_plain, with the old name of a renamed setting when the new one has no value
 env_value() {
     local value old
-    value=$(env_line "${1}")
+    value=$(env_plain "${1}")
     old=$(old_name "${1}")
-    [ -z "$(env_plain "${1}")" ] && [ -n "${old}" ] && value=$(env_line "${old}")
+    [ -z "${value}" ] && [ -n "${old}" ] && value=$(env_plain "${old}")
     printf '%s\n' "${value}"
 }
-# the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
+# a backup name that is not taken: <path>-<UTC time>, -2, -3... after it within a second
+backup_name() {
+    local base n=2
+    base=${1}-$(date -u +%Y%m%dT%H%M%SZ)
+    [ ! -e "${base}" ] && { printf '%s' "${base}"; return; }
+    while [ -e "${base}-${n}" ]; do n=$((n + 1)); done
+    printf '%s' "${base}-${n}"
+}
+# a copy of an .env (passwords): this user only, whatever the mode of the original
+private_copy() { rm -f "${2}" && (umask 077; cp "${1}" "${2}"); }
+# the SQL for your own database server, with the names and passwords of .env (docs/databases.md#create-the-databases-and-users)
 render_sql() {
     local template=${1} out=${2} pair expressions=()
     shift 2
@@ -141,15 +156,19 @@ render_sync_sql() {
     fi
 }
 
-# MariaDB 12 and later (FXA_MARIADB_IMAGE=mariadb:lts, the default) need accounts images with
-# mozilla/fxa#21494 (upstream-patches.yml): ours list it in their label
+# Accounts images and the upstream pull requests of upstream-patches.yml they need: MariaDB 12
+# and later (FXA_MARIADB_IMAGE=mariadb:lts, the default) need mozilla/fxa#21494, MySQL 9
+# (FXA_MYSQL_IMAGE=mysql:lts, the default) and MySQL without mysql_native_password need
+# mozilla/fxa#21554 (the mysql2 driver). Ours list what they have in their label
 # org.firefox-sync.upstream-patches, Mozilla's (docker.io/mozilla/fxa-mono) and ours built
-# before don't have it. The local image first (what starts), then the registry (docker buildx
-# imagetools or skopeo); only a warning. Here and not in the admin UI, which cannot inspect images
+# before don't have them. The local image first (what starts), then the registry (docker buildx
+# imagetools or skopeo). Here and not in the admin UI, which cannot inspect images
 image_label() { grep -o '"org\.firefox-sync\.upstream-patches": *"[^"]*"' | head -n 1 | sed 's/.*: *"//; s/"$//'; }
 fxa_image_patches_local() {
-    local image=${1} runtime out
-    for runtime in docker podman; do
+    local image=${1} runtime out runtimes="docker podman"
+    # the store of what runs the units: Podman's for the Quadlets (also on a host with Docker)
+    [ "${DEPLOY_METHOD:-}" = quadlets ] && runtimes=podman
+    for runtime in ${runtimes}; do
         command -v "${runtime}" > /dev/null 2>&1 || continue
         out=$(${runtime} image inspect "${image}" 2> /dev/null) && { printf '%s' "${out}" | image_label; return 0; }
     done
@@ -161,9 +180,48 @@ fxa_image_patches_remote() {
         || out=$(skopeo inspect "docker://${image}" 2> /dev/null) || return 1
     printf '%s' "${out}" | image_label
 }
-has_fxa_patch() { case " ${1} " in *" mozilla/fxa#21494@"*) return 0 ;; esac; return 1; }
+# has_fxa_patch <pull request> <label>: e.g. mozilla/fxa#21494 in "mozilla/fxa#21494@517651a..aa0b178 ..."
+has_fxa_patch() { case " ${2} " in *" ${1}@"*) return 0 ;; esac; return 1; }
+# fxa_image_has <pull request>: whether the accounts image of .env (FXA_IMAGE:FXA_VERSION) has
+# it: 0 yes, 1 no, 2 not known (no local copy and no answer of the registry). An older local
+# copy without it while the registry's has it: yes, and FXA_IMAGE_PULL=yes (pull before starting).
+# Asked once per image and pull request (FXA_IMAGE_ANSWERS)
+FXA_IMAGE_ANSWERS=""
+fxa_image_has() {
+    local pr=${1} image patches remote rc answer
+    image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
+    for answer in ${FXA_IMAGE_ANSWERS}; do
+        [ "${answer%=*}" = "${image}|${pr}" ] || continue
+        rc=${answer##*=}; FXA_IMAGE_PULL=${rc#?}; return "${rc%"${FXA_IMAGE_PULL}"}"
+    done
+    FXA_IMAGE_PULL=""
+    case "${image}" in
+        mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*) rc=1 ;;
+        *)
+            # Quadlets of another architecture (--arch): the units pull the registry's at every
+            # start, so that one is what runs
+            if [ "${DEPLOY_METHOD:-}" = quadlets ] && [ -n "$(env_plain FXA_ARCH)" ] && [ "$(env_plain FXA_ARCH)" != "$(host_arch)" ] \
+                && patches=$(fxa_image_patches_remote "${image}"); then
+                has_fxa_patch "${pr}" "${patches}" && rc=0 || rc=1
+            elif patches=$(fxa_image_patches_local "${image}"); then
+                rc=1
+                if has_fxa_patch "${pr}" "${patches}"; then
+                    rc=0
+                # an older local copy: the registry's may have it, then a pull is enough
+                elif remote=$(fxa_image_patches_remote "${image}") && has_fxa_patch "${pr}" "${remote}"; then
+                    rc=0 FXA_IMAGE_PULL=yes
+                fi
+            elif patches=$(fxa_image_patches_remote "${image}"); then
+                has_fxa_patch "${pr}" "${patches}" && rc=0 || rc=1
+            else
+                rc=2
+            fi ;;
+    esac
+    FXA_IMAGE_ANSWERS="${FXA_IMAGE_ANSWERS} ${image}|${pr}=${rc}${FXA_IMAGE_PULL}"
+    return "${rc}"
+}
 fxa_mariadb_image_check() {
-    local db_image image patches remote
+    local db_image image rc
     [ "$(env_value FXA_DB)" = mariadb ] || return 0
     db_image=$(env_value FXA_MARIADB_IMAGE)
     db_image=${db_image:-mariadb:lts}
@@ -172,26 +230,21 @@ fxa_mariadb_image_check() {
         case "${db_image##*:}" in 10|10.*|11|11.*) return 0 ;; esac
     fi
     image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
-    case "${image}" in
-        mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*) patches="" ;;
-        *)
-            if patches=$(fxa_image_patches_local "${image}"); then
-                has_fxa_patch "${patches}" && return 0
-                # an older local copy: the registry's may have it, then a pull is enough
-                if remote=$(fxa_image_patches_remote "${image}") && has_fxa_patch "${remote}"; then
-                    echo "NOTE: your local ${image} does not have mozilla/fxa#21494, needed on MariaDB 12,"
-                    echo "  the registry's has it: pull it before starting (docker compose pull, podman pull)"
-                    echo ""
-                    return 0
-                fi
-            elif ! patches=$(fxa_image_patches_remote "${image}"); then
-                echo "NOTE: could not read the labels of ${image}: MariaDB 12 needs an accounts image with mozilla/fxa#21494"
-                echo "  (label org.firefox-sync.upstream-patches, see FXA.md#mysql-or-mariadb)"
-                echo ""
-                return 0
-            fi ;;
-    esac
-    has_fxa_patch "${patches}" && return 0
+    fxa_image_has mozilla/fxa#21494; rc=$?
+    if [ "${rc}" = 0 ]; then
+        if [ -n "${FXA_IMAGE_PULL}" ]; then
+            echo "NOTE: your local ${image} does not have mozilla/fxa#21494, needed on MariaDB 12,"
+            echo "  the registry's has it: pull it before starting (docker compose pull, podman pull)"
+            echo ""
+        fi
+        return 0
+    fi
+    if [ "${rc}" = 2 ]; then
+        echo "NOTE: could not read the labels of ${image}: MariaDB 12 needs an accounts image with mozilla/fxa#21494"
+        echo "  (label org.firefox-sync.upstream-patches, see docs/accounts.md#mysql-or-mariadb)"
+        echo ""
+        return 0
+    fi
     if [ "$(env_value FXA_DB_CONTAINERS)" = 0 ]; then
         echo "WARNING: if your MariaDB server is 12 or later, the accounts need an image with mozilla/fxa#21494,"
     else
@@ -199,32 +252,416 @@ fxa_mariadb_image_check() {
     fi
     echo "  which ${image} does not have (Mozilla's images, or ours built before it): on a new"
     echo "  database Mozilla's migrations stop. Use our images (FXA_IMAGE=ghcr.io/porelli/firefox-sync,"
-    echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11 (FXA_MARIADB_IMAGE=mariadb:11), see FXA.md#mysql-or-mariadb"
+    echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11 (FXA_MARIADB_IMAGE=mariadb:11), see docs/accounts.md#mysql-or-mariadb"
     echo ""
+}
+# the options of fxa-db (FXA_MYSQL_ARGS) for accounts images without mozilla/fxa#21554: their
+# driver speaks mysql_native_password only, which MySQL 8.4 has off by default and MySQL 9 not
+# at all (mysqld 9 refuses these options and does not start)
+FXA_MYSQL_NATIVE_ARGS="--mysql-native-password=ON --authentication-policy=mysql_native_password"
+# a MySQL image of major 8 (mysql:8, mysql:8.4, a registry before it)
+mysql_8() { case "${1##*:}" in 8|8.*) return 0 ;; esac; return 1; }
+# the accounts on MySQL in fxa-db: the image of .env, its options and the accounts image agree
+fxa_mysql_image_check() {
+    local db_image args image rc native=no
+    [ "$(env_value FXA_DB)" != mariadb ] || return 0
+    [ "$(env_value FXA_DB_CONTAINERS)" != 0 ] || return 0
+    db_image=$(env_plain FXA_MYSQL_IMAGE); db_image=${db_image:-mysql:lts}
+    args=$(env_plain FXA_MYSQL_ARGS)
+    case " ${args} " in *" --mysql-native-password=ON "*) native=yes ;; esac
+    image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
+    if ! mysql_8 "${db_image}" && [ "${native}" = yes ]; then
+        echo "WARNING: FXA_MYSQL_ARGS has --mysql-native-password=ON, which MySQL ${db_image##*:} (FXA_MYSQL_IMAGE=${db_image})"
+        echo "  refuses: fxa-db would not start. On MySQL 9 the accounts need an image with mozilla/fxa#21554 and"
+        echo "  their users on caching_sha2_password first: docs/upgrading.md#mysql-8-to-9 (or FXA_MYSQL_IMAGE=mysql:8)"
+        echo ""
+        return 0
+    fi
+    fxa_image_has mozilla/fxa#21554; rc=$?
+    if [ "${rc}" = 0 ]; then
+        if [ -n "${FXA_IMAGE_PULL}" ] && ! { mysql_8 "${db_image}" && [ "${native}" = yes ]; }; then
+            echo "WARNING: your local ${image} does not have mozilla/fxa#21554, without which the accounts cannot"
+            echo "  log in on MySQL ${db_image##*:}; the registry's has it: pull it before starting (docker compose pull, podman pull)"
+            echo ""
+        elif [ "${native}" = yes ] && [ "${UPGRADING:-}" = yes ]; then
+            echo "NOTE: ${image} has mozilla/fxa#21554 (caching_sha2_password): the accounts database can move"
+            echo "  from MySQL 8 with mysql_native_password to MySQL lts, when you choose: docs/upgrading.md#mysql-8-to-9"
+            echo ""
+        elif mysql_8 "${db_image}" && [ "${UPGRADING:-}" = yes ]; then
+            # (the users' plugins are not known here)
+            echo "NOTE: fxa-db is on MySQL 8 without FXA_MYSQL_ARGS (mysql_native_password off): users created before on"
+            echo "  mysql_native_password cannot log in. Moving from the pin: step 2 (the users) before step 3 (the options),"
+            echo "  docs/upgrading.md#mysql-8-to-9; SELECT user, host, plugin FROM mysql.user shows them"
+            echo ""
+        fi
+        return 0
+    fi
+    # without it: only mysql_native_password, on MySQL 8 with the options
+    mysql_8 "${db_image}" && [ "${native}" = yes ] && return 0
+    if [ "${rc}" = 2 ]; then
+        echo "NOTE: could not read the labels of ${image}: MySQL ${db_image##*:} without mysql_native_password"
+        echo "  needs an accounts image with mozilla/fxa#21554 (label org.firefox-sync.upstream-patches, docs/accounts.md#mysql-or-mariadb)"
+        echo ""
+        return 0
+    fi
+    echo "WARNING: the accounts on MySQL ${db_image##*:} (FXA_MYSQL_IMAGE=${db_image}${args:+, FXA_MYSQL_ARGS=${args}}) need an image"
+    echo "  with mozilla/fxa#21554, which ${image} does not have (Mozilla's images, or ours built before it):"
+    echo "  they cannot log in. Use our images (FXA_IMAGE=ghcr.io/porelli/firefox-sync, FXA_VERSION=fxa-mono-latest)"
+    echo "  or FXA_MYSQL_IMAGE=mysql:8 with FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}"
+    echo "  (on a new database only: MySQL 8 cannot open MySQL 9's data), see docs/accounts.md#mysql-or-mariadb"
+    echo ""
+}
+# this host's architecture as the images name it
+host_arch() { case "$(uname -m)" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac; }
+# the accounts of this install self-hosted (prepare_environment.sh wrote their passwords)
+fxa_installed() {
+    local pw
+    pw=$(env_plain FXA_MYSQL_PASSWORD)
+    [ -n "${pw}" ] && [[ "${pw}" != *"<REPLACE_WITH_"* ]]
+}
+
+# a database volume of an earlier install (the .env gone, or for another database):
+# "<runtime> volume <name>", for any of the names given (compose: <project>_<name>, Quadlets:
+# firefox-sync-<name>), e.g. db_volume fxa-db-mariadb
+db_volume() {
+    local project runtime volume name
+    # compose's project: COMPOSE_PROJECT_NAME (this shell's, then .env's), else the directory
+    project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
+    project=$(printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+    for runtime in docker podman; do
+        command -v "${runtime}" > /dev/null 2>&1 || continue
+        for name in "$@"; do
+            # (the Quadlets' names only for them: they are the same on every install of this user)
+            for volume in "${project}_${name}" $([ "${DEPLOY_METHOD:-}" = quadlets ] && echo "firefox-sync-${name}"); do
+                ${runtime} volume inspect "${volume}" > /dev/null 2>&1 && { echo "${runtime} volume ${volume}"; return 0; }
+            done
+        done
+    done
+    return 1
+}
+
+# the major of postgres:latest, from its own server ("postgres (PostgreSQL) 18.1 (Debian ...)"):
+# pulled first (a local copy may be older than latest), with Docker, else Podman (a Docker
+# without its daemon fails at once); without a registry, the local copy
+postgres_latest_major() {
+    local runtime image pull out
+    for pull in always missing; do
+        for runtime in docker podman; do
+            command -v "${runtime}" > /dev/null 2>&1 || continue
+            image=postgres:latest
+            [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
+            out=$(${runtime} run --rm --pull="${pull}" --entrypoint postgres "${image}" --version 2> /dev/null) || continue
+            out=$(printf '%s' "${out}" | sed -n 's/^postgres (PostgreSQL) \([0-9][0-9]*\)[^0-9].*/\1/p')
+            [ -n "${out}" ] && { echo "${out}"; return 0; }
+        done
+    done
+    return 1
+}
+# the major of the MySQL data in a volume of db_volume ("<runtime> volume <name>"): the last
+# version of its mysql_upgrade_history (8.4 and later write it); none, an empty volume or one of
+# 8.0: nothing (fails)
+mysql_volume_major() {
+    local runtime=${1} volume=${3} image=mysql:lts
+    [ "${runtime}" = podman ] && image=docker.io/library/mysql:lts
+    ${runtime} run --rm --pull=missing -v "${volume}:/v:ro" --entrypoint sh "${image}" -c 'cat /v/mysql_upgrade_history' 2> /dev/null \
+        | grep -o '"version" *: *"[0-9]*' | tail -n 1 | sed 's/.*"//' | grep -x '[0-9][0-9]*'
+}
+# the major of the PostgreSQL data in a volume of db_volume ("<runtime> volume <name>"): its
+# PG_VERSION (at the top or in data/ before 18, in <major>/docker/ since)
+postgres_volume_major() {
+    local runtime=${1} volume=${3} image=postgres:latest
+    [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
+    ${runtime} run --rm --pull=missing -v "${volume}:/v:ro" --entrypoint sh "${image}" -c \
+        'for f in /v/PG_VERSION /v/data/PG_VERSION /v/*/docker/PG_VERSION; do [ -s "$f" ] && { cat "$f"; exit 0; }; done; exit 1' 2> /dev/null \
+        | grep -x '[0-9][0-9]*'
+}
+
+# the major of the MariaDB data in a volume of db_volume: what mariadb-install-db and
+# mariadb-upgrade wrote ("11.8.9-MariaDB"; mysql_upgrade_info before 10.11)
+mariadb_volume_major() {
+    local runtime=${1} volume=${3} image=mariadb:lts
+    [ "${runtime}" = podman ] && image=docker.io/library/mariadb:lts
+    ${runtime} run --rm --pull=missing -v "${volume}:/v:ro" --entrypoint sh "${image}" -c \
+        'cat /v/mariadb_upgrade_info /v/mysql_upgrade_info 2> /dev/null | tr -d "\0"' 2> /dev/null \
+        | sed -n '1s/^\([0-9][0-9]*\)\..*/\1/p' | grep -x '[0-9][0-9]*'
+}
+# the major of the MariaDB a running Sync database container runs (compose's tokenserver_db of
+# the project, the Quadlets' firefox-sync-tokenserver-db)
+mariadb_running_major() {
+    local project runtime ctr
+    project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
+    project=$(printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+    for runtime in docker podman; do
+        command -v "${runtime}" > /dev/null 2>&1 || continue
+        for ctr in $(${runtime} ps -q --filter "label=com.docker.compose.project=${project}" --filter label=com.docker.compose.service=tokenserver_db 2> /dev/null) \
+            $([ "${DEPLOY_METHOD:-}" = quadlets ] && echo firefox-sync-tokenserver-db); do
+            ${runtime} exec "${ctr}" mariadbd --version 2> /dev/null | sed -n 's/.* Ver \([0-9][0-9]*\)\..*/\1/p' | grep -x '[0-9][0-9]*' && return 0
+        done
+    done
+    return 1
+}
+# the major of the Sync MariaDB data of this install: its volume, else its running server
+sync_mariadb_major() {
+    local volume
+    volume=$(db_volume tokenserver-db syncstorage-db) && mariadb_volume_major ${volume} && return 0
+    mariadb_running_major
+}
+
+# where the Quadlet units go; timers are plain systemd units, not Quadlets
+QUADLET_DIR="${QUADLET_DIR:-${HOME}/.config/containers/systemd}"
+SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user}"
+# the units of this install: installed, and rendered from this directory (they mount its
+# config/backup and db/), not from another checkout
+units_installed() { [ -f "${QUADLET_DIR}/firefox-sync-syncstorage.container" ]; }
+# the directory the installed units were rendered from ("": not known)
+units_dir() {
+    grep -h '^Volume=/.*/config/backup:' "${QUADLET_DIR}"/firefox-sync-backup.container 2> /dev/null \
+        | head -n 1 | sed -e 's|^Volume=||; s|/config/backup:.*||'
+}
+# a directory without its symlinks (cd -P: macOS and Linux), as it is when it is gone
+canonical_dir() { (cd -P -- "${1}" 2> /dev/null && pwd -P) || printf '%s' "${1}"; }
+units_of_here() {
+    local dir
+    dir=$(units_dir)
+    [ -n "${dir}" ] && [ "$(canonical_dir "${dir}")" = "$(canonical_dir "${SCRIPT_DIR}")" ]
+}
+
+# the Quadlet units of .env, with the units SELF_HOST_FXA and ADMIN_UI say (the answers of
+# the setup, or what the install has with --upgrade): rendered aside, then only the units
+# that differ installed, the units of before kept first in quadlets.before-<UTC time>/; none
+# differ: nothing written (run again, nothing changes)
+render_units() {
+    local key stage file filename source target_dir changed=() removed=() backup repository
+    local sync_containers sync_db fxa_containers fxa_db
+    # the values of the units: those of .env (database names, users, FxA endpoints, etc.) as
+    # compose reads them (env_plain: quotes, a comment after the value, export, CRLF), and the
+    # ones set below; never this shell's environment (a name .env lacks: .env-example's
+    # default). Not with `source`: unused sections keep placeholders like <REPLACE_WITH_...>
+    RENDER_KEYS=" "
+    render_set() { export "${1}=${2}"; RENDER_KEYS="${RENDER_KEYS}${1} "; }
+    render_set SCRIPT_DIR "${SCRIPT_DIR}"
+    for key in $(sed -n "s/^${ENV_LEAD}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p" "${SCRIPT_DIR}/.env" | sort -u); do
+        render_set "${key}" "$(env_plain "${key}")"
+    done
+    sync_containers=$(env_plain SYNC_DB_CONTAINERS) sync_db=$(env_plain SYNC_DB)
+    fxa_containers=$(env_plain FXA_DB_CONTAINERS) fxa_db=$(env_plain FXA_DB)
+    mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
+    # the images from .env only (not this shell's environment); unset: lts, as the compose
+    # files (the admin UI's: IMAGE_REPOSITORY's admin-latest). podman needs the registry in
+    # the image name (compose is fine with mariadb:lts): a first part with a dot or a port,
+    # or localhost, is one
+    podman_image() {
+        local image first
+        image=$(env_plain "${1}")
+        image=${image:-${2}}
+        first=${image%%/*}
+        if [ "${first}" != "${image}" ] && { [[ "${first}" == *[.:]* ]] || [ "${first}" = localhost ]; }; then
+            :
+        elif [[ "${image}" == */* ]]; then
+            image=docker.io/${image}
+        else
+            image=docker.io/library/${image}
+        fi
+        render_set "${1}" "${image}"
+    }
+    podman_image SYNC_MARIADB_IMAGE mariadb:lts
+    podman_image FXA_MARIADB_IMAGE mariadb:lts
+    podman_image FXA_MYSQL_IMAGE mysql:lts
+    podman_image SYNC_MYSQL_IMAGE mysql:lts
+    repository=$(env_value IMAGE_REPOSITORY)
+    podman_image ADMIN_IMAGE "${repository:-ghcr.io/porelli/firefox-sync}:admin-latest"
+    # fxa-db's extra options, none when not set
+    render_set FXA_MYSQL_ARGS "$(env_plain FXA_MYSQL_ARGS)"
+    # fxa-auth's log level, INFO when not set (as compose)
+    FXA_LOG_LEVEL=$(env_plain FXA_LOG_LEVEL)
+    render_set FXA_LOG_LEVEL "${FXA_LOG_LEVEL:-INFO}"
+    # the accounts' units: --arch only for another architecture than this host's (an emulated
+    # image). With it podman 4 pulls the tag from the registry at every start, over the local
+    # image: the units would not run the image whose label chose FXA_MYSQL_IMAGE above
+    FXA_ARCH_ARGS=""
+    # (none in an .env from before FXA_ARCH: the host's)
+    [ -z "$(env_plain FXA_ARCH)" ] || [ "$(env_plain FXA_ARCH)" = "$(host_arch)" ] || FXA_ARCH_ARGS="--arch=$(env_plain FXA_ARCH)"
+    render_set FXA_ARCH_ARGS "${FXA_ARCH_ARGS}"
+
+    # the database containers: the .env names (syncstorage_db) are compose's, here the
+    # containers are reached by their names. Your own server: none of them
+    SKIP_UNITS=""
+    DROP_DEPS=""
+    if [ "${sync_containers:-1}" = 0 ]; then
+        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
+        DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
+    else
+        render_set SYNC_STORAGE_DB_HOST firefox-sync-syncstorage-db; render_set SYNC_STORAGE_DB_PORT 3306
+        render_set SYNC_TOKENSERVER_DB_HOST firefox-sync-tokenserver-db; render_set SYNC_TOKENSERVER_DB_PORT 3306
+        if [ "${sync_db:-mariadb}" = "mysql" ]; then
+            # MariaDB's volumes, unused (the volumes themselves are kept); MySQL's certificate
+            # is self-signed, the init container's client does not check it
+            SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.volume$'
+            render_set SYNC_DB_TLS_VERIFY false
+        fi
+    fi
+    if [ "${fxa_containers:-1}" = 0 ]; then
+        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db(-mariadb)?\.(container|volume)$"
+        DROP_DEPS="${DROP_DEPS:+${DROP_DEPS}|}firefox-sync-fxa-db\.service"
+    elif [ "${fxa_db:-mysql}" = "mariadb" ]; then
+        # MySQL's volume, unused (the volume itself is kept)
+        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db\.volume$"
+    fi
+    # Requires= on a unit that is not installed fails the start: drop those dependencies
+    drop_deps() {
+        [ -n "${DROP_DEPS}" ] || { cat; return; }
+        sed -E -e "/^(After|Requires)=/{s/(=| )(${DROP_DEPS})/\1/g; s/= +/=/; s/ +$//; s/  +/ /g;}" -e '/^Requires=$/d'
+    }
+
+    # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it
+    render_quadlet() {
+        local file=${1} content name value
+        content=$(cat "${file}")
+        for name in $(grep -o '%[A-Z][A-Z0-9_]*%' "${file}" | sort -u | tr -d '%'); do
+            if [[ "${RENDER_KEYS}" == *" ${name} "* ]]; then
+                value=${!name}
+            elif ENV_READ="${SCRIPT_DIR}/.env-example" env_has "${name}"; then
+                value=$(ENV_READ="${SCRIPT_DIR}/.env-example" env_plain "${name}")
+            else
+                echo "ERROR: ${file} needs ${name}, which is not set in .env" >&2
+                return 1
+            fi
+            value=$(printf '%s' "${value}" | sed -e 's/%/%%/g')
+            content=$(printf '%s\n' "${content}" | sed -e "s|%${name}%|$(sed_escape "${value}")|g")
+        done
+        printf '%s\n' "${content}"
+    }
+
+    QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
+    # SYNC_DB=mysql: sync-mysql/ replaces the database units of the same name (without the
+    # database containers, SKIP_UNITS leaves them out)
+    [ "${sync_db:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/sync-mysql")
+    [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
+    # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
+    [ "${SELF_HOST_FXA}" = "yes" ] && [ "${fxa_db:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
+    if [ "${ADMIN_UI}" = "yes" ]; then
+        # with the accounts, the admin UI also manages them
+        [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/admin") || QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/admin")
+    fi
+    echo "Processing quadlet files..."
+    stage=$(mktemp -d) || exit 1
+    for source in "${QUADLET_SOURCES[@]}"; do
+        for file in "${source}"/*.{network,volume,container,timer}; do
+            [ -f "${file}" ] || continue
+            filename=$(basename "${file}")
+            [ "${fxa_db:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
+            [ "${sync_db:-mariadb}" = "mysql" ] && [ -f "${source}/sync-mysql/${filename}" ] && continue
+            if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
+                # left from a setup with the database containers (the volume is kept)
+                [ -f "${QUADLET_DIR}/${filename}" ] && removed+=("${filename}")
+                continue
+            fi
+            # (an empty PodmanArgs= would reset the ones before it, the network aliases)
+            render_quadlet "${file}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
+            [ "${PIPESTATUS[0]}" = 0 ] || { rm -rf "${stage}"; exit 1; }
+        done
+    done
+    for file in "${stage}"/*; do
+        filename=$(basename "${file}")
+        target_dir=${QUADLET_DIR}
+        [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
+        cmp -s "${file}" "${target_dir}/${filename}" || changed+=("${filename}")
+    done
+    if [ "${#changed[@]}" = 0 ] && [ "${#removed[@]}" = 0 ]; then
+        rm -rf "${stage}"
+        echo "  the units in ${QUADLET_DIR} are those of .env already: nothing changed"
+        UNITS_CHANGED=""
+        return 0
+    fi
+    # the units of before (their passwords too: this user only), all of them
+    # (nothing is written when that copy fails)
+    if ls "${QUADLET_DIR}"/firefox-sync-* "${SYSTEMD_USER_DIR}"/firefox-sync-*.timer > /dev/null 2>&1; then
+        backup=$(backup_name "${SCRIPT_DIR}/quadlets.before")
+        if ! (umask 077; mkdir "${backup}" && for file in "${QUADLET_DIR}"/firefox-sync-* "${SYSTEMD_USER_DIR}"/firefox-sync-*.timer; do
+                [ -e "${file}" ] || continue; cp "${file}" "${backup}/" || exit 1; done); then
+            rm -rf "${stage}" "${backup}"
+            echo "ERROR: could not keep the units of before in ${backup}: no unit written" >&2
+            exit 1
+        fi
+        echo "  the units of before: ${backup}"
+    fi
+    for filename in "${changed[@]}"; do
+        target_dir=${QUADLET_DIR}
+        [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
+        cp "${stage}/${filename}" "${target_dir}/${filename}" || { rm -rf "${stage}"; exit 1; }
+        echo "  ✓ ${filename}"
+    done
+    for filename in "${removed[@]}"; do
+        rm -f "${QUADLET_DIR}/${filename}"
+        echo "  - ${filename} (removed)"
+    done
+    rm -rf "${stage}"
+    UNITS_CHANGED="${changed[*]} ${removed[*]}"
+
+    echo ""
+    echo "Reloading systemd daemon..."
+    systemctl --user daemon-reload
 }
 
 # ./prepare_environment.sh --upgrade: the .env of an install that runs (docker compose), given
-# the settings of this release that need a value of their own (MIGRATING.md), nothing else
+# the settings of this release that need a value of their own (docs/upgrading.md#older-firefox-sync-releases), nothing else
 # changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
 # Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
 # container (SYNC_POSTGRES_APP_USER, SYNC_POSTGRES_APP_PASSWORD), and in COMPOSE_FILE the new name of
 # docker-compose.postgres.yml (docker-compose.sync-postgres.yml), and with the accounts on
 # MariaDB FXA_MARIADB_IMAGE=mariadb:11, the major they run (the compose default is now
-# mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, FXA.md). A value already set is kept; the
-# old file is kept as .env.before-upgrade. With your own database server database-setup.sql
-# is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
-# First the settings of RENAMED_SETTINGS get their new names, their values as they are.
+# mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, docs/upgrading.md#mariadb), on MySQL
+# FXA_MYSQL_IMAGE=mysql:8 and FXA_MYSQL_ARGS with mysql_native_password, Sync on MySQL
+# SYNC_MYSQL_IMAGE=mysql:8 (the default is now mysql:lts, 9; docs/upgrading.md#mysql-8-to-9). A value already set is kept; the
+# old file is kept as .env.before-upgrade-<UTC time>. With your own database server database-setup.sql
+# is written again, to run there first. First the settings of RENAMED_SETTINGS get their new
+# names, their values as they are.
+# The Quadlets (their units installed from this directory, or --render-units): the same, then
+# the settings of .env-example that .env lacks added with their defaults (a new secret only
+# for a secret that is missing: every password and secret of .env stays), and the units
+# rendered again from .env (render_units), with the units of before kept; no question asked.
+# Also to apply a setting changed in .env, or an image pinned there. Run again, nothing
+# changes (docs/upgrading.md#quadlets)
 upgrade_env() {
-    local env_file name changed=()
+    local env_file dot_env backup name changed=() quadlets=no here
     SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-    env_file=${SCRIPT_DIR}/.env
-    [ -f "${env_file}" ] || { echo "ERROR: no ${env_file} to upgrade: run ./prepare_environment.sh"; exit 1; }
+    dot_env=${SCRIPT_DIR}/.env
+    [ -f "${dot_env}" ] || { echo "ERROR: no ${dot_env} to upgrade: run ./prepare_environment.sh"; exit 1; }
+    if [ "${RENDER_UNITS:-}" = yes ]; then
+        quadlets=yes
+        # a compose install is no Quadlet one: a first render only when asked for
+        if ! units_installed && [ "${RENDER_FRESH:-}" != yes ]; then
+            echo "ERROR: no Quadlet units in ${QUADLET_DIR}: --render-units renders those of an install again."
+            echo "  To install the units of this .env (it then runs with Quadlets): ./prepare_environment.sh --render-units --fresh"
+            exit 1
+        fi
+        if units_installed && ! units_of_here; then
+            here=$(units_dir)
+            echo "WARNING: the units in ${QUADLET_DIR} were rendered from ${here:-another directory}, not ${SCRIPT_DIR}:"
+            echo "  rendered again from this .env (the units of before are kept)"
+        fi
+    elif units_installed; then
+        if units_of_here; then
+            quadlets=yes
+        else
+            here=$(units_dir)
+            echo "NOTE: the Quadlet units in ${QUADLET_DIR} are those of ${here:-another directory}, not of ${SCRIPT_DIR}:"
+            echo "  not rendered again (./prepare_environment.sh --render-units renders them from this .env)"
+            echo ""
+        fi
+    fi
+    if [ "${quadlets}" = yes ]; then
+        command -v podman > /dev/null 2>&1 || { echo "ERROR: --render-units: the Quadlets need podman, which is not installed"; exit 1; }
+        [ "$(env_value SYNC_IMAGE)" != "syncstorage-rs-postgres" ] \
+            || { echo "ERROR: the Quadlets are for MariaDB and MySQL only, this .env is PostgreSQL's (docker compose)"; exit 1; }
+        DEPLOY_METHOD=quadlets
+    fi
     # the old names of RENAMED_SETTINGS: the line renamed where it is (indented or with
     # export, as compose reads it too), the rest of it as it is written. Both names there:
     # the new one is kept, unless it has no value of its own (empty, a placeholder or the
     # default of .env-example, e.g. added from it: then the old one's value); the old line
     # goes. A WARNING when what compose runs with changes; every value of before stays in
-    # .env.before-upgrade
+    # .env.before-upgrade-<UTC time>
     rename_settings() {
         local pair new old new_value old_value example effective after kind moved=() notes=() warnings=()
         for pair in "${RENAMED_SETTINGS[@]}"; do
@@ -262,12 +699,12 @@ upgrade_env() {
             changed+=("${new}")
         done
         [ "${#moved[@]}" = 0 ] && return
-        echo "Renamed in .env, the values as they were (MIGRATING.md#renamed-settings):"
+        echo "Renamed in .env, the values as they were (docs/upgrading.md#renamed-settings):"
         printf '  %s\n' "${moved[@]}"
         [ "${#notes[@]}" = 0 ] || printf '  NOTE: %s\n' "${notes[@]}"
         if [ "${#warnings[@]}" != 0 ]; then
             printf 'WARNING: %s\n' "${warnings[@]}"
-            echo "  Check them before starting: .env.before-upgrade has the previous file."
+            echo "  Check them before starting: .env.before-upgrade-<UTC time> has the previous file."
         fi
         echo "  Rename them in your own scripts too (docker compose run -e, systemd units...)."
     }
@@ -285,24 +722,28 @@ upgrade_env() {
         printf '  %s\n' "${found[@]}"
     }
     set_value() {
-        if grep -q "^${1}=" "${env_file}"; then
-            apply_sed "${env_file}" "s|^${1}=.*|${1}=$(sed_escape "${2}")|"
+        if env_has "${1}"; then
+            apply_sed "${env_file}" "s|^\(${ENV_LEAD}\)${1}=.*|\1${1}=$(sed_escape "${2}")|"
         else
             printf '%s=%s\n' "${1}" "${2}" >> "${env_file}"
         fi
         changed+=("${1}")
     }
-    cp -p "${env_file}" "${env_file}.upgrading" || exit 1
+    # every change on a copy (this user only), which replaces .env at the end: a run that stops
+    # halfway leaves .env as it was
+    env_file=${dot_env}.upgrading
+    private_copy "${dot_env}" "${env_file}" || exit 1
+    ENV_READ=${env_file}
     rename_settings
     # the names: those of .env-example
     for name in ADMIN_DB_NAME ADMIN_DB_USER ADMIN_DB_SYNC_USER; do
-        grep -q "^${name}=" "${env_file}" || set_value "${name}" "$(grep "^${name}=" "${SCRIPT_DIR}/.env-example" | cut -d= -f2-)"
+        env_has "${name}" || set_value "${name}" "$(grep "^${name}=" "${SCRIPT_DIR}/.env-example" | cut -d= -f2-)"
     done
     [ -n "$(env_value ADMIN_DB_PASSWORD)" ] || set_value ADMIN_DB_PASSWORD "$(generate_random_string 32)"
     # docker-compose.postgres.yml is now docker-compose.sync-postgres.yml (the old name is a
-    # symlink to it for a transition period, MIGRATING.md): the new name in COMPOSE_FILE
+    # symlink to it for a transition period, docs/upgrading.md#files-that-moved): the new name in COMPOSE_FILE
     local compose_file compose_new part parts=() renamed=no
-    compose_file=$(env_value COMPOSE_FILE | tail -n 1)
+    compose_file=$(env_value COMPOSE_FILE)
     case "${compose_file}" in
         \'*\') compose_file=${compose_file:1:${#compose_file}-2} ;;
         \"*\") compose_file=${compose_file:1:${#compose_file}-2} ;;
@@ -324,35 +765,129 @@ upgrade_env() {
     fi
     # Sync on PostgreSQL, from before SYNC_POSTGRES_IMAGE: postgres:18, the major it runs (every
     # release so far used 18, git log -- docker-compose.sync-postgres.yml confirms it)
-    if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && ! grep -q '^SYNC_POSTGRES_IMAGE=' "${env_file}"; then
+    if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && ! env_has SYNC_POSTGRES_IMAGE; then
         set_value SYNC_POSTGRES_IMAGE postgres:18
         echo "SYNC_POSTGRES_IMAGE=postgres:18: the Sync database stays on PostgreSQL 18. To move it to"
-        echo "  a newer major: a dump and restore (ADMIN.md#restoring) or pg_upgrade (DATABASES.md#another-postgresql-major)"
+        echo "  a newer major: a dump and restore or pg_upgrade (docs/upgrading.md#postgresql)"
     fi
     # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11, they stay there (unset
     # it is now mariadb:lts, which would upgrade their data to 12 at the next start)
-    if [ "$(env_value FXA_DB)" = mariadb ] && ! grep -q '^FXA_MARIADB_IMAGE=' "${env_file}"; then
+    if [ "$(env_value FXA_DB)" = mariadb ] && ! env_has FXA_MARIADB_IMAGE; then
         set_value FXA_MARIADB_IMAGE mariadb:11
         echo "FXA_MARIADB_IMAGE=mariadb:11: the accounts database stays on MariaDB 11. To move it to"
-        echo "  MariaDB lts, 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
+        echo "  MariaDB lts, 12 (a backup first, there is no way back): docs/upgrading.md#mariadb"
     fi
+    # the accounts on MySQL, from before FXA_MYSQL_IMAGE: on 8 with mysql_native_password, they
+    # stay there. Unset it is now mysql:lts (9), which would upgrade their data at the next start
+    # (fxa-db refuses, db/mysql/keep-major.sh), and where their users, created with
+    # mysql_native_password, could not log in at all. Your own server: the backups' client
+    if [ "$(env_value FXA_DB)" != mariadb ] && fxa_installed && ! env_has FXA_MYSQL_IMAGE; then
+        set_value FXA_MYSQL_IMAGE mysql:8
+        env_has FXA_MYSQL_ARGS || set_value FXA_MYSQL_ARGS "${FXA_MYSQL_NATIVE_ARGS}"
+        echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
+        echo "  stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9 (its users first, a backup, no"
+        echo "  way back): docs/upgrading.md#mysql-8-to-9"
+    fi
+    # Sync on MariaDB containers, from before SYNC_MARIADB_IMAGE (they ran mariadb:lts): on the
+    # major their data holds, they stay there (unset, a pull after the next major would upgrade
+    # it; the containers refuse that, db/mysql/keep-major.sh)
+    if [ "$(env_value SYNC_DB)" != mysql ] && [ "$(env_value SYNC_IMAGE)" != "syncstorage-rs-postgres" ] \
+        && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && ! env_has SYNC_MARIADB_IMAGE; then
+        if major=$(sync_mariadb_major); then
+            set_value SYNC_MARIADB_IMAGE "mariadb:${major}"
+            echo "SYNC_MARIADB_IMAGE=mariadb:${major}: the Sync databases stay on MariaDB ${major}, the major of their data. To follow"
+            echo "  MariaDB lts again (a backup first, there is no way back): SYNC_MARIADB_IMAGE=mariadb:lts (docs/upgrading.md#database-majors)"
+        else
+            echo "WARNING: could not read the MariaDB major of the Sync databases (no volume or running container found):"
+            echo "  SYNC_MARIADB_IMAGE is not set; set it to the major they run, SYNC_MARIADB_IMAGE=mariadb:<major>. Until then the"
+            echo "  containers refuse data of another major than mariadb:lts's (db/mysql/keep-major.sh)"
+        fi
+    fi
+    # Sync on MySQL containers, from before SYNC_MYSQL_IMAGE: on 8, they stay there (unset it
+    # is now mysql:lts, 9)
+    if [ "$(env_value SYNC_DB)" = mysql ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && ! env_has SYNC_MYSQL_IMAGE; then
+        set_value SYNC_MYSQL_IMAGE mysql:8
+        echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases stay on MySQL 8. To move them to MySQL lts, 9"
+        echo "  (a backup first, there is no way back): docs/upgrading.md#mysql-8-to-9"
+    fi
+    # the Quadlets have no defaults of their own: every setting of .env-example in .env, as a
+    # new setup writes it. A secret only when it is not there at all, the accounts' only
+    # with the accounts (their placeholders say they are not set up)
+    add_missing_settings() {
+        local line key value fxa=no added=() generated=()
+        fxa_installed && fxa=yes
+        # (an .env without a line end at its end)
+        [ -z "$(tail -c 1 "${env_file}")" ] || echo "" >> "${env_file}"
+        while IFS= read -r line || [ -n "${line}" ]; do
+            [[ "${line}" =~ ^[A-Z][A-Z0-9_]*= ]] || continue
+            key=${line%%=*}
+            env_has "${key}" && continue
+            case "${key}" in
+                # the units of an .env from before it ran the accounts on this host's architecture
+                FXA_ARCH) line="FXA_ARCH=$(host_arch)" ;;
+            esac
+            if [[ "${line}" == *"<REPLACE_WITH_SOMETHING_SECURE>"* ]] && { [[ "${key}" != FXA_* ]] || [ "${fxa}" = yes ]; }; then
+                line="${key}=$(generate_random_string 32)"
+                generated+=("${key}")
+            else
+                added+=("${key}")
+            fi
+            printf '%s\n' "${line}" >> "${env_file}"
+            changed+=("${key}")
+        done < "${SCRIPT_DIR}/.env-example"
+        [ "${#added[@]}" = 0 ] || echo "Added from .env-example, with their defaults: ${added[*]}"
+        [ "${#generated[@]}" = 0 ] || echo "Generated, as they were not in .env: ${generated[*]}"
+    }
+    [ "${quadlets}" = yes ] && add_missing_settings
     old_names_in_environment
     if [ "${#changed[@]}" = 0 ]; then
-        rm -f "${env_file}.upgrading"
-        echo "Nothing to add: ${env_file} has every setting of this release."
+        rm -f "${env_file}"
+        echo "Nothing to add: ${dot_env} has every setting of this release."
     else
-        mv "${env_file}.upgrading" "${env_file}.before-upgrade"
-        echo "Updated ${env_file} (the old one is .env.before-upgrade): ${changed[*]}"
+        backup=$(backup_name "${dot_env}.before-upgrade")
+        private_copy "${dot_env}" "${backup}" || { echo "ERROR: could not keep ${dot_env} as ${backup}: .env not changed"; rm -f "${env_file}"; exit 1; }
+        mv "${env_file}" "${dot_env}" || exit 1
+        echo "Updated ${dot_env} (the old one is $(basename "${backup}")): ${changed[*]}"
     fi
+    unset ENV_READ
+    # the passwords: this user only
+    chmod 600 "${dot_env}"
     if [ "$(env_value SYNC_DB_CONTAINERS)" = 0 ]; then
         [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && render_sync_sql postgres || render_sync_sql mariadb
-        echo "Your own database server: run database-setup.sql there first, as its administrator (DATABASES.md)."
+        echo "Your own database server: run database-setup.sql there first, as its administrator (docs/databases.md#create-the-databases-and-users)."
     fi
     fxa_mariadb_image_check
-    echo "Then: docker compose pull && docker compose up -d"
+    fxa_installed && UPGRADING=yes fxa_mysql_image_check
+    if [ "${quadlets}" = yes ]; then
+        # the units of this install: the accounts' with them, the admin UI's when it is on
+        SELF_HOST_FXA=no ADMIN_UI=no
+        fxa_installed && SELF_HOST_FXA=yes
+        case ",$(env_plain COMPOSE_PROFILES)," in *,admin,*) ADMIN_UI=yes ;; esac
+        [ -f "${QUADLET_DIR}/firefox-sync-admin.container" ] && ADMIN_UI=yes
+        echo ""
+        echo "Rendering the Quadlet units from ${dot_env}..."
+        render_units
+        echo ""
+        echo "Then: the new images (podman does not pull a tag it has),"
+        echo "  grep -h '^Image=' ${QUADLET_DIR}/firefox-sync-*.container | cut -d= -f2 | sort -u | xargs -n1 podman pull"
+        if [ -n "${UNITS_CHANGED// /}" ]; then
+            echo "  and start the units again: stopped, systemctl --user start$([ "${ADMIN_UI}" = yes ] && echo " firefox-sync-admin.service") firefox-sync-syncstorage.service"
+            echo "  (running: systemctl --user restart of the units changed above)"
+        fi
+    else
+        echo "Then: docker compose pull && docker compose up -d"
+    fi
     exit 0
 }
-[ "${1:-}" = "--upgrade" ] && upgrade_env
+case "${1:-}" in
+    --upgrade) upgrade_env ;;
+    --render-units)
+        case "${2:-}" in
+            "") RENDER_UNITS=yes upgrade_env ;;
+            --fresh) RENDER_UNITS=yes RENDER_FRESH=yes upgrade_env ;;
+            *) echo "ERROR: --render-units [--fresh], not '${2}'"; exit 2 ;;
+        esac ;;
+esac
 
 # domain
 DOMAIN_EXAMPLE='firefox-sync.example.com'
@@ -364,10 +899,41 @@ CURRENT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 read -e -p "Enter full path for the docker-compose file [${CURRENT_DIR}]: " SCRIPT_DIR
 SCRIPT_DIR=${SCRIPT_DIR:-${CURRENT_DIR}}
 
-# listening port
-DEFAULT_CONTAINER_EXPORT_PORT=5000
-read -e -p "Listening port for syncstorage-rs [${DEFAULT_CONTAINER_EXPORT_PORT}]: " SYNC_EXPORT_PORT
-SYNC_EXPORT_PORT=${SYNC_EXPORT_PORT:-${DEFAULT_CONTAINER_EXPORT_PORT}}
+# where the Sync server listens for your reverse proxy, [address:]port: on this host only by
+# default, as the other ports; a port alone is 127.0.0.1:<port>, 0.0.0.0:<port> (or [::]:<port>)
+# every interface. Run again on an install: what its .env has, as it is
+DEFAULT_SYNC_EXPORT_PORT=127.0.0.1:5000
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    previous=$(env_plain SYNC_EXPORT_PORT); previous=${previous:-$(env_plain CONTAINER_EXPORT_PORT)}
+    DEFAULT_SYNC_EXPORT_PORT=${previous:-${DEFAULT_SYNC_EXPORT_PORT}}
+fi
+read -e -p "Listening address and port for syncstorage-rs, a port alone on 127.0.0.1 [${DEFAULT_SYNC_EXPORT_PORT}]: " SYNC_EXPORT_PORT
+# [address:]port: an IPv4 address (octets up to 255) or an IPv6 one in brackets ([::]:5000)
+valid_export_port() {
+    local port ip octet
+    [[ "${1}" =~ ^(([0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9A-Fa-f:.]+\]):)?([0-9]{1,5})$ ]] || return 1
+    port=${BASH_REMATCH[4]} ip=${BASH_REMATCH[2]}
+    [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || return 1
+    if [ -n "${ip}" ] && [ "${ip:0:1}" != "[" ]; then
+        for octet in ${ip//./ }; do [ "$((10#${octet}))" -le 255 ] || return 1; done
+    fi
+    return 0
+}
+case "${SYNC_EXPORT_PORT}" in
+    "")
+        SYNC_EXPORT_PORT=${DEFAULT_SYNC_EXPORT_PORT}
+        # what an install has is kept as it is, also a value this check does not know
+        if ! valid_export_port "${SYNC_EXPORT_PORT}"; then
+            echo "WARNING: SYNC_EXPORT_PORT='${SYNC_EXPORT_PORT}' of .env is not [address:]port as this script knows it: kept"
+            SYNC_EXPORT_KEPT=yes
+        fi ;;
+    *[!0-9]*) ;;
+    *) SYNC_EXPORT_PORT=127.0.0.1:${SYNC_EXPORT_PORT} ;;
+esac
+if [ -z "${SYNC_EXPORT_KEPT:-}" ] && ! valid_export_port "${SYNC_EXPORT_PORT}"; then
+    echo "ERROR: not a port or an address and port: '${SYNC_EXPORT_PORT}' (e.g. 5000, 127.0.0.1:5000, 0.0.0.0:5000, [::]:5000)"
+    exit 1
+fi
 
 # a limit of accounts: a number (0: nobody new) or unlimited
 valid_limit() {
@@ -390,7 +956,7 @@ read -e -p "Database backend [mariadb/mysql/postgres] [${DEFAULT_DATABASE_BACKEN
 DATABASE_BACKEND=${DATABASE_BACKEND:-${DEFAULT_DATABASE_BACKEND}}
 case "${DATABASE_BACKEND}" in
     mariadb|postgres) SYNC_DB=mariadb ;;
-    # MySQL 8 containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
+    # MySQL containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
     mysql|MySQL) DATABASE_BACKEND=mysql; SYNC_DB=mysql ;;
     *)
         echo "ERROR: unknown database backend '${DATABASE_BACKEND}'"
@@ -440,7 +1006,7 @@ read -e -p "Syncstorage image tag [latest/<tag>] [${DEFAULT_SYNCSTORAGE_IMAGE_TA
 SYNC_IMAGE_TAG=${SYNC_IMAGE_TAG:-${DEFAULT_SYNCSTORAGE_IMAGE_TAG}}
 
 # admin UI
-read -r -e -p "Enable the admin UI? Max users, and sign-ups and accounts with self-hosted accounts, see ADMIN.md (Y/n): " ADMIN_UI
+read -r -e -p "Enable the admin UI? Max users, and sign-ups and accounts with self-hosted accounts, see docs/admin/README.md (Y/n): " ADMIN_UI
 case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
 # with the admin UI, max users is managed there: SYNC_MAX_USERS=initial:N sets it only on the
 # first start. A plain number is set again on every start (read-only in the admin UI)
@@ -450,8 +1016,8 @@ case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
 ADMIN_ALLOWED_USERS=""
 ADMIN_HOST=""
 
-# self-hosted Mozilla accounts (FXA.md)
-read -r -e -p "Also self-host Mozilla accounts? See FXA.md (y/N): " SELF_HOST_FXA
+# self-hosted Mozilla accounts (docs/accounts.md)
+read -r -e -p "Also self-host Mozilla accounts? See docs/accounts.md (y/N): " SELF_HOST_FXA
 case "${SELF_HOST_FXA}" in y|Y|yes) SELF_HOST_FXA=yes ;; *) SELF_HOST_FXA=no ;; esac
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     DEFAULT_FXA_DOMAIN=${SYNC_FQDN#*.}
@@ -486,7 +1052,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
 fi
 
-# your own database server (DATABASES.md), asked last so that scripted answers for the
+# your own database server (docs/databases.md#your-own-server), asked last so that scripted answers for the
 # questions above still line up
 EXTERNAL_DB=no
 EXTERNAL_FXA_DB=no
@@ -499,7 +1065,7 @@ valid_host() {
         "") echo "ERROR: the database host is required"; exit 1 ;;
         localhost|127.*|0.0.0.0)
             echo "ERROR: '${1}' would be the container itself: use an address of this host the containers"
-            echo "  can reach (e.g. 172.17.0.1 for Docker, host.containers.internal for Podman), see DATABASES.md"
+            echo "  can reach (e.g. 172.17.0.1 for Docker, host.containers.internal for Podman), see docs/databases.md#server-requirements"
             exit 1 ;;
         # IPv6 literals would need [ ] in the database URLs, which not every client parses
         *:*) echo "ERROR: '${1}': use a host name or an IPv4 address (no IPv6 address)"; exit 1 ;;
@@ -507,7 +1073,7 @@ valid_host() {
     esac
 }
 valid_port() { case "${1}" in ''|*[!0-9]*) echo "ERROR: not a port: '${1}'"; exit 1 ;; esac; }
-read -r -e -p "Use an existing database server instead of starting one? See DATABASES.md (y/N): " EXTERNAL_DB
+read -r -e -p "Use an existing database server instead of starting one? See docs/databases.md#your-own-server (y/N): " EXTERNAL_DB
 case "${EXTERNAL_DB}" in y|Y|yes) EXTERNAL_DB=yes ;; *) EXTERNAL_DB=no ;; esac
 if [ "${EXTERNAL_DB}" = "yes" ]; then
     read -r -e -p "Database server host, as the containers reach it: " DB_HOST
@@ -538,7 +1104,7 @@ if [ "${EXTERNAL_DB}" = "yes" ]; then
     fi
 fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    read -r -e -p "Use an existing MySQL 8 or MariaDB 11.4+ server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See DATABASES.md (y/N): " EXTERNAL_FXA_DB
+    read -r -e -p "Use an existing MySQL 8.4/9 or MariaDB 11.4+ server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See docs/databases.md#your-own-server (y/N): " EXTERNAL_FXA_DB
     case "${EXTERNAL_FXA_DB}" in y|Y|yes) EXTERNAL_FXA_DB=yes ;; *) EXTERNAL_FXA_DB=no ;; esac
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Accounts database server host${DB_HOST:+ [${DB_HOST}]}: " FXA_MYSQL_HOST
@@ -557,7 +1123,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Is that server MySQL or MariaDB? (mysql/mariadb) [mysql]: " FXA_DB
     else
-        read -r -e -p "Accounts database: mysql (MySQL 8, what Mozilla supports) or mariadb (MariaDB lts, see FXA.md) [mysql]: " FXA_DB
+        read -r -e -p "Accounts database: mysql (MySQL lts, what Mozilla runs) or mariadb (MariaDB lts, see docs/accounts.md#mysql-or-mariadb) [mysql]: " FXA_DB
     fi
     case "${FXA_DB}" in
         ""|mysql|MySQL) FXA_DB=mysql ;;
@@ -576,19 +1142,19 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     [ "${ADMIN_UI}" = "yes" ] && FXA_MAX_ACCOUNTS=initial:${FXA_MAX_ACCOUNTS}
 fi
 
-# the security history of the accounts (FXA.md), asked last for the same reason
+# the security history of the accounts (docs/accounts.md#security-history), asked last for the same reason
 FXA_ACCOUNT_EVENTS=false
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    echo "Security history: every sign-in, password and 2-step change is kept with its IP address, for the owner and the admin UI to see (FXA.md)."
+    echo "Security history: every sign-in, password and 2-step change is kept with its IP address, for the owner and the admin UI to see (docs/accounts.md#security-history)."
     read -r -e -p "Record the security history of the accounts? (y/N): " FXA_ACCOUNT_EVENTS
     case "${FXA_ACCOUNT_EVENTS}" in y|Y|yes) FXA_ACCOUNT_EVENTS=true ;; *) FXA_ACCOUNT_EVENTS=false ;; esac
 fi
 
-# the alerts of the admin UI to other destinations than email (ADMIN.md#alerts), asked last
+# the alerts of the admin UI to other destinations than email (docs/admin/alerts.md#destinations), asked last
 # for the same reason. Not shown as typed: the URLs hold tokens
 ADMIN_NOTIFY=""
 if [ "${ADMIN_UI}" = "yes" ]; then
-    echo "Alerts of the admin UI: by email (ADMIN_ALERT_EMAIL in .env, with an SMTP server), and/or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (ADMIN.md#alerts)."
+    echo "Alerts of the admin UI: by email (ADMIN_ALERT_EMAIL in .env, with an SMTP server), and/or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (docs/admin/alerts.md#destinations)."
     read -r -s -p "Also send alerts to Slack, Discord, ntfy...? Paste a destination URL (e.g. ntfy://ntfy.sh/<topic>, slack://hooks.slack.com/services/...) or leave empty: " ADMIN_NOTIFY
     echo ""
     # scheme://host of a destination, … for what cannot be named safely (an @ after the
@@ -619,7 +1185,7 @@ if [ "${ADMIN_UI}" = "yes" ]; then
         esac
         if [ -n "${notify_kind}" ]; then
             read -r -e -p "That is a ${notify_kind} webhook URL: use it as ${notify_kind}://... (Y/n): " notify_convert
-            case "${notify_convert}" in n|N|no) echo "ERROR: https:// is no destination of ADMIN_NOTIFY, see ADMIN.md#alerts"; exit 1 ;; esac
+            case "${notify_convert}" in n|N|no) echo "ERROR: https:// is no destination of ADMIN_NOTIFY, see docs/admin/alerts.md#destinations"; exit 1 ;; esac
             notify_entry="${notify_kind}://${notify_entry#https://}"
         fi
         notify_base="" notify_shown="…"
@@ -628,7 +1194,7 @@ if [ "${ADMIN_UI}" = "yes" ]; then
             notify_shown=$(notify_name "${notify_entry}")
         fi
         if ! [[ "${notify_base}" =~ ^(slack|discord|teams|ntfy|gotify|telegram|matrix|webhook)$ ]]; then
-            echo "ERROR: ${notify_shown} is no destination of ADMIN_NOTIFY: slack://, discord://, teams://, ntfy://, gotify://, telegram://, matrix:// or webhook://, see ADMIN.md#alerts"
+            echo "ERROR: ${notify_shown} is no destination of ADMIN_NOTIFY: slack://, discord://, teams://, ntfy://, gotify://, telegram://, matrix:// or webhook://, see docs/admin/alerts.md#destinations"
             exit 1
         fi
         if [ "${notify_base}" != telegram ] && [ "${notify_shown}" = "${notify_shown%://…}://…" ]; then
@@ -654,107 +1220,163 @@ SYNC_METRICS_HASH_SECRET=$(generate_random_string 24)
 ADMIN_PASSWORD=$(generate_random_string 24)
 ADMIN_DB_PASSWORD=$(generate_random_string 32)
 
-# the accounts database of an install on MariaDB, its volume left (the .env gone, or for
-# MySQL): "<runtime> volume <name>" (compose: <project>_fxa-db-mariadb, Quadlets: firefox-sync-fxa-db-mariadb)
-fxa_mariadb_volume() {
-    local project runtime volume
-    project=$(basename "${SCRIPT_DIR}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
-    for runtime in docker podman; do
-        command -v "${runtime}" > /dev/null 2>&1 || continue
-        for volume in "${project}_fxa-db-mariadb" firefox-sync-fxa-db-mariadb; do
-            ${runtime} volume inspect "${volume}" > /dev/null 2>&1 && { echo "${runtime} volume ${volume}"; return 0; }
-        done
-    done
-    return 1
-}
-
-# run again on an install: its databases stay on the PostgreSQL or MariaDB versions they run
+# run again on an install: its databases stay on the PostgreSQL, MariaDB or MySQL versions they run
 PREVIOUS_SYNCSTORAGE_IMAGE="" PREVIOUS_POSTGRES_IMAGE=""
 PREVIOUS_FXA_DB="" PREVIOUS_FXA_MARIADB_IMAGE=""
+PREVIOUS_FXA_MYSQL=no PREVIOUS_FXA_MYSQL_IMAGE="" PREVIOUS_FXA_MYSQL_ARGS=""
+PREVIOUS_SYNC_MYSQL=no PREVIOUS_SYNC_MYSQL_IMAGE=""
 if [ -f "${SCRIPT_DIR}/.env" ]; then
     PREVIOUS_SYNCSTORAGE_IMAGE=$(env_value SYNC_IMAGE)
     PREVIOUS_POSTGRES_IMAGE=$(env_value SYNC_POSTGRES_IMAGE)
     PREVIOUS_FXA_DB=$(env_value FXA_DB)
     PREVIOUS_FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
+    # the accounts on MySQL (FXA_DB=mysql is also in .env-example: with their passwords)
+    if [ "${PREVIOUS_FXA_DB}" != mariadb ] && fxa_installed; then
+        PREVIOUS_FXA_MYSQL=yes
+        PREVIOUS_FXA_MYSQL_IMAGE=$(env_plain FXA_MYSQL_IMAGE)
+        PREVIOUS_FXA_MYSQL_ARGS=$(env_plain FXA_MYSQL_ARGS)
+    fi
+    if [ "$(env_value SYNC_DB)" = mysql ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ]; then
+        PREVIOUS_SYNC_MYSQL=yes
+        PREVIOUS_SYNC_MYSQL_IMAGE=$(env_plain SYNC_MYSQL_IMAGE)
+    fi
 fi
 
-# prepare .env file
-cp ${SCRIPT_DIR}/.env-example ${SCRIPT_DIR}/.env
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${SYNC_TOKENSERVER_DB_PASSWORD}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=${SYNC_STORAGE_DB_PASSWORD}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_PASSWORD=.*|SYNC_POSTGRES_PASSWORD=${SYNC_POSTGRES_PASSWORD}|"
-apply_sed ${SCRIPT_DIR}/.env "s|SYNC_MASTER_SECRET=.*|SYNC_MASTER_SECRET=${SYNC_MASTER_SECRET}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_METRICS_HASH_SECRET=.*|SYNC_METRICS_HASH_SECRET=${SYNC_METRICS_HASH_SECRET}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://${SYNC_FQDN}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=${SYNC_EXPORT_PORT}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=${SYNC_MAX_USERS}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${SYNC_IMAGE_TAG}|"
-apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
+# PostgreSQL has no lts (every major is supported for 5 years) and no major opens another's
+# data: the major of the install, decided before .env is written. One that ran PostgreSQL
+# before keeps its SYNC_POSTGRES_IMAGE (postgres:18 without one: every release before it used
+# 18, git log -- docker-compose.sync-postgres.yml); a new setup over the PostgreSQL volume of an
+# earlier install the major of its data; a new install the major postgres:latest is at now, read
+# from the image itself. Unset it would be postgres:latest, which a new major leaves unable to
+# start: not knowing the major is an error
+SYNC_POSTGRES_PIN="" SYNC_POSTGRES_MAJOR="" SYNC_POSTGRES_VOLUME=""
+if [ "${DATABASE_BACKEND}" = postgres ]; then
+    if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
+        SYNC_POSTGRES_PIN=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
+    elif [ "${EXTERNAL_DB}" != "yes" ] && SYNC_POSTGRES_VOLUME=$(db_volume postgres-db) \
+        && SYNC_POSTGRES_VOLUME_MAJOR=$(postgres_volume_major ${SYNC_POSTGRES_VOLUME}); then
+        SYNC_POSTGRES_PIN=postgres:${SYNC_POSTGRES_VOLUME_MAJOR}
+    elif SYNC_POSTGRES_MAJOR=$(postgres_latest_major); then
+        SYNC_POSTGRES_PIN=postgres:${SYNC_POSTGRES_MAJOR}
+        SYNC_POSTGRES_VOLUME=""
+    else
+        echo "ERROR: could not read the major of postgres:latest, which this install is pinned to (SYNC_POSTGRES_IMAGE):"
+        echo "  docker (or podman) run --rm --pull=always --entrypoint postgres postgres:latest --version failed."
+        echo "  Check the container runtime and the access to Docker Hub, and run this again; nothing was written."
+        exit 1
+    fi
+fi
+
+# Sync on the MariaDB containers: lts for new installs; one that ran them before keeps its
+# SYNC_MARIADB_IMAGE, or without one the major its data holds (its volume, else its running
+# server), as a new setup over the MariaDB volumes of an earlier install
+SYNC_MARIADB_PIN=mariadb:lts SYNC_MARIADB_FOUND=""
+if [ "${DATABASE_BACKEND}" = mariadb ] && [ "${EXTERNAL_DB}" != "yes" ]; then
+    if [ -f "${SCRIPT_DIR}/.env" ] && [ "$(env_value SYNC_DB)" != mysql ] && [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" != "syncstorage-rs-postgres" ] \
+        && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && [ -n "$(env_plain SYNC_MARIADB_IMAGE)" ]; then
+        SYNC_MARIADB_PIN=$(env_plain SYNC_MARIADB_IMAGE)
+    elif major=$(sync_mariadb_major); then
+        SYNC_MARIADB_PIN=mariadb:${major} SYNC_MARIADB_FOUND=${major}
+    fi
+fi
+
+# prepare .env file: new passwords and secrets, written into a copy (this user only) that
+# replaces .env at the end. Run again on an install, its .env of before is kept as
+# .env.before-setup-<UTC time> (the passwords its databases have); ./prepare_environment.sh
+# --upgrade keeps them instead
+NEW_ENV=${SCRIPT_DIR}/.env.setup
+private_copy "${SCRIPT_DIR}/.env-example" "${NEW_ENV}" || exit 1
+ENV_READ=${NEW_ENV}
+apply_sed "${NEW_ENV}" "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${SYNC_TOKENSERVER_DB_PASSWORD}|"
+apply_sed "${NEW_ENV}" "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=${SYNC_STORAGE_DB_PASSWORD}|"
+apply_sed "${NEW_ENV}" "s|^SYNC_POSTGRES_PASSWORD=.*|SYNC_POSTGRES_PASSWORD=${SYNC_POSTGRES_PASSWORD}|"
+apply_sed "${NEW_ENV}" "s|SYNC_MASTER_SECRET=.*|SYNC_MASTER_SECRET=${SYNC_MASTER_SECRET}|"
+apply_sed "${NEW_ENV}" "s|^SYNC_METRICS_HASH_SECRET=.*|SYNC_METRICS_HASH_SECRET=${SYNC_METRICS_HASH_SECRET}|"
+apply_sed "${NEW_ENV}" "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://${SYNC_FQDN}|"
+apply_sed "${NEW_ENV}" "s|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=${SYNC_EXPORT_PORT}|"
+apply_sed "${NEW_ENV}" "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=${SYNC_MAX_USERS}|"
+apply_sed "${NEW_ENV}" "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${SYNC_IMAGE_TAG}|"
+apply_sed "${NEW_ENV}" "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
 # the admin UI's database user, also for the backups: with or without the admin UI
-apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=${ADMIN_DB_PASSWORD}|"
-[ "${ADMIN_UI}" = "yes" ] && apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
-[ -n "${ADMIN_NOTIFY}" ] && apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_NOTIFY=.*|ADMIN_NOTIFY='$(sed_escape "${ADMIN_NOTIFY}")'|"
-apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
+apply_sed "${NEW_ENV}" "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=${ADMIN_DB_PASSWORD}|"
+[ "${ADMIN_UI}" = "yes" ] && apply_sed "${NEW_ENV}" "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
+[ -n "${ADMIN_NOTIFY}" ] && apply_sed "${NEW_ENV}" "s|^ADMIN_NOTIFY=.*|ADMIN_NOTIFY='$(sed_escape "${ADMIN_NOTIFY}")'|"
+apply_sed "${NEW_ENV}" "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
+[ "${DATABASE_BACKEND}" = mariadb ] && [ "${EXTERNAL_DB}" != "yes" ] && \
+    apply_sed "${NEW_ENV}" "s|^# SYNC_MARIADB_IMAGE=.*|SYNC_MARIADB_IMAGE=$(sed_escape "${SYNC_MARIADB_PIN}")|"
 if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
     # MySQL's certificate is self-signed: the init container's client does not check it
     # (docker-compose.sync-mysql.yml does the same, this is for the Quadlets)
-    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
+    apply_sed "${NEW_ENV}" "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
     # with the accounts, set below with theirs
-    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml|"
+    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed "${NEW_ENV}" "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml|"
+    # MySQL lts for new installs (9 today), written out (also the default when unset). One that
+    # ran MySQL before SYNC_MYSQL_IMAGE, or whose MySQL volumes are still there, runs 8: pinned,
+    # so that its data does not move to 9 by itself
+    SYNC_MYSQL_IMAGE=mysql:lts
+    if [ "${PREVIOUS_SYNC_MYSQL}" = yes ]; then
+        SYNC_MYSQL_IMAGE=${PREVIOUS_SYNC_MYSQL_IMAGE:-mysql:8}
+        [ -n "${PREVIOUS_SYNC_MYSQL_IMAGE}" ] || PINNED_SYNC_MYSQL=yes
+    elif SYNC_MYSQL_VOLUME=$(db_volume syncstorage-db-mysql tokenserver-db-mysql); then
+        # (already on 9 or later: lts, MySQL cannot go back to 8)
+        SYNC_MYSQL_VOLUME_MAJOR=$(mysql_volume_major ${SYNC_MYSQL_VOLUME}) || SYNC_MYSQL_VOLUME_MAJOR=8
+        [ "${SYNC_MYSQL_VOLUME_MAJOR}" -ge 9 ] || SYNC_MYSQL_IMAGE=mysql:8
+    fi
+    apply_sed "${NEW_ENV}" "s|^# SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=$(sed_escape "${SYNC_MYSQL_IMAGE}")|"
 fi
 if [ "${EXTERNAL_DB}" = "yes" ]; then
-    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|"
+    apply_sed "${NEW_ENV}" "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|"
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         for name in SYNC_POSTGRES_NAME SYNC_POSTGRES_USER; do
-            apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
+            apply_sed "${NEW_ENV}" "s|^${name}=.*|${name}=${!name}|"
         done
-        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_HOST=.*|SYNC_POSTGRES_HOST=${DB_HOST}|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_PORT=.*|SYNC_POSTGRES_PORT=${DB_PORT}|"
+        apply_sed "${NEW_ENV}" "s|^SYNC_POSTGRES_HOST=.*|SYNC_POSTGRES_HOST=${DB_HOST}|"
+        apply_sed "${NEW_ENV}" "s|^SYNC_POSTGRES_PORT=.*|SYNC_POSTGRES_PORT=${DB_PORT}|"
     else
         # the init container's client checks the certificate by default, MySQL's is self-signed
-        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
+        apply_sed "${NEW_ENV}" "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
         for name in SYNC_TOKENSERVER_DB_NAME SYNC_TOKENSERVER_DB_USER SYNC_STORAGE_DB_NAME SYNC_STORAGE_DB_USER; do
-            apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
+            apply_sed "${NEW_ENV}" "s|^${name}=.*|${name}=${!name}|"
         done
         for part in TOKENSERVER STORAGE; do
-            apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_${part}_DB_HOST=.*|SYNC_${part}_DB_HOST=${DB_HOST}|"
-            apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_${part}_DB_PORT=.*|SYNC_${part}_DB_PORT=${DB_PORT}|"
+            apply_sed "${NEW_ENV}" "s|^SYNC_${part}_DB_HOST=.*|SYNC_${part}_DB_HOST=${DB_HOST}|"
+            apply_sed "${NEW_ENV}" "s|^SYNC_${part}_DB_PORT=.*|SYNC_${part}_DB_PORT=${DB_PORT}|"
         done
     fi
 fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     for name in FXA_MYSQL_PASSWORD FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_FLOW_ID_KEY FXA_SESSION_TOKEN_HANDLE_KEY FXA_CONTENT_SESSION_SECRET; do
-        apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=$(generate_random_string 32)|"
+        apply_sed "${NEW_ENV}" "s|^${name}=.*|${name}=$(generate_random_string 32)|"
     done
     # the accounts images come from the same registry as the sync images, for this host's architecture
-    FXA_REGISTRY=$(grep '^IMAGE_REPOSITORY=' ${SCRIPT_DIR}/.env | cut -d= -f2)
-    case "$(uname -m)" in aarch64|arm64) FXA_ARCH=arm64 ;; *) FXA_ARCH=amd64 ;; esac
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_IMAGE=.*|FXA_IMAGE=${FXA_REGISTRY}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${FXA_REGISTRY}:fxa-channelserver-latest|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_ARCH=.*|FXA_ARCH=${FXA_ARCH}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_CONTENT_URL=.*|FXA_CONTENT_URL=https://accounts.${FXA_DOMAIN}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_AUTH_URL=.*|FXA_AUTH_URL=https://api.${FXA_DOMAIN}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_PROFILE_URL=.*|FXA_PROFILE_URL=https://profile.${FXA_DOMAIN}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.${FXA_DOMAIN}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=${FXA_SMTP_HOST}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_PORT=.*|FXA_SMTP_PORT=${FXA_SMTP_PORT}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_USER=.*|FXA_SMTP_USER='$(sed_escape "${FXA_SMTP_USER}")'|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_PASS=.*|FXA_SMTP_PASS='$(sed_escape "${FXA_SMTP_PASS}")'|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_SECURE=.*|FXA_SMTP_SECURE=${FXA_SMTP_SECURE}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"$(sed_escape "${FXA_SMTP_SENDER}")\"|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=${FXA_SIGNUPS}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_MAX_ACCOUNTS=.*|FXA_MAX_ACCOUNTS=${FXA_MAX_ACCOUNTS}|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_ACCOUNT_EVENTS=.*|FXA_ACCOUNT_EVENTS=${FXA_ACCOUNT_EVENTS}|"
+    FXA_REGISTRY=$(grep '^IMAGE_REPOSITORY=' "${NEW_ENV}" | cut -d= -f2)
+    FXA_ARCH=$(host_arch)
+    apply_sed "${NEW_ENV}" "s|^FXA_IMAGE=.*|FXA_IMAGE=${FXA_REGISTRY}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${FXA_REGISTRY}:fxa-channelserver-latest|"
+    apply_sed "${NEW_ENV}" "s|^FXA_ARCH=.*|FXA_ARCH=${FXA_ARCH}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_CONTENT_URL=.*|FXA_CONTENT_URL=https://accounts.${FXA_DOMAIN}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_AUTH_URL=.*|FXA_AUTH_URL=https://api.${FXA_DOMAIN}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_PROFILE_URL=.*|FXA_PROFILE_URL=https://profile.${FXA_DOMAIN}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_OAUTH_SERVER_URL=.*|FXA_OAUTH_SERVER_URL=http://fxa-auth:9000/v1|"
+    apply_sed "${NEW_ENV}" "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.${FXA_DOMAIN}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=${FXA_SMTP_HOST}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_PORT=.*|FXA_SMTP_PORT=${FXA_SMTP_PORT}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_USER=.*|FXA_SMTP_USER='$(sed_escape "${FXA_SMTP_USER}")'|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_PASS=.*|FXA_SMTP_PASS='$(sed_escape "${FXA_SMTP_PASS}")'|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_SECURE=.*|FXA_SMTP_SECURE=${FXA_SMTP_SECURE}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"$(sed_escape "${FXA_SMTP_SENDER}")\"|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=${FXA_SIGNUPS}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_MAX_ACCOUNTS=.*|FXA_MAX_ACCOUNTS=${FXA_MAX_ACCOUNTS}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_ACCOUNT_EVENTS=.*|FXA_ACCOUNT_EVENTS=${FXA_ACCOUNT_EVENTS}|"
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
-        apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB_CONTAINERS=.*|FXA_DB_CONTAINERS=0|"
+        apply_sed "${NEW_ENV}" "s|^FXA_DB_CONTAINERS=.*|FXA_DB_CONTAINERS=0|"
         for name in FXA_MYSQL_HOST FXA_MYSQL_PORT FXA_MYSQL_USER FXA_MYSQL_POLICY_USER; do
-            apply_sed ${SCRIPT_DIR}/.env "s|^${name}=.*|${name}=${!name}|"
+            apply_sed "${NEW_ENV}" "s|^${name}=.*|${name}=${!name}|"
         done
-        apply_sed ${SCRIPT_DIR}/.env "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=$(generate_random_string 32)|"
+        apply_sed "${NEW_ENV}" "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=$(generate_random_string 32)|"
     fi
-    apply_sed ${SCRIPT_DIR}/.env "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|"
+    apply_sed "${NEW_ENV}" "s|^FXA_DB=.*|FXA_DB=${FXA_DB}|"
     # MariaDB lts for new installs (12 today, with the patched migrations), written out (also
     # the default when unset). One that ran MariaDB before FXA_MARIADB_IMAGE, or whose MariaDB
     # volume is still there, runs 11: pinned, so that its data does not move to 12 by itself
@@ -763,25 +1385,55 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         if [ "${PREVIOUS_FXA_DB}" = "mariadb" ]; then
             FXA_MARIADB_IMAGE=${PREVIOUS_FXA_MARIADB_IMAGE:-mariadb:11}
             [ -n "${PREVIOUS_FXA_MARIADB_IMAGE}" ] || PINNED_FXA_MARIADB=yes
-        elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MARIADB_VOLUME=$(fxa_mariadb_volume); then
+        elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MARIADB_VOLUME=$(db_volume fxa-db-mariadb); then
             FXA_MARIADB_IMAGE=mariadb:11
         fi
-        apply_sed ${SCRIPT_DIR}/.env "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=$(sed_escape "${FXA_MARIADB_IMAGE}")|"
+        apply_sed "${NEW_ENV}" "s|^# FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=$(sed_escape "${FXA_MARIADB_IMAGE}")|"
+    fi
+    # MySQL lts for new installs (9 today), written out (also the default when unset), when the
+    # accounts image has mozilla/fxa#21554; else MySQL 8 with mysql_native_password, the only
+    # authentication of the images without it (Mozilla's, ours from before). One that ran MySQL
+    # before FXA_MYSQL_IMAGE, or whose fxa-db volume is still there, runs 8 like that: pinned,
+    # its users are on mysql_native_password (docs/upgrading.md#mysql-8-to-9). Your own server: the
+    # image is the backups' client, and without the patch the accounts' user is created with
+    # mysql_native_password in database-setup-fxa.sql
+    if [ "${FXA_DB}" = "mysql" ]; then
+        fxa_image_has mozilla/fxa#21554; FXA_MYSQL2=$?
+        # the local copy without it (the registry's has it): it is what would start, so MySQL 8
+        # with mysql_native_password, which works with both; 3: said below
+        [ "${FXA_MYSQL2}" = 0 ] && [ -n "${FXA_IMAGE_PULL}" ] && FXA_MYSQL2=3
+        FXA_MYSQL_IMAGE=mysql:lts FXA_MYSQL_ARGS=""
+        if [ "${PREVIOUS_FXA_MYSQL}" = yes ]; then
+            if [ -n "${PREVIOUS_FXA_MYSQL_IMAGE}" ]; then
+                FXA_MYSQL_IMAGE=${PREVIOUS_FXA_MYSQL_IMAGE} FXA_MYSQL_ARGS=${PREVIOUS_FXA_MYSQL_ARGS}
+            else
+                FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS} PINNED_FXA_MYSQL=yes
+            fi
+        elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MYSQL_VOLUME=$(db_volume fxa-db); then
+            # (already on 9 or later: lts, its users cannot be on mysql_native_password, and MySQL
+            # cannot go back to 8)
+            FXA_MYSQL_VOLUME_MAJOR=$(mysql_volume_major ${FXA_MYSQL_VOLUME}) || FXA_MYSQL_VOLUME_MAJOR=8
+            [ "${FXA_MYSQL_VOLUME_MAJOR}" -ge 9 ] || FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}
+        elif [ "${FXA_MYSQL2}" != 0 ]; then
+            FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}
+        fi
+        apply_sed "${NEW_ENV}" "s|^# FXA_MYSQL_IMAGE=.*|FXA_MYSQL_IMAGE=$(sed_escape "${FXA_MYSQL_IMAGE}")|"
+        [ -z "${FXA_MYSQL_ARGS}" ] || apply_sed "${NEW_ENV}" "s|^# FXA_MYSQL_ARGS=.*|FXA_MYSQL_ARGS=$(sed_escape "${FXA_MYSQL_ARGS}")|"
     fi
     if [ -n "${ADMIN_ALLOWED_USERS:-}" ]; then
         # the admin UI signs in with these accounts: a public OAuth client (PKCE, no secret:
         # the accounts service refuses PKCE from clients with one), registered by fxa-auth
         ADMIN_FXA_CLIENT_ID=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
-        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_FXA_CLIENT_ID=.*|ADMIN_FXA_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_ALLOWED_USERS=.*|ADMIN_ALLOWED_USERS=${ADMIN_ALLOWED_USERS}|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_REDIRECT_URL=.*|ADMIN_OIDC_REDIRECT_URL=https://${ADMIN_HOST}/auth/callback|"
+        apply_sed "${NEW_ENV}" "s|^ADMIN_FXA_CLIENT_ID=.*|ADMIN_FXA_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
+        apply_sed "${NEW_ENV}" "s|^ADMIN_ALLOWED_USERS=.*|ADMIN_ALLOWED_USERS=${ADMIN_ALLOWED_USERS}|"
+        apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_REDIRECT_URL=.*|ADMIN_OIDC_REDIRECT_URL=https://${ADMIN_HOST}/auth/callback|"
         # written out for the Quadlets too, which have no defaults like docker-compose.fxa.yml
-        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_ISSUER=.*|ADMIN_OIDC_ISSUER=https://accounts.${FXA_DOMAIN}|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_CLIENT_ID=.*|ADMIN_OIDC_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_NAME=.*|ADMIN_OIDC_NAME=\"Mozilla account\"|"
+        apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_ISSUER=.*|ADMIN_OIDC_ISSUER=https://accounts.${FXA_DOMAIN}|"
+        apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_CLIENT_ID=.*|ADMIN_OIDC_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
+        apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_NAME=.*|ADMIN_OIDC_NAME=\"Mozilla account\"|"
         # the accounts service has no email_verified claim, but only lets confirmed
         # sessions through to the admin UI (SERVICES_WITH_EMAIL_VERIFICATION in fxa-auth)
-        apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=.*|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true|"
+        apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=.*|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true|"
     fi
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         COMPOSE_FILES=docker-compose.sync-postgres.yml:docker-compose.fxa.yml
@@ -791,25 +1443,25 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         COMPOSE_FILES=docker-compose.yml:docker-compose.fxa.yml
     fi
     [ "${FXA_DB}" = "mariadb" ] && COMPOSE_FILES="${COMPOSE_FILES}:docker-compose.fxa-mariadb.yml"
-    apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=${COMPOSE_FILES}|"
+    apply_sed "${NEW_ENV}" "s|# COMPOSE_FILE=.*|COMPOSE_FILE=${COMPOSE_FILES}|"
     # nginx example for the accounts host names
     cp ${SCRIPT_DIR}/config/nginx/fxa-example.conf ${SCRIPT_DIR}/config/nginx/fxa.conf
     apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ACCOUNTS_HOST>|accounts.${FXA_DOMAIN}|g"
     apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<API_HOST>|api.${FXA_DOMAIN}|g"
     apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<PROFILE_HOST>|profile.${FXA_DOMAIN}|g"
     for port in CONTENT AUTH PROFILE PROFILE_STATIC PAIRING; do
-        value=$(grep "^FXA_${port}_EXPORT_PORT=" ${SCRIPT_DIR}/.env | cut -d= -f2)
+        value=$(grep "^FXA_${port}_EXPORT_PORT=" "${NEW_ENV}" | cut -d= -f2)
         apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<${port}_EXPORT_PORT>|${value}|g"
     done
     if [ "${ADMIN_UI}" = "yes" ]; then
-        value=$(grep "^ADMIN_GATE_EXPORT_PORT=" ${SCRIPT_DIR}/.env | cut -d= -f2)
+        value=$(grep "^ADMIN_GATE_EXPORT_PORT=" "${NEW_ENV}" | cut -d= -f2)
         apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ADMIN_GATE_EXPORT_PORT>|${value}|g"
     else
         # no sign-up gate without the admin UI
         apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "/# admin UI only/,/^  }$/d"
     fi
     if [ -n "${ADMIN_ALLOWED_USERS:-}" ]; then
-        value=$(grep "^ADMIN_EXPORT_PORT=" ${SCRIPT_DIR}/.env | cut -d= -f2)
+        value=$(grep "^ADMIN_EXPORT_PORT=" "${NEW_ENV}" | cut -d= -f2)
         apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ADMIN_HOST>|${ADMIN_HOST}|g"
         apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ADMIN_EXPORT_PORT>|${value}|g"
     else
@@ -817,39 +1469,59 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
 fi
 if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed ${SCRIPT_DIR}/.env "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.sync-postgres.yml|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-postgres|"
-    apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-postgres-init|"
+    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed "${NEW_ENV}" "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.sync-postgres.yml|"
+    apply_sed "${NEW_ENV}" "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-postgres|"
+    apply_sed "${NEW_ENV}" "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-postgres-init|"
     # the database container: the Sync server gets a role of its own, SYNC_POSTGRES_USER is the
-    # container's superuser (your own server: SYNC_POSTGRES_USER is the plain owner, DATABASES.md)
+    # container's superuser (your own server: SYNC_POSTGRES_USER is the plain owner, docs/reference/database-users.md#postgresql)
     if [ "${EXTERNAL_DB}" != "yes" ]; then
-        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|"
-        apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(generate_random_string 32)|"
+        apply_sed "${NEW_ENV}" "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|"
+        apply_sed "${NEW_ENV}" "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(generate_random_string 32)|"
     fi
-    # PostgreSQL 18 for new installs, written out (unset it is postgres:18; not lts: no install
-    # moves to a new major by itself). One that ran PostgreSQL before SYNC_POSTGRES_IMAGE, or whose
-    # PostgreSQL volume is still there, runs postgres:18 (every release so far used 18, git log
-    # -- docker-compose.sync-postgres.yml confirms it)
-    SYNC_POSTGRES_IMAGE=postgres:18
-    if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
-        SYNC_POSTGRES_IMAGE=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
-    fi
-    apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_IMAGE}")|"
+    # the major of the install, above
+    apply_sed "${NEW_ENV}" "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_PIN}")|"
 fi
+# the new .env in place, the one of before kept
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    ENV_BACKUP=$(backup_name "${SCRIPT_DIR}/.env.before-setup")
+    private_copy "${SCRIPT_DIR}/.env" "${ENV_BACKUP}" || { echo "ERROR: could not keep ${SCRIPT_DIR}/.env as ${ENV_BACKUP}: nothing written"; rm -f "${NEW_ENV}"; exit 1; }
+    echo "NOTE: ${SCRIPT_DIR}/.env written again with new passwords, the one of before is $(basename "${ENV_BACKUP}")"
+    echo "  (to keep the passwords of an install: ./prepare_environment.sh --upgrade, Quadlets too)"
+fi
+mv "${NEW_ENV}" "${SCRIPT_DIR}/.env" || exit 1
+unset ENV_READ
 
-# the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
+# the SQL for your own database server, with the names and passwords of .env (docs/databases.md#create-the-databases-and-users)
 [ "${EXTERNAL_DB}" = "yes" ] && render_sync_sql "${DATABASE_BACKEND}"
 if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
-    render_sql ${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql ${SCRIPT_DIR}/database-setup-fxa.sql \
+    fxa_template=${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql
+    # MySQL and an accounts image without mozilla/fxa#21554: their user on mysql_native_password
+    # (the commented lines of fxa-mysql.sql instead of those after them)
+    if [ "${FXA_DB}" = mysql ] && [ "${FXA_MYSQL2}" != 0 ]; then
+        fxa_template=${SCRIPT_DIR}/database-setup-fxa.native
+        sed -e "/^-- native: /{s/^-- native: //;n;d;}" "${SCRIPT_DIR}/db/mysql/fxa-mysql.sql" > "${fxa_template}"
+    fi
+    render_sql "${fxa_template}" ${SCRIPT_DIR}/database-setup-fxa.sql \
         FXA_USER="$(env_value FXA_MYSQL_USER)" FXA_PASSWORD="$(env_value FXA_MYSQL_PASSWORD)" \
         FXA_POLICY_USER="$(env_value FXA_MYSQL_POLICY_USER)" FXA_POLICY_PASSWORD="$(env_value FXA_MYSQL_POLICY_PASSWORD)" \
         FXA_ADMIN_PASSWORD="$(env_value FXA_ADMIN_DB_PASSWORD)"
+    [ "${fxa_template}" = "${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql" ] || rm -f "${fxa_template}"
 fi
 
 # prepare nginx example
 cp ${SCRIPT_DIR}/config/nginx/syncstorage-rs-example.conf ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf
 apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s/firefox-sync.example.com/${SYNC_FQDN}/g"
-apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s|<SYNC_EXPORT_PORT>|${SYNC_EXPORT_PORT}|"
+# the Sync server where it listens: its address (127.0.0.1 for every interface, 0.0.0.0, or a
+# port alone in an .env of before), not localhost, which nginx tries on ::1 first
+# (IPv6: [::] every interface, nginx on [::1])
+SYNC_UPSTREAM=${SYNC_EXPORT_PORT}
+case "${SYNC_UPSTREAM}" in
+    0.0.0.0:*) SYNC_UPSTREAM=127.0.0.1:${SYNC_UPSTREAM##*:} ;;
+    "[::]:"*) SYNC_UPSTREAM=[::1]:${SYNC_UPSTREAM##*:} ;;
+    *:*) ;;
+    *) SYNC_UPSTREAM=127.0.0.1:${SYNC_UPSTREAM} ;;
+esac
+apply_sed ${SCRIPT_DIR}/config/nginx/syncstorage-rs.conf "s|localhost:<SYNC_EXPORT_PORT>|${SYNC_UPSTREAM}|; s|<SYNC_EXPORT_PORT>|${SYNC_UPSTREAM##*:}|"
 
 # prepare systemd example (for docker compose; with Podman, Quadlets start at boot instead)
 cp ${SCRIPT_DIR}/config/systemd/syncstorage-rs-example.service ${SCRIPT_DIR}/config/systemd/syncstorage-rs.service
@@ -860,118 +1532,7 @@ apply_sed ${SCRIPT_DIR}/config/systemd/syncstorage-rs.service "s|<COMPOSE_DIR>|$
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
     echo ""
     echo "Setting up Podman Quadlets..."
-    
-    QUADLET_DIR="${QUADLET_DIR:-${HOME}/.config/containers/systemd}"
-    # timers are plain systemd units, not Quadlets
-    SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user}"
-
-    # load the generated values (database names, users, FxA endpoints, etc.); not with
-    # `source`: unused sections keep placeholders like <REPLACE_WITH_...>, not shell
-    while IFS= read -r line || [ -n "${line}" ]; do
-        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
-        key=${line%%=*}
-        value=${line#*=}
-        case "${value}" in
-            \'*\') value=${value:1:${#value}-2} ;;
-            \"*\") value=${value:1:${#value}-2} ;;
-        esac
-        export "${key}=${value}"
-    done < ${SCRIPT_DIR}/.env
-    mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
-    # from .env only (not this shell's environment); unset: lts, as docker-compose.fxa-mariadb.yml.
-    # podman needs the registry in the image name (compose is fine with mariadb:lts): a first
-    # part with a dot or a port, or localhost, is one
-    FXA_MARIADB_IMAGE=$(env_value FXA_MARIADB_IMAGE)
-    FXA_MARIADB_IMAGE=${FXA_MARIADB_IMAGE:-mariadb:lts}
-    first=${FXA_MARIADB_IMAGE%%/*}
-    if [ "${first}" != "${FXA_MARIADB_IMAGE}" ] && { [[ "${first}" == *[.:]* ]] || [ "${first}" = localhost ]; }; then
-        :
-    elif [[ "${FXA_MARIADB_IMAGE}" == */* ]]; then
-        FXA_MARIADB_IMAGE=docker.io/${FXA_MARIADB_IMAGE}
-    else
-        FXA_MARIADB_IMAGE=docker.io/library/${FXA_MARIADB_IMAGE}
-    fi
-    export FXA_MARIADB_IMAGE
-
-    # the database containers: the .env names (syncstorage_db) are compose's, here the
-    # containers are reached by their names. Your own server: none of them
-    SKIP_UNITS=""
-    DROP_DEPS=""
-    if [ "${SYNC_DB_CONTAINERS:-1}" = 0 ]; then
-        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
-        DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
-    else
-        export SYNC_STORAGE_DB_HOST=firefox-sync-syncstorage-db SYNC_STORAGE_DB_PORT=3306
-        export SYNC_TOKENSERVER_DB_HOST=firefox-sync-tokenserver-db SYNC_TOKENSERVER_DB_PORT=3306
-        if [ "${SYNC_DB:-mariadb}" = "mysql" ]; then
-            # MariaDB's volumes, unused (the volumes themselves are kept); MySQL's certificate
-            # is self-signed, the init container's client does not check it
-            SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db\.volume$'
-            export SYNC_DB_TLS_VERIFY=false
-        fi
-    fi
-    if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
-        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db(-mariadb)?\.(container|volume)$"
-        DROP_DEPS="${DROP_DEPS:+${DROP_DEPS}|}firefox-sync-fxa-db\.service"
-    elif [ "${FXA_DB:-mysql}" = "mariadb" ]; then
-        # MySQL's volume, unused (the volume itself is kept)
-        SKIP_UNITS="${SKIP_UNITS:+${SKIP_UNITS}|}^firefox-sync-fxa-db\.volume$"
-    fi
-    # Requires= on a unit that is not installed fails the start: drop those dependencies
-    drop_deps() {
-        [ -n "${DROP_DEPS}" ] || { cat; return; }
-        sed -E -e "/^(After|Requires)=/{s/(=| )(${DROP_DEPS})/\1/g; s/= +/=/; s/ +$//; s/  +/ /g;}" -e '/^Requires=$/d'
-    }
-    
-    # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it
-    render_quadlet() {
-        local file=${1} content name value
-        content=$(cat "${file}")
-        for name in $(grep -o '%[A-Z][A-Z0-9_]*%' "${file}" | sort -u | tr -d '%'); do
-            if [ -z "${!name+x}" ]; then
-                echo "ERROR: ${file} needs ${name}, which is not set in .env" >&2
-                return 1
-            fi
-            value=$(printf '%s' "${!name}" | sed -e 's/%/%%/g')
-            content=$(printf '%s\n' "${content}" | sed -e "s|%${name}%|$(sed_escape "${value}")|g")
-        done
-        printf '%s\n' "${content}"
-    }
-
-    QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
-    # SYNC_DB=mysql: sync-mysql/ replaces the database units of the same name (without the
-    # database containers, SKIP_UNITS leaves them out)
-    [ "${SYNC_DB:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/sync-mysql")
-    [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
-    # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
-    [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
-    if [ "${ADMIN_UI}" = "yes" ]; then
-        # with the accounts, the admin UI also manages them
-        [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/admin") || QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/admin")
-    fi
-    echo "Processing quadlet files..."
-    for source in "${QUADLET_SOURCES[@]}"; do
-        for file in "${source}"/*.{network,volume,container,timer}; do
-            [ -f "${file}" ] || continue
-            filename=$(basename "${file}")
-            target_dir=${QUADLET_DIR}
-            [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
-            [ "${FXA_DB:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
-            [ "${SYNC_DB:-mariadb}" = "mysql" ] && [ -f "${source}/sync-mysql/${filename}" ] && continue
-            if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
-                # left from a setup with the database containers (the volume is kept)
-                rm -f "${QUADLET_DIR}/${filename}"
-                continue
-            fi
-            render_quadlet "${file}" | drop_deps > "${target_dir}/${filename}"
-            [ "${PIPESTATUS[0]}" = 0 ] || exit 1
-            echo "  ✓ ${filename}"
-        done
-    done
-    
-    echo ""
-    echo "Reloading systemd daemon..."
-    systemctl --user daemon-reload
+    render_units
 fi
 
 echo ""
@@ -995,7 +1556,7 @@ fi
 if [ "${ADMIN_UI}" = "yes" ]; then
     echo ""
     echo "Admin UI: http://localhost:8090 on this host (over SSH: ssh -L 8090:127.0.0.1:8090 <host>),"
-    echo "  password: ADMIN_PASSWORD in .env. See ADMIN.md"
+    echo "  password: ADMIN_PASSWORD in .env. See docs/admin/README.md"
     [ -n "${ADMIN_ALLOWED_USERS:-}" ] && echo "  or https://${ADMIN_HOST}, signed in with the accounts of ${ADMIN_ALLOWED_USERS}"
 fi
 
@@ -1003,7 +1564,7 @@ echo ""
 
 # your own database server: what to run there first
 if [ "${EXTERNAL_DB}" = "yes" ]; then
-    echo "First, on your database server (see DATABASES.md):"
+    echo "First, on your database server (see docs/databases.md#create-the-databases-and-users):"
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         echo "  psql -h ${DB_HOST} -p ${DB_PORT} -U postgres -f database-setup.sql"
         echo "  pg_hba.conf: a host line (not hostssl) for the containers' addresses, scram-sha-256"
@@ -1015,27 +1576,83 @@ if [ "${EXTERNAL_DB}" = "yes" ]; then
     fi
 fi
 if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
-    [ "${EXTERNAL_DB}" = "yes" ] || echo "First, on your database server (see DATABASES.md):"
+    [ "${EXTERNAL_DB}" = "yes" ] || echo "First, on your database server (see docs/databases.md#create-the-databases-and-users):"
     if [ "${FXA_DB}" = "mariadb" ]; then
         echo "  mariadb -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
-        echo "  MariaDB 11.4 or later (12: with our accounts images, FXA.md), with binary logging: log_bin_trust_function_creators=ON"
+        echo "  MariaDB 11.4 or later (12: with our accounts images, docs/accounts.md#mariadb-12), with binary logging: log_bin_trust_function_creators=ON"
     else
         echo "  mysql -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
-        echo "  MySQL 8.4 started with mysql_native_password=ON and log_bin_trust_function_creators=ON"
+        if [ "${FXA_MYSQL2}" = 0 ]; then
+            echo "  MySQL 8.4 or 9 with log_bin_trust_function_creators=ON"
+        else
+            echo "  MySQL 8.4 started with mysql_native_password=ON and log_bin_trust_function_creators=ON: the accounts"
+            echo "  image has no mozilla/fxa#21554, its driver speaks mysql_native_password only (docs/accounts.md#mysql-or-mariadb)"
+        fi
     fi
 fi
 [ "${EXTERNAL_DB}" = "yes" ] || [ "${EXTERNAL_FXA_DB}" = "yes" ] && echo ""
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${PINNED_FXA_MARIADB:-}" = "yes" ]; then
         echo "FXA_MARIADB_IMAGE=mariadb:11: the accounts database of this install stays on MariaDB 11."
-        echo "  To move it to MariaDB lts, 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
+        echo "  To move it to MariaDB lts, 12 (a backup first, there is no way back): docs/upgrading.md#mariadb"
     fi
     if [ -n "${FXA_MARIADB_VOLUME:-}" ]; then
         echo "FXA_MARIADB_IMAGE=mariadb:11: found the accounts database of an earlier install (${FXA_MARIADB_VOLUME}),"
         echo "  its data stays on MariaDB 11. Already on 12: set FXA_MARIADB_IMAGE=mariadb:lts. A new install: remove the volume"
-        echo "  (its accounts are lost) and run this again. Moving it to lts: FXA.md#moving-to-a-newer-mariadb"
+        echo "  (its accounts are lost) and run this again. Moving it to lts: docs/upgrading.md#mariadb"
+    fi
+    if [ "${PINNED_FXA_MYSQL:-}" = "yes" ]; then
+        echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
+        echo "  of this install stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9: docs/upgrading.md#mysql-8-to-9"
+    fi
+    if [ -n "${FXA_MYSQL_VOLUME:-}" ] && [ "${FXA_MYSQL_VOLUME_MAJOR}" -ge 9 ]; then
+        echo "FXA_MYSQL_IMAGE=mysql:lts: found the accounts database of an earlier install (${FXA_MYSQL_VOLUME}), on"
+        echo "  MySQL ${FXA_MYSQL_VOLUME_MAJOR} already: it stays on lts. A new install: remove the volume (its accounts are lost) and run this again"
+    elif [ -n "${FXA_MYSQL_VOLUME:-}" ]; then
+        echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: found the accounts database"
+        echo "  of an earlier install (${FXA_MYSQL_VOLUME}), its data stays on MySQL 8 with mysql_native_password."
+        echo "  A new install: remove the volume"
+        echo "  (its accounts are lost) and run this again. Moving it to lts: docs/upgrading.md#mysql-8-to-9"
+    elif [ "${FXA_DB}" = mysql ] && [ "${EXTERNAL_FXA_DB}" != yes ] && [ "${PREVIOUS_FXA_MYSQL}" != yes ] && [ "${FXA_MYSQL2}" != 0 ]; then
+        if [ "${FXA_MYSQL2}" = 2 ]; then
+            echo "NOTE: could not read the labels of $(env_value FXA_IMAGE):$(env_value FXA_VERSION): MySQL lts (9) needs"
+        elif [ "${FXA_MYSQL2}" = 3 ]; then
+            echo "NOTE: your local $(env_value FXA_IMAGE):$(env_value FXA_VERSION) is older than the registry's: it does not have"
+            echo "  mozilla/fxa#21554, the registry's has it. For MySQL lts (9) on this new install: pull it, then before the"
+            echo "  first start set FXA_MYSQL_IMAGE=mysql:lts and remove FXA_MYSQL_ARGS in .env. Until then MySQL lts needs"
+        else
+            echo "NOTE: $(env_value FXA_IMAGE):$(env_value FXA_VERSION) does not have mozilla/fxa#21554 (Mozilla's images, ours"
+            echo "  built before it), which MySQL lts (9) needs"
+        fi
+        echo "  an accounts image with mozilla/fxa#21554 (the mysql2 driver): fxa-db runs MySQL 8 with mysql_native_password"
+        echo "  (FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}), see docs/accounts.md#mysql-or-mariadb"
     fi
     fxa_mariadb_image_check
+    [ "${FXA_DB}" = mysql ] && fxa_mysql_image_check
+fi
+if [ "${DATABASE_BACKEND}" = postgres ] && [ -n "${SYNC_POSTGRES_MAJOR:-}" ]; then
+    echo "SYNC_POSTGRES_IMAGE=postgres:${SYNC_POSTGRES_MAJOR}: PostgreSQL ${SYNC_POSTGRES_MAJOR}, the major of postgres:latest today, pinned: a newer"
+    echo "  major cannot open its data. Moving later: docs/upgrading.md#postgresql"
+elif [ "${DATABASE_BACKEND}" = postgres ] && [ -n "${SYNC_POSTGRES_VOLUME}" ]; then
+    echo "SYNC_POSTGRES_IMAGE=${SYNC_POSTGRES_PIN}: found the Sync database of an earlier install (${SYNC_POSTGRES_VOLUME}),"
+    echo "  PostgreSQL ${SYNC_POSTGRES_VOLUME_MAJOR}: it stays on it. A new install: remove the volume (its data is lost) and run this"
+    echo "  again. Moving to a newer major: docs/upgrading.md#postgresql"
+fi
+if [ -n "${SYNC_MARIADB_FOUND}" ]; then
+    echo "SYNC_MARIADB_IMAGE=${SYNC_MARIADB_PIN}: found the Sync databases of an earlier install on MariaDB ${SYNC_MARIADB_FOUND}: they stay on it."
+    echo "  A new install: remove their volumes (the data is lost) and run this again. To follow lts: SYNC_MARIADB_IMAGE=mariadb:lts"
+fi
+if [ "${PINNED_SYNC_MYSQL:-}" = "yes" ]; then
+    echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases of this install stay on MySQL 8. To move them to MySQL lts, 9:"
+    echo "  docs/upgrading.md#mysql-8-to-9"
+fi
+if [ -n "${SYNC_MYSQL_VOLUME:-}" ] && [ "${SYNC_MYSQL_VOLUME_MAJOR}" -ge 9 ]; then
+    echo "SYNC_MYSQL_IMAGE=mysql:lts: found the Sync databases of an earlier install (${SYNC_MYSQL_VOLUME}), on MySQL"
+    echo "  ${SYNC_MYSQL_VOLUME_MAJOR} already: they stay on lts. A new install: remove the volumes and run this again"
+elif [ -n "${SYNC_MYSQL_VOLUME:-}" ]; then
+    echo "SYNC_MYSQL_IMAGE=mysql:8: found the Sync databases of an earlier install (${SYNC_MYSQL_VOLUME}), their data"
+    echo "  stays on MySQL 8. A new install: remove the volumes and run"
+    echo "  this again. Moving them to lts: docs/upgrading.md#mysql-8-to-9"
 fi
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
@@ -1049,15 +1666,15 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     if [ "${SELF_HOST_FXA}" = "yes" ]; then
         echo "     systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \\"
         echo "       firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service"
-        echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see FXA.md)"
+        echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see docs/firefox.md#self-hosted-accounts)"
     fi
     echo "  2. (Optional) loginctl enable-linger \$USER"
-    echo "  3. (Optional) nightly backups: systemctl --user enable --now firefox-sync-backup.timer (ADMIN.md#backups)"
+    echo "  3. (Optional) nightly backups: systemctl --user enable --now firefox-sync-backup.timer (docs/backups.md#the-backup-service)"
     echo ""
     echo "To check status:"
     echo "  systemctl --user status firefox-sync-syncstorage.service"
     echo ""
-    echo "See PODMAN.md for detailed instructions"
+    echo "See docs/install/podman.md for detailed instructions"
 elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         COMPOSE_FILES="-f docker-compose.sync-postgres.yml"
@@ -1071,14 +1688,14 @@ elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     echo "  1. systemctl --user enable --now podman.socket"
     echo "  2. export DOCKER_HOST=unix://\${XDG_RUNTIME_DIR}/podman/podman.sock"
     echo "  3. docker compose ${COMPOSE_FILES} up -d"
-    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (ADMIN.md#backups)"
+    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
     echo ""
-    echo "See PODMAN.md for detailed instructions (podman-compose is not supported)"
+    echo "See docs/install/podman.md for detailed instructions (podman-compose is not supported)"
 else
     echo "Next steps:"
     echo "  1. docker compose up -d"
-    [ "${SELF_HOST_FXA}" = "yes" ] && echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see FXA.md)"
-    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (ADMIN.md#backups)"
+    [ "${SELF_HOST_FXA}" = "yes" ] && echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see docs/firefox.md#self-hosted-accounts)"
+    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
     echo "  2. (Optional) Install systemd service:"
     echo "     sudo cp config/systemd/syncstorage-rs.service /etc/systemd/system/"
     echo "     sudo systemctl enable --now syncstorage-rs.service"

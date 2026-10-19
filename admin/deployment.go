@@ -76,7 +76,7 @@ func (d deployment) Kubectl() string {
 
 // helmUpgrade: helm upgrade of the release with the values it has, plus those given, in
 // the chart version it runs: --reuse-values with another version would apply the old
-// release's values to the new chart (HELM.md#upgrading), and without --version helm takes
+// release's values to the new chart (docs/upgrading.md#helm), and without --version helm takes
 // the newest
 func (d deployment) helmUpgrade(set string) string {
 	ns := ""
@@ -187,9 +187,9 @@ func (d deployment) translate(msg string) string {
 // gateHint: where POST /v1/account/create must go, for the public check of the gate
 func (d deployment) gateHint() string {
 	if d.Kubernetes() != nil {
-		return "Send it to the Service " + d.AdminService() + ", port 8081: the chart's Ingress routes it with fxa.ingress.enabled and admin.enabled, your own needs an Exact path /v1/account/create there (HELM.md)"
+		return "Send it to the Service " + d.AdminService() + ", port 8081: the chart's Ingress routes it with fxa.ingress.enabled and admin.enabled, your own needs an Exact path /v1/account/create there (docs/reverse-proxy.md#sign-up-gate)"
 	}
-	return "Send it to ADMIN_GATE_EXPORT_PORT, see ADMIN.md"
+	return "Send it to ADMIN_GATE_EXPORT_PORT, see docs/reverse-proxy.md#sign-up-gate"
 }
 
 // chartValues: the values of the chart that set the accounts' variables (of .env in compose)
@@ -200,7 +200,7 @@ var chartValues = map[string]string{
 	"FXA_PROFILE_URL": "fxa.profileUrl", "FXA_PAIRING_URL": "fxa.pairing.url", "FXA_DB": "fxa.database.backend",
 	"FXA_MYSQL_HOST": "fxa.database.external.host", "FXA_MYSQL_PORT": "fxa.database.external.port",
 	"FXA_SMTP_HOST": "smtp.host", "FXA_SMTP_PORT": "smtp.port", "FXA_SMTP_USER": "smtp.user", "FXA_SMTP_PASS": "smtp.password",
-	"FXA_SMTP_SECURE": "smtp.secure", "FXA_SMTP_SENDER": "smtp.sender",
+	"FXA_SMTP_SECURE": "smtp.secure", "FXA_SMTP_SENDER": "smtp.sender", "ADMIN_SMTP_INSECURE_AUTH": "smtp.insecureAuth",
 }
 
 // valueName: a variable of .env as this deployment sets it: with the chart, the accounts'

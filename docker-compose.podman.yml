@@ -1,5 +1,5 @@
 # Podman-specific override: longer healthcheck timings for rootless environments
-# Usage (see PODMAN.md): DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock \
+# Usage (see docs/install/podman.md): DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock \
 #   docker compose -f docker-compose.yml -f docker-compose.podman.yml up -d
 
 services:

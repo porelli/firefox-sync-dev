@@ -4,7 +4,8 @@ FXA_UPGRADE_PHASE=before, on the older release: an account signs up and syncs, i
 session registers a device, it gets an OAuth refresh token (like the mobile apps),
 and what the after phase needs is kept in UPGRADE_STATE. FXA_UPGRADE_PHASE=after,
 on the new release: the same session, device, refresh token and Sync data still
-work, a new sign-in too, and the admin UI shows the new release, all healthy.
+work, a new sign-in too, and the admin UI shows the new release, all healthy. The after
+phase can run again (after another step of the upgrade).
 
 Runs inside the syncstorage-rs image (PyFxA), like test_fxa_flow.py.
 
@@ -118,7 +119,8 @@ def test_after_the_sync_data_reads_back_with_the_old_session(state):
     token = sync_with(session, state["key_id"])
     # the same tokenserver user: no new node assignment, no empty storage
     assert token["uid"] == state["sync_uid"], token
-    assert sorted(storage(token, "GET", "/storage/bookmarks").json()) == BOOKMARKS
+    # (run again after a later step, fxa-upgrade.sh's MySQL ones: with what the first run wrote)
+    assert sorted(storage(token, "GET", "/storage/bookmarks").json()) in (BOOKMARKS, sorted(BOOKMARKS + ["bookmark-after"]))
     assert json.loads(storage(token, "GET", "/storage/meta/global").json()["payload"])["syncID"] == "upgradeabcde"
     new = [{"id": "bookmark-after", "payload": json.dumps({"title": "after the upgrade"})}]
     assert len(storage(token, "POST", "/storage/bookmarks", new).json()["success"]) == 1

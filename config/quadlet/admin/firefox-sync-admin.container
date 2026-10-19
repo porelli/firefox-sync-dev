@@ -4,7 +4,8 @@ After=firefox-sync-network.service firefox-sync-tokenserver-db-init.service
 Requires=firefox-sync-tokenserver-db-init.service
 
 [Container]
-Image=%IMAGE_REPOSITORY%:admin-latest
+# ADMIN_IMAGE of .env, else IMAGE_REPOSITORY:admin-latest (as compose)
+Image=%ADMIN_IMAGE%
 ContainerName=firefox-sync-admin
 Network=firefox-sync-network.network
 # the Sync server sends its metrics to ffs-admin
@@ -12,7 +13,7 @@ PodmanArgs=--network-alias=ffs-admin
 Environment="ADMIN_PASSWORD=%ADMIN_PASSWORD%"
 # initial:N: the admin UI manages max users, otherwise .env does (read-only)
 Environment="MAX_USERS=%SYNC_MAX_USERS%"
-# its own users and database, out of the Sync server's reach (DATABASES.md): one for its
+# its own users and database, out of the Sync server's reach (docs/reference/database-users.md#the-admin-uis-own-database): one for its
 # database, one that reads the Sync data. It gets no password of the Sync users
 Environment="ADMIN_DB_USER=%ADMIN_DB_USER%"
 Environment="ADMIN_DB_SYNC_USER=%ADMIN_DB_SYNC_USER%"
@@ -35,7 +36,7 @@ Environment="FXA_EMAIL_DOMAIN=%FXA_EMAIL_DOMAIN%"
 # every hour the public https URLs and their certificates; false: never
 Environment="ADMIN_PUBLIC_CHECK=%ADMIN_PUBLIC_CHECK%"
 Environment="ALERT_EMAIL=%ADMIN_ALERT_EMAIL%"
-# alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (ADMIN.md#alerts)
+# alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (docs/admin/alerts.md#destinations)
 Environment="ADMIN_NOTIFY=%ADMIN_NOTIFY%"
 Environment="SMTP_HOST=%FXA_SMTP_HOST%"
 Environment="SMTP_PORT=%FXA_SMTP_PORT%"
@@ -43,17 +44,19 @@ Environment="SMTP_USER=%FXA_SMTP_USER%"
 Environment="SMTP_PASS=%FXA_SMTP_PASS%"
 Environment="SMTP_SECURE=%FXA_SMTP_SECURE%"
 Environment="SMTP_SENDER=%FXA_SMTP_SENDER%"
+# the SMTP password over a connection without TLS (1, true or yes; empty, 0, false or no: refused)
+Environment="SMTP_INSECURE_AUTH=%ADMIN_SMTP_INSECURE_AUTH%"
 Environment="METRICS_TOKEN=%ADMIN_METRICS_TOKEN%"
 Environment="ADMIN_UPDATE_CHECK=%ADMIN_UPDATE_CHECK%"
 Environment="ADMIN_STALE_DAYS=%ADMIN_STALE_DAYS%"
 Environment="ADMIN_RETENTION_DAYS=%ADMIN_RETENTION_DAYS%"
 Environment="ADMIN_AUDIT_RETENTION_DAYS=%ADMIN_AUDIT_RETENTION_DAYS%"
-# the alerts on a spike of Sync errors and on the growth of the databases (ADMIN.md)
+# the alerts on a spike of Sync errors and on the growth of the databases (docs/admin/monitoring.md#errors-and-growth)
 Environment="ADMIN_ERROR_RATE_PERCENT=%ADMIN_ERROR_RATE_PERCENT%"
 Environment="ADMIN_ERROR_RATE_MIN_ERRORS=%ADMIN_ERROR_RATE_MIN_ERRORS%"
 Environment="ADMIN_DB_GROWTH_MB=%ADMIN_DB_GROWTH_MB%"
 Environment="ADMIN_DB_GROWTH_FACTOR=%ADMIN_DB_GROWTH_FACTOR%"
-# the daily purge of the Sync storage (ADMIN.md)
+# the daily purge of the Sync storage (docs/admin/storage.md#maintenance-and-retention)
 Environment="ADMIN_PURGE=%ADMIN_PURGE%"
 Environment="ADMIN_TZ=%ADMIN_TZ%"
 # what the backup units do (firefox-sync-backup.timer), for their help on the overview
@@ -63,7 +66,7 @@ Environment="ADMIN_DEPLOYMENT=quadlets"
 # the configuration page (no secrets): the databases, where the admin UI is published
 Environment="SYNC_DB=%SYNC_DB%"
 Environment="ADMIN_EXPORT_PORT=%ADMIN_EXPORT_PORT%"
-# sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
+# sign-in (see docs/admin/signing-in.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
 Environment="ADMIN_OIDC_ISSUER=%ADMIN_OIDC_ISSUER%"
 Environment="ADMIN_OIDC_CLIENT_ID=%ADMIN_OIDC_CLIENT_ID%"
 Environment="ADMIN_OIDC_CLIENT_SECRET=%ADMIN_OIDC_CLIENT_SECRET%"
@@ -77,6 +80,8 @@ Environment="ADMIN_AUTH_GROUPS_HEADER=%ADMIN_AUTH_GROUPS_HEADER%"
 Environment="ADMIN_TRUSTED_PROXIES=%ADMIN_TRUSTED_PROXIES%"
 Environment="ADMIN_ALLOWED_USERS=%ADMIN_ALLOWED_USERS%"
 Environment="ADMIN_ALLOWED_GROUPS=%ADMIN_ALLOWED_GROUPS%"
+# the session cookie also over plain HTTP (1, true or yes; empty, 0, false or no: HTTPS and localhost only)
+Environment="ADMIN_INSECURE_COOKIE=%ADMIN_INSECURE_COOKIE%"
 PublishPort=%ADMIN_EXPORT_PORT%:8080
 # exec form: the image has no shell for the default CMD-SHELL
 HealthCmd=["/ffs-admin", "healthcheck"]

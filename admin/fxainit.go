@@ -475,7 +475,7 @@ func missingProcedures(ctx context.Context, db *sql.DB) ([]string, error) {
 }
 
 func fxaInit(ctx context.Context) error {
-	// the policy user, or the accounts' own (Quadlets have no ${a:-${b}}): DATABASES.md.
+	// the policy user, or the accounts' own (Quadlets have no ${a:-${b}}): docs/reference/database-users.md#the-accounts.
 	// User and password as a pair: a policy password left over must not go with FXA_MYSQL_USER
 	user, password := env("FXA_DB_ROOT_USER", ""), env("FXA_DB_ROOT_PASSWORD", "")
 	if user == "" {
@@ -513,14 +513,14 @@ func fxaInit(ctx context.Context) error {
 	}
 
 	// information_schema lists only the routines this user may run: without EXECUTE on
-	// fxa.* (your own server, DATABASES.md) they look missing too
+	// fxa.* (your own server, docs/reference/database-users.md#the-accounts) they look missing too
 	missing, err := missingProcedures(ctx, db)
 	if err != nil {
 		return err
 	}
 	stmts := fxaPolicySQL
 	if len(missing) > 0 {
-		log.Printf("WARNING: %s missing from the accounts database (a newer FxA release renamed it, or %s has no EXECUTE on fxa.*, DATABASES.md): what the admin UI does with it answers with an error (ADMIN.md)",
+		log.Printf("WARNING: %s missing from the accounts database (a newer FxA release renamed it, or %s has no EXECUTE on fxa.*, docs/reference/database-users.md#the-accounts): what the admin UI does with it answers with an error (docs/admin/accounts.md)",
 			strings.Join(missing, ", "), user)
 		stmts = policySQL(missing)
 	}
@@ -539,15 +539,15 @@ func fxaInit(ctx context.Context) error {
 	}
 
 	if password := env("FXA_ADMIN_DB_PASSWORD", ""); password != "" {
-		// the server's default plugin: mysql_native_password on fxa-db (docker-compose.fxa.yml),
-		// often caching_sha2_password on your own server, this driver handles both
+		// created with the server's default plugin (mysql_native_password on MariaDB and on a
+		// pinned mysql:8 with --authentication-policy=mysql_native_password), see the ALTER below
 		grants := fxaAdminGrants
 		_, err := db.ExecContext(ctx, "CREATE USER IF NOT EXISTS 'ffs_admin'@'%' IDENTIFIED BY ?", password)
 		var myErr *mysql.MySQLError
 		switch {
 		case errors.As(err, &myErr) && myErr.Number == errSpecificAccessDenied:
 			// your own server: no CREATE USER for the policy user (it could change any
-			// account's password), the administrator created ffs_admin (DATABASES.md).
+			// account's password), the administrator created ffs_admin (docs/reference/database-users.md#the-accounts).
 			// Nothing earlier versions granted to revoke there, and REVOKE ALL needs it too
 			log.Printf("ffs_admin: created by the administrator of the database server, granting")
 			grants = grants[1:]
@@ -559,7 +559,19 @@ func fxaInit(ctx context.Context) error {
 		case err != nil:
 			return fmt.Errorf("creating ffs_admin: %w", err)
 		default:
-			if _, err := db.ExecContext(ctx, "ALTER USER 'ffs_admin'@'%' IDENTIFIED BY ?", password); err != nil {
+			// on MySQL caching_sha2_password, whatever the server's default: this driver speaks
+			// it, and MySQL 9 has no mysql_native_password, which a pinned mysql:8 with
+			// --authentication-policy=mysql_native_password gives it (docs/upgrading.md#mysql-8-to-9).
+			// MariaDB has no caching_sha2_password: its default
+			alter := "ALTER USER 'ffs_admin'@'%' IDENTIFIED BY ?"
+			var version string
+			if err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+				return fmt.Errorf("the accounts database's version: %w", err)
+			}
+			if !strings.Contains(strings.ToLower(version), "mariadb") {
+				alter = "ALTER USER 'ffs_admin'@'%' IDENTIFIED WITH caching_sha2_password BY ?"
+			}
+			if _, err := db.ExecContext(ctx, alter, password); err != nil {
 				return fmt.Errorf("setting the ffs_admin password: %w", err)
 			}
 		}

@@ -10,7 +10,7 @@ import (
 // Backups: the runs of the backup service (config/backup/backup.sh, COMPOSE_PROFILES=backup
 // or the Quadlets' timer), one row of ffs_backups per run and scope in the admin UI's
 // database, written as its user (before ADMIN_DB_PASSWORD: in the tokenserver database, as
-// the tokenserver user); with your own database servers by your own backups (ADMIN.md#backups).
+// the tokenserver user); with your own database servers by your own backups (docs/backups.md#your-own-database-server).
 // The admin UI only reads them: it has no access to the backups volume.
 
 // the last good backup may be this old: a nightly run missed once is still fine

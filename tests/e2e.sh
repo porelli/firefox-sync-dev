@@ -2,10 +2,10 @@
 # End-to-end test of the firefox-sync stack (docker compose), isolated from anything
 # else running on the host: own compose project, loopback-only port, own volumes.
 #
-# Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL 8
+# Usage: tests/e2e.sh <mysql|postgres>, SYNC_DB=mysql tests/e2e.sh mysql for MySQL (SYNC_MYSQL_IMAGE)
 # Runs with the admin UI and the backups (COMPOSE_PROFILES=admin,backup, BACKUP_KEEP=1; with
 # EXTERNAL_DB=1 the admin UI only, your own backups record their runs), with Mozilla's accounts
-# (mock): Sync part only. At the end a backup is restored as ADMIN.md#restoring says, into
+# (mock): Sync part only. At the end a backup is restored as docs/backups.md#restore says, into
 # empty volumes (not with EXTERNAL_DB=1).
 # The admin UI signs in with its password, Dex (OpenID Connect) and a trusted header.
 # Environment:
@@ -25,24 +25,28 @@
 #                   10.231.4.0/24 SYNC_DB=mysql);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
 #                   gateway (the host) at .1 is not
-#   SYNC_DB         mysql: the mysql backend on MySQL 8 containers (docker-compose.sync-mysql.yml)
+#   SYNC_DB         mysql: the mysql backend on MySQL containers (docker-compose.sync-mysql.yml)
 #                   instead of MariaDB (default mariadb); own project, PORT 28654 and TEST_SUBNET 10.231.4.0/24
-#   EXTERNAL_DB     set to 1 for a database server outside the stack (SYNC_DB_CONTAINERS=0, DATABASES.md),
-#                   created with only the grants of db/<engine>/sync.sql: MySQL 8 with binary logging
-#                   for mysql, a PostgreSQL 18 owner that is no superuser for postgres; on its own
+#   SYNC_MYSQL_IMAGE the MySQL of SYNC_DB=mysql and of EXTERNAL_DB=1 with mysql (default: mysql:lts);
+#                   mysql:8 as the installs from before: SYNC_DB=mysql then also checks that
+#                   without it (the default, lts) the containers refuse to upgrade the data, and that
+#                   --upgrade pins it
+#   EXTERNAL_DB     set to 1 for a database server outside the stack (SYNC_DB_CONTAINERS=0, docs/databases.md#your-own-server),
+#                   created with only the grants of db/<engine>/sync.sql: MySQL with binary logging
+#                   for mysql, a PostgreSQL (postgres:latest) owner that is no superuser for postgres; on its own
 #                   network (EXTDB_SUBNET, default: 10.232.1.0/24 mysql, 10.232.2.0/24 postgres)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the install from before below runs its compose files, its admin UI and its
 #                   init image (built from it), then upgrades to this tree. Default: this tree
 #                   without ADMIN_DB_PASSWORD (and SYNC_POSTGRES_APP_USER), the same layout
-#   DEMO            set to 1 for the demo of ADMIN.md's screenshots instead of the tests: a fresh
+#   DEMO            set to 1 for the screenshot demo (docs/development/testing.md#the-screenshot-demo) instead of the tests: a fresh
 #                   stack of this tree seeded by tests/demo_seed.py (three accounts of Mozilla's,
 #                   the mock FxA, with Sync data and notes; a backup run), kept running (KEEP=1);
 #                   the admin UI on PORT+20
 # The stack starts as an install from before ADMIN_DB_PASSWORD (the admin UI's tables in the
 # tokenserver database, as the Sync server's user), then is upgraded: they move into the admin
 # UI's own database, which the Sync server's users cannot read or change. That install's .env
-# has the old names of the Sync settings (MIGRATING.md#renamed-settings), which compose still
+# has the old names of the Sync settings (docs/upgrading.md#renamed-settings), which compose still
 # reads; the upgrade renames them with ./prepare_environment.sh --upgrade.
 set -u
 
@@ -63,15 +67,17 @@ case ${BACKEND}:${SYNC_DB} in
   mysql:mariadb)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28651 + SLOT_PORTS))}; NET=$((1 + SLOT_NET)) ;;
   postgres:mariadb) COMPOSE=${CODE}/docker-compose.sync-postgres.yml; PORT=${PORT:-$((28652 + SLOT_PORTS))}; NET=$((2 + SLOT_NET)) ;;
   # (28653 is tests/e2e-fxa.sh's)
-  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28654 + SLOT_PORTS))}; NET=$((4 + SLOT_NET)); PROJECT=${PROJECT}-mysql84 ;;
+  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28654 + SLOT_PORTS))}; NET=$((4 + SLOT_NET)); PROJECT=${PROJECT}-mysqldb ;;
   postgres:*) echo "SYNC_DB is for the mysql backend"; exit 2 ;;
   mysql:*) echo "SYNC_DB: mariadb or mysql"; exit 2 ;;
   *) echo "unknown backend ${BACKEND}"; exit 2 ;;
 esac
 PROJECT=${PROJECT}${SLOT_SUFFIX}
 if [ "${SYNC_DB}" = mysql ] && [ -n "${EXTERNAL_DB:-}" ]; then
-  echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL 8"; exit 2
+  echo "SYNC_DB=mysql is for the database containers, EXTERNAL_DB=1 is already MySQL (SYNC_MYSQL_IMAGE)"; exit 2
 fi
+SYNC_MYSQL_IMAGE=${SYNC_MYSQL_IMAGE:-mysql:lts} MYSQL_TESTED=${SYNC_MYSQL_IMAGE:-mysql:lts}
+case "${SYNC_MYSQL_IMAGE##*:}" in 8|8.*) MYSQL_PINNED=8 ;; *) MYSQL_PINNED="" ;; esac
 # the admin UI trusts the X-Test-Email header of the containers (tests/docker-compose.test.yml),
 # not of the gateway: what comes from the host
 export TEST_SUBNET=${TEST_SUBNET:-10.231.${NET}.0/24}
@@ -109,7 +115,7 @@ sed -e "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=$(rnd)|"
     -e "s|<REPLACE_WITH_SOMETHING_SECURE>|$(rnd)|" \
     -e "s|<REPLACE_WITH_[A-Z_]*>|placeholder.invalid|g" \
     "${CODE}/.env-example" > "${ENV_FILE}"
-# the stack's PostgreSQL container: the Sync server's own role, no superuser (DATABASES.md)
+# the stack's PostgreSQL container: the Sync server's own role, no superuser (docs/reference/database-users.md#postgresql)
 if [ "${BACKEND}" = postgres ] && [ -z "${EXTERNAL_DB:-}" ]; then
   sed -i -e "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|" -e "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(rnd)|" "${ENV_FILE}"
 fi
@@ -121,6 +127,8 @@ DB_CLIENT=mariadb
 if [ "${SYNC_DB}" = mysql ]; then
   COMPOSE_EXTRA=(-f "${CODE}/docker-compose.sync-mysql.yml")
   DATABASE_SERVER=MySQL DB_CLIENT=mysql
+  # written out, as prepare_environment.sh does
+  sed -i "s|^# SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=${SYNC_MYSQL_IMAGE}|" "${ENV_FILE}"
 fi
 if [ -n "${EXTERNAL_DB:-}" ]; then
   # a server elsewhere: its own container and network, reached by name
@@ -146,6 +154,10 @@ if [ -n "${DEMO:-}" ]; then
   sed -i -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.example.org|" -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.accounts.firefox.com|" \
     -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=initial:10|" "${ENV_FILE}"
 fi
+# the database images and options as the env file has them: not empty ones of the caller's
+# environment (CI passes its matrix values, empty for the defaults), which compose would
+# prefer to the file and which would hide its pins from db/mysql/keep-major.sh
+export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
 set -a; source "${ENV_FILE}"; set +a
 # the admin UI's own database users, the Sync server's role in the PostgreSQL container
 # (set_env empties them until the upgrade)
@@ -321,7 +333,7 @@ extdb_admin() {
     docker exec -i -e PGPASSWORD="${EXTDB_ROOT}" "${EXTDB}" psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA "$@"
   fi
 }
-# the server, then the databases and users exactly as DATABASES.md says
+# the server, then the databases and users exactly as docs/databases.md#create-the-databases-and-users says
 start_extdb() {
   EXTDB_ROOT=$(rnd)
   docker rm -f "${EXTDB}" > /dev/null 2>&1
@@ -331,10 +343,10 @@ start_extdb() {
   if [ "${BACKEND}" = mysql ]; then
     # binary logging is on by default: the trigger needs log_bin_trust_function_creators
     docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/mysql \
-      -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" mysql:8 --log-bin-trust-function-creators=ON > /dev/null || return 1
+      -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" "${SYNC_MYSQL_IMAGE}" --log-bin-trust-function-creators=ON > /dev/null || return 1
   else
     docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/postgresql \
-      -e POSTGRES_PASSWORD="${EXTDB_ROOT}" postgres:18 > /dev/null || return 1
+      -e POSTGRES_PASSWORD="${EXTDB_ROOT}" postgres:latest > /dev/null || return 1
   fi
   # over TCP: while the images initialize, a temporary server listens on the socket only
   for _ in $(seq 1 90); do
@@ -392,7 +404,7 @@ teardown() {
     docker rmi "${REPOSITORY}:syncstorage-rs-${BACKEND}-${TAG}" "${REPOSITORY}:syncstorage-rs-${BACKEND}-init-${INIT_TAG}" > /dev/null 2>&1
     [ -n "${ADMIN_GIVEN}" ] && docker rmi "${ADMIN_GIVEN}" > /dev/null 2>&1
     [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mariadb:lts' && docker rmi mariadb:lts > /dev/null 2>&1
-    [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx 'mysql:8' && docker rmi mysql:8 > /dev/null 2>&1
+    [ "${SYNC_DB}" = mysql ] && ! docker ps -a --format '{{.Image}}' | grep -qx "${SYNC_MYSQL_IMAGE}" && docker rmi "${SYNC_MYSQL_IMAGE}" > /dev/null 2>&1
     docker rmi busybox > /dev/null 2>&1
   fi
   rm -rf "${WORK}"
@@ -407,7 +419,7 @@ echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
 
 if [ -n "${EXTDB}" ]; then
-  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo mysql:8 || echo postgres:18))"
+  echo "== external database server ${EXTDB} ($([ "${BACKEND}" = mysql ] && echo "${SYNC_MYSQL_IMAGE}" || echo postgres:latest))"
   start_extdb
   check "$?" 0 "external database server with the databases and users of db/${BACKEND}/sync.sql"
 fi
@@ -503,7 +515,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   set_env SYNC_INIT_IMAGE_TAG "${INIT_NOW}"
 fi
 echo "== the lines of .env-example added before --upgrade: both names, the migrations refuse to start"
-# (MIGRATING.md: --upgrade first) the new names with their placeholders and defaults would
+# (docs/upgrading.md#when-both-names-are-set: --upgrade first) the new names with their placeholders and defaults would
 # win over the values of the old ones: a new server on empty databases, or none at all
 grep -E "${NEW_RE}" "${CODE}/.env-example" >> "${ENV_FILE}"
 # but the images under test (the defaults of .env-example are the published MySQL ones): as
@@ -518,21 +530,34 @@ check "$([ $? != 0 ] && echo failed) $(state syncstorage Running || echo false) 
 # (PostgreSQL: sync_role_init, which runs first)
 both=$([ "${BACKEND}" = mysql ] && echo "SYNC_TOKENSERVER_DB_PASSWORD and MARIADB_TOKENSERVER_PASSWORD" || echo "SYNC_POSTGRES_PASSWORD and POSTGRES_PASSWORD")
 both_logs=$(dc logs "$([ "${BACKEND}" = postgres ] && echo sync_role_init || echo syncstorage_migrate)" 2>&1)
-both_said=$(grep -c "ERROR: ${both} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset ${both##* } in your shell (MIGRATING.md#renamed-settings)" <<< "${both_logs}")
+both_said=$(grep -c "ERROR: ${both} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset ${both##* } in your shell (docs/upgrading.md#renamed-settings)" <<< "${both_logs}")
 check "${both_said}" 1 "it names them, and what to run"
 [ "${both_said}" = 1 ] || { tail -5 <<< "${both_logs}"; tail -5 "${WORK}/both.log"; }
 echo "== ./prepare_environment.sh --upgrade renames the old setting names"
 UP=${WORK}/upgrade
+# SYNC_DB=mysql on mysql:8: as an install from before SYNC_MYSQL_IMAGE, which --upgrade pins
+[ "${SYNC_DB}" = mysql ] && [ -n "${MYSQL_PINNED}" ] && sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"
 mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
-(cd "${UP}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
+# (the compose project of this test, as a user running docker compose -p would set it)
+(cd "${UP}" && COMPOSE_PROJECT_NAME=${PROJECT} ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
 check "$?" 0 "./prepare_environment.sh --upgrade" || cat "${WORK}/upgrade.log"
+# the Sync MariaDB containers of an install from before SYNC_MARIADB_IMAGE (mariadb:lts): pinned
+# to the major their data holds, which they keep running
+if [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && [ -z "${EXTDB}" ]; then
+  # (the containers may be stopped here: from the data, as --upgrade reads it)
+  mariadb_major=$(docker run --rm -v "${PROJECT}_tokenserver-db:/v:ro" --entrypoint cat mariadb:lts /v/mariadb_upgrade_info 2> /dev/null | tr -d '\0' | sed -n '1s/^\([0-9]*\)\..*/\1/p')
+  check "$(grep '^SYNC_MARIADB_IMAGE=' "${UP}/.env") $(grep -c "the Sync databases stay on MariaDB ${mariadb_major}, the major of their data" "${WORK}/upgrade.log")" \
+    "SYNC_MARIADB_IMAGE=mariadb:${mariadb_major} 1" "--upgrade pins the Sync MariaDB of an install from before to the major of its data (${mariadb_major})"
+fi
+[ "${SYNC_DB}" = mysql ] && [ -n "${MYSQL_PINNED}" ] && check "$(grep '^SYNC_MYSQL_IMAGE=' "${UP}/.env") $(grep -c 'the Sync databases stay on MySQL 8' "${WORK}/upgrade.log")" \
+  "SYNC_MYSQL_IMAGE=mysql:8 1" "--upgrade pins the Sync databases of an install from before on MySQL 8"
 # each value under its new name, as it was under the old one (the empty ones it may fill in)
 moved=all
 for pair in "${RENAMED_SETTINGS[@]}"; do
   [ -n "$(grep "^${pair#*=}=" "${ENV_FILE}" | cut -d= -f2-)" ] || continue
   [ "$(grep "^${pair%%=*}=" "${UP}/.env" | cut -d= -f2-)" = "$(grep "^${pair#*=}=" "${ENV_FILE}" | cut -d= -f2-)" ] || moved=${pair}
 done
-check "$(grep -cE "${OLD_RE}" "${UP}/.env") ${moved} $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log") $(cmp -s "${ENV_FILE}" "${UP}/.env.before-upgrade" && echo kept)" \
+check "$(grep -cE "${OLD_RE}" "${UP}/.env") ${moved} $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log") $(cmp -s "${ENV_FILE}" "$(ls -1 "${UP}"/.env.before-upgrade-* | tail -n 1)" && echo kept)" \
   "0 all $(grep -cE "${OLD_RE}" "${ENV_FILE}") kept" "--upgrade: no old name left, every value under its new name, each rename said, the old .env kept"
 cp "${UP}/.env" "${ENV_FILE}"
 # the old names gone from this shell too (REPOSITORY and POSTGRES_IMAGE are the test's own,
@@ -567,9 +592,9 @@ check "$(hb)" 200 "/__heartbeat__ after the upgrade"
 check "$(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -q syncstorage)") $(docker inspect -f '{{.HostConfig.CapDrop}}' "$(dc ps -a -q syncstorage_migrate)")" \
   "[CAP_NET_RAW] [CAP_NET_RAW]" "the Sync server and its migrations without raw sockets (cap_drop)"
 if [ "${BACKEND}" = postgres ] && [ -z "${EXTERNAL_DB:-}" ]; then
-  # postgres_db and backup use SYNC_POSTGRES_IMAGE from .env (postgres:18 by default)
+  # postgres_db and backup use SYNC_POSTGRES_IMAGE from .env (postgres:latest by default)
   pg_image=$(grep "^SYNC_POSTGRES_IMAGE=" "${ENV_FILE}" | cut -d= -f2)
-  pg_image=${pg_image:-postgres:18}
+  pg_image=${pg_image:-postgres:latest}
   check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -q postgres_db)")" \
     "${pg_image}" "postgres_db uses SYNC_POSTGRES_IMAGE from .env"
   # backup service: check the compose config (not running unless COMPOSE_PROFILES=backup was used)
@@ -737,15 +762,43 @@ if [ -n "${EXTDB}" ]; then
 fi
 
 if [ "${SYNC_DB}" = mysql ]; then
-  echo "== database containers on MySQL 8 (SYNC_DB=mysql)"
+  echo "== database containers on MySQL ${SYNC_MYSQL_IMAGE} (SYNC_DB=mysql)"
   for db in syncstorage_db tokenserver_db; do
-    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "${db}")")" mysql:8 "${db} runs mysql:8"
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "${db}")")" "${SYNC_MYSQL_IMAGE}" "${db} runs ${SYNC_MYSQL_IMAGE}"
     check "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Name}}{{end}}{{end}}' "$(dc ps -a -q "${db}")")" \
       "${PROJECT}_${db//_/-}-mysql" "${db} in its own volume, not MariaDB's"
   done
   # no binary logging (docker-compose.sync-mysql.yml), the trigger without log_bin_trust_function_creators
-  check "$(sql "SELECT VERSION() LIKE '8.4.%', @@log_bin, @@log_bin_trust_function_creators;")" "$(printf '1\t0\t0')" "MySQL 8.4 without binary logging"
+  mysql_version=$(sql "SELECT VERSION();")
+  check "$(sql "SELECT @@log_bin, @@log_bin_trust_function_creators;") $([ -z "${MYSQL_PINNED}" ] || [[ "${mysql_version}" == "${MYSQL_PINNED}".* ]] && echo yes)" "$(printf '0\t0') yes" \
+    "MySQL ${mysql_version} without binary logging"
   check "$(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser';")" 1 "SYNC_MAX_USERS trigger created by the init container"
+  if [ -n "${MYSQL_PINNED}" ]; then
+    echo "== without SYNC_MYSQL_IMAGE (the default, mysql:lts): the MySQL ${MYSQL_PINNED} data is not upgraded"
+    # an install from before SYNC_MYSQL_IMAGE with the new files, without --upgrade
+    sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"; unset SYNC_MYSQL_IMAGE
+    dc up -d --no-deps --force-recreate tokenserver_db > /dev/null 2>&1
+    for _ in $(seq 1 60); do dc logs tokenserver_db 2>&1 | grep -q 'keep-major.sh: ' && break; sleep 2; done
+    # (said at each of its restarts)
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q tokenserver_db)") $(dc logs tokenserver_db 2>&1 | grep -q "keep-major.sh: this database is MySQL ${MYSQL_PINNED}, the image is MySQL" && echo said)" "mysql:lts said" \
+      "tokenserver_db on mysql:lts refuses the MySQL ${MYSQL_PINNED} data, and says why"
+    check "$(dc logs tokenserver_db 2>&1 | grep -ciE 'upgrad(e|ing) (the )?(data dictionary|server)|Server upgrade from')" 0 "the data not upgraded"
+    printf 'SYNC_MYSQL_IMAGE=mysql:%s\n' "${MYSQL_PINNED}" >> "${ENV_FILE}"; export SYNC_MYSQL_IMAGE=mysql:${MYSQL_PINNED}
+    dc up -d --no-deps --force-recreate tokenserver_db > /dev/null 2>&1
+    for _ in $(seq 1 60); do [ "$(state tokenserver_db Health.Status)" = healthy ] && break; sleep 2; done
+    check "$(state tokenserver_db Health.Status) $(sql "SELECT VERSION();" | cut -d. -f1)" "healthy ${MYSQL_PINNED}" "back on mysql:${MYSQL_PINNED}: its data as it was"
+    dc up -d > /dev/null 2>&1
+    check "$(hb)" 200 "/__heartbeat__ again"
+    echo "== docs/upgrading.md#mysql-8-to-9: SYNC_MYSQL_IMAGE=mysql:lts, MySQL upgrades the data"
+    users_before=$(sql "SELECT COUNT(*) FROM users;")
+    sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"; printf 'SYNC_MYSQL_IMAGE=mysql:lts\n' >> "${ENV_FILE}"; export SYNC_MYSQL_IMAGE=mysql:lts
+    dc up -d > "${WORK}/up-mysql-lts.log" 2>&1 || tail -5 "${WORK}/up-mysql-lts.log"
+    for _ in $(seq 1 90); do [ "$(state tokenserver_db Health.Status)" = healthy ] && [ "$(state syncstorage_db Health.Status)" = healthy ] && break; sleep 2; done
+    check "$(hb) $(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q tokenserver_db)") $(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q syncstorage_db)")" "200 mysql:lts mysql:lts" \
+      "the Sync databases on mysql:lts"
+    check "$([ "$(sql "SELECT VERSION();" | cut -d. -f1)" != "${MYSQL_PINNED}" ] && echo newer) $(sql "SELECT COUNT(*) FROM users;")" "newer ${users_before}" \
+      "MySQL $(sql "SELECT VERSION();") on the data of MySQL ${MYSQL_PINNED}, every user kept"
+  fi
 fi
 
 echo "== tokenserver node"
@@ -1002,13 +1055,13 @@ if [ -z "${EXTDB}" ]; then
   # BACKUP_KEEP=1 again: the restore below takes the one run left
   backup_run
   check "$? $(dc exec -T backup sh -c 'ls /backups/sync | wc -l')" "0 1" "a run with BACKUP_KEEP=1 keeps only itself"
-  echo "== restoring the dumps as ADMIN.md#restoring says"
+  echo "== restoring the dumps as docs/backups.md#restore says"
   dump() { dc exec -T backup sh -c "gunzip -c /backups/sync/*/$1.sql.gz"; }
   if [ "${BACKEND}" = postgres ]; then
     # no owner and no grant in the dump of the Sync database: they name roles a new server
     # has only after the init container (it gives them again at every start)
     check "$(dump "${SYNC_POSTGRES_NAME}" | grep -cE '^(GRANT|REVOKE|ALTER .* OWNER TO) ')" 0 "the dump of the Sync database names no role"
-    # as the Sync server's role, the owner of what the dump holds (ADMIN.md#restoring), never
+    # as the Sync server's role, the owner of what the dump holds (docs/backups.md#restore), never
     # the superuser: into a database of its own
     check "$(dc exec -T backup printenv TOKENSERVER_DB_USER)" "${SYNC_ROLE}" "the backups dump the Sync database as the Sync server's role"
     sql "DROP DATABASE IF EXISTS ffs_restore_test;" > /dev/null 2>&1 && sql "CREATE DATABASE ffs_restore_test OWNER ${SYNC_ROLE} TEMPLATE template0;" > /dev/null
@@ -1023,10 +1076,10 @@ else
   # test that the dumps restore with only the documented grants
   echo "== backup and restore with EXTERNAL_DB (only documented grants)"
   if [ "${BACKEND}" = mysql ]; then
-    BACKUP_IMAGE="mysql:8"
+    BACKUP_IMAGE="${SYNC_MYSQL_IMAGE}"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   else
-    BACKUP_IMAGE="${SYNC_POSTGRES_IMAGE:-postgres:18}"
+    BACKUP_IMAGE="${SYNC_POSTGRES_IMAGE:-postgres:latest}"
     BACKUP_VOL="${PROJECT}_backups-extdb"
   fi
   docker volume create "${BACKUP_VOL}" > /dev/null
@@ -1078,7 +1131,7 @@ else
   DUMPS=$(docker run --rm -v "${BACKUP_VOL}:/backups:ro" "${BACKUP_IMAGE}" sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" 2>/dev/null && basename "$f"; done' | LC_ALL=C sort | paste -sd' ')
   check "${DUMPS}" "${expected}" "the dumps of EXTERNAL_DB pass gzip -t"
   # test restore into scratch databases with only the documented grants
-  echo "== restore the dumps as ADMIN.md#restoring says (EXTERNAL_DB, documented grants only)"
+  echo "== restore the dumps as docs/backups.md#restore says (EXTERNAL_DB, documented grants only)"
   dump_extdb() { docker run --rm -v "${BACKUP_VOL}:/backups:ro" "${BACKUP_IMAGE}" sh -c "gunzip -c /backups/sync/*/$1.sql.gz"; }
   if [ "${BACKEND}" = postgres ]; then
     # PostgreSQL: test restoring as the Sync role (documented grants) into a scratch database
@@ -1117,7 +1170,7 @@ else
     check "$?" 0 "the admin UI's database dump restores as its user (MySQL)"
   fi
   docker volume rm "${BACKUP_VOL}" > /dev/null 2>&1
-  # the INSERT of your own backups record (tested before the fix: ADMIN.md#backups)
+  # the INSERT of your own backups record (tested before the fix: docs/backups.md#your-own-database-server)
   admin_sql "INSERT INTO ffs_backups (scope, started, finished, ok, bytes, location) VALUES ('sync', $(date +%s)000, $(date +%s)000, 1, 123456, 'my own backup');"
   check "$?" 0 "the INSERT of your own backups (EXTERNAL_DB)"
   check "$(backups_of "ok = 1 AND location = 'my own backup'")" 1 "your own backup in ffs_backups"
@@ -1174,27 +1227,23 @@ if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ] && [[ " ${UPSTR
   T=test_node_assignment.py::test_user_creation
   UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
 fi
-if [ "${BACKEND}" = postgres ] && [[ " ${UPSTREAM_PATCHES} " == *" mozilla-services/syncstorage-rs#2638@3a5abd9..c670cf0 "* ]]; then
-  # #2638 at c670cf0 breaks the ties by id, and on PostgreSQL the test's three extra nodes
-  # get ids from the identity sequence (an explicit id does not advance it), below the
-  # default node's 800: the user lands on one of them (assert 33 == 800). The test, not the
-  # tokenserver: the update of the pull request gives them ids after 800
-  # (firefox-sync-drafts/syncstorage-rs-2638-postgres-fix.md); deselected only for this sha
-  T=test_node_assignment.py::test_user_creation
-  UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
-fi
 # test_misc.py::test_user_updates_with_new_client_state creates its old row at the current
 # millisecond, and the tokenserver replaces only the rows created strictly before the new
 # one (created_at < its timestamp): when both fall in the same millisecond (about 1 in 100
 # here, the request takes about 1 ms) nothing is replaced and the test fails. Upstream's
-# race, not this stack's: run on its own, once more when it fails
+# race, not this stack's, fixed by mozilla-services/syncstorage-rs#2671 (upstream-patches.yml):
+# for the images without it, run on its own, once more when it fails
 RACY=test_misc.py::test_user_updates_with_new_client_state
-UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${RACY} --deselect tools/integration_tests/tokenserver/${RACY}"
+if [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2671@"* ]]; then
+  UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${RACY} --deselect tools/integration_tests/tokenserver/${RACY}"
+fi
 pytest_in_app "${UPSTREAM_TS}"
 check "$?" 0 "upstream tokenserver tests"
-pytest_in_app "tools/integration_tests/tokenserver/${RACY}" > /dev/null ||
-  { echo "  ${RACY} failed, once more"; pytest_in_app "tools/integration_tests/tokenserver/${RACY}"; }
-check "$?" 0 "upstream ${RACY} (once more when it fails: the same millisecond)"
+if [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2671@"* ]]; then
+  pytest_in_app "tools/integration_tests/tokenserver/${RACY}" > /dev/null ||
+    { echo "  ${RACY} failed, once more"; pytest_in_app "tools/integration_tests/tokenserver/${RACY}"; }
+  check "$?" 0 "upstream ${RACY} (once more when it fails: the same millisecond)"
+fi
 
 echo "== admin UI"
 check "$(admin_healthy)" healthy "admin UI container healthcheck"
@@ -1209,7 +1258,7 @@ echo "== the Sync server without the admin UI (ADMIN_UI=n: no ffs-admin to resol
 dc stop ffs-admin > /dev/null 2>&1 && dc rm -f ffs-admin > /dev/null 2>&1
 if [ -z "${EXTDB}" ]; then
   # the admin UI's database restored from the last backup, as its user, over the tables it
-  # has (the admin UI stopped, ADMIN.md#restoring): what was written after the dump goes
+  # has (the admin UI stopped, docs/backups.md#restore): what was written after the dump goes
   admin_sql "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-e2e: after the backup');" > /dev/null
   if [ "${BACKEND}" = postgres ]; then
     dump "${ADMIN_DB_NAME}" | dc exec -T -e PGPASSWORD="${ADMIN_DB_SECRET}" postgres_db psql -q -h 127.0.0.1 -U "${ADMIN_DB_USER}" -d "${ADMIN_DB_NAME}" -v ON_ERROR_STOP=1 > /dev/null 2>&1
@@ -1230,7 +1279,7 @@ pytest_in_app "/tests/test_client_flow.py -k first_sign_in"
 check "$?" 0 "a first sign-in and sync without the admin UI"
 
 if [ -z "${EXTDB}" ]; then
-  echo "== a backup restores, the way ADMIN.md#restoring says, on a new host (empty volumes)"
+  echo "== a backup restores, the way docs/backups.md#restore says, on a new host (empty volumes)"
   # the storage database (MariaDB, MySQL): PostgreSQL has one database, sql's
   sql_storage() { dc exec -T -e MYSQL_PWD="${SYNC_STORAGE_DB_PASSWORD}" syncstorage_db "${DB_CLIENT}" -u"${SYNC_STORAGE_DB_USER}" "${SYNC_STORAGE_DB_NAME}" -sN -e "$1" < /dev/null; }
   # every table of a database with its rows, its triggers and procedures: <sql function>
@@ -1267,15 +1316,15 @@ if [ -z "${EXTDB}" ]; then
   check "$(echo "${BEFORE}" | grep -cE '^tokenserver users [1-9]|^(tokenserver|storage) bsos? [1-9]')" 2 "tokenserver users and Sync items to back up"
   dc exec -T backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1
   check "$?" 0 "the backup of the Sync data"
-  # copied off the host, as ADMIN.md#copy-them-off-the-host says, put back on the new one
+  # copied off the host, as docs/backups.md#copy-them-off-the-host says, put back on the new one
   docker run --rm -v "${PROJECT}_backups:/backups:ro" -v "${WORK}:/out" busybox tar -C /backups -czf /out/ffs-backups.tar.gz . > /dev/null 2>&1
   check "$?" 0 "the backups volume copied off the host"
 
-  # the commands of ADMIN.md#restoring, as it writes them (firefox-sync_ the project,
+  # the commands of docs/backups.md#restore, as it writes them (firefox-sync_ the project,
   # 20261013T030000Z the run): each is checked to be there word for word, then run
-  ADMIN_MD=$(sed 's/^ *//' "${CODE}/ADMIN.md")
+  BACKUPS_MD=$(sed 's/^ *//' "${CODE}/docs/backups.md")
   # shellcheck disable=SC2001
-  documented() { [[ "${ADMIN_MD}" == *"$(sed 's/^ *//' <<< "$1")"* ]] && echo yes || echo "not in ADMIN.md: $1"; }
+  documented() { [[ "${BACKUPS_MD}" == *"$(sed 's/^ *//' <<< "$1")"* ]] && echo yes || echo "not in docs/backups.md: $1"; }
   as_here() { sed -e "s/firefox-sync_/${PROJECT}_/g" -e "s/20261013T030000Z/${2:-${RUN:-}}/g" -e 's/^docker compose /dc /' <<< "$1"; }
   # 1. the stack down, the databases' volumes gone (a new host), the copy of the backups
   # volume put back, the databases alone
@@ -1291,7 +1340,7 @@ if [ -z "${EXTDB}" ]; then
   PUT_BACK='docker run --rm -v firefox-sync_backups:/backups -v "$PWD":/in busybox tar -C /backups -xzf /in/ffs-backups.tar.gz'
   UP="docker compose up -d --wait ${DBS[*]}"
   LS='docker compose run --rm --no-deps --entrypoint ls backup /backups/sync'
-  for c in "${RM}" "${PUT_BACK}" "${UP}" "${LS}"; do check "$(documented "\`${c}\`")" yes "ADMIN.md#restoring says \`${c}\`"; done
+  for c in "${RM}" "${PUT_BACK}" "${UP}" "${LS}"; do check "$(documented "\`${c}\`")" yes "docs/backups.md#restore says \`${c}\`"; done
   dc down > /dev/null 2>&1
   eval "$(as_here "${RM}")" > /dev/null && docker volume rm "${PROJECT}_backups" > /dev/null
   check "$?" 0 "the volumes of the databases removed (${RM}), and the backups' (a new host)"
@@ -1315,12 +1364,12 @@ if [ -z "${EXTDB}" ]; then
     f=/backups/sync/20261013T030000Z/\$TOKENSERVER_DB_NAME.sql.gz
     gunzip -t \"\$f\" && gunzip -c \"\$f\" |
       ${LOAD}'"
-  check "$(documented "${RESTORE}")" yes "ADMIN.md#restoring step 4 as run here"
+  check "$(documented "${RESTORE}")" yes "docs/backups.md#restore step 4 as run here"
   if [ "${BACKEND}" = postgres ]; then
     # the dump is loaded as the Sync server's role (TOKENSERVER_DB_USER of the backups): first
     # the role, in the empty database
     ROLE='docker compose run --rm sync_role_init'
-    check "$(documented "${ROLE}")" yes "ADMIN.md#restoring says \`${ROLE}\`"
+    check "$(documented "${ROLE}")" yes "docs/backups.md#restore says \`${ROLE}\`"
     eval "$(as_here "${ROLE}")" < /dev/null >> "${WORK}/restore.log" 2>&1
     check "$?" 0 "the Sync server's role in the empty database"
   fi
@@ -1348,7 +1397,7 @@ if [ -z "${EXTDB}" ]; then
   # shellcheck disable=SC2016
   if [ "${BACKEND}" = postgres ]; then
     INIT='docker compose run --rm tokenserver_db_init'
-    check "$(documented "${INIT}")" yes "ADMIN.md#restoring says \`${INIT}\`"
+    check "$(documented "${INIT}")" yes "docs/backups.md#restore says \`${INIT}\`"
     eval "$(as_here "${INIT}")" < /dev/null >> "${WORK}/restore.log" 2>&1
     check "$?" 0 "the init container makes the admin UI's database again"
     LOAD='PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'
@@ -1359,7 +1408,7 @@ if [ -z "${EXTDB}" ]; then
     f=/backups/sync/20261013T030000Z/\$ADMIN_DB_NAME.sql.gz
     gunzip -t \"\$f\" && gunzip -c \"\$f\" |
       ${LOAD}'"
-  check "$(documented "${RESTORE}")" yes "ADMIN.md#restoring step 5 as run here"
+  check "$(documented "${RESTORE}")" yes "docs/backups.md#restore step 5 as run here"
   eval "$(as_here "${RESTORE}" | sed "s/^\( *\)mariadb /\1${DB_CLIENT} /")" < /dev/null >> "${WORK}/restore.log" 2>&1
   check "$?" 0 "the admin UI's database restored as its user"
   check "$(admin_sql "SELECT COUNT(*) FROM ffs_events;")" "${EVENTS}" "the event log of the dump"
@@ -1378,6 +1427,6 @@ echo "== every container that keeps running healthy, the one-shot ones exited 0"
 [ -z "${EXTDB}" ] || dc up -d > /dev/null 2>&1
 check "$(compose_healthy 300 dc)" "all healthy" "every long-running container healthy (docker compose ps), the one-shot ones exited 0"
 
-RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL 8)")
+RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL, ${MYSQL_TESTED})")
 [ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"
 exit ${FAILED}

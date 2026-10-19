@@ -14,7 +14,7 @@ readonly SQL_FILE="/tmp/db_init_processed.sql"
 # .env-example), and placeholders or empty values where the stack needs real ones
 if [ -n "${FFS_BOTH_ENV_NAMES:-}" ]; then
   for pair in ${FFS_BOTH_ENV_NAMES}; do
-    echo "✗ ERROR: ${pair%%/*} and ${pair#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset ${pair#*/} in your shell (MIGRATING.md#renamed-settings)"
+    echo "✗ ERROR: ${pair%%/*} and ${pair#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset ${pair#*/} in your shell (docs/upgrading.md#renamed-settings)"
   done
   exit 1
 fi
@@ -36,13 +36,13 @@ echo "Max Users: ${MAX_USERS:-}"
 echo "Database: ${MARIADB_DATABASE}"
 echo "=========================================="
 
-# the old names of the settings (MIGRATING.md#renamed-settings) compose found in .env or in
+# the old names of the settings (docs/upgrading.md#renamed-settings) compose found in .env or in
 # its environment (FFS_OLD_ENV_NAMES): they still work, a later release removes them
 if [ -n "${FFS_OLD_ENV_NAMES:-}" ]; then
   read -r -a old_names <<< "${FFS_OLD_ENV_NAMES}"
   echo "WARNING: settings under their old names, in .env or in the environment docker compose runs in,"
   echo "  which still work but will be removed in a later release: ${old_names[*]}"
-  echo "  ./prepare_environment.sh --upgrade renames them (MIGRATING.md#renamed-settings)"
+  echo "  ./prepare_environment.sh --upgrade renames them (docs/upgrading.md#renamed-settings)"
   echo "=========================================="
 fi
 
@@ -78,7 +78,7 @@ fi
 [ "${MAX_USERS_MODE}" = fixed ] && MAX_USERS_FIXED=1 || MAX_USERS_FIXED=0
 
 # MARIADB_TLS_VERIFY=false: MySQL's certificate is self-signed, which this client refuses
-# by default; syncstorage-rs itself connects without TLS (DATABASES.md)
+# by default; syncstorage-rs itself connects without TLS (docs/databases.md#server-requirements)
 TLS_ARGS=()
 [ "${MARIADB_TLS_VERIFY:-true}" = false ] && TLS_ARGS=(--skip-ssl-verify-server-cert)
 db() {
@@ -186,10 +186,10 @@ echo "Domain: ${DOMAIN}"
 echo ""
 if [ "${MAX_USERS_MODE}" = fixed ]; then
   echo "SYNC_MAX_USERS=${MAX_USERS}: applied on every start, read-only in the admin UI."
-  echo "  To manage it in the admin UI (ADMIN.md) set SYNC_MAX_USERS=initial:${MAX_USERS_VALUE} in .env."
+  echo "  To manage it in the admin UI (docs/limits.md#sync_max_users) set SYNC_MAX_USERS=initial:${MAX_USERS_VALUE} in .env."
 else
   echo "SYNC_MAX_USERS=${MAX_USERS}: applied only when there was no limit yet (first start),"
-  echo "  change it in the admin UI (ADMIN.md). A plain SYNC_MAX_USERS=N in .env sets it on every start."
+  echo "  change it in the admin UI (docs/limits.md#sync_max_users). A plain SYNC_MAX_USERS=N in .env sets it on every start."
 fi
 [ "${max_users_in_db}" = "${MAX_USERS_VALUE}" ] || echo "  Kept the value in the database, set in the admin UI."
 echo "After changing SYNC_MAX_USERS in .env:"

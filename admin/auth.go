@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 )
 
-// Sign-in methods, enabled by their configuration (see ADMIN.md): the password,
+// Sign-in methods, enabled by their configuration (see docs/admin/signing-in.md): the password,
 // OpenID Connect, and a header set by a trusted forward-auth proxy. They all end
 // in the same session.
 type authConfig struct {
@@ -38,7 +38,11 @@ type authConfig struct {
 var headerName = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 
 func loadAuth() (*authConfig, error) {
-	c := &authConfig{insecureCookie: env("ADMIN_INSECURE_COOKIE", "") != ""}
+	insecure, err := envSwitch("ADMIN_INSECURE_COOKIE")
+	if err != nil {
+		return nil, err
+	}
+	c := &authConfig{insecureCookie: insecure}
 	if p := env("ADMIN_PASSWORD", ""); p != "" {
 		if len(p) < 12 {
 			return nil, errors.New("ADMIN_PASSWORD must be at least 12 characters (or empty to turn password sign-in off)")
@@ -46,7 +50,6 @@ func loadAuth() (*authConfig, error) {
 		sum := sha256.Sum256([]byte(p))
 		c.password = &sum
 	}
-	var err error
 	if c.oidc, err = loadOIDC(c.insecureCookie); err != nil {
 		return nil, err
 	}

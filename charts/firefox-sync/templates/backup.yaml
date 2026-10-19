@@ -1,5 +1,5 @@
 {{- /*
-The backups, compose's backup service (COMPOSE_PROFILES=backup, see ADMIN.md#backups) as a
+The backups, compose's backup service (COMPOSE_PROFILES=backup, see docs/backups.md#the-backup-service) as a
 CronJob: config/backup/backup.sh (a copy in files/, kept identical) runs once a night
 (`backup.sh now`, compose's loop is the schedule here) in the database's image, as the
 stack's users, into the PVC <fullname>-backups. Each run is a row of ffs_backups in the admin
@@ -179,7 +179,7 @@ spec:
                 - name: TOKENSERVER_DB_NAME
                   value: {{ include "firefox-sync.dbName" $ts | quote }}
                 {{- if eq $backend "postgres" }}
-                # as the Sync server's own role, the owner of every table (ADMIN.md#restoring
+                # as the Sync server's own role, the owner of every table (docs/backups.md#restore
                 # loads the dump as it too), never the superuser; without it POSTGRES_USER
                 - name: TOKENSERVER_DB_USER
                   value: {{ $syncUser | default (include "firefox-sync.dbUser" $ts) | quote }}

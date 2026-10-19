@@ -8,8 +8,10 @@ Image=%FXA_IMAGE%:%FXA_VERSION%
 ContainerName=firefox-sync-fxa-auth
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-auth
-# Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
-PodmanArgs=--arch=%FXA_ARCH%
+# Mozilla publishes amd64 images only (emulated elsewhere), see docs/reference/images.md#accounts for arm64 images
+# --arch only for another architecture than this host's (Mozilla's amd64 image, emulated): with it
+# podman 4 pulls the tag from the registry at every start, over the local image
+PodmanArgs=%FXA_ARCH_ARGS%
 Environment="MYSQL_HOST=%FXA_MYSQL_HOST%"
 Environment="MYSQL_PORT=%FXA_MYSQL_PORT%"
 Environment="MYSQL_USERNAME=%FXA_MYSQL_USER%"
@@ -85,9 +87,10 @@ Environment="RECOVERY_PHONE__ENABLED=false"
 Environment="RECOVERY_PHONE__TWILIO__CREDENTIAL_MODE="
 # the security history with IP addresses, see FXA_ACCOUNT_EVENTS in .env-example
 Environment="ACCOUNT_EVENTS_ENABLED=%FXA_ACCOUNT_EVENTS%"
-# never skip the sign-in code for a known IP address (Mozilla: 7 days), see FXA.md
+# never skip the sign-in code for a known IP address (Mozilla: 7 days), see docs/accounts.md#security-history
 Environment="IP_PROFILING_RECENCY=0"
-Environment="LOG_LEVEL=INFO"
+# FXA_LOG_LEVEL of .env, else INFO (as compose)
+Environment="LOG_LEVEL=%FXA_LOG_LEVEL%"
 Volume=firefox-sync-fxa-keys.volume:/fxa-keys
 Volume=%SCRIPT_DIR%/config/fxa:/fxa-config:ro,z
 PublishPort=%FXA_AUTH_EXPORT_PORT%:9000

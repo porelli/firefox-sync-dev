@@ -1,5 +1,5 @@
 #!/bin/sh
-# The admin UI's user in the MariaDB and MySQL containers of the stack (DATABASES.md), run
+# The admin UI's user in the MariaDB and MySQL containers of the stack (docs/reference/database-users.md#the-admin-uis-own-database), run
 # as their command before the image's entrypoint: [sh, /ffs-db/admin-user.sh, mariadbd, ...].
 # It writes the statements below into a file the server runs at every start with all
 # privileges (--init-file, also on the first start and on the volumes of an install from
@@ -25,7 +25,7 @@ if [ -n "${ADMIN_DB_PASSWORD:-}" ]; then
   # the images' own setting of the Sync database
   sync_db=${MARIADB_DATABASE:-${MYSQL_DATABASE:-}}
   fail() { echo "admin-user.sh: $*" >&2; exit 1; }
-  # they end up in SQL: names and passwords as DATABASES.md allows them
+  # they end up in SQL: names and passwords as docs/databases.md#create-the-databases-and-users allows them
   for name in "${user}" "${reader}" "${sync_db}" ${ADMIN_DB_NAME:+"${ADMIN_DB_NAME}"}; do
     printf '%s' "${name}" | grep -Eqx '[a-z_][a-z0-9_]{0,31}' || fail "not a database or user name (a-z, 0-9, _): '${name}'"
   done

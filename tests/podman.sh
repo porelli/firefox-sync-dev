@@ -15,14 +15,15 @@
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
 #   SYNC_DB     mariadb (default) or mysql: the Sync databases of the compose and quadlet phases
-#               (MySQL 8, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/); the MySQL
-#               quadlets are rendered and checked in any case
+#               (MySQL, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/: compose as an
+#               install from before on mysql:8, pinned by --upgrade; the quadlets on mysql:lts); the
+#               MySQL quadlets are rendered and checked in any case
 #   ADMIN_IMAGE     admin UI image to test, used as is, pulled when not here (default: built from admin/)
-#   FXA_TEST_IMAGE  accounts image to test with the quadlets, e.g.
+#   FXA_TEST_IMAGE  accounts image to test with the quadlets (a local one of podman used as it is), e.g.
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1, or a digest (default: REPOSITORY:fxa-mono-latest)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the quadlets (SYNC_DB=mariadb) start as an install of it, its files, admin UI
-#                   and init image (built from it), then are upgraded to this tree as MIGRATING.md
+#                   and init image (built from it), then are upgraded to this tree as docs/upgrading.md#with-quadlets
 #                   says for the Quadlets, and checked as a new install
 set -u
 
@@ -166,6 +167,24 @@ compose_test() {
   admin_password=$(env_of ADMIN_DB_PASSWORD)
   check "$(echo "${admin_password}" | grep -cE '^[A-Za-z0-9]{32}$')" 1 "prepare_environment.sh generates ADMIN_DB_PASSWORD (${backend})"
   sed -i 's|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=|' .env
+  # PostgreSQL: a new install is pinned to the major of postgres:latest; one from before ran 18
+  # without SYNC_POSTGRES_IMAGE (--upgrade pins it below)
+  if [ "${backend}" = postgres ]; then
+    pg_major=$(podman run --rm --entrypoint postgres docker.io/library/postgres:latest --version 2> /dev/null | sed -n 's/^postgres (PostgreSQL) \([0-9]*\)[^0-9].*/\1/p')
+    check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:${pg_major}" "prepare_environment.sh pins PostgreSQL to the major of postgres:latest (postgres, compose)"
+    sed -i 's|^SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=postgres:18|' .env
+  fi
+  # MariaDB: a new install is on mariadb:lts; one from before ran it without SYNC_MARIADB_IMAGE
+  if [ "${backend}" = mariadb ]; then
+    check "$(env_of SYNC_MARIADB_IMAGE)" mariadb:lts "prepare_environment.sh writes SYNC_MARIADB_IMAGE=mariadb:lts (mariadb, compose)"
+    sed -i '/^SYNC_MARIADB_IMAGE=/d' .env
+  fi
+  # MySQL: a new install is on mysql:lts; one from before ran mysql:8 without SYNC_MYSQL_IMAGE
+  # (--upgrade pins it below)
+  if [ "${backend}" = mysql ]; then
+    check "$(env_of SYNC_MYSQL_IMAGE)" mysql:lts "prepare_environment.sh writes SYNC_MYSQL_IMAGE=mysql:lts (mysql, compose)"
+    sed -i 's|^SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=mysql:8|' .env
+  fi
   # PostgreSQL: before, the Sync server connected as SYNC_POSTGRES_USER, the container's superuser
   sync_role=$(env_of SYNC_POSTGRES_APP_USER) sync_role_password=$(env_of SYNC_POSTGRES_APP_PASSWORD)
   if [ "${backend}" = postgres ]; then
@@ -177,7 +196,7 @@ compose_test() {
   else
     sync_user=$(env_of SYNC_TOKENSERVER_DB_USER) sync_password=$(env_of SYNC_TOKENSERVER_DB_PASSWORD) sync_db=$(env_of SYNC_TOKENSERVER_DB_NAME)
   fi
-  # and from before the SYNC_ names of the settings (MIGRATING.md#renamed-settings): the old
+  # and from before the SYNC_ names of the settings (docs/upgrading.md#renamed-settings): the old
   # ones only, which compose still reads
   local pair old_lines
   for pair in "${RENAMED_SETTINGS[@]}"; do sed -i "s|^${pair%%=*}=|${pair#*=}=|" .env; done
@@ -191,7 +210,13 @@ compose_test() {
   check "$?" 0 "an audit event in the tokenserver database, as before (${backend})"
   # an install from before docker-compose.sync-postgres.yml had the old name in COMPOSE_FILE
   [ "${backend}" = postgres ] && sed -i 's|^COMPOSE_FILE=docker-compose.sync-postgres.yml$|COMPOSE_FILE=docker-compose.postgres.yml|' .env
-  # the upgrade, as MIGRATING.md says: prepare_environment.sh --upgrade fills in what is missing
+  [ "${backend}" != mysql ] || sed -i '/^SYNC_MYSQL_IMAGE=/d' .env
+  # (the old names left, as counted for the rename below)
+  if [ "${backend}" = postgres ]; then
+    sed -i '/^\(SYNC_\)\{0,1\}POSTGRES_IMAGE=/d' .env
+    old_lines=$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env)
+  fi
+  # the upgrade, as docs/upgrading.md#with-docker-compose says: prepare_environment.sh --upgrade fills in what is missing
   ./prepare_environment.sh --upgrade > "upgrade-${backend}.log" 2>&1
   check "$?" 0 "prepare_environment.sh --upgrade (${backend})"
   check "$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env) $(grep -c '^Renamed in .env' "upgrade-${backend}.log") $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "upgrade-${backend}.log")" \
@@ -202,6 +227,14 @@ compose_test() {
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
   [ "${backend}" != postgres ] || check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:18" "--upgrade writes SYNC_POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"
   [ "${backend}" != mysql ] || check "$(env_of FXA_DB | grep -c mariadb)" "0" "no FXA_MARIADB_IMAGE for MariaDB backend without accounts (${backend})"
+  # MariaDB: an install from before SYNC_MARIADB_IMAGE, pinned to the major of its data
+  if [ "${backend}" = mariadb ]; then
+    mariadb_major=$(podman exec "$(ctr tokenserver_db)" mariadbd --version 2> /dev/null | sed -n 's/.* Ver \([0-9]*\)\..*/\1/p')
+    check "$(env_of SYNC_MARIADB_IMAGE) $(grep -c "Sync databases stay on MariaDB ${mariadb_major}," "upgrade-${backend}.log")" "mariadb:${mariadb_major} 1" \
+      "--upgrade pins the Sync MariaDB of an install from before to the major of its data (mariadb)"
+  fi
+  [ "${backend}" != mysql ] || check "$(env_of SYNC_MYSQL_IMAGE) $(grep -c 'Sync databases stay on MySQL 8' "upgrade-${backend}.log") $(env_of FXA_MYSQL_IMAGE)" "mysql:8 1 " \
+    "--upgrade pins the Sync databases of an install from before on MySQL 8, nothing for the accounts it has not (mysql)"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
   timeout 600 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" up -d >> "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up (${backend})"
@@ -258,6 +291,49 @@ check "$?" 0 "prepare_environment.sh (postgres, quadlets)"
 check "$(grep -c 'Quadlets are only provided for MariaDB' setup-postgres-1.log) $(grep -c 'docker compose -f docker-compose.sync-postgres.yml up -d' setup-postgres-1.log) $(ls "${QUADLET_DIR}" 2> /dev/null | wc -l)" \
   "1 1 0" "quadlets with PostgreSQL fall back to docker compose, no quadlet files"
 
+echo "== where the Sync server listens: on this host only by default (nothing started)"
+# answers as setup, the port: the default, a port alone, another address, not a port
+port_setup() { printf '%s\n' ffs-e2e.invalid "" "$1" 1 mariadb 2 "" "${TAG}" "" | ./prepare_environment.sh > setup-port.log 2>&1; }
+rm -f .env .env.before-setup-*
+port_setup ""
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5000;$' config/nginx/syncstorage-rs.conf)" "0 127.0.0.1:5000 1" \
+  "a new install: SYNC_EXPORT_PORT=127.0.0.1:5000, nginx proxies to it"
+port_setup 5001
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5001;$' config/nginx/syncstorage-rs.conf)" "0 127.0.0.1:5001 1" "a port alone: on 127.0.0.1"
+port_setup 0.0.0.0:5002
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5002;$' config/nginx/syncstorage-rs.conf)" "0 0.0.0.0:5002 1" "0.0.0.0:<port>: every interface, nginx on 127.0.0.1"
+# run again on an install from before (a port alone in its .env: every interface), it keeps it
+sed -i 's|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=5003|' .env
+port_setup ""
+newest_backup() { ls -1 "$1"-* 2> /dev/null | LC_ALL=C sort | tail -n 1; }
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5003;$' config/nginx/syncstorage-rs.conf) $(grep -c '^SYNC_EXPORT_PORT=5003$' "$(newest_backup .env.before-setup)")" "0 5003 1 1" \
+  "run again on an install: its SYNC_EXPORT_PORT kept, the .env of before as .env.before-setup-<time>"
+# every run on an .env keeps its own copy (3 runs over one), the first one's passwords too; .env
+# and its copies for this user only
+first_setup=$(ls -1 .env.before-setup-* | LC_ALL=C sort | head -n 1)
+check "$(ls -1 .env.before-setup-* | wc -l) $(grep -c '^SYNC_EXPORT_PORT=127.0.0.1:5000$' "${first_setup}") $(stat -c %a .env .env.before-setup-* | sort -u | paste -sd' ')" "3 1 600" \
+  "a copy of .env for each setup run on it, none overwritten, .env and the copies 0600"
+cp -p .env "${WORK}/port.env"
+port_setup localhost:5004
+check "$? $(grep -c "^ERROR: not a port or an address and port: 'localhost:5004'" setup-port.log) $(cmp -s .env "${WORK}/port.env" && echo kept)" "1 1 kept" "not a port: refused, .env as it was"
+port_setup 256.1.1.1:5004
+check "$? $(grep -c "^ERROR: not a port or an address and port: '256.1.1.1:5004'" setup-port.log)" "1 1" "an octet over 255: refused"
+port_setup '[::]:5005'
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://\[::1\]:5005;$' config/nginx/syncstorage-rs.conf)" "0 [::]:5005 1" "[::]:<port>: every interface (IPv6 too), nginx on [::1]"
+# a value of an .env of before this script does not know: kept, said
+sed -i 's|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=localhost:5006|' .env
+port_setup ""
+check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c "^WARNING: SYNC_EXPORT_PORT='localhost:5006' of .env is not" setup-port.log)" "0 localhost:5006 1" "an unknown SYNC_EXPORT_PORT of .env: kept, with a warning"
+# --render-units on a compose install: refused, nothing written; --fresh asks for it
+port_setup ""
+cp -p .env "${WORK}/port.env"
+./prepare_environment.sh --render-units < /dev/null > render-compose.log 2>&1
+check "$? $(grep -c '^ERROR: no Quadlet units in' render-compose.log) $(ls "${QUADLET_DIR}" 2> /dev/null | wc -l) $(cmp -s .env "${WORK}/port.env" && echo kept)" "1 1 0 kept" \
+  "--render-units without installed units (a compose install): refused, no unit written"
+QUADLET_DIR=${WORK}/fresh SYSTEMD_USER_DIR=${WORK}/fresh-timers ./prepare_environment.sh --render-units --fresh < /dev/null > render-fresh.log 2>&1
+check "$? $(ls "${WORK}/fresh"/firefox-sync-syncstorage.container "${WORK}/fresh-timers"/firefox-sync-backup.timer 2> /dev/null | wc -l)" "0 2" "--render-units --fresh renders the units of a compose .env"
+rm -rf .env .env.before-setup-* .env.before-upgrade-* "${WORK}/fresh" "${WORK}/fresh-timers"
+
 # the admin UI quadlet gets every setting of the compose ffs-admin service: the keys
 # only in compose (allowed: $2, a regex), then those only in the quadlet
 compose_env_keys() { docker compose --profile admin "$@" config --format json 2> /dev/null | jq -r '.services["ffs-admin"].environment | keys[]' | LC_ALL=C sort; }
@@ -271,30 +347,45 @@ env_keys_diff() {
 
 echo "== quadlets (${SYNC_DB})"
 export QUADLET_DIR=${HOME}/.config/containers/systemd
+# the passwords and secrets of an .env ($1) in another ($2), under their new names: "kept <n>",
+# else the first that changed (not shown)
+secrets_kept() {
+  local key new pair n=0
+  for key in $(sed -nE 's/^([A-Z][A-Z0-9_]*(PASSWORD|PASS|SECRET|KEY|TOKEN|_CLIENT_ID))=.+/\1/p' "$1"); do
+    new=${key}
+    for pair in "${RENAMED_SETTINGS[@]}"; do [ "${pair#*=}" = "${key}" ] && new=${pair%%=*}; done
+    [ "$(grep "^${new}=" "$2" | cut -d= -f2-)" = "$(grep "^${key}=" "$1" | cut -d= -f2-)" ] || { echo "changed: ${key}"; return; }
+    n=$((n + 1))
+  done
+  echo "kept ${n}"
+}
 if [ -n "${UPGRADE_FROM:-}" ]; then
-  echo "== first the quadlets of ${UPGRADE_FROM}, then upgraded as MIGRATING.md says"
+  echo "== first the quadlets of ${UPGRADE_FROM}, then upgraded as docs/upgrading.md#with-quadlets says"
   [ "${SYNC_DB}" = mariadb ] || { echo "UPGRADE_FROM is for SYNC_DB=mariadb"; exit 2; }
-  FROM=${WORK}/from
-  cp -r "${UPGRADE_FROM}" "${FROM}" && rm -f "${FROM}/.env" && example "${FROM}" || exit 1
+  # that release where this tree is (its units mount files of it), this tree aside until the
+  # upgrade brings it, as git pull does
+  mv "${WORK}/ffs" "${WORK}/new" && cp -r "${UPGRADE_FROM}" "${WORK}/ffs" && cd "${WORK}/ffs" && rm -f .env && example . || exit 1
   # that release's admin UI and init image under the names of the units, this tree's aside
   INIT_IMAGE=${REPOSITORY}:syncstorage-rs-mysql-init-${INIT_TAG}
   # (releases before db/: syncstorage-rs-init)
-  INIT_DIR=${FROM}/db/mysql/init; [ -d "${INIT_DIR}" ] || INIT_DIR=${FROM}/syncstorage-rs-init
+  INIT_DIR=db/mysql/init; [ -d "${INIT_DIR}" ] || INIT_DIR=syncstorage-rs-init
   podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:upgrade-to && podman tag "${INIT_IMAGE}" localhost/ffs-init:upgrade-to &&
-    podman build -q --format docker -t "${REPOSITORY}:admin-latest" "${FROM}/admin" > build-from.log 2>&1 &&
-    podman build -q -t "${INIT_IMAGE}" "${INIT_DIR}" >> build-from.log 2>&1
+    podman build -q --format docker -t "${REPOSITORY}:admin-latest" admin > "${WORK}/build-from.log" 2>&1 &&
+    podman build -q -t "${INIT_IMAGE}" "${INIT_DIR}" >> "${WORK}/build-from.log" 2>&1
   check "$?" 0 "the admin UI and init images of ${UPGRADE_FROM}"
-  (cd "${FROM}" && setup mariadb 1)
+  setup mariadb 1
   check "$?" 0 "its prepare_environment.sh (quadlets)"
   timeout 900 systemctl --user start firefox-sync-syncstorage.service
   check "$?" 0 "its units started (quadlets)"
   check "$(hb) $(admin_up /login)" "200 200" "its Sync server and admin UI (quadlets)"
+  FROM_ENV=${WORK}/from.env
+  cp -p .env "${FROM_ENV}"
   # (a release from before the SYNC_ names: the old one)
   from_env() {
     local pair v
-    v=$(grep "^$1=" "${FROM}/.env" | cut -d= -f2)
+    v=$(grep "^$1=" "${FROM_ENV}" | cut -d= -f2)
     for pair in "${RENAMED_SETTINGS[@]}"; do
-      [ -z "${v}" ] && [ "${pair%%=*}" = "$1" ] && v=$(grep "^${pair#*=}=" "${FROM}/.env" | cut -d= -f2)
+      [ -z "${v}" ] && [ "${pair%%=*}" = "$1" ] && v=$(grep "^${pair#*=}=" "${FROM_ENV}" | cut -d= -f2)
     done
     echo "${v}"
   }
@@ -303,16 +394,39 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   for _ in $(seq 1 30); do [ "$(from_ts_sql 'SELECT COUNT(*) FROM ffs_events' 2> /dev/null)" -gt 0 ] 2> /dev/null && break; sleep 2; done
   from_ts_sql "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the Quadlet upgrade by admin (password)')"
   check "$?" 0 "an audit event in the tokenserver database, as before (quadlets)"
-  # the upgrade: the units stopped, the one-shot ones too, as MIGRATING.md says
-  STOP='systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
-  check "$(grep -cF "\`${STOP}\`" "${CODE}/MIGRATING.md")" 1 "MIGRATING.md says \`${STOP}\`"
+  # the upgrade: the units stopped, the one-shot ones too, as docs/upgrading.md#quadlets says
+  STOP='systemctl --user stop firefox-sync-backup.timer firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
+  check "$(grep -cF "\`${STOP}\`" "${CODE}/docs/upgrading.md")" 1 "docs/upgrading.md says \`${STOP}\`"
   timeout 300 ${STOP}
-  # (the images of this tree are local: what MIGRATING.md pulls is here already)
+  # the new files, the .env of the install kept
+  cp -p .env "${WORK}/new/.env" && cd "${WORK}" && rm -rf "${WORK}/ffs" && mv "${WORK}/new" "${WORK}/ffs" && cd "${WORK}/ffs" || exit 1
+  # (the images of this tree are local: what docs/upgrading.md#quadlets pulls is here already)
   podman tag localhost/ffs-admin:upgrade-to "${REPOSITORY}:admin-latest" && podman tag localhost/ffs-init:upgrade-to "${INIT_IMAGE}"
   podman rmi localhost/ffs-admin:upgrade-to localhost/ffs-init:upgrade-to > /dev/null 2>&1
+  # the units rendered again from that .env: every password and secret as it was, nothing asked
+  ./prepare_environment.sh --upgrade < /dev/null > upgrade-quadlets.log 2>&1
+  check "$?" 0 "prepare_environment.sh --upgrade (quadlets)"
+  check "$(secrets_kept "${FROM_ENV}" .env | sed 's/ [0-9]*$//') $(grep -c '^Rendering the Quadlet units from' upgrade-quadlets.log) $(ls quadlets.before-*/firefox-sync-syncstorage.container 2> /dev/null | wc -l)" \
+    "kept 1 1" "--upgrade renders the units from the .env of the install, every secret kept, the units of before kept (quadlets)"
+  check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env)" "1 0" \
+    "--upgrade gives the Quadlets ADMIN_DB_PASSWORD, renames the old setting names (quadlets)"
+  check "$(stat -c %a .env .env.before-upgrade-* | sort -u | paste -sd' ') $(ls .env.before-upgrade-* | wc -l) $(cmp -s .env.before-upgrade-* "${FROM_ENV}" && echo before)" "600 1 before" \
+    "--upgrade: .env and .env.before-upgrade-<time> (the .env of before) 0600"
+  [ "${FAILED}" = 0 ] || cat upgrade-quadlets.log
+  # run again: nothing to change
+  cp -p .env "${WORK}/upgraded.env"
+  ./prepare_environment.sh --upgrade < /dev/null > upgrade-quadlets-again.log 2>&1
+  check "$? $(grep -c 'nothing changed$' upgrade-quadlets-again.log) $(ls -d quadlets.before-* | wc -l) $(cmp -s .env "${WORK}/upgraded.env" && echo same)" "0 1 1 same" \
+    "--upgrade again: .env and the units as they are (quadlets)"
+else
+  setup "${SYNC_DB}" 1
+  check "$?" 0 "prepare_environment.sh (quadlets)"
 fi
-setup "${SYNC_DB}" 1
-check "$?" 0 "prepare_environment.sh (quadlets)"
+# the Sync server on this host only for a new install (a port alone answered: 127.0.0.1),
+# an install from before keeps what it has (a port alone: every interface)
+if [ -n "${UPGRADE_FROM:-}" ]; then sync_listen=${PORT}; else sync_listen=127.0.0.1:${PORT}; fi
+check "$(env_of SYNC_EXPORT_PORT) $(sed -n 's/^PublishPort=//p' "${QUADLET_DIR}/firefox-sync-syncstorage.container")" "${sync_listen} ${sync_listen}:8000" \
+  "SYNC_EXPORT_PORT=${sync_listen} in .env and the Sync server's PublishPort (quadlets)"
 # the healthchecks of compose, those of the Quadlets (as rendered from .env)
 sync_compose=(-f docker-compose.yml)
 [ "${SYNC_DB}" = mysql ] && sync_compose+=(-f docker-compose.sync-mysql.yml)
@@ -332,30 +446,23 @@ check "$(grep -cxE 'Environment="(BACKUP_TIME=03:00|BACKUP_KEEP=7|ADMIN_DEPLOYME
 QUADLET=$(ls /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2> /dev/null | head -1)
 "${QUADLET}" -dryrun -user > quadlet-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files"
-if [ -n "${UPGRADE_FROM:-}" ]; then
-  # MIGRATING.md: the database containers (they create the admin UI's users with the new
-  # ADMIN_DB_PASSWORD), then the Sync users' new passwords, as the old ones
-  timeout 300 systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
-  for db in TOKENSERVER STORAGE; do
-    container=firefox-sync-$([ "${db}" = STORAGE ] && echo syncstorage || echo tokenserver)-db
-    for _ in $(seq 1 30); do
-      podman exec "${container}" mariadb -u"$(from_env "SYNC_${db}_DB_USER")" -p"$(from_env "SYNC_${db}_DB_PASSWORD")" \
-        -e "SET PASSWORD = PASSWORD('$(env_of "SYNC_${db}_DB_PASSWORD")')" > /dev/null 2>&1 && ok=0 && break
-      ok=1
-      sleep 2
-    done
-    check "${ok}" 0 "the new password of the ${db} user (quadlets upgraded)"
-  done
-fi
 # the journal keeps earlier runs
 fast_admin_checks
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 timeout 900 systemctl --user start firefox-sync-syncstorage.service
 check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service"
+# (docs/upgrading.md#quadlets: the backup timer again when the nightly backups are on; not here)
+[ -z "${UPGRADE_FROM:-}" ] || ! systemctl --user is-enabled -q firefox-sync-backup.timer 2> /dev/null || systemctl --user start firefox-sync-backup.timer
 for u in syncstorage-db tokenserver-db syncstorage-migrate tokenserver-db-init syncstorage; do
   printf '  %-22s %s\n' "${u}" "$(systemctl --user is-active "firefox-sync-${u}.service")"
 done
 check "$(hb)" 200 "/__heartbeat__ (quadlets)"
+sync_sockets=$(ss -Hltn "sport = :${PORT}" | awk '{ print $4 }' | sort -u | paste -sd' ')
+if [ -n "${UPGRADE_FROM:-}" ]; then
+  check "$([ -n "${sync_sockets}" ] && [ "${sync_sockets}" != "127.0.0.1:${PORT}" ] && echo every)" every "the Sync server listens on every interface, as before the upgrade (quadlets; ${sync_sockets})"
+else
+  check "${sync_sockets}" "127.0.0.1:${PORT}" "the Sync server listens on 127.0.0.1 only (quadlets)"
+fi
 check "$(podman inspect -f '{{.EffectiveCaps}}' firefox-sync-syncstorage | grep -c NET_RAW) $(grep -hcxF 'DropCapability=NET_RAW' "${QUADLET_DIR}"/firefox-sync-syncstorage{,-migrate}.container | paste -sd' ')" \
   "0 1 1" "the Sync server and its migrations without raw sockets (quadlets)"
 journalctl --user -u firefox-sync-syncstorage-migrate.service --no-pager 2> /dev/null | grep -m1 "Migrations completed"
@@ -408,7 +515,40 @@ check "$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/m
   "ffs_admin.sql.gz syncstorage.sql.gz tokenserver.sql.gz" "the dumps in the firefox-sync-backups volume (quadlets)"
 [ "${FAILED}" = 0 ] || journalctl --user -u firefox-sync-backup.service --no-pager | tail -20
 
-echo "== a backup restores, the way ADMIN.md#restoring says for the Quadlets"
+echo "== the units of the running install rendered again from its .env: a setting changed, an image pinned"
+cp -p .env "${WORK}/rendered.env"
+backups=$(ls -d quadlets.before-* 2> /dev/null | wc -l)
+# as an admin edits .env (the same admin UI under a name of its own: a pin)
+podman tag "${REPOSITORY}:admin-latest" localhost/ffs-admin:pinned
+# (with a comment after the value: dropped, as compose does)
+sed -i 's|^ADMIN_STALE_DAYS=.*|ADMIN_STALE_DAYS=45  # was 90|' .env
+# (a switch of the admin UI the units pass from .env, as compose: on its configuration page)
+sed -i 's|^ADMIN_INSECURE_COOKIE=.*|ADMIN_INSECURE_COOKIE=1|' .env
+grep -q '^ADMIN_IMAGE=' .env && sed -i 's|^ADMIN_IMAGE=.*|ADMIN_IMAGE=localhost/ffs-admin:pinned|' .env || echo 'ADMIN_IMAGE=localhost/ffs-admin:pinned' >> .env
+cp -p .env "${WORK}/edited.env"
+./prepare_environment.sh --render-units < /dev/null > render-units.log 2>&1
+check "$?" 0 "prepare_environment.sh --render-units (quadlets)"
+check "$(secrets_kept "${WORK}/rendered.env" .env | sed 's/ [0-9]*$//') $(cmp -s .env "${WORK}/edited.env" && echo same)" "kept same" "--render-units keeps every password and secret, and .env as it is (quadlets)"
+# only the admin UI's unit changed (fast_admin_checks' line gone with it), the units of before kept
+check "$(sed -n 's/^  ✓ //p' render-units.log | paste -sd' ') $(grep -cxE 'Image=localhost/ffs-admin:pinned|Environment="(ADMIN_STALE_DAYS=45|ADMIN_INSECURE_COOKIE=1)"' "${QUADLET_DIR}/firefox-sync-admin.container") $(($(ls -d quadlets.before-* | wc -l) - backups)) $(grep -Hc '^Image=localhost/ffs-admin:pinned' quadlets.before-*/firefox-sync-admin.container 2> /dev/null | grep -c ':0$')" \
+  "firefox-sync-admin.container 3 1 $((backups + 1))" "--render-units writes the changed unit only, with ADMIN_IMAGE and the settings, the units of before kept (quadlets)"
+./prepare_environment.sh --render-units < /dev/null > render-units-again.log 2>&1
+check "$? $(grep -c 'nothing changed$' render-units-again.log) $(grep -c '✓' render-units-again.log) $(($(ls -d quadlets.before-* | wc -l) - backups)) $(cmp -s .env "${WORK}/edited.env" && echo same)" "0 1 0 1 same" \
+  "--render-units again: nothing changes (quadlets)"
+[ "${FAILED}" = 0 ] || cat render-units.log render-units-again.log
+# every unit stopped and started again with the units rendered (daemon-reload done): the
+# databases have the passwords of before, nothing set by hand
+fast_admin_checks
+timeout 300 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service \
+  firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
+timeout 900 systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service
+check "$?" 0 "the units started again, rendered again (quadlets)"
+check "$(hb) $(admin_up /login) $(admin_sign_in rendered) $(podman inspect -f '{{.ImageName}}' firefox-sync-admin)" "200 200 yes localhost/ffs-admin:pinned" \
+  "the Sync server, the admin UI with the same password and the image pinned (quadlets rendered again)"
+check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')" all "admin UI reaches the Sync server and its databases, their passwords as before (quadlets rendered again)"
+check "$(curl -s -b "${WORK}/cookies-rendered" http://localhost:${ADMIN_PORT}/config | grep -q 'also over plain HTTP' && echo yes)" yes "ADMIN_INSECURE_COOKIE of .env reaches the admin UI (quadlets)"
+
+echo "== a backup restores, the way docs/backups.md#restore-with-quadlets says for the Quadlets"
 st_sql() { podman exec -e MYSQL_PWD="$(grep '^SYNC_STORAGE_DB_PASSWORD=' .env | cut -d= -f2)" firefox-sync-syncstorage-db \
   sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -u"$(grep '^SYNC_STORAGE_DB_USER=' .env | cut -d= -f2)" "$(grep '^SYNC_STORAGE_DB_NAME=' .env | cut -d= -f2)" -sN -e "$1"; }
 # every table of a database with its rows, its triggers and procedures: <sql function>
@@ -433,7 +573,7 @@ st_sql "SET @c = (SELECT id FROM collections WHERE name = 'bookmarks'), @m = UNI
     (${uid}, @c, 'restore-2', CONCAT('line', CHAR(10), 'break'), 20, @m, @m + 86400000);"
 payloads() { st_sql "SELECT MD5(GROUP_CONCAT(id, ':', payload ORDER BY id SEPARATOR '|')) FROM bso"; }
 PAYLOADS=$(payloads)
-# the units stopped as ADMIN.md says (nothing writes: the databases hold what the dump holds)
+# the units stopped as docs/backups.md#restore-with-quadlets says (nothing writes: the databases hold what the dump holds)
 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service \
   firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service
 BEFORE=$(inventory ts_sql | sed 's/^/tokenserver /'; inventory st_sql | sed 's/^/storage /')
@@ -451,18 +591,18 @@ run=$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mari
 dump() { podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts gunzip -c "/backups/$1"; }
 # shellcheck disable=SC2016 # (expanded in the database container)
 if [ "${SYNC_DB}" = mysql ]; then load='mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'; else load='mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'; fi
-# with set -o pipefail, as ADMIN.md says: a run that is not there fails, instead of loading nothing
-check "$(grep -cxF 'set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore' ADMIN.md)" 1 "ADMIN.md's Quadlet restore sets pipefail"
+# with set -o pipefail, as docs/backups.md#restore-with-quadlets says: a run that is not there fails, instead of loading nothing
+check "$(grep -cxF 'set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore' "${CODE}/docs/backups.md")" 1 "docs/backups.md's Quadlet restore sets pipefail"
 missing=$( (set -o pipefail; dump "sync/20000101T000000Z/tokenserver.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${load}") >> restore.log 2>&1 || echo failed)
 check "${missing}" failed "a restore of a run that is not there fails (quadlets)"
 for db in tokenserver syncstorage; do
   (set -o pipefail; dump "sync/${run}/${db}.sql.gz" | podman exec -i "firefox-sync-${db}-db" sh -c "${load}") >> restore.log 2>&1
   check "$?" 0 "${db} restored from ${run} as its user (quadlets)"
 done
-# the admin UI's database, as its user (the line of ADMIN.md, the client of the image)
+# the admin UI's database, as its user (the line of docs/backups.md#restore-with-quadlets, the client of the image)
 # shellcheck disable=SC2016
 admin_load='mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
-check "$(grep -cF "dump sync/\$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c '${admin_load}'" ADMIN.md)" 1 "ADMIN.md's Quadlet restore of the admin UI's database"
+check "$(grep -cF "dump sync/\$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c '${admin_load}'" "${CODE}/docs/backups.md")" 1 "docs/backups.md's Quadlet restore of the admin UI's database"
 [ "${SYNC_DB}" = mysql ] && admin_load=${admin_load/#mariadb/mysql}
 (set -o pipefail; dump "sync/${run}/ffs_admin.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${admin_load}") >> restore.log 2>&1
 check "$?" 0 "ffs_admin restored from ${run} as its user (quadlets)"
@@ -493,11 +633,18 @@ stop_quadlets() {
 stop_quadlets
 
 echo "== quadlets without the admin UI (mariadb)"
+# a new install (the .env of the phase before pins its databases' major, which a setup run
+# again keeps: UPGRADE_FROM's)
+rm -f .env
 # answers as setup, admin UI: n. The Sync server starts without ffs-admin to resolve
-printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare_environment.sh > setup-no-admin.log 2>&1
+# (the port as address and port)
+printf '%s\n' ffs-e2e.invalid "" "127.0.0.1:${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare_environment.sh > setup-no-admin.log 2>&1
 check "$?" 0 "prepare_environment.sh (quadlets, no admin UI)"
+check "$(sed -n 's/^PublishPort=//p' "${QUADLET_DIR}/firefox-sync-syncstorage.container")" "127.0.0.1:${PORT}:8000" "127.0.0.1:<port> answered: the Sync server's PublishPort"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-admin.* 2> /dev/null | wc -l)" 0 "no admin UI quadlet"
 check "$(grep -hcxF 'Environment=MAX_USERS=1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "plain SYNC_MAX_USERS=1 in the init quadlet"
+check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | paste -sd' ') $(env_of SYNC_MARIADB_IMAGE)" \
+  "docker.io/library/mariadb:lts docker.io/library/mariadb:lts docker.io/library/mariadb:lts mariadb:lts" "the Sync MariaDB units on lts for a new install (SYNC_MARIADB_IMAGE)"
 "${QUADLET}" -dryrun -user > quadlet-no-admin-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files without the admin UI"
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
@@ -516,8 +663,8 @@ setup mysql 1
 check "$?" 0 "prepare_environment.sh (quadlets, MySQL)"
 check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup -f docker-compose.yml -f docker-compose.sync-mysql.yml)" same "the MySQL Quadlets' healthchecks are compose's"
 check "$(grep -c '^SYNC_DB=mysql$' .env) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml$' .env)" "1 1" "SYNC_DB=mysql in .env, with the compose overlay"
-check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
-  "docker.io/library/mysql:8 docker.io/library/mysql:8" "MySQL 8 database units"
+check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | paste -sd' ') $(env_of SYNC_MYSQL_IMAGE)" \
+  "docker.io/library/mysql:lts docker.io/library/mysql:lts docker.io/library/mysql:lts mysql:lts" "MySQL lts database and backup units for a new install"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db*.volume 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
   "firefox-sync-syncstorage-db-mysql.volume firefox-sync-tokenserver-db-mysql.volume" "MySQL's own volumes, not MariaDB's"
 check "$(grep -hcxE 'Exec=sh /ffs-db/admin-user\.sh mysqld --disable-log-bin|HealthCmd=mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) -p[A-Za-z0-9]+ --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
@@ -567,7 +714,7 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
   podman rm -f "${EXTDB}" > /dev/null 2>&1
   podman network rm -f firefox-sync > /dev/null 2>&1
 
-  # the accounts on your own MySQL server: only what is installed (no MySQL 8 here)
+  # the accounts on your own MySQL server: only what is installed (no MySQL here)
   # answers: ..., admin host, your own server for Sync? the accounts? host, port, user, policy user
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" \
     n y fxa-mysql.invalid "" "" "" | ./prepare_environment.sh > setup-fxa-external.log 2>&1
@@ -597,6 +744,42 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" docker.io/library/mariadb:lts "the backups of the accounts with the same MariaDB"
   "${QUADLET}" -dryrun -user > quadlet-fxa-mariadb-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the MariaDB accounts database"
+  # a setting of the accounts changed in .env, rendered again: the units of the install (with
+  # the accounts on MariaDB and the admin UI), only fxa-auth's changes
+  check "$(grep -cxF 'Environment="LOG_LEVEL=INFO"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "fxa-auth logs at INFO without FXA_LOG_LEVEL"
+  cp -p .env "${WORK}/fxa-mariadb.env"
+  echo 'FXA_LOG_LEVEL=DEBUG' >> .env
+  ./prepare_environment.sh --render-units < /dev/null > render-units-fxa.log 2>&1
+  check "$? $(sed -n 's/^  ✓ //p' render-units-fxa.log | paste -sd' ') $(grep -cxF 'Environment="LOG_LEVEL=DEBUG"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container") $(secrets_kept "${WORK}/fxa-mariadb.env" .env | sed 's/ [0-9]*$//')" \
+    "0 firefox-sync-fxa-auth.container 1 kept" "--render-units with the accounts on MariaDB: FXA_LOG_LEVEL in fxa-auth's unit alone, the secrets kept"
+  [ "${FAILED}" = 0 ] || cat render-units-fxa.log
+  # values written otherwise, as compose reads them: quoted with a comment, export; a name
+  # .env lacks is not taken from this shell. The same units, nothing appended to .env
+  units_sum() { cat "${QUADLET_DIR}"/firefox-sync-* | md5sum; }
+  sum=$(units_sum)
+  repo=$(env_of IMAGE_REPOSITORY)
+  sed -i -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=\"${repo}\"  # a mirror|" -e 's|^ADMIN_DB_NAME=|export ADMIN_DB_NAME=|' \
+    -e "s|^FXA_LOG_LEVEL=.*|FXA_LOG_LEVEL='DEBUG' # loud|" .env
+  cp -p .env "${WORK}/fxa-written.env"
+  ADMIN_TZ=Europe/Rome ADMIN_IMAGE=localhost/not-this:one ./prepare_environment.sh --render-units < /dev/null > render-units-quoted.log 2>&1
+  check "$? $(grep -c 'nothing changed$' render-units-quoted.log) $([ "$(units_sum)" = "${sum}" ] && echo same) $(cmp -s .env "${WORK}/fxa-written.env" && echo kept) $(grep -c 'ADMIN_DB_NAME=' .env) $(grep -cxF "Image=${repo}:admin-latest" "${QUADLET_DIR}/firefox-sync-admin.container")" \
+    "0 1 same kept 1 1" "quoted and commented values, export, this shell's ADMIN_TZ and ADMIN_IMAGE: the same units, .env as it was"
+  # a quoted PostgreSQL .env: refused, nothing changed
+  sed -i 's|^SYNC_IMAGE=.*|SYNC_IMAGE="syncstorage-rs-postgres" # pg|' .env
+  ./prepare_environment.sh --render-units < /dev/null > render-units-pg.log 2>&1
+  check "$? $(grep -c 'ERROR: the Quadlets are for MariaDB and MySQL only' render-units-pg.log) $([ "$(units_sum)" = "${sum}" ] && echo same)" "1 1 same" "a quoted SYNC_IMAGE of PostgreSQL: --render-units refuses"
+  cp -p "${WORK}/fxa-written.env" .env
+  # the units of before cannot be kept (one unreadable): nothing written
+  sed -i "s|^FXA_LOG_LEVEL=.*|FXA_LOG_LEVEL=TRACE|" .env
+  backups=$(ls -d quadlets.before-* 2> /dev/null | wc -l)
+  chmod 000 "${QUADLET_DIR}/firefox-sync-network.network"
+  ./prepare_environment.sh --render-units < /dev/null > render-units-nobackup.log 2>&1
+  rc=$?
+  chmod 644 "${QUADLET_DIR}/firefox-sync-network.network"
+  check "${rc} $(grep -c '^ERROR: could not keep the units of before' render-units-nobackup.log) $([ "$(units_sum)" = "${sum}" ] && echo same) $(ls -d quadlets.before-* 2> /dev/null | wc -l)" "1 1 same ${backups}" \
+    "the units of before not kept: --render-units writes no unit"
+  # .env, its copies and the units of before: this user only
+  check "$(stat -c %a .env .env.before-upgrade-* | sort -u | paste -sd' ') $(stat -c %a quadlets.before-* | sort -u | paste -sd' ')" "600 700" "--render-units: .env and its copies 0600, the units of before 0700"
   stop_quadlets
 fi
 
@@ -606,6 +789,19 @@ if [ -z "${SKIP_FXA:-}" ]; then
   # admin emails, admin host, [your own server for Sync? the accounts? the accounts database]
   fxa_db_answers=()
   [ "${FXA_DB}" = mariadb ] && fxa_db_answers=(n n mariadb)
+  # one pull up front, otherwise every unit pulls the 5 GB image at the same time; before
+  # prepare_environment.sh, which reads its label (mozilla/fxa#21554: MySQL lts)
+  case "$(uname -m)" in aarch64|arm64) fxa_arch=arm64 ;; *) fxa_arch=amd64 ;; esac
+  fxa_image=$(grep '^IMAGE_REPOSITORY=' .env-example | cut -d= -f2):$(grep '^FXA_VERSION=' .env-example | cut -d= -f2)
+  if [ -n "${FXA_TEST_IMAGE:-}" ]; then
+    # the candidate, under the name the quadlets use
+    # (a local build is used as it is)
+    { podman image exists "${FXA_TEST_IMAGE}" || podman pull -q --arch "${fxa_arch}" "${FXA_TEST_IMAGE}" > /dev/null; } && podman tag "${FXA_TEST_IMAGE}" "${fxa_image}"
+  else
+    podman pull -q --arch "${fxa_arch}" "${fxa_image}" > /dev/null
+  fi
+  fxa_pulled=$?
+  fxa_image_id=$(podman image inspect -f '{{.Id}}' "${fxa_image}" 2> /dev/null)
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test 'p%ss|w&rd' "" "@fxa.invalid" \
     "me@fxa.invalid" "" "${fxa_db_answers[@]}" \
     | ./prepare_environment.sh > setup-fxa-quadlets.log 2>&1
@@ -615,8 +811,19 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
     "every long-running service has a healthcheck, the Quadlets with the accounts compose's (${FXA_DB})"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
-  [ "${FXA_DB}" = mariadb ] && expected_image=docker.io/library/mariadb:lts || expected_image=docker.io/library/mysql:8
-  check "$(fxa_db_image)" "${expected_image}" "accounts database ${FXA_DB}"
+  # MySQL: lts when the accounts image of .env has mozilla/fxa#21554, else 8 with mysql_native_password
+  if [ "${FXA_DB}" = mariadb ]; then
+    expected_image=docker.io/library/mariadb:lts expected_exec=mariadbd
+  elif [ "$(env_of FXA_MYSQL_IMAGE)" = mysql:lts ]; then
+    expected_image=docker.io/library/mysql:lts expected_exec="mysqld --event-scheduler=ON "
+    check "[$(env_of FXA_MYSQL_ARGS)] $(grep -c 'does not have mozilla/fxa#21554' setup-fxa-quadlets.log)" "[] 0" "the accounts on MySQL lts: no mysql_native_password"
+  else
+    expected_image=docker.io/library/mysql:8 expected_exec="mysqld --event-scheduler=ON --mysql-native-password=ON --authentication-policy=mysql_native_password"
+    check "$(env_of FXA_MYSQL_IMAGE) $(grep -cE 'does not have mozilla/fxa#21554|could not read the labels of' setup-fxa-quadlets.log)" "mysql:8 1" \
+      "the accounts on MySQL 8 with mysql_native_password, for an accounts image without mozilla/fxa#21554 (said)"
+  fi
+  check "$(fxa_db_image) $(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" "${expected_image} ${expected_image}" "accounts database ${FXA_DB} and its backups"
+  [ "${FXA_DB}" = mariadb ] || check "$(sed -n 's/^Exec=//p' "${QUADLET_DIR}/firefox-sync-fxa-db.container")" "${expected_exec}" "fxa-db's options (FXA_MYSQL_ARGS)"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   # no pairing server in the quadlets
   check "$(env_keys_diff "-f docker-compose.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL|TOKENSERVER_DB_PASSWORD|STORAGE_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "|" "admin quadlet with the accounts passes every setting of the compose service"
@@ -640,20 +847,25 @@ if [ -z "${SKIP_FXA:-}" ]; then
   "${QUADLET}" -dryrun -user > quadlet-fxa-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the accounts files"
   fast_admin_checks
-  # one pull up front, otherwise every unit pulls the 5 GB image at the same time
-  fxa_arch=$(grep '^FXA_ARCH=' .env | cut -d= -f2)
-  fxa_image=$(grep '^FXA_IMAGE=' .env | cut -d= -f2):$(grep '^FXA_VERSION=' .env | cut -d= -f2)
-  if [ -n "${FXA_TEST_IMAGE:-}" ]; then
-    # the candidate, under the name the quadlets use
-    podman pull -q --arch "${fxa_arch}" "${FXA_TEST_IMAGE}" > /dev/null && podman tag "${FXA_TEST_IMAGE}" "${fxa_image}"
-  else
-    podman pull -q --arch "${fxa_arch}" "${fxa_image}" > /dev/null
-  fi
-  check "$?" 0 "pull mozilla/fxa-mono ${FXA_TEST_IMAGE:-${fxa_image}}"
+  check "${fxa_pulled}" 0 "pull mozilla/fxa-mono ${FXA_TEST_IMAGE:-${fxa_image}}"
+  check "$(grep '^FXA_IMAGE=' .env | cut -d= -f2):$(grep '^FXA_VERSION=' .env | cut -d= -f2) $(grep '^FXA_ARCH=' .env | cut -d= -f2)" "${fxa_image} ${fxa_arch}" \
+    "the accounts image pulled is the one of .env"
   # (all of them, as at boot: WantedBy=default.target)
   timeout 1200 systemctl --user start firefox-sync-syncstorage.service firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \
     firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service firefox-sync-admin.service
   check "$?" 0 "systemctl --user start (syncstorage and accounts)"
+  # the image the accounts' units run is the one whose label chose fxa-db's MySQL: lts only with
+  # mozilla/fxa#21554 in it, and the units did not pull another one over it (podman 4 does with
+  # --arch, which the units have only for another architecture)
+  run_id=$(podman image inspect -f '{{.Id}}' "${fxa_image}" 2> /dev/null)
+  run_label=$(podman image inspect -f '{{index .Labels "org.firefox-sync.upstream-patches"}}' "${fxa_image}" 2> /dev/null)
+  check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u) [$(grep -h '^PodmanArgs=--arch' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u)] $(grep -hc '^PodmanArgs=--network-alias=fxa-' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | awk '{ s += $1 } END { print s }') ${run_id}" \
+    "${fxa_image} [$([ "${fxa_arch}" = "$(case "$(uname -m)" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac)" ] || echo "PodmanArgs=--arch=${fxa_arch}")] 2 ${fxa_image_id}" \
+    "the accounts' units run ${fxa_image}, the image prepare_environment.sh read (not pulled over: no --arch on this host's architecture)"
+  if [ "${FXA_DB}" != mariadb ]; then
+    [[ " ${run_label} " == *" mozilla/fxa#21554@"* ]] && want_db=docker.io/library/mysql:lts || want_db=docker.io/library/mysql:8
+    check "$(fxa_db_image)" "${want_db}" "fxa-db's MySQL agrees with the label of the image the units run ($([ "${want_db##*:}" = lts ] && echo with || echo without) mozilla/fxa#21554)"
+  fi
   ok=""
   for _ in $(seq 1 225); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${CONTENT_PORT}/__heartbeat__)" = 200 ] && ok=yes && break

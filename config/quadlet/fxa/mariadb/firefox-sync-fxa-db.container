@@ -1,11 +1,11 @@
-# Installed instead of ../firefox-sync-fxa-db.container with FXA_DB=mariadb (FXA.md).
+# Installed instead of ../firefox-sync-fxa-db.container with FXA_DB=mariadb (docs/accounts.md#mysql-or-mariadb).
 [Unit]
 Description=Firefox Sync - Mozilla accounts - Database (MariaDB)
 After=firefox-sync-network.service
 
 [Container]
 # FXA_MARIADB_IMAGE of .env (with its registry), mariadb:lts when unset; mariadb:11 for the
-# installs from before it (FXA.md#mysql-or-mariadb). On 12 Mozilla's migrations need
+# installs from before it (docs/accounts.md#mysql-or-mariadb). On 12 Mozilla's migrations need
 # https://github.com/mozilla/fxa/pull/21494, in our images (upstream-patches.yml)
 Image=%FXA_MARIADB_IMAGE%
 ContainerName=firefox-sync-fxa-db
@@ -20,7 +20,7 @@ HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=10
 HealthStartPeriod=30s
-# the default authentication is already mysql_native_password, the only one FxA's driver supports
+# the default authentication is mysql_native_password (MariaDB has no caching_sha2_password), which both of the accounts' drivers speak
 Exec=mariadbd --event-scheduler=ON
 
 AutoUpdate=registry

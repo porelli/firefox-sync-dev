@@ -62,6 +62,9 @@
         },
         "sender": {
           "type": "string"
+        },
+        "insecureAuth": {
+          "type": ["string", "boolean", "integer"]
         }
       },
       "additionalProperties": false
@@ -435,6 +438,9 @@
         "bundled": {
           "type": "boolean"
         },
+        "allowMajorUpgrade": {
+          "type": "boolean"
+        },
         "image": {
           "type": "object",
           "required": ["mariadb", "mysql", "postgres"],
@@ -619,6 +625,9 @@
         },
         "alertEmail": {
           "type": "string"
+        },
+        "insecureCookie": {
+          "type": ["string", "boolean", "integer"]
         },
         "oidc": {
           "type": "object",

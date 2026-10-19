@@ -1,17 +1,21 @@
-# The Sync databases (syncstorage_db, tokenserver_db) on MySQL 8 (8.4 today) instead of MariaDB
-# (SYNC_DB=mysql, see DATABASES.md), on top of docker-compose.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
+# The Sync databases (syncstorage_db, tokenserver_db) on MySQL instead of MariaDB
+# (SYNC_DB=mysql, see docs/databases.md#mysql-instead-of-mariadb), on top of docker-compose.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
 # (with Podman: -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml).
 # Same images for the Sync server (syncstorage-rs-mysql) and the init container: upstream
-# syncstorage-rs is developed and tested on MySQL 8.
+# syncstorage-rs is developed and tested on MySQL 8, the tests here run it on lts and 8 too.
 # The MARIADB_* variables of docker-compose.yml stay in these containers, the MySQL image ignores them.
 
 x-sync-mysql: &sync-mysql
-  image: mysql:8
+  # SYNC_MYSQL_IMAGE: mysql:lts by default, MySQL's newest long-term major (9 today); the
+  # installs from before run mysql:8 (prepare_environment.sh --upgrade writes it, moving to
+  # lts: docs/upgrading.md#mysql-8-to-9). On data of another major the containers do not start unless
+  # SYNC_MYSQL_IMAGE is set (db/mysql/keep-major.sh): MySQL would upgrade it for good
+  image: ${SYNC_MYSQL_IMAGE:-mysql:lts}
   # no binary logging, like the MariaDB containers: no replica reads it, and it would keep
   # 30 days of every change (binlog_expire_logs_seconds). With it on, the init container's
   # max users procedure and trigger would also need log_bin_trust_function_creators (ERROR 1419)
   # (through db/mysql/admin-user.sh, the admin UI's user, see docker-compose.yml)
-  command: [sh, /ffs-db/admin-user.sh, mysqld, --disable-log-bin]
+  command: [sh, /ffs-db/keep-major.sh, sh, /ffs-db/admin-user.sh, mysqld, --disable-log-bin]
   healthcheck:
     # over TCP: during the first start the image runs a temporary server on the socket only;
     # as the stack's user (the root password is random), mysqladmin ping only asks if it answers
@@ -29,10 +33,13 @@ services:
       MYSQL_DATABASE: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
       MYSQL_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
       MYSQL_PASSWORD: ${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}
+      FFS_MYSQL_IMAGE: ${SYNC_MYSQL_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MYSQL_IMAGE
     # replaces the syncstorage-db volume (same path): MySQL must not open MariaDB's data
     # files, an existing syncstorage-db volume is left as it is
     volumes:
       - syncstorage-db-mysql:/var/lib/mysql
+      - ./db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
 
   tokenserver_db:
     <<: *sync-mysql
@@ -41,8 +48,11 @@ services:
       MYSQL_DATABASE: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
       MYSQL_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
       MYSQL_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
+      FFS_MYSQL_IMAGE: ${SYNC_MYSQL_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MYSQL_IMAGE
     volumes:
       - tokenserver-db-mysql:/var/lib/mysql
+      - ./db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
 
   tokenserver_db_init:
     environment:
@@ -51,9 +61,9 @@ services:
       MARIADB_TLS_VERIFY: "false"
 
   # the backups (COMPOSE_PROFILES=backup) with MySQL's own client and mysqldump: the MariaDB
-  # client refuses MySQL's self-signed certificate
+  # client refuses MySQL's self-signed certificate; the same image as the databases
   backup:
-    image: mysql:8
+    image: ${SYNC_MYSQL_IMAGE:-mysql:lts}
 
 volumes:
   syncstorage-db-mysql:

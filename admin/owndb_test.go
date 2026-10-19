@@ -225,7 +225,7 @@ func TestMoveOwnTables(t *testing.T) {
 		!strings.Contains(c.Text, "prepare_environment.sh --upgrade (it sets ADMIN_DB_PASSWORD") || !strings.Contains(c.Text, "docker compose up -d") {
 		t.Errorf("check without ADMIN_DB_PASSWORD: %+v", c)
 	}
-	// with the Quadlets (ADMIN_DEPLOYMENT=quadlets): their steps of MIGRATING.md, no compose
+	// with the Quadlets (ADMIN_DEPLOYMENT=quadlets): their steps of docs/upgrading.md#with-quadlets, no compose
 	if c := ownDBCheck(s, moveState{}, deployment{kind: "quadlets"}); c.OK || strings.Contains(c.Text, "docker compose") || strings.Contains(c.Text, "Run ./prepare_environment.sh --upgrade") ||
 		!strings.Contains(c.Text, "run ./prepare_environment.sh again with the same answers") || !strings.Contains(c.Text, "database-setup.sql") ||
 		!strings.Contains(c.Text, "systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service") {

@@ -475,8 +475,8 @@ def test_health_and_sizes(admin):
     # versions from /__version__ (our syncstorage images fill it in since APP_BUILD_REVISION 2)
     assert re.search(r"<td>Accounts API</td><td>[^<]*<span[^>]*>up</span></td><td>\d+\.\d+", health), health
     assert re.search(r"Databases: .*Tokenserver \d", page), page[:3000]
-    # FXA_DB_SERVER: set by e2e-fxa.sh, MariaDB with FXA_DB=mariadb
-    for component, v in (("Accounts database", os.environ.get("FXA_DB_SERVER") or r"MySQL 8"), ("Accounts Redis", r"Redis \d"), ("Profile server", r"\d+\.\d+")):
+    # FXA_DB_SERVER: set by e2e-fxa.sh from FXA_MYSQL_IMAGE (MariaDB with FXA_DB=mariadb)
+    for component, v in (("Accounts database", os.environ.get("FXA_DB_SERVER") or r"MySQL \d+\.\d+"), ("Accounts Redis", r"Redis \d"), ("Profile server", r"\d+\.\d+")):
         assert re.search(r"<td>" + component + r"</td><td>[^<]*<span[^>]*>up</span></td><td>" + v, health), (component, health)
 
 
@@ -651,7 +651,7 @@ def test_prometheus():
         assert line in res.text, line
 
 
-# account support: how an account signs in, and helping its owner (ADMIN.md)
+# account support: how an account signs in, and helping its owner (docs/admin/accounts.md#helping-account-owners)
 
 def totp_code(secret, at=None):
     """The code of an authenticator app (RFC 6238, SHA-1, 30 s, 6 digits)"""
@@ -1074,7 +1074,7 @@ def test_notes_and_the_disable_reason(admin):
     assert f"Removed the note of {address} (uid {uid[:8]}) by admin (password)" in events, events
 
 
-# email delivery, what the server sees of its public URLs, onboarding (ADMIN.md)
+# email delivery, what the server sees of its public URLs, onboarding (docs/admin/monitoring.md)
 
 def health_row(admin, component, timeout=90):
     """The status cell of a component in the health table, once it is up (or the last one)"""
@@ -1257,8 +1257,8 @@ def test_configuration_page(admin):
                            ("Pairing server", "wss://pairing.fxa.test"), ("SMTP server", "mailpit")):
         assert config_row(page, setting).startswith(value + " "), (setting, config_row(page, setting))
     accounts = page.split('id="accounts-settings"')[1].split("</section>")[0]
-    # the version the health check read from the server (8.4.6), the image's before the first check
-    assert re.match((os.environ.get("FXA_DB_SERVER") or r"MySQL 8") + r"[.\d]* FXA_DB ", config_row(accounts, "Database")), config_row(accounts, "Database")
+    # the version the health check read from the server (9.7.2, 8.4.6)
+    assert re.match((os.environ.get("FXA_DB_SERVER") or r"MySQL \d+\.\d+") + r"[.\d]* FXA_DB ", config_row(accounts, "Database")), config_row(accounts, "Database")
     # the settings of fxa-auth, given to the admin UI for this page (not the defaults)
     assert config_row(page, "Access token lifetime") == "60 minutes FXA_ACCESS_TOKEN_LIFETIME of the access tokens of Firefox"
     assert config_row(page, "Client IP address").startswith("2 FXA_CLIENT_ADDRESS_DEPTH")
@@ -1283,7 +1283,7 @@ def test_configuration_page(admin):
         assert wrong not in hints, hints
 
 
-# the life of an account: deleting it, its Sync data, pruning (ADMIN.md)
+# the life of an account: deleting it, its Sync data, pruning (docs/admin/accounts.md)
 
 @pytest.fixture(scope="module")
 def fxa_db():

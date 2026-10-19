@@ -9,7 +9,7 @@
 # "mozilla/fxa#21494@517651a..aa0b178", base..sha; "none" without any), shown in the summary
 # of the run; the tests run on these images as always.
 #
-# Fields (all required):
+# Fields (all required, but ports):
 #   id             a short name for the entry
 #   repo           the upstream repository, owner/name
 #   pr             the pull request number
@@ -22,6 +22,13 @@
 #   component      fxa-mono or syncstorage-rs: the image it goes into
 #   why            what it fixes for this project
 #   when_released  what to undo here once it is in a release (workarounds, pins, docs)
+#   ports          optional, a directory of this repository with <release-tag>.diff files: the
+#                  same change made by hand for a release base...sha does not apply to (e.g.
+#                  the code moved between that release and the pull request's base). Building
+#                  that release the file is applied instead (label ...@base..sha+<release-tag>);
+#                  for any other release base...sha as always, which fails when it does not
+#                  apply: a new release needs a port of its own or the pull request rebased.
+#                  Review a port like the pull request: the release's code, the same change
 # Values are plain one-line scalars, or folded blocks (>-) for the long texts.
 #
 # Adding a pull request: review it at the commit to apply and pin it:
@@ -47,14 +54,16 @@
 #           and a new sha, or remove the entry and its workaround)
 # Removing an entry: also undo what when_released says, in the same commit.
 #
+# Removing an entry with ports: its directory too.
+#
 # Unit tests: python3 tests/test_upstream_patches.py (no network)
 
 - id: fxa-mariadb12-foreign-keys
   repo: mozilla/fxa
   pr: 21494
   head_repo: porelli/fxa
-  base: 517651a36053d1fc306520bd7d95bfeb4543c7fd
-  sha: aa0b1780901844fc5639f7837d7841f5e90ce227
+  base: 3e2cb676f8c561e7c293d44ec979c3be88eb81cb
+  sha: 0eaa3a297f65ebe4898602e7b4e4675f7df7ddf4
   component: fxa-mono
   why: >-
     fix(db-migrations): name foreign keys that later patches drop. MariaDB 12 names unnamed
@@ -62,8 +71,9 @@
     names: without it the migrations stop on MariaDB 12 on a new database.
   when_released: >-
     MariaDB 12 then works with every accounts image from that release on, Mozilla's too: say
-    so (the release) instead of "our images" in FXA.md (MariaDB 12, MySQL or MariaDB),
-    DATABASES.md, PODMAN.md, README.md, .env-example and prepare_environment.sh, and make
+    so (the release) instead of "our images" in docs/accounts.md (MariaDB 12, MySQL or MariaDB),
+    docs/databases.md#supported-versions, docs/reference/images.md#upstream-patches,
+    docs/troubleshooting.md, .env-example and prepare_environment.sh, and make
     fxa_mariadb_image_check in prepare_environment.sh compare FXA_VERSION with that release
     instead of reading the label.
 
@@ -72,7 +82,7 @@
   pr: 2638
   head_repo: porelli/syncstorage-rs
   base: 3a5abd9e2365fd70ee9ac27bc2c07561a727c4a9
-  sha: c670cf0843a3af9a3d58bb3187323257039aa642
+  sha: 771fa8cfb697d17e94beed2818e4905a6aebdf84
   component: syncstorage-rs
   why: >-
     fix: break ties by id when choosing the best tokenserver node. On MariaDB the nodes that
@@ -81,5 +91,45 @@
   when_released: >-
     In tests/e2e.sh drop the --deselect of test_node_assignment.py::test_user_creation (the
     LOG(0) comment) and its check of the image label: every image tested then has the fix.
-    Moving sha past c670cf0 (the pull request's update giving the test's extra nodes ids after
-    800): drop the PostgreSQL --deselect of the same test there, for #2638@3a5abd9..c670cf0.
+
+- id: tokenserver-new-client-state-test
+  repo: mozilla-services/syncstorage-rs
+  pr: 2671
+  head_repo: porelli/syncstorage-rs
+  base: b0d78b8100d322ddd4e6530abf589016e219997f
+  sha: a56eb274288e076498fd93a705d4db382b0f4fab
+  component: syncstorage-rs
+  why: >-
+    test: create the replaced user before the request in
+    test_user_updates_with_new_client_state. The test's old row got the current millisecond
+    as created_at and the tokenserver replaces only rows created strictly before the request:
+    when both fall in the same millisecond the test fails with assert 0 == 1. The image ships
+    tools/integration_tests and tests/e2e.sh runs them from it, so the fix goes in the image.
+  when_released: >-
+    In tests/e2e.sh drop the special handling of test_misc.py::test_user_updates_with_new_client_state
+    (deselected from the tokenserver run, run on its own with one retry) and its check of the
+    image label: every image tested then has the fix.
+
+- id: fxa-mysql2
+  repo: mozilla/fxa
+  pr: 21554
+  head_repo: porelli/fxa
+  base: 3e2cb676f8c561e7c293d44ec979c3be88eb81cb
+  sha: 84d71e2165adeca84809afec2f3706822226ca11
+  component: fxa-mono
+  # the pull request is on main, where the shared db code moved to libs/shared/db/mysql/legacy
+  # (55110d3): v1.347.x has it in packages/fxa-shared/db, the same change ported by hand
+  ports: upstream-patches/fxa-mysql2
+  why: >-
+    fix(shared): replace mysql with mysql2 for MySQL 8.4+/9 auth. The accounts used the
+    unmaintained mysqljs driver, which only speaks mysql_native_password: MySQL 8.4 needs
+    mysql_native_password=ON for it and MySQL 9 removed the plugin. With mysql2 the accounts
+    connect with caching_sha2_password, so fxa-db can be MySQL 9 (mysql:lts).
+  when_released: >-
+    Every accounts image from that release on, Mozilla's too, works on MySQL 9 and on 8.4
+    without mysql_native_password: say so (the release) instead of "our images" in docs/accounts.md,
+    docs/databases.md#supported-versions, docs/reference/images.md#upstream-patches,
+    docs/upgrading.md#database-majors, .env-example and prepare_environment.sh, make
+    fxa_mysql_image_check in prepare_environment.sh (and the image checks of tests/e2e-fxa.sh
+    and tests/fxa-upgrade.sh) compare FXA_VERSION with that release instead of reading the
+    label, and remove upstream-patches/fxa-mysql2.

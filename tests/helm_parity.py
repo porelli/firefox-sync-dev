@@ -45,7 +45,10 @@ ALLOWED_DIFFERENCES = {
     "*:admin/ADMIN_K8S_CHART": "chart-only: where the chart was published, for the helm upgrade commands the admin UI shows",
     "*:admin/ADMIN_K8S_CHART_VERSION": "chart-only: the release's chart version, the --version of the helm upgrade commands the admin UI shows",
     "*:admin/ADMIN_EXPORT_PORT": "compose-only: the host port compose publishes the admin UI on; the chart has a Service (and an Ingress)",
-    # the old names of .env (MIGRATING.md#renamed-settings): compose tells its containers which
+    "*:admin/ADMIN_INSECURE_COOKIE": "compose passes it empty when .env does not set it; the chart only when admin.insecureCookie "
+    "is set (empty: off, as compose's), so that the default render stays that of 0.1.0",
+    "*:admin/SMTP_INSECURE_AUTH": "as ADMIN_INSECURE_COOKIE: the chart only when smtp.insecureAuth is set",
+    # the old names of .env (docs/upgrading.md#renamed-settings): compose tells its containers which
     # are still set, or set with their new ones; the chart has no .env
     "*:migrate/FFS_BOTH_ENV_NAMES": "compose-only: the old .env names set with their new ones; the chart has no .env",
     "*:syncstorage/FFS_BOTH_ENV_NAMES": "as migrate's",
@@ -70,7 +73,13 @@ ALLOWED_DIFFERENCES = {
     "external-postgres:syncstorage/POSTGRES_PASSWORD": "as migrate's",
     # the backups
     "mysql:backup/MARIADB_TLS_VERIFY": "bundled MySQL: false (the chart's one value, the init container's) where compose's backup "
-    "inherits true; no effect: the backup image is mysql:8, backup.sh reads it with the MariaDB client only",
+    "inherits true; no effect: the backup image is MySQL's, backup.sh reads it with the MariaDB client only",
+    "mariadb,mysql:db/FFS_MYSQL_IMAGE": "compose-only: SYNC_MARIADB_IMAGE or SYNC_MYSQL_IMAGE as set in .env (empty: the "
+    "compose file's default), for db/mysql/keep-major.sh; the chart's image is always database.image.<backend>, chosen in "
+    "the values, and checkDbMajor refuses another major (docs/upgrading.md#database-majors)",
+    "mariadb,mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
+    "postgres:db/FFS_POSTGRES_IMAGE": "compose-only in the server's container: SYNC_POSTGRES_IMAGE for the message of "
+    "db/postgres/keep-major.sh, which the chart runs as its db-major init container (with database.image.postgres)",
     # the databases
     "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
     "the MySQL image ignores them",
@@ -86,6 +95,15 @@ ALLOWED_COMMANDS = {
                       "compose's entrypoint script only adds SYNC_STATSD_* (env here) before exec /app/bin/syncserver"),
     "*:backup": ([["sh", "/ffs-backup/backup.sh"], ["now"]],
                  "a CronJob runs backup.sh now at backup.schedule; compose's container runs backup.sh loop"),
+    "postgres:db": ([None, None],
+                    "compose starts it through db/postgres/keep-major.sh (refuses another major's data, says what "
+                    "to pin); the chart runs that as the db-major init container, then the image's entrypoint and command"),
+    "mariadb:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mariadbd", "--explicit_defaults_for_timestamp"]],
+                   "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
+                   "SYNC_MARIADB_IMAGE unset in .env); the chart has no unset: database.image.mariadb"),
+    "mysql:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mysqld", "--disable-log-bin"]],
+                 "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
+                 "SYNC_MYSQL_IMAGE unset in .env); the chart has no unset: database.image.mysql"),
 }
 
 # probes with other timings than compose's healthcheck, the chart's exactly:
@@ -105,6 +123,8 @@ ALLOWED_PROBE_TIMINGS = {
 # containers of the chart that compose has no service for, without env (no credentials):
 # "<cases>:<kind>/<workload name, a regex>/<container>" -> why
 CHART_ONLY_CONTAINERS = {
+    f"postgres:StatefulSet/{FULLNAME}-postgres/db-major": "compose runs db/postgres/keep-major.sh in postgres_db's entrypoint: "
+    "refuses another major's data before the server starts",
     f"*:Deployment/{FULLNAME}-syncstorage/wait-db": "compose's depends_on service_healthy: waits for the database servers to answer",
     f"*:Deployment/{FULLNAME}-admin/wait-sync": "compose's ffs-admin depends_on tokenserver_db_init: the admin UI starts once the "
     "Sync server serves (its init containers succeeded)",
@@ -140,6 +160,7 @@ EQUIVALENT_CHECKS = {
 IDENTICAL_FILES = {
     "charts/firefox-sync/files/backup.sh": "config/backup/backup.sh",
     "charts/firefox-sync/files/admin-user.sh": "db/mysql/admin-user.sh",
+    "charts/firefox-sync/files/postgres-keep-major.sh": "db/postgres/keep-major.sh",
 }
 
 # compose service -> chart (workload kind, workload name, container, key prefix, init or one-shot);
@@ -172,7 +193,7 @@ CASES = {
     "mariadb": (["docker-compose.yml"], {}, ["--set", "database.backend=mariadb"]),
     "mysql": (["docker-compose.yml", "docker-compose.sync-mysql.yml"], {"SYNC_DB": "mysql"}, ["--set", "database.backend=mysql"]),
     "postgres": (["docker-compose.sync-postgres.yml"], {"SYNC_POSTGRES_APP_USER": "syncserver_app"}, ["--set", "database.backend=postgres"]),
-    # your own server (DATABASES.md, prepare_environment.sh): no database containers, no TLS
+    # your own server (docs/databases.md#your-own-server, prepare_environment.sh): no database containers, no TLS
     # check (MySQL's self-signed certificate); PostgreSQL without the Sync role
     "external-mariadb": (["docker-compose.yml"],
                          {"SYNC_DB_CONTAINERS": "0", "SYNC_DB_TLS_VERIFY": "false", "SYNC_TOKENSERVER_DB_HOST": EXTDB,
@@ -208,7 +229,7 @@ def run(cmd, env=None):
 # --- the test .env: .env-example filled as tests/e2e.sh does it ---------------------------
 
 def set_line(lines, name, value):
-    """NAME=value of .env-example's names (the SYNC_ ones, MIGRATING.md#renamed-settings)"""
+    """NAME=value of .env-example's names (the SYNC_ ones, docs/upgrading.md#renamed-settings)"""
     pattern = re.compile(rf"^{re.escape(name)}=")
     hits = [i for i, line in enumerate(lines) if pattern.match(line)]
     if not hits:

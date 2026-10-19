@@ -144,6 +144,9 @@ func serve(ctx context.Context) error {
 		return err
 	}
 	// checked here, not on the first page load or in a background ticker
+	if _, err := envSwitch("SMTP_INSECURE_AUTH"); err != nil {
+		return err
+	}
 	for _, name := range []string{"HEALTH_CHECK_SECONDS", "METRICS_FLUSH_SECONDS", "ALERT_INTERVAL_SECONDS"} {
 		if envInt(name, 1) < 1 {
 			return fmt.Errorf("%s must be 1 or more", name)
@@ -188,7 +191,7 @@ func serve(ctx context.Context) error {
 	rec, err := newRecorder(ctx, syncDB)
 	if err != nil {
 		if syncDB.own != nil {
-			return fmt.Errorf("metrics and event tables in the admin UI's database %s (ADMIN_DB_*, see DATABASES.md): %w", syncDB.ownName, err)
+			return fmt.Errorf("metrics and event tables in the admin UI's database %s (ADMIN_DB_*, see docs/reference/database-users.md#the-admin-uis-own-database): %w", syncDB.ownName, err)
 		}
 		return fmt.Errorf("metrics and event tables in the tokenserver database: %w", err)
 	}

@@ -22,9 +22,15 @@
 # ./prepare_environment.sh --upgrade
 /.env.before-upgrade
 /.env.upgrading
+/.env.before-setup
+/.env.before-setup-*
+/.env.before-upgrade-*
+/.env.setup
+# the Quadlet units of before, kept by prepare_environment.sh when it renders them again
+/quadlets.before-*/
 /config/nginx/syncstorage-rs.conf
 /config/systemd/syncstorage-rs.service
-# SQL for your own database server, with passwords (DATABASES.md)
+# SQL for your own database server, with passwords (docs/databases.md#create-the-databases-and-users)
 /database-setup*.sql
 # go build output of admin/
 admin/admin

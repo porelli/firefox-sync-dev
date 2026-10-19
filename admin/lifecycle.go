@@ -485,7 +485,7 @@ func (a *App) deleteAccount(w http.ResponseWriter, r *http.Request, s *session) 
 	}
 	removed, emptied, err := a.deleteSyncRows(ctx, rows, label)
 	if err == nil {
-		// personal data (ADMIN.md), and no page left to remove it from
+		// personal data (docs/admin/accounts.md), and no page left to remove it from
 		if e := a.sync.SetNote(ctx, uid, "", noteAuthor(s)); e != nil {
 			warn = joinPartial(warn, fmt.Errorf("its note was not removed: %w", e))
 		}

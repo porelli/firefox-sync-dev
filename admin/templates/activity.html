@@ -46,7 +46,7 @@
     <summary>All metrics</summary>
     <div class="scroll"><table id="metrics" aria-label="All metrics">
       <thead><tr><th>Metric</th><th>Count</th><th>Average</th></tr></thead>
-      <tbody>{{range .Totals}}<tr><td><code>{{.Name}}</code></td><td>{{.Count}}</td><td>{{if .AvgMs}}{{printf "%.1f" .AvgMs}} ms{{end}}</td></tr>{{else}}<tr><td colspan="3" class="empty">No metrics yet: they come from the Sync server when it runs with the admin UI (see ADMIN.md).</td></tr>{{end}}</tbody>
+      <tbody>{{range .Totals}}<tr><td><code>{{.Name}}</code></td><td>{{.Count}}</td><td>{{if .AvgMs}}{{printf "%.1f" .AvgMs}} ms{{end}}</td></tr>{{else}}<tr><td colspan="3" class="empty">No metrics yet: they come from the Sync server when it runs with the admin UI (see docs/admin/monitoring.md#sync-metrics).</td></tr>{{end}}</tbody>
     </table></div>
   </details>
 </section>

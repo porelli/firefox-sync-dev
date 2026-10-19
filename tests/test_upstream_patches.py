@@ -97,8 +97,41 @@ class Checkout:
         self.tmp.cleanup()
 
 
-def run(entries, gh, checkout=None, component="fxa-mono"):
-    return up.run(entries, component, "v1.2.3", gh, checkout.path if checkout else None, log=lambda *_: None)
+def run(entries, gh, checkout=None, component="fxa-mono", root=None):
+    return up.run(entries, component, "v1.2.3", gh, checkout.path if checkout else None, log=lambda *_: None,
+                  root=root or ROOT)
+
+
+# a release where the pull request's diff does not apply (the line moved on), and its port
+MOVED = "one\ntwo\nthree\nfour\n".replace("one\n", "zero\n")
+PORT = """diff --git a/file.txt b/file.txt
+--- a/file.txt
++++ b/file.txt
+@@ -1,4 +1,4 @@
+ zero
+-two
++2
+ three
+ four
+"""
+
+
+class Ports:
+    """A directory like this repository's with ports/fix/<tag>.diff files."""
+
+    def __init__(self, files):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = self.tmp.name
+        os.makedirs(os.path.join(self.path, "ports", "fix"))
+        for name, content in files.items():
+            with open(os.path.join(self.path, "ports", "fix", name), "w") as f:
+                f.write(content)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.tmp.cleanup()
 
 
 class Decisions(unittest.TestCase):
@@ -248,6 +281,45 @@ class Decisions(unittest.TestCase):
         self.assertEqual(two["label"], "up/stream#7@eeeeeee..aaaaaaa")
         self.assertNotEqual(one["key"], two["key"])
 
+    def test_port_applied(self):
+        # the release has its own file: applied instead of base...sha, named in the label
+        gh = FakeGitHub({("up/stream", 7): pull()})
+        with Ports({"v1.2.3.diff": PORT}) as p, Checkout(MOVED) as c:
+            r = run([entry(ports="ports/fix")], gh, c, root=p.path)
+            self.assertEqual(c.read(), MOVED.replace("two", "2"))
+            plan = run([entry(ports="ports/fix")], FakeGitHub({("up/stream", 7): pull()}), root=p.path)
+        self.assertNotIn("diff", [call[0] for call in gh.calls])
+        out = up.outputs(r)
+        self.assertEqual(out["label"], "up/stream#7@ccccccc..aaaaaaa+v1.2.3")
+        self.assertEqual(up.outputs(plan)["label"], out["label"], "the plan knows the port too")
+        self.assertIn("up/stream#7@", out["label"])
+        # the pull request is still checked: closed unmerged fails with a port too
+        with Ports({"v1.2.3.diff": PORT}) as p, Checkout(MOVED) as c:
+            with self.assertRaisesRegex(up.Fail, "closed without being merged"):
+                run([entry(ports="ports/fix")], FakeGitHub({("up/stream", 7): pull("closed", False)}), c, root=p.path)
+
+    def test_port_that_does_not_apply_fails(self):
+        with Ports({"v1.2.3.diff": PORT}) as p, Checkout() as c:
+            with self.assertRaisesRegex(up.Fail, "port ports/fix/v1.2.3.diff does not apply"):
+                run([entry(ports="ports/fix")], FakeGitHub({("up/stream", 7): pull()}), c, root=p.path)
+            self.assertEqual(c.read(), ORIGINAL)
+
+    def test_missing_port_and_pull_request_not_applying_fails(self):
+        # a new release without a port: base...sha, which does not apply: the build fails
+        with Ports({}) as p, Checkout(MOVED) as c:
+            with self.assertRaisesRegex(up.Fail, r"does not apply to the release(.|\n)*add a port for it \(ports/fix/<release-tag>.diff\)"):
+                run([entry(ports="ports/fix")], FakeGitHub({("up/stream", 7): pull()}), c, root=p.path)
+            self.assertEqual(c.read(), MOVED)
+
+    def test_port_of_another_release_ignored(self):
+        # v1.0.0's port is not for v1.2.3 (it would not even apply): base...sha as always
+        gh = FakeGitHub({("up/stream", 7): pull()})
+        with Ports({"v1.0.0.diff": PORT, "v1.2.3.diff.orig": PORT}) as p, Checkout() as c:
+            r = run([entry(ports="ports/fix")], gh, c, root=p.path)
+            self.assertEqual(c.read(), PATCHED)
+        self.assertIn(("diff", f"{BASE}...{PINNED}"), gh.calls)
+        self.assertEqual(up.outputs(r)["label"], "up/stream#7@ccccccc..aaaaaaa")
+
     def test_key_follows_label(self):
         gh = FakeGitHub({("up/stream", 7): pull()})
         self.assertNotEqual(up.outputs(run([entry()], gh))["key"], up.outputs(run([], gh))["key"])
@@ -261,11 +333,21 @@ class Parse(unittest.TestCase):
         for e in entries:
             self.assertIn(e["component"], up.COMPONENTS)
             self.assertNotIn("\n", e["why"] + e["when_released"])
+            if e.get("ports"):
+                ports = os.path.join(ROOT, e["ports"])
+                self.assertTrue(os.path.isdir(ports), ports)
+                for name in os.listdir(ports):
+                    self.assertRegex(name, r"^v[0-9]+\.[0-9]+\.[0-9]+\.diff$", f"{e['ports']}/{name}: <release-tag>.diff")
 
     def test_folded_and_quoted(self):
         e = up.parse("# c\n- id: a\n  repo: o/r\n  pr: 1\n  head_repo: me/r\n  base: " + BASE + "\n  sha: " + PINNED + "\n  component: 'fxa-mono'\n"
                      "  why: >-\n    first\n    second\n  when_released: \"x # y\"\n")
         self.assertEqual(e, [entry(id="a", repo="o/r", pr=1, head_repo="me/r", why="first second", when_released="x # y")])
+
+    def test_ports_optional(self):
+        good = "- id: a\n  repo: o/r\n  pr: 1\n  head_repo: me/r\n  base: " + BASE + "\n  sha: " + PINNED + "\n  component: fxa-mono\n  why: w\n  when_released: x\n"
+        self.assertNotIn("ports", up.parse(good)[0])
+        self.assertEqual(up.parse(good + "  ports: upstream-patches/a\n")[0]["ports"], "upstream-patches/a")
 
     def test_errors(self):
         good = "- id: a\n  repo: o/r\n  pr: 1\n  head_repo: me/r\n  base: " + BASE + "\n  sha: " + PINNED + "\n  component: fxa-mono\n  why: w\n  when_released: x\n"
@@ -277,7 +359,9 @@ class Parse(unittest.TestCase):
                              (good.replace("pr: 1", "pr: x"), "number"),
                              (good + "  extra: 1\n", "unknown extra"),
                              (good + good, "unique"),
-                             (good.replace("why: w", "why: [w]"), "plain or quoted")):
+                             (good.replace("why: w", "why: [w]"), "plain or quoted"),
+                             (good + "  ports: ../elsewhere\n", "ports must be a relative directory"),
+                             (good + "  ports: /abs\n", "ports must be a relative directory")):
             with self.assertRaisesRegex(ValueError, message):
                 up.parse(bad)
 

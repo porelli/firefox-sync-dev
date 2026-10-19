@@ -1,10 +1,11 @@
-# Installed instead of ../firefox-sync-tokenserver-db.container with SYNC_DB=mysql (DATABASES.md).
+# Installed instead of ../firefox-sync-tokenserver-db.container with SYNC_DB=mysql (docs/databases.md#mysql-instead-of-mariadb).
 [Unit]
 Description=Firefox Sync - Tokenserver Database (MySQL)
 After=firefox-sync-network.service
 
 [Container]
-Image=docker.io/library/mysql:8
+# SYNC_MYSQL_IMAGE of .env (prepare_environment.sh: mysql:lts, mysql:8 for the installs from before)
+Image=%SYNC_MYSQL_IMAGE%
 ContainerName=firefox-sync-tokenserver-db
 Network=firefox-sync-network.network
 # MySQL must not open MariaDB's data files: its own volume

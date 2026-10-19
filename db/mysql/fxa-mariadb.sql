@@ -1,12 +1,13 @@
--- Self-hosted Mozilla accounts on your MariaDB 11.4 or later server (FXA_DB=mariadb, DATABASES.md);
+-- Self-hosted Mozilla accounts on your MariaDB 11.4 or later server (FXA_DB=mariadb, docs/reference/database-users.md#the-accounts);
 -- 12.x with our accounts images only: Mozilla's migrations drop foreign keys by names MariaDB 12
--- does not give them, fixed in ours (FXA.md#mariadb-12).
+-- does not give them, fixed in ours (docs/accounts.md#mariadb-12).
 -- Run as an administrator of the server. prepare_environment.sh fills in the placeholders
 -- from .env and writes the result to database-setup-fxa.sql.
 -- The server needs (my.cnf, or the parameter group of a managed service):
 --   log_bin_trust_function_creators=ON (with binary logging: the sign-up policy's function and trigger)
 -- The database names are fixed: fxa, fxa_oauth, fxa_profile, pushbox and ffs.
--- FxA's driver supports mysql_native_password only: explicit, whatever the server's default
+-- mysql_native_password, explicit whatever the server's default: MariaDB has no caching_sha2_password,
+-- and both of the accounts' drivers speak it (mysql, and mysql2 with mozilla/fxa#21554)
 -- (again: a new password after prepare_environment.sh ran again)
 CREATE USER IF NOT EXISTS '@FXA_USER@'@'%' IDENTIFIED VIA mysql_native_password USING PASSWORD('@FXA_PASSWORD@');
 ALTER USER '@FXA_USER@'@'%' IDENTIFIED VIA mysql_native_password USING PASSWORD('@FXA_PASSWORD@');

@@ -1,4 +1,4 @@
-"""A small household on a fresh stack, for the screenshots of ADMIN.md.
+"""A small household on a fresh stack, for the screenshot demo (docs/development/testing.md#the-screenshot-demo).
 
   python3 /tests/demo_seed.py fxa    self-hosted accounts (tests/e2e-fxa.sh DEMO=1)
   python3 /tests/demo_seed.py sync   Mozilla's accounts, Sync only (tests/e2e.sh mysql DEMO=1)

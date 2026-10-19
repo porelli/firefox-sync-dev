@@ -64,7 +64,7 @@ func TestDeploymentKubernetesCommands(t *testing.T) {
 	}
 	noStackCommands(t, "own database check", c.Text)
 	noStackCommands(t, "the log line", ownDBHint(d))
-	if c := ownDBCheck(&SyncDB{own: sql.OpenDB(&fakeFxa{}), ownName: "ffs_admin", postgres: true}, moveState{Superuser: "syncserver"}, d); !strings.Contains(c.Text, "DATABASES.md") {
+	if c := ownDBCheck(&SyncDB{own: sql.OpenDB(&fakeFxa{}), ownName: "ffs_admin", postgres: true}, moveState{Superuser: "syncserver"}, d); !strings.Contains(c.Text, "docs/reference/database-users.md#postgresql") {
 		t.Errorf("superuser check: %s", c.Text)
 	} else {
 		noStackCommands(t, "superuser check", c.Text)

@@ -1,5 +1,5 @@
 # Installed in ~/.config/systemd/user by prepare_environment.sh (a timer is no Quadlet), off
-# until enabled: systemctl --user enable --now firefox-sync-backup.timer (ADMIN.md#backups)
+# until enabled: systemctl --user enable --now firefox-sync-backup.timer (docs/backups.md#the-backup-service)
 [Unit]
 Description=Firefox Sync - Nightly backup of the databases
 

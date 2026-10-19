@@ -11,7 +11,7 @@ name: fxa-mono
 # access; the images are pushed under tags of their run (<tag>-run<id>), tested by digest, and
 # the multi-arch tags published from those digests on the default branch only (other branches
 # build and test). One run at a time per branch.
-# See FXA.md.
+# See docs/accounts.md.
 
 on:
   workflow_dispatch:
@@ -30,6 +30,7 @@ on:
     paths:
       - .github/workflows/fxa.yml
       - upstream-patches.yml
+      - upstream-patches/**
       - .github/scripts/upstream-patches.py
 
 concurrency:
@@ -270,6 +271,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             upstream-patches.yml
+            upstream-patches/
             .github/scripts/upstream-patches.py
           sparse-checkout-cone-mode: false
 
@@ -369,6 +371,10 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # the accounts on MySQL: mysql_image empty is what tests/e2e-fxa.sh picks from the image's
+    # label, mysql:lts with mozilla/fxa#21554 (upstream-patches.yml); mysql:8 with
+    # mysql_native_password is what the installs from before run (pinned by --upgrade), with
+    # the candidate's mysql2 driver
     strategy:
       fail-fast: false
       matrix:
@@ -377,6 +383,9 @@ jobs:
             runner: ubuntu-latest
           - arch: arm64
             runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-latest
+            mysql_image: mysql:8
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -440,10 +449,11 @@ jobs:
           docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
           docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
-      - name: End-to-end tests with our ${{ matrix.arch }} image
+      - name: End-to-end tests with our ${{ matrix.arch }} image${{ matrix.mysql_image && format(', the accounts on {0}', matrix.mysql_image) || '' }}
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
+          FXA_MYSQL_IMAGE: ${{ matrix.mysql_image }}
           # the init images above (the others are pulled when missing)
           SKIP_PULL: 1
           # FXA_VERSION, FXA_PAIRING_IMAGE: the images under test, above
@@ -451,9 +461,9 @@ jobs:
           FXA_ARCH: ${{ matrix.arch }}
         run: ./tests/e2e-fxa.sh
 
-  # the candidate with the accounts database on MariaDB (FXA_DB=mariadb, FXA.md). Not needed
+  # the candidate with the accounts database on MariaDB (FXA_DB=mariadb, docs/accounts.md#mysql-or-mariadb). Not needed
   # by publish: Mozilla supports MySQL only, a release that breaks MariaDB must not hold back
-  # MySQL installs. The failed run is the warning for MariaDB installs (FXA.md: pin FXA_VERSION).
+  # MySQL installs. The failed run is the warning for MariaDB installs (docs/accounts.md#mysql-or-mariadb: pin FXA_VERSION).
   # mariadb:lts, the default (12 today: needs mozilla/fxa#21494, upstream-patches.yml), and
   # mariadb:11, the installs from before it (pinned by prepare_environment.sh --upgrade). The
   # lts job, once the canary of the next major, is now the main one: it moves with the installs
@@ -544,7 +554,9 @@ jobs:
         run: ./tests/e2e-fxa.sh
 
   # an install of the published release (fxa-mono-latest, not moved yet) with an account,
-  # a device and Sync data, upgraded in place to the candidate as FXA.md says
+  # a device and Sync data, upgraded in place to the candidate as docs/upgrading.md#self-hosted-accounts says; on MySQL 8 with
+  # mysql_native_password as the installs from before, through --upgrade, then with a
+  # candidate that has mozilla/fxa#21554 moved to mysql:lts as docs/upgrading.md#mysql-8-to-9 says
   test-upgrade:
     needs: [prepare, build, push, build-pairing, push-pairing]
     if: ${{ !failure() && !cancelled() && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.build_pairing == 'true') }}
@@ -552,7 +564,7 @@ jobs:
       contents: read
       packages: read
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -625,7 +637,7 @@ jobs:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
           # the init images above and the candidate by its digest; the older release is pulled,
-          # and the upgrade's own docker compose pull runs anyway, as FXA.md says: FXA_VERSION
+          # and the upgrade's own docker compose pull runs anyway, as docs/upgrading.md#self-hosted-accounts says: FXA_VERSION
           # (the images under test, above) is the candidate's tag of this run, that digest
           SKIP_PULL: 1
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}

@@ -1,21 +1,26 @@
-# The accounts database on MariaDB instead of MySQL 8 (FXA_DB=mariadb, see FXA.md), on top of
+# The accounts database on MariaDB instead of MySQL (FXA_DB=mariadb, see docs/accounts.md#mysql-or-mariadb), on top of
 # docker-compose.fxa.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml
 # Mozilla supports MySQL only; MariaDB passes the same tests here: lts (12 today) with our
-# accounts images, 11 (11.4 to 11.8) with any (FXA.md#mysql-or-mariadb).
+# accounts images, 11 (11.4 to 11.8) with any (docs/accounts.md#mysql-or-mariadb).
 
 services:
   fxa-db:
     # FXA_MARIADB_IMAGE: mariadb:lts by default, MariaDB's newest long-term major: a pull after
     # its next major release upgrades the data (MARIADB_AUTO_UPGRADE), with no way back but a
     # backup. Pin a major to choose (prepare_environment.sh --upgrade writes mariadb:11 for the
-    # installs from before, FXA.md#moving-to-a-newer-mariadb). On 12 Mozilla's migrations need
+    # installs from before, docs/upgrading.md#mariadb). On 12 Mozilla's migrations need
     # https://github.com/mozilla/fxa/pull/21494, applied to our images until it is in a
     # release (upstream-patches.yml)
     image: ${FXA_MARIADB_IMAGE:-mariadb:lts}
     environment:
       MARIADB_AUTO_UPGRADE: "true"
-    # the default authentication is already mysql_native_password, the only one FxA's driver supports
-    command: [mariadbd, --event-scheduler=ON]
+      # without FXA_MARIADB_IMAGE, data of another major is refused (db/mysql/keep-major.sh,
+      # mounted by docker-compose.fxa.yml)
+      FFS_MYSQL_IMAGE: ${FXA_MARIADB_IMAGE:-}
+      FFS_MYSQL_SETTING: FXA_MARIADB_IMAGE
+    # the default authentication is mysql_native_password (MariaDB has no caching_sha2_password),
+    # which both of the accounts' drivers speak (mysql, and mysql2 with mozilla/fxa#21554)
+    command: [sh, /ffs-db/keep-major.sh, docker-entrypoint.sh, mariadbd, --event-scheduler=ON]
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
     # replaces the fxa-db volume (same path): MariaDB cannot open MySQL's data files,

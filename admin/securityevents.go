@@ -15,7 +15,7 @@ import (
 // The security history of the self-hosted accounts: what the auth server records in
 // fxa.securityEvents (the Recent activity of the account settings), read through
 // ffs.security_events. It only records them with ACCOUNT_EVENTS_ENABLED, which the stack
-// sets from FXA_ACCOUNT_EVENTS (off by default: they keep IP addresses), see FXA.md
+// sets from FXA_ACCOUNT_EVENTS (off by default: they keep IP addresses), see docs/accounts.md#security-history
 
 // SecurityEvent: one entry of the history of an account
 type SecurityEvent struct {

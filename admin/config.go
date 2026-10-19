@@ -203,7 +203,7 @@ func (d deployment) whereDB(host string) string {
 	if d.stackHost(host) {
 		return "a container of the stack"
 	}
-	return "your own server (DATABASES.md)"
+	return "your own server (docs/databases.md#your-own-server)"
 }
 
 // dbServer: the server as the health check read it (MariaDB 11.8.3), otherwise the
@@ -379,7 +379,8 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	} else {
 		name := a.deployment.dbServer(components, "Tokenserver database", "MariaDB", "MariaDB", tsHost)
 		if configLookup("SYNC_DB") == "mysql" {
-			name = a.deployment.dbServer(components, "Tokenserver database", "MySQL", "MySQL 8", tsHost)
+			// the image is SYNC_MYSQL_IMAGE (lts or a pinned major), not known here: the version once checked
+			name = a.deployment.dbServer(components, "Tokenserver database", "MySQL", "MySQL", tsHost)
 		}
 		user, userVar := syncUser("TOKENSERVER_DB_USER", "SYNC_TOKENSERVER_DB_USER")
 		syncGroup.Rows = append(syncGroup.Rows,
@@ -404,7 +405,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		}
 		syncGroup.Rows = append(syncGroup.Rows,
 			fact("Admin UI database", dbAddress(shown("ADMIN_DB_USER", "ffs_admin_ui"), tsHost, port, shown("ADMIN_DB_NAME", "ffs_admin")),
-				"the event log, the audit trail, the notes: out of the Sync server's reach (DATABASES.md)", "ADMIN_DB_USER", "ADMIN_DB_NAME"),
+				"the event log, the audit trail, the notes: out of the Sync server's reach (docs/reference/database-users.md#the-admin-uis-own-database)", "ADMIN_DB_USER", "ADMIN_DB_NAME"),
 			setting("Admin UI database password", "ADMIN_DB_PASSWORD", "", "not set", "of "+shown("ADMIN_DB_USER", "ffs_admin_ui")+" and "+reader))
 	} else {
 		syncGroup.Rows = append(syncGroup.Rows, fact("Admin UI database", "the tokenserver database, as the Sync server's user",
@@ -422,10 +423,11 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	// the self-hosted accounts
 	accounts := configGroup{ID: "accounts", Title: "Accounts"}
 	if !fxa {
-		accounts.Intro = "Mozilla's accounts: Firefox signs in at accounts.firefox.com, the server only knows the account ids. Self-hosted accounts: docker-compose.fxa.yml, see FXA.md."
+		accounts.Intro = "Mozilla's accounts: Firefox signs in at accounts.firefox.com, the server only knows the account ids. Self-hosted accounts: docker-compose.fxa.yml, see docs/accounts.md."
 	} else {
 		fxaHost := shown("FXA_DB_HOST", "fxa-db")
-		dbName := a.deployment.dbServer(components, "Accounts database", "MySQL", "MySQL 8", fxaHost)
+		// the image is FXA_MYSQL_IMAGE (lts or a pinned major), not known here: the version once checked
+		dbName := a.deployment.dbServer(components, "Accounts database", "MySQL", "MySQL", fxaHost)
 		if configLookup("FXA_DB") == "mariadb" {
 			// the image is FXA_MARIADB_IMAGE, not known here: the version once checked
 			dbName = a.deployment.dbServer(components, "Accounts database", "MariaDB", "MariaDB", fxaHost)
@@ -453,7 +455,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		accounts.Rows = append(accounts.Rows,
 			setting("Client IP address", "FXA_CLIENT_ADDRESS_DEPTH", "", "2", "the position in X-Forwarded-For of the rate limits: 2 for one reverse proxy"),
 			setting("Access token lifetime", "FXA_ACCESS_TOKEN_LIFETIME", "", "60 minutes", "of the access tokens of Firefox"),
-			fact("Security history", onText[a.accountEvents], "the sign-ins and changes of each account, with their IP addresses (FXA.md)", "FXA_ACCOUNT_EVENTS").unset(),
+			fact("Security history", onText[a.accountEvents], "the sign-ins and changes of each account, with their IP addresses (docs/accounts.md#security-history)", "FXA_ACCOUNT_EVENTS").unset(),
 			setting("Accounts API, inside the stack", "FXA_AUTH_UPSTREAM", "", "http://fxa-auth:9000", "where the sign-up gate passes the allowed sign-ups"))
 		if k != nil {
 			// not in the backups (an RWO volume of the auth pod's node): NOTES.txt says how to export them
@@ -565,8 +567,8 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			setting("User", "SMTP_USER", "FXA_SMTP_USER", "none", ""),
 			setting("Password", "SMTP_PASS", "FXA_SMTP_PASS", "not set", ""),
 			sender)
-		if configLookup("SMTP_INSECURE_AUTH") != "" {
-			email.Rows = append(email.Rows, setting("Password without TLS", "SMTP_INSECURE_AUTH", "", "", "allowed: for a test server only"))
+		if server.insecureAuth {
+			email.Rows = append(email.Rows, setting("Password without TLS", "SMTP_INSECURE_AUTH", "ADMIN_SMTP_INSECURE_AUTH", "", "allowed: in clear to a server that offers no TLS"))
 		}
 	}
 	sends := "yes"
@@ -599,7 +601,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		alerts.Rows = append(alerts.Rows, fact("Notifications to", strings.Join(names, ", "), "shown without their paths and tokens; "+every, "ADMIN_NOTIFY"))
 	} else {
 		alerts.Rows = append(alerts.Rows, configRow{Setting: "Notifications to", Value: "nowhere", Vars: []string{"ADMIN_NOTIFY"}, Default: true, Fact: true,
-			Note: "Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook, see ADMIN.md#alerts"})
+			Note: "Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook, see docs/admin/alerts.md#destinations"})
 	}
 	if fxa {
 		burst := strconv.Itoa(a.signupBurst) + " accounts in an hour"
@@ -677,7 +679,8 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	metrics.Rows = append(metrics.Rows, prometheus,
 		setting("Metrics of the Sync server", "METRICS_LISTEN", "", ":8125", "statsd over UDP, inside the stack's network"),
-		fact("Health checks every", count("HEALTH_CHECK_SECONDS", "60", "second"), "", "HEALTH_CHECK_SECONDS").unset(),
+		// (HEALTH_CHECK_SECONDS of the container: the tests' rounds, no setting of .env)
+		fact("Health checks every", count("HEALTH_CHECK_SECONDS", "60", "second"), "the components, the blocks, the security history"),
 		fact("Public checks", onText[publicChecks()], "every hour the public https URLs, their certificates and the sign-up gate", "ADMIN_PUBLIC_CHECK").unset(),
 		fact("New releases", onText[updateChecks()], "every 12 hours on GitHub", "ADMIN_UPDATE_CHECK").unset())
 
@@ -718,7 +721,7 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 			hints = append(hints, attention{Text: fmt.Sprintf("%s is %s, not an https:// URL: Firefox needs https (other than on localhost), and the public checks skip it.", a.deployment.valueName(dotenvName(name)), v), Href: "#public-settings", Link: "Public URLs"})
 		}
 	}
-	// FXA.md: one host name each, the proxy sends each of them to another port
+	// docs/reverse-proxy.md#host-names-and-ports: one host name each, the proxy sends each of them to another port
 	hosts := map[string]string{}
 	for _, name := range urls {
 		u, err := url.Parse(configLookup(name))
@@ -736,7 +739,7 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 		hints = append(hints, attention{Text: "FXA_PAIRING_URL is " + v + ", not a wss:// URL: Firefox pairs over secure WebSockets.", Href: "#public-settings", Link: "Public URLs"})
 	}
 	if fxa {
-		// FXA.md: the email domain is the host of the accounts API
+		// docs/reverse-proxy.md#host-names-and-ports: the email domain is the host of the accounts API
 		if auth := httpsURL(configLookup("FXA_AUTH_URL")); auth != nil && a.emailDomain != "" && a.emailDomain != strings.ToLower(auth.Hostname()) {
 			hints = append(hints, attention{Text: fmt.Sprintf("FXA_EMAIL_DOMAIN is %s, but the accounts API (FXA_AUTH_URL) is %s: it must be its host name.", a.emailDomain, auth.Hostname()), Href: "#sync-settings", Link: "Sync server"})
 		}
@@ -749,7 +752,7 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 			}
 		}
 	}
-	// ADMIN.md: the header only with the admin UI published on a loopback address
+	// docs/reverse-proxy.md#the-admin-ui: the header only with the admin UI published on a loopback address
 	if configLookup("ADMIN_AUTH_HEADER") != "" {
 		if port := shown("ADMIN_EXPORT_PORT", "127.0.0.1:8090"); !loopbackPort(port) {
 			hints = append(hints, attention{Text: fmt.Sprintf("Sign-in with a trusted header, and ADMIN_EXPORT_PORT is %s, not a loopback address: through the port forwarders every client can arrive from your proxy's address and send the header itself. Publish on 127.0.0.1, or use OpenID Connect.", port), Href: "#admin-settings", Link: "Admin UI"})

@@ -358,7 +358,7 @@ func TestFormsOfThePages(t *testing.T) {
 	if activity := p["activity.html"]; strings.Contains(activity, `action="/maintenance/prune"`) || !strings.Contains(activity, `<a href="/maintenance/prune" class="button secondary" id="prune">`) {
 		t.Error("prune in one click")
 	}
-	// every other form posts one of these: not destructive, one click (ADMIN.md)
+	// every other form posts one of these: not destructive, one click (docs/admin/README.md#confirm-pages)
 	oneClick := map[string]bool{"/logout": true, "/login": true, "/accounts/signups": true, "/accounts/invite": true, "/alerts/test": true,
 		"/alerts/test-notification": true, "/sync/max-users": true, "/accounts/max-accounts": true, "/security/unblock": true, "/x": true}
 	action := regexp.MustCompile(`<form method="post" action="([^"]+)"`)
@@ -368,7 +368,7 @@ func TestFormsOfThePages(t *testing.T) {
 			if oneClick[a] || strings.HasSuffix(a, "/enable") || strings.HasSuffix(a, "/note") {
 				continue
 			}
-			t.Errorf("%s: a form posts %s: needs a confirm page, or a reason in ADMIN.md", name, a)
+			t.Errorf("%s: a form posts %s: needs a confirm page, or a reason in docs/admin/README.md#confirm-pages", name, a)
 		}
 	}
 }
@@ -404,7 +404,7 @@ func TestNavAndSchemaAndBackups(t *testing.T) {
 	// what the backups are, when, how many, where
 	for _, want := range []string{"Every night at 03:00 UTC (<code>BACKUP_TIME</code>)", "The newest 7 runs are kept (<code>BACKUP_KEEP</code>)",
 		"and the accounts databases into the backups volume", "<code>docker compose exec backup sh /ffs-backup/backup.sh now</code>",
-		"Add <code>backup</code> to <code>COMPOSE_PROFILES</code>", `href="https://github.com/porelli/firefox-sync/blob/main/ADMIN.md#restoring"`, "Leave the Sync storage empty: each Firefox uploads its data again", "<dd>Every night at 03:00",
+		"Add <code>backup</code> to <code>COMPOSE_PROFILES</code>", `href="https://github.com/porelli/firefox-sync/blob/main/docs/backups.md#restore"`, "Leave the Sync storage empty: each Firefox uploads its data again", "<dd>Every night at 03:00",
 		"<code>sync/&lt;UTC time&gt;/&lt;database&gt;.sql.gz</code>"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("backups: no %q", want)

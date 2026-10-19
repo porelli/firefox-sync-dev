@@ -3,7 +3,10 @@ Description=Firefox Sync - Mozilla accounts - Database
 After=firefox-sync-network.service
 
 [Container]
-Image=docker.io/library/mysql:8
+# FXA_MYSQL_IMAGE of .env (prepare_environment.sh: mysql:lts, or mysql:8 for the installs from
+# before and for accounts images without mozilla/fxa#21554, with FXA_MYSQL_ARGS: see
+# docker-compose.fxa.yml)
+Image=%FXA_MYSQL_IMAGE%
 ContainerName=firefox-sync-fxa-db
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-db
@@ -14,7 +17,7 @@ HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=10
 HealthStartPeriod=30s
-Exec=mysqld --mysql-native-password=ON --authentication-policy=mysql_native_password --event-scheduler=ON
+Exec=mysqld --event-scheduler=ON %FXA_MYSQL_ARGS%
 
 AutoUpdate=registry
 

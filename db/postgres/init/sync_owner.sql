@@ -4,7 +4,7 @@
 -- public (the migrations and db_init.sql run as this role), and those of a database from
 -- before it, which the migrations and this container created as POSTGRES_USER (tables,
 -- the functions and types of the migrations, check_user_limit, ffs_drop_admin_tables, the
--- admin UI's tables of before). Nothing on the admin UI's database (DATABASES.md).
+-- admin UI's tables of before). Nothing on the admin UI's database (docs/reference/database-users.md#the-admin-uis-own-database).
 -- Only GRANT, REVOKE and ALTER ... OWNER, which run no code of the objects' owner, over the
 -- catalogs, with pg_catalog alone in the search path: nothing the Sync server's role put in
 -- public stands in for a name here. What reads or writes the tables runs as that role.

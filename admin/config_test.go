@@ -114,7 +114,7 @@ var adminSecrets = map[string]bool{"ADMIN_PASSWORD": true, "ADMIN_OIDC_CLIENT_SE
 	// the Helm chart's Redis of the accounts has one (compose's is on a network of its own)
 	"FXA_REDIS_PASSWORD":           true,
 	"SYNC_TOKENSERVER_DB_PASSWORD": true, "SYNC_STORAGE_DB_PASSWORD": true, "SYNC_POSTGRES_PASSWORD": true, "SYNC_POSTGRES_APP_PASSWORD": true,
-	// their old names, still read when the new ones are not set (MIGRATING.md#renamed-settings)
+	// their old names, still read when the new ones are not set (docs/upgrading.md#renamed-settings)
 	"MARIADB_TOKENSERVER_PASSWORD": true, "MARIADB_SYNCSTORAGE_PASSWORD": true, "POSTGRES_PASSWORD": true, "POSTGRES_SYNC_PASSWORD": true}
 
 func TestConfigVarsClassified(t *testing.T) {
@@ -301,7 +301,7 @@ func TestConfigPage(t *testing.T) {
 	})
 	for setting, want := range map[string]string{
 		"Max users":                  "5 (1 used) SYNC_MAX_USERS SYNC_MAX_USERS=initial:3: set to 3 on a new database only, then on the overview",
-		"Databases":                  "MySQL 8 SYNC_DB the tokenserver and the storage databases, on a container of the stack",
+		"Databases":                  "MySQL SYNC_DB the tokenserver and the storage databases, on a container of the stack",
 		"Tokenserver database":       "ffs_admin_sync on tokenserver_db:3306, database tokenserver",
 		"Tokenserver password":       "set ADMIN_DB_PASSWORD of ffs_admin_sync",
 		"Admin UI database":          "ffs_admin_ui on tokenserver_db:3306, database ffs_admin ADMIN_DB_USER , ADMIN_DB_NAME the event log",
@@ -351,7 +351,7 @@ func TestConfigPage(t *testing.T) {
 	}
 	// with the Quadlets their steps, --upgrade writes no unit
 	page = configPage(t, false, func(app *App, _ *fakeFxa) { app.sync.own, app.deployment = nil, deployment{kind: "quadlets"} })
-	if got := configRowOf(page, "Admin UI database"); !strings.Contains(got, "the steps of MIGRATING.md for the Quadlets") || strings.Contains(got, "--upgrade") {
+	if got := configRowOf(page, "Admin UI database"); !strings.Contains(got, "the steps of docs/upgrading.md#with-quadlets for the Quadlets") || strings.Contains(got, "--upgrade") {
 		t.Errorf("before ADMIN_DB_PASSWORD, Quadlets: %q", got)
 	}
 	t.Setenv("ADMIN_DB_PASSWORD", "hunter2hunter3")
@@ -370,7 +370,7 @@ func TestConfigPage(t *testing.T) {
 	page = configPage(t, true, func(app *App, _ *fakeFxa) { app.emailDomain = "accounts.example.com" })
 	for setting, want := range map[string]string{
 		"Max accounts":          "unlimited (3 accounts) FXA_MAX_ACCOUNTS FXA_MAX_ACCOUNTS=not set, initial:unlimited: set to unlimited on a new database only",
-		"Database":              "MariaDB FXA_DB fxa, fxa_oauth, fxa_profile, pushbox and ffs, on your own server (DATABASES.md)",
+		"Database":              "MariaDB FXA_DB fxa, fxa_oauth, fxa_profile, pushbox and ffs, on your own server (docs/databases.md#your-own-server)",
 		"Sign-ups":              "open FXA_SIGNUPS , FXA_SIGNUP_ALLOWLIST",
 		"Pairing server":        "https://pairing.example.com FXA_PAIRING_URL",
 		"Trusted proxies":       "172.18.0.1 ADMIN_TRUSTED_PROXIES",
@@ -433,9 +433,9 @@ func TestRedactURL(t *testing.T) {
 // the page says what the program does with a variable, read with the program's own
 // rules, not parsed again its own way
 func TestConfigPageReadsLikeTheProgram(t *testing.T) {
-	// what the admin UI makes of them: insecure with any value, the release checks off
-	// with false only, implicit TLS with true only
-	t.Setenv("ADMIN_INSECURE_COOKIE", "false")
+	// what the admin UI makes of them: insecure with 1, true or yes (envSwitch), the release
+	// checks off with false only, implicit TLS with true only
+	t.Setenv("ADMIN_INSECURE_COOKIE", "Yes")
 	t.Setenv("ADMIN_UPDATE_CHECK", "0")
 	t.Setenv("SMTP_HOST", "smtp.example.com")
 	t.Setenv("SMTP_SECURE", "1")
@@ -473,7 +473,7 @@ func TestConfigPageReadsLikeTheProgram(t *testing.T) {
 	}
 	hints := page[strings.Index(page, `<section id="hints">`):strings.Index(page, `<nav class="chips"`)]
 	if !strings.Contains(hints, "ADMIN_INSECURE_COOKIE is set") {
-		t.Errorf("no hint of ADMIN_INSECURE_COOKIE=false: %s", hints)
+		t.Errorf("no hint of ADMIN_INSECURE_COOKIE=Yes: %s", hints)
 	}
 	// http://localhost is fine for Firefox; two parts on one host name are not
 	if strings.Contains(hints, "SYNC_PUBLIC_URL is http://localhost:8000") {
@@ -486,8 +486,11 @@ func TestConfigPageReadsLikeTheProgram(t *testing.T) {
 	// with true only: implicit TLS, the release checks off; no hint without the variable
 	t.Setenv("SMTP_SECURE", "true")
 	t.Setenv("ADMIN_UPDATE_CHECK", "false")
-	t.Setenv("ADMIN_INSECURE_COOKIE", "")
+	t.Setenv("ADMIN_INSECURE_COOKIE", "false")
 	t.Setenv("FXA_PROFILE_URL", "https://profile.example.com")
+	if auth, err = loadAuth(); err != nil || auth.insecureCookie {
+		t.Fatalf("ADMIN_INSECURE_COOKIE=false: %v, %v", auth, err)
+	}
 	page = configPage(t, true, func(app *App, _ *fakeFxa) { app.mailer = newMailer("") })
 	for setting, want := range map[string]string{
 		"Session cookie": "Secure (HTTPS, or http://localhost)",
@@ -511,6 +514,35 @@ func TestLoopbackURL(t *testing.T) {
 		"http://sync.example.com": false, "http://10.0.0.1": false, "localhost": false} {
 		if loopbackURL(raw) != want {
 			t.Errorf("%s: %v", raw, !want)
+		}
+	}
+}
+
+// the switches of .env that are off unless asked for: never on with false or 0, an error
+// for what is neither
+func TestEnvSwitch(t *testing.T) {
+	t.Setenv("ADMIN_PASSWORD", "correct-horse-battery")
+	for value, want := range map[string]bool{"": false, "0": false, "false": false, "FALSE": false, "no": false, "off": false,
+		"1": true, "true": true, "True": true, "yes": true, "on": true, " 1 ": true} {
+		t.Setenv("ADMIN_INSECURE_COOKIE", value)
+		t.Setenv("SMTP_INSECURE_AUTH", value)
+		on, err := envSwitch("ADMIN_INSECURE_COOKIE")
+		if err != nil || on != want {
+			t.Errorf("%q: %v, %v", value, on, err)
+		}
+		auth, err := loadAuth()
+		if err != nil || auth.insecureCookie != want {
+			t.Errorf("loadAuth with %q: %v", value, err)
+		}
+		t.Setenv("SMTP_HOST", "smtp.example.com")
+		if m := smtpServer(); m == nil || m.insecureAuth != want {
+			t.Errorf("SMTP_INSECURE_AUTH=%q: %+v", value, m)
+		}
+	}
+	for _, value := range []string{"maybe", "2", "enable"} {
+		t.Setenv("ADMIN_INSECURE_COOKIE", value)
+		if _, err := loadAuth(); err == nil || !strings.Contains(err.Error(), "ADMIN_INSECURE_COOKIE must be 1, true or yes") {
+			t.Errorf("ADMIN_INSECURE_COOKIE=%q: %v", value, err)
 		}
 	}
 }

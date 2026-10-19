@@ -3,6 +3,7 @@ The bundled databases, as compose's tokenserver_db and syncstorage_db (MariaDB, 
 with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.sync-postgres.yml)
 */ -}}
 {{- if .Values.database.bundled }}
+{{- include "firefox-sync.checkDbMajor" . }}
 {{- $root := . }}
 {{- $backend := .Values.database.backend }}
 {{- $persistence := .Values.database.persistence }}
@@ -12,10 +13,10 @@ with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.sync-postgres
 {{- else }}
 {{- $dbs = list (dict "component" "tokenserver-db" "db" "tokenserver") (dict "component" "storage-db" "db" "storage") }}
 {{- end }}
-{{- if ne $backend "postgres" }}
 ---
 # db/mysql/admin-user.sh (a copy in files/, kept identical): the admin UI's users, run by the
-# MariaDB and MySQL containers before the image's entrypoint, as in compose
+# MariaDB and MySQL containers before the image's entrypoint, as in compose; PostgreSQL:
+# db/postgres/keep-major.sh (files/postgres-keep-major.sh), its db-major init container
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,9 +24,13 @@ metadata:
   labels:
     {{- include "firefox-sync.labels" (dict "root" $root "component" "db-scripts") | nindent 4 }}
 data:
+  {{- if eq $backend "postgres" }}
+  keep-major.sh: |
+    {{- $root.Files.Get "files/postgres-keep-major.sh" | trimSuffix "\n" | nindent 4 }}
+  {{- else }}
   admin-user.sh: |
     {{- $root.Files.Get "files/admin-user.sh" | trimSuffix "\n" | nindent 4 }}
-{{- end }}
+  {{- end }}
 {{- range $dbs }}
 {{- $component := .component }}
 {{- $role := .db }}
@@ -66,18 +71,39 @@ spec:
       labels:
         {{- include "firefox-sync.selectorLabels" (dict "root" $root "component" $component) | nindent 8 }}
       {{- $annotations := dict }}
-      {{- if ne $backend "postgres" }}
-      {{- /* admin-user.sh runs at the start: a new pod when it changes */}}
-      {{- $_ := set $annotations "checksum/db-scripts" ($root.Files.Get "files/admin-user.sh" | sha256sum) }}
-      {{- end }}
+      {{- /* admin-user.sh, keep-major.sh run at the start: a new pod when they change */}}
+      {{- $_ := set $annotations "checksum/db-scripts" ($root.Files.Get (ternary "files/postgres-keep-major.sh" "files/admin-user.sh" (eq $backend "postgres")) | sha256sum) }}
       {{- with include "firefox-sync.podAnnotations" (dict "root" $root "annotations" $annotations) }}{{ . | trim | nindent 6 }}{{ end }}
     spec:
       {{- include "firefox-sync.podSpec" $root | nindent 6 }}
       # root at the start (the image's entrypoint chowns the data, then drops to its user
-      # with gosu): PodSecurity baseline, not restricted (HELM.md#what-you-need)
+      # with gosu): PodSecurity baseline, not restricted (docs/install/helm.md#requirements)
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      {{- if eq $backend "postgres" }}
+      # PostgreSQL keeps its data in <major>/docker: an image of another major (latest moving
+      # on, another pin) finds none of its own. Its entrypoint refuses then; this says first
+      # what to pin (db/postgres/keep-major.sh, as compose's postgres_db)
+      initContainers:
+        - name: db-major
+          image: {{ include "firefox-sync.dbImage" $root }}
+          {{- include "firefox-sync.noEscalation" $root | nindent 10 }}
+          {{- with $root.Values.database.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # (the names for its message as arguments: no env, nothing of the Secret here)
+          command: [env, {{ printf "FFS_POSTGRES_IMAGE=%s" (include "firefox-sync.dbImage" $root) | quote }}, FFS_POSTGRES_SETTING=database.image.postgres, sh, /ffs-db/keep-major.sh, "true"]
+          # (read-write though it only reads: the images before 18 declare a VOLUME at
+          # /var/lib/postgresql/data, whose mount point cannot be made in a read-only mount)
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: db-scripts
+              mountPath: /ffs-db
+              readOnly: true
+      {{- end }}
       containers:
         {{- $check := list }}
         - name: db
@@ -151,8 +177,8 @@ spec:
           volumeMounts:
             - name: data
               {{- if eq $backend "postgres" }}
-              # postgres:18 and later keep their data in a subdirectory of the major
-              # (PGDATA /var/lib/postgresql/18/docker): a new major does not open the old data
+              # the official image keeps its data in a subdirectory of the major (PGDATA
+              # /var/lib/postgresql/<major>/docker): another major finds none (db-major above)
               mountPath: /var/lib/postgresql
               {{- else }}
               # a subdirectory: MariaDB and MySQL refuse to initialise next to the lost+found
@@ -163,12 +189,10 @@ spec:
               mountPath: /ffs-db
               readOnly: true
               {{- end }}
-      {{- if ne $backend "postgres" }}
       volumes:
         - name: db-scripts
           configMap:
             name: {{ include "firefox-sync.fullname" $root }}-db-scripts
-      {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

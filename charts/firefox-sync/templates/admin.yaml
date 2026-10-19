@@ -69,7 +69,7 @@ spec:
     spec:
       {{- include "firefox-sync.podSpec" . | nindent 6 }}
       # the image's user nonroot, by number: Kubernetes checks runAsNonRoot on a uid. The
-      # pod meets the PodSecurity level restricted (HELM.md#what-you-need)
+      # pod meets the PodSecurity level restricted (docs/install/helm.md#requirements)
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -132,7 +132,7 @@ spec:
             # initial:N: the admin UI manages max users, otherwise the chart does (read-only)
             - name: MAX_USERS
               value: {{ include "firefox-sync.maxUsers" . | quote }}
-            # its own users and database, out of the Sync server's reach (DATABASES.md)
+            # its own users and database, out of the Sync server's reach (docs/reference/database-users.md#the-admin-uis-own-database)
             - name: ADMIN_DB_USER
               value: {{ include "firefox-sync.adminDbUser" . }}
             - name: ADMIN_DB_SYNC_USER
@@ -193,6 +193,11 @@ spec:
               value: {{ $smtp.secure | quote }}
             - name: SMTP_SENDER
               value: {{ $smtp.sender | quote }}
+            {{- /* only when set: the default render stays that of the chart before it */}}
+            {{- with (.Values.smtp | default dict).insecureAuth }}
+            - name: SMTP_INSECURE_AUTH
+              value: {{ . | toString | quote }}
+            {{- end }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "METRICS_TOKEN" "key" "ADMIN_METRICS_TOKEN" "optional" true) | nindent 12 }}
             - name: ADMIN_UPDATE_CHECK
               value: {{ $a.updateCheck | toString | quote }}
@@ -202,7 +207,7 @@ spec:
               value: {{ include "firefox-sync.number" $a.retentionDays | quote }}
             - name: ADMIN_AUDIT_RETENTION_DAYS
               value: {{ include "firefox-sync.number" $a.auditRetentionDays | quote }}
-            # the alerts on a spike of Sync errors and on the growth of the databases (ADMIN.md)
+            # the alerts on a spike of Sync errors and on the growth of the databases (docs/admin/monitoring.md#errors-and-growth)
             - name: ADMIN_ERROR_RATE_PERCENT
               value: {{ include "firefox-sync.number" $a.errorRatePercent | quote }}
             - name: ADMIN_ERROR_RATE_MIN_ERRORS
@@ -244,7 +249,7 @@ spec:
             - name: ADMIN_K8S_CHART
               value: {{ index .Chart.Annotations "org.firefox-sync/chart" | default "oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync" | quote }}
             # the release's chart version: the --version of those commands (--reuse-values
-            # must never move to another version, HELM.md#upgrades)
+            # must never move to another version, docs/upgrading.md#helm)
             - name: ADMIN_K8S_CHART_VERSION
               value: {{ .Chart.Version | quote }}
             {{- if ne $backend "postgres" }}
@@ -309,7 +314,7 @@ spec:
               value: /ffs-ca
             {{- end }}
             {{- end }}
-            # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header;
+            # sign-in (see docs/admin/signing-in.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header;
             # with admin.fxaSignIn the self-hosted accounts by default, as compose's
             # ${ADMIN_OIDC_...:-${ADMIN_FXA_CLIENT_ID:+...}}
             {{- $fxaIssuer := and (eq $signIn "true") (not $a.oidc.issuer) }}
@@ -344,6 +349,10 @@ spec:
               value: {{ $a.allowed.users | quote }}
             - name: ADMIN_ALLOWED_GROUPS
               value: {{ $a.allowed.groups | quote }}
+            {{- with $a.insecureCookie }}
+            - name: ADMIN_INSECURE_COOKIE
+              value: {{ . | toString | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080

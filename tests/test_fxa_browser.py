@@ -355,7 +355,7 @@ def test_admin_disables_through_the_confirm_page(first_device):
 
 
 def test_invite_link_fills_in_the_email():
-    # the link of an invitation (ADMIN.md): the accounts pages open with the email filled in
+    # the link of an invitation (docs/admin/accounts.md#invitations): the accounts pages open with the email filled in
     if not os.environ.get("ADMIN_PASSWORD"):
         pytest.skip("no admin UI")
     admin = os.environ.get("ADMIN_URL", "https://admin.fxa.test").rstrip("/")
