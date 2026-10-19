@@ -88,7 +88,7 @@ The CronJob `ffs-firefox-sync-backup` runs the same `backup.sh` in the database'
 - `backup.keep` is `BACKUP_KEEP`.
 - `backup.activeDeadlineSeconds` (82800, 23 hours): a run still going then is stopped and fails. One run at a time (`concurrencyPolicy: Forbid`): a hung dump would hold back every later one.
 - With your own database server (`database.bundled: false`) it runs too, as the users of its SQL, next to the server's own backups.
-- With the self-hosted accounts (`fxa.enabled`), the same Job first dumps their five databases into `accounts/<UTC time>/`, as compose's `backup-fxa` does: in its init container `backup-accounts`, in the accounts database's image, as `root` of the bundled server or as `fxa.database.external.user`. A failed dump is recorded and alerted, and the Sync databases are dumped all the same. A dump that hangs instead holds back the Sync one, which starts only after it, until `backup.activeDeadlineSeconds` stops the whole run. Their signing keys are not in the backups: see [The signing keys](install/helm.md#the-signing-keys).
+- With the self-hosted accounts (`fxa.enabled`) on their bundled database (`fxa.database.bundled: true`), the same Job first dumps their five databases into `accounts/<UTC time>/`, as compose's `backup-fxa` does: in its init container `backup-accounts`, in the accounts database's image, as its `root`. With your own accounts server it dumps the Sync databases alone, as compose does: see [Your own database server](#your-own-database-server). A failed dump is recorded and alerted, and the Sync databases are dumped all the same. A dump that hangs instead holds back the Sync one, which starts only after it, until `backup.activeDeadlineSeconds` stops the whole run. Their signing keys are not in the backups: see [The signing keys](install/helm.md#the-signing-keys).
 
 Without the admin UI:
 
@@ -132,7 +132,7 @@ The PVC is `ReadWriteOnce`: while a backup runs on another node, the pod waits f
 
 ## Your own database server
 
-The backup service of compose and the Quadlets is for the stack's own database containers. On [your own server](databases.md#your-own-server), use the server's own backups: the accounts' user of the stack cannot read `ffs` there. The Helm chart's CronJob is the exception: it also runs on your own server, see [Kubernetes](#kubernetes).
+The backup service of compose and the Quadlets is for the stack's own database containers. On [your own server](databases.md#your-own-server), use the server's own backups: the accounts' user of the stack cannot read `ffs` there. The Helm chart's CronJob is the exception for the Sync databases: it also dumps them on your own server, see [Kubernetes](#kubernetes). Not the accounts': with your own accounts server it skips them, as compose does, so use the server's own backups for their five databases (`fxa`, `fxa_oauth`, `fxa_profile`, `pushbox` and `ffs`).
 
 Back up the admin UI's database too: it holds the event log. To have the admin UI watch your backups, have your backup job record each run in that database, as its user (`ffs_admin_ui`; before `ADMIN_DB_PASSWORD`, the tokenserver database as the tokenserver user). The admin UI creates the table when it starts:
 
