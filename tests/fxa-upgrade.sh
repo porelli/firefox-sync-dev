@@ -1,7 +1,7 @@
 #!/bin/bash
 # Upgrade of the self-hosted Mozilla accounts in place (docker-compose.fxa.yml): the stack
 # starts on an older release, an account signs up, registers a device, gets a refresh
-# token and syncs; then FXA_VERSION is changed in .env and the stack upgraded as FXA.md
+# token and syncs; then FXA_VERSION is changed in .env and the stack upgraded as docs/upgrading.md#self-hosted-accounts
 # says (a backup, docker compose pull, docker compose up -d). Checked after: the
 # migrations ran with the new image (the patch levels of its target-patch.json), the
 # sign-up policy and the admin UI's procedures installed again over them, the old
@@ -25,21 +25,21 @@
 #                    refuses to upgrade its data (db/mysql/keep-major.sh), prepare_environment.sh
 #                    --upgrade pins it back on mysql:8, then the accounts are upgraded
 #   FXA_MYSQL_TO     with FXA_DB=mysql, after the upgrade of the accounts: the move of
-#                    MIGRATING.md#mysql-lts to this image (the users on caching_sha2_password,
+#                    docs/upgrading.md#mysql-8-to-9 to this image (the users on caching_sha2_password,
 #                    the native options dropped, a backup, the image); default: mysql:lts when the
 #                    new accounts image has mozilla/fxa#21554, else none; keep: none
 #   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:11, as the installs from before
 #                    MariaDB 12 have it; mariadb:lts (12) needs FXA_FROM with mozilla/fxa#21494)
 #   FXA_MARIADB_FROM with FXA_DB=mariadb: the install starts on this MariaDB (e.g. mariadb:11)
 #                    and the upgrade also moves it to FXA_MARIADB_IMAGE (default: mariadb:lts) as
-#                    FXA.md#moving-to-a-newer-mariadb says: then the data must have been
+#                    docs/upgrading.md#mariadb says: then the data must have been
 #                    upgraded (server version, mariadb-upgrade by MARIADB_AUTO_UPGRADE). The new
 #                    accounts image needs mozilla/fxa#21494 for MariaDB 12
 #   FXA_SAME_TAG     set to 1 to install the older release under the new tag (FXA_FROM pulled and
 #                    tagged FXA_IMAGE:FXA_VERSION here), as an install following fxa-mono-latest
 #                    has it: then docker compose up -d alone must not upgrade, the pull must
 #   SKIP_PULL        set to 1 to use the local images (the FxA images are pulled when missing;
-#                    the docker compose pull of the upgrade runs anyway, as FXA.md says)
+#                    the docker compose pull of the upgrade runs anyway, as docs/upgrading.md#self-hosted-accounts says)
 #   FXA_NEW_LOCAL    set to 1 when the new accounts image is a local build in no registry: the
 #                    pull of the upgrade leaves it out
 #   KEEP             set to 1 to leave the upgraded stack running (project ffs-fxa-upgrade)
@@ -244,7 +244,7 @@ else
 fi
 pull_image "${FXA_FROM}" "${from_arch}" || { echo "FAIL: pull ${FXA_FROM}"; exit 1; }
 new_release=$(release_of "${NEW}" "${NEW_ARCH}") old_release=$(release_of "${FXA_FROM}" "${from_arch}")
-# MIGRATING.md#mysql-lts after the upgrade: with an image that has mozilla/fxa#21554
+# docs/upgrading.md#mysql-8-to-9 after the upgrade: with an image that has mozilla/fxa#21554
 MYSQL_TO=""
 if [ "${FXA_DB}" = mysql ]; then
   MYSQL_TO=${FXA_MYSQL_TO:-}
@@ -252,7 +252,7 @@ if [ "${FXA_DB}" = mysql ]; then
     MYSQL_TO=mysql:lts
   fi
   [ "${MYSQL_TO}" != keep ] || MYSQL_TO=""
-  echo "accounts database: mysql:8 with mysql_native_password${MYSQL_TO:+, then ${MYSQL_TO} (MIGRATING.md#mysql-lts)}"
+  echo "accounts database: mysql:8 with mysql_native_password${MYSQL_TO:+, then ${MYSQL_TO} (docs/upgrading.md#mysql-8-to-9)}"
 fi
 echo "releases: ${old_release:-?} -> ${new_release:-?}"
 [ -n "${new_release}" ] || { echo "FAIL: no release in ${NEW} (label org.opencontainers.image.version or /fxa/packages/version.json)"; exit 1; }
@@ -297,22 +297,22 @@ if [ "${FXA_DB}" = mysql ]; then
   check "$(state fxa-db Health.Status) $(fxa_sql "SELECT VERSION()")" "healthy ${old_db_version}" "fxa-db back on mysql:8, its data as it was"
 fi
 
-echo "== upgrade as FXA.md says: a backup, FXA_VERSION in .env, docker compose pull, docker compose up -d"
+echo "== upgrade as docs/upgrading.md#self-hosted-accounts says: a backup, FXA_VERSION in .env, docker compose pull, docker compose up -d"
 dc exec -T backup-fxa sh /ffs-backup/backup.sh now > "${WORK}/backup.log" 2>&1
 check "$?" 0 "a backup of the accounts before the upgrade"
 set_env FXA_IMAGE "${NEW_IMAGE}"
 set_env FXA_VERSION "${NEW_VERSION}"
 set_env FXA_ARCH "${NEW_ARCH}"
-# FXA.md#moving-to-a-newer-mariadb: the backup above, FXA_MARIADB_IMAGE, pull and up
+# docs/upgrading.md#mariadb: the backup above, FXA_MARIADB_IMAGE, pull and up
 [ -z "${MARIADB_TO}" ] || set_env FXA_MARIADB_IMAGE "${MARIADB_TO}"
 if [ -n "${FXA_SAME_TAG:-}" ]; then
-  # FXA.md: up -d alone keeps the image it has under that tag
+  # docs/upgrading.md#self-hosted-accounts: up -d alone keeps the image it has under that tag
   dc up -d > "${WORK}/up-no-pull.log" 2>&1 || { echo "FAIL: compose up without a pull"; tail -10 "${WORK}/up-no-pull.log"; }
   check "$(image_id_of fxa-migrations) $(image_id_of fxa-auth)" "${old_id} ${old_id}" \
     "docker compose up -d without a pull keeps the older release"
 fi
 migrations_before=$(state fxa-migrations StartedAt)
-# the pull of FXA.md, also with SKIP_PULL: the accounts image only (the admin UI under test
+# the pull of docs/upgrading.md#self-hosted-accounts, also with SKIP_PULL: the accounts image only (the admin UI under test
 # may be a local build)
 MARIADB_SERVICES=()
 [ -z "${MARIADB_TO}" ] || MARIADB_SERVICES=(fxa-db backup-fxa)
@@ -350,7 +350,7 @@ if [ -n "${MARIADB_TO}" ]; then
 fi
 upgrade_tests after
 if [ -n "${MYSQL_TO}" ]; then
-  echo "== MIGRATING.md#mysql-lts: 2. the users on caching_sha2_password"
+  echo "== docs/upgrading.md#mysql-8-to-9: 2. the users on caching_sha2_password"
   native_users() { fxa_sql "SELECT CONCAT(user, '@', host) FROM mysql.user WHERE plugin = 'mysql_native_password' ORDER BY 1" | paste -sd' '; }
   # ffs_admin: fxa-policy gives it caching_sha2_password itself
   check "$(native_users)" "root@% root@localhost" "on mysql_native_password: root (FXA_MYSQL_USER) only"

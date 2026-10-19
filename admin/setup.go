@@ -127,7 +127,7 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 }
 
 // oldNamesCheck: the Sync settings that .env (or compose's environment) still has under their old names
-// (MIGRATING.md#renamed-settings), from compose (FFS_OLD_ENV_NAMES): they still work, a
+// (docs/upgrading.md#renamed-settings), from compose (FFS_OLD_ENV_NAMES): they still work, a
 // later release removes them. No check without them (the Quadlets have the new names)
 func oldNamesCheck(names string) (setupCheck, bool) {
 	old := strings.Fields(names)
@@ -135,7 +135,7 @@ func oldNamesCheck(names string) (setupCheck, bool) {
 		return setupCheck{}, false
 	}
 	return setupCheck{Name: "Old setting names (.env, environment)", Text: "Settings under their old names, in .env or in the environment docker compose runs in, which still work but will be removed in a later release: " +
-		strings.Join(old, ", ") + ". Run ./prepare_environment.sh --upgrade, which renames them (MIGRATING.md), then docker compose up -d."}, true
+		strings.Join(old, ", ") + ". Run ./prepare_environment.sh --upgrade, which renames them (docs/upgrading.md#renamed-settings), then docker compose up -d."}, true
 }
 
 // accountsSMTPCheck: the self-hosted accounts need an SMTP server whatever the admin UI's

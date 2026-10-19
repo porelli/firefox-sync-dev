@@ -386,7 +386,7 @@ jobs:
       fail-fast: false
       matrix:
         database_backend: [mysql, postgres]
-        # 1: on a database server outside the stack, with only the grants of DATABASES.md
+        # 1: on a database server outside the stack, with only the grants of docs/reference/database-users.md
         external_db: ["", "1"]
         # the database containers: mariadb (lts), or mysql (SYNC_DB=mysql) for the mysql backend
         sync_db: [mariadb]

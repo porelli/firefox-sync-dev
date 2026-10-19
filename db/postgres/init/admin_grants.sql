@@ -1,6 +1,6 @@
 -- The grants of the admin UI's reader of the Sync data (ADMIN_DB_SYNC_USER) on the Sync
 -- tables, given by their owner at every start (new tables of an upgrade too), see
--- DATABASES.md. Applied by db_init.sh when ADMIN_DB_PASSWORD is set and the role exists.
+-- docs/reference/database-users.md#the-admin-uis-own-database. Applied by db_init.sh when ADMIN_DB_PASSWORD is set and the role exists.
 -- The admin UI's database (ADMIN_DB_NAME) is its other role's (ADMIN_DB_USER): neither this
 -- one nor the Sync server's role has a grant there.
 -- As POSTGRES_USER, a superuser in the stack's container: GRANT runs no code of the tables'

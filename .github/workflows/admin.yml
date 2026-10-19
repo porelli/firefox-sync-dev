@@ -1,6 +1,6 @@
 name: admin
 
-# The admin UI and sign-up policy image (admin/, see ADMIN.md), amd64 and arm64.
+# The admin UI and sign-up policy image (admin/, see docs/admin/README.md), amd64 and arm64.
 # Go cross-compiles in the Dockerfile: one runner builds both without emulation.
 # The candidate admin-<sha12> is tested as published (ADMIN_IMAGE) against the
 # published syncstorage and accounts images, then tagged admin-latest, from main only.
@@ -98,7 +98,7 @@ jobs:
       fail-fast: false
       matrix:
         database_backend: [mysql, postgres]
-        # 1: on a database server outside the stack, with only the grants of DATABASES.md
+        # 1: on a database server outside the stack, with only the grants of docs/reference/database-users.md
         external_db: ["", "1"]
         # the database containers: mariadb, or mysql (mysql:lts, SYNC_DB=mysql) for the mysql backend
         sync_db: [mariadb]
@@ -159,7 +159,7 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
             fxa_db: mariadb
-          # Sync and the accounts on a server outside the stack (DATABASES.md)
+          # Sync and the accounts on a server outside the stack (docs/databases.md#your-own-server)
           - arch: amd64
             runner: ubuntu-latest
             fxa_db: mysql

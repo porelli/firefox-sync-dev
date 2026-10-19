@@ -166,7 +166,7 @@
   {{if not .AccountEvents}}
   <div class="box" id="events-off">
     <p>The accounts service does not record security events (sign-ins, password changes, two-step authentication, recovery keys), so there is no history to show{{if .SecurityEvents}} newer than the entries below{{end}}.</p>
-    <p>To record them, set <code>FXA_ACCOUNT_EVENTS=true</code> in <code>.env</code>, then {{if .Quadlets}}<code>ACCOUNT_EVENTS_ENABLED=true</code> in <code>firefox-sync-fxa-auth.container</code> and <code>FXA_ACCOUNT_EVENTS=true</code> in <code>firefox-sync-admin.container</code> (<code>~/.config/containers/systemd</code>), <code>systemctl --user daemon-reload</code> and restart both{{else}}<code>docker compose up -d</code>{{end}}. They keep the IP address of every sign-in, see FXA.md.</p>
+    <p>To record them, set <code>FXA_ACCOUNT_EVENTS=true</code> in <code>.env</code>, then {{if .Quadlets}}<code>ACCOUNT_EVENTS_ENABLED=true</code> in <code>firefox-sync-fxa-auth.container</code> and <code>FXA_ACCOUNT_EVENTS=true</code> in <code>firefox-sync-admin.container</code> (<code>~/.config/containers/systemd</code>), <code>systemctl --user daemon-reload</code> and restart both{{else}}<code>docker compose up -d</code>{{end}}. They keep the IP address of every sign-in, see docs/accounts.md#security-history.</p>
   </div>
   {{end}}
   {{if .SecurityEvents}}

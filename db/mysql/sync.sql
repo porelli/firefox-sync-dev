@@ -1,4 +1,4 @@
--- The Sync server on your MariaDB 10.10+ or MySQL 8.0 or later server (9 by default in the stack; DATABASES.md).
+-- The Sync server on your MariaDB 10.10+ or MySQL 8.0 or later server (9 by default in the stack; docs/databases.md#your-own-server).
 -- Run as an administrator of the server. prepare_environment.sh fills in the placeholders
 -- from .env and writes the result to database-setup.sql.
 -- Two databases: the migrations of both keep their state in a table of the same name.

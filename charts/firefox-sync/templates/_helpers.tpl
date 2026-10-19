@@ -378,7 +378,7 @@ its name and tag without the registry ("mysql:lts"), for checkDbMajor
 "true" when the image old -> new moves the data to another major (dict "old" "new"): two
 numbered majors that differ, a numbered major to a tag without one (lts, latest), or one tag
 without a major to another; to a numbered major from lts or latest is the pin of
-HELM.md#upgrades. Another server (a backend switch) is not a major change of this one
+docs/upgrading.md#database-majors. Another server (a backend switch) is not a major change of this one
 */}}
 {{- define "firefox-sync.dbMajorChange" -}}
 {{- $oldNameTag := include "firefox-sync.imageNameTag" .old }}
@@ -430,9 +430,9 @@ of its data changed, going back to its major must stay possible */}}
 {{- end }}
 {{- if and $up (include "firefox-sync.dbMajorChange" (dict "old" $old "new" $new)) }}
 {{- if eq $backend "postgres" }}
-{{- fail (printf "firefox-sync: database.image.postgres is %s but the bundled PostgreSQL (%s) runs %s, and PostgreSQL cannot open another major's data; set database.image.postgres to %s, a newer major needs a dump and restore or pg_upgrade, see HELM.md#upgrades" $new $name $old $old) }}
+{{- fail (printf "firefox-sync: database.image.postgres is %s but the bundled PostgreSQL (%s) runs %s, and PostgreSQL cannot open another major's data; set database.image.postgres to %s, a newer major needs a dump and restore or pg_upgrade, see docs/upgrading.md#database-majors" $new $name $old $old) }}
 {{- else if not $root.Values.database.allowMajorUpgrade }}
-{{- fail (printf "firefox-sync: database.image.%s is %s but the bundled database %s runs %s; another major upgrades its data for good at the next start: set database.image.%s to %s to stay, or database.allowMajorUpgrade=true to move (a backup first), see HELM.md#upgrades" $backend $new $name $old $backend $old) }}
+{{- fail (printf "firefox-sync: database.image.%s is %s but the bundled database %s runs %s; another major upgrades its data for good at the next start: set database.image.%s to %s to stay, or database.allowMajorUpgrade=true to move (a backup first), see docs/upgrading.md#database-majors" $backend $new $name $old $backend $old) }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -455,10 +455,10 @@ UI's Ingress a host of its own
 {{- define "firefox-sync.checkValues" -}}
 {{- if not .Values.database.bundled }}
 {{- if not .Values.database.external.host }}
-{{- fail "firefox-sync: database.bundled=false needs database.external.host, your database server (DATABASES.md)" }}
+{{- fail "firefox-sync: database.bundled=false needs database.external.host, your database server (docs/databases.md#your-own-server)" }}
 {{- end }}
 {{- if not .Values.existingSecret }}
-{{- fail "firefox-sync: database.bundled=false needs existingSecret, a Secret with the passwords of the users that DATABASES.md's SQL created on your server (and the stack's secrets): the chart cannot generate passwords your server knows" }}
+{{- fail "firefox-sync: database.bundled=false needs existingSecret, a Secret with the passwords of the users that the SQL of docs/databases.md#create-the-databases-and-users created on your server (and the stack's secrets): the chart cannot generate passwords your server knows" }}
 {{- end }}
 {{- end }}
 {{- range $key := list "port" "storagePort" }}

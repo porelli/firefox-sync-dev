@@ -216,7 +216,7 @@ def test_notifications(admin):
     assert hooks and any(signed_in(r) for r in hooks), hooks
     hook = next(r for r in hooks if signed_in(r))
     payload = json.loads(hook["body"])
-    # the documented schema (ADMIN.md#alerts), the token in its header, not in the URL
+    # the documented schema (docs/admin/alerts.md#webhook-schema), the token in its header, not in the URL
     assert set(payload) == {"source", "kind", "severity", "title", "text", "link", "events", "dropped"}, payload
     assert payload["source"] == "firefox-sync" and payload["severity"] in ("info", "warning") and payload["title"].startswith("firefox-sync: "), payload
     assert payload["link"] == "http://ffs-admin:8080/activity" and "Details: http://ffs-admin:8080/activity" in payload["text"], payload

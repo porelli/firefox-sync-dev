@@ -188,7 +188,7 @@ func serve(ctx context.Context) error {
 	rec, err := newRecorder(ctx, syncDB)
 	if err != nil {
 		if syncDB.own != nil {
-			return fmt.Errorf("metrics and event tables in the admin UI's database %s (ADMIN_DB_*, see DATABASES.md): %w", syncDB.ownName, err)
+			return fmt.Errorf("metrics and event tables in the admin UI's database %s (ADMIN_DB_*, see docs/reference/database-users.md#the-admin-uis-own-database): %w", syncDB.ownName, err)
 		}
 		return fmt.Errorf("metrics and event tables in the tokenserver database: %w", err)
 	}

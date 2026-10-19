@@ -1,6 +1,6 @@
 #!/bin/sh
 # Backups of the stack's databases (COMPOSE_PROFILES=backup, or firefox-sync-backup.timer
-# with the Quadlets), see ADMIN.md#backups. Runs in the database images already pulled:
+# with the Quadlets), see docs/backups.md#the-backup-service. Runs in the database images already pulled:
 # mariadb (mariadb-dump), postgres (pg_dump), mysql (mysqldump).
 #
 #   backup.sh loop    once a day at BACKUP_TIME (UTC), checked every minute (compose)
@@ -173,7 +173,7 @@ ts_sql() {
   fi
 }
 
-# the table of the admin UI (it creates it too), see ADMIN.md#backups
+# the table of the admin UI (it creates it too), see docs/backups.md#your-own-database-server
 ts_table() {
   if [ "${TOKENSERVER_DB_TYPE:-mysql}" = postgres ]; then
     ts_sql "CREATE TABLE IF NOT EXISTS ffs_backups (id BIGSERIAL PRIMARY KEY, scope VARCHAR(32) NOT NULL, started BIGINT NOT NULL,

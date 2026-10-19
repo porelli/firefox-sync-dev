@@ -432,7 +432,7 @@ func TestWebhook(t *testing.T) {
 		p.Dropped["sign-up refused"] != 3 || !strings.Contains(p.Text, "3 more sign-up refused") || !strings.Contains(p.Text, shownTricky) || strings.Contains(p.Text, "@here") {
 		t.Errorf("%+v", p)
 	}
-	// the documented field names (ADMIN.md#alerts), dropped always an object
+	// the documented field names (docs/admin/alerts.md#webhook-schema), dropped always an object
 	n.Send(context.Background(), testAlert("admin (password)", ""))
 	m := rc.requests()[1].json(t)
 	for _, key := range []string{"source", "kind", "severity", "title", "text", "link", "events", "dropped"} {

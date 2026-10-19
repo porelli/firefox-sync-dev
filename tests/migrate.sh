@@ -1,6 +1,6 @@
 #!/bin/bash
-# Tests of MIGRATING.md: an account's data written through another Sync server, moved the
-# way MIGRATING.md says, then read back through firefox-sync with the same FxA uid and keys
+# Tests of docs/migrating.md: an account's data written through another Sync server, moved the
+# way docs/migrating.md says, then read back through firefox-sync with the same FxA uid and keys
 # (upstream's mock FxA, tests/migrate_client.py).
 #
 # Usage: tests/migrate.sh <scenario>
@@ -26,8 +26,8 @@
 # The old stacks run their real compose files (fetched from GitHub at pinned commits, with
 # only what the test needs changed in an override: the mock FxA as accounts server, a node
 # URL, no published ports, a published image instead of a build), or reproduce the layout
-# where the original builds from source. The commands of MIGRATING.md are run as written
-# there: each one must be found, verbatim, in MIGRATING.md (guide()), so a command changed
+# where the original builds from source. The commands of docs/migrating.md are run as written
+# there: each one must be found, verbatim, in docs/migrating.md (guide()), so a command changed
 # in the guide must be changed here too.
 # The new stack is a copy of this tree set up like a user's install (.env, COMPOSE_FILE),
 # with SYNC_MAX_USERS=2 and the admin UI; checked: the init container, the SQL of "Checking the
@@ -80,7 +80,7 @@ fail() { echo "FAIL: $1"; FAILED=1; return 1; }
 check() { if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (expected '$2', got '$1')"; fi; }
 rnd() { tr -dc '[:alnum:]' < /dev/urandom | head -c 24; }
 
-# a command (or lines run together in one shell) as MIGRATING.md has it, in the current directory
+# a command (or lines run together in one shell) as docs/migrating.md has it, in the current directory
 guide() {
   local line
   for line in "$@"; do
@@ -190,7 +190,7 @@ dst_sql() {
   case ${DST_DB} in
     mariadb) dst exec -T tokenserver_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -sN -e "$0"' "$1" ;;
     mysql) dst exec -T tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -sN -e "$0"' "$1" ;;
-    # as the Sync server's role, the owner of the tables (never the superuser, DATABASES.md)
+    # as the Sync server's role, the owner of the tables (never the superuser, docs/reference/database-users.md#postgresql)
     postgres) dst exec -T postgres_db sh -c 'PGPASSWORD="$1" psql -h 127.0.0.1 -U "$2" -d "$POSTGRES_DB" -tA -F "	" -c "$0"' "$1" \
       "$(grep '^SYNC_POSTGRES_APP_PASSWORD=' "${DST}/.env" | cut -d= -f2)" "$(grep '^SYNC_POSTGRES_APP_USER=' "${DST}/.env" | cut -d= -f2)" ;;
   esac < /dev/null 2> /dev/null
@@ -346,7 +346,7 @@ scenario_upstream_mysql() {
   upstream_src docker-compose.one-shot.mysql.yaml mysql < <(oneshot_override mysql)
   src_write "${SRC_PROJECT}_default" http://syncserver:8000
   src_stop docker-compose.one-shot.mysql.yaml syncserver
-  echo "== dumps (MIGRATING.md, Mozilla's compose files)"
+  echo "== dumps (docs/migrating.md, Mozilla's compose files)"
   cd "${SRC}" || exit 1
   guide "docker exec syncserver-tokenserver-db mysqldump -usync -psync --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver > tokenserver.sql"
   check "$?" 0 "tokenserver dump"
@@ -377,14 +377,14 @@ services:
     ports: !reset []
     environment:
       SYNC_TOKENSERVER__ENABLED: "true"
-      # its default is Mozilla's stage accounts (api-accounts.stage.mozaws.net), see MIGRATING.md
+      # its default is Mozilla's stage accounts (api-accounts.stage.mozaws.net), see docs/migrating.md
       SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN: api.accounts.firefox.com
       SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL: http://mock-fxa-server:6000
       SYNC_TOKENSERVER__INIT_NODE_URL: ${OLD_DOMAIN}
 EOF
   src_write "${SRC_PROJECT}_default" http://syncserver:8000
   src_stop docker-compose.mysql.yaml syncserver
-  echo "== dumps (MIGRATING.md, Mozilla's test setup)"
+  echo "== dumps (docs/migrating.md, Mozilla's test setup)"
   cd "${SRC}" || exit 1
   guide 'dc="docker compose -f docker/docker-compose.mysql.yaml exec -T"' \
     '$dc tokenserver-db mysqldump -utest -ptest --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver > tokenserver.sql' \
@@ -401,7 +401,7 @@ scenario_upstream_postgres() {
   upstream_src docker-compose.one-shot.postgres.yaml postgres < <(oneshot_override postgres)
   src_write "${SRC_PROJECT}_default" http://syncserver:8000
   src_stop docker-compose.one-shot.postgres.yaml syncserver
-  echo "== dump (MIGRATING.md, Mozilla's compose files)"
+  echo "== dump (docs/migrating.md, Mozilla's compose files)"
   cd "${SRC}" || exit 1
   guide "docker exec syncserver-postgres pg_dump -U sync --no-owner --no-acl syncserver > syncserver.sql"
   check "$?" 0 "syncserver dump"
@@ -432,14 +432,14 @@ services:
     ports: !reset []
     environment:
       SYNC_TOKENSERVER__ENABLED: "true"
-      # its default is Mozilla's stage accounts (api-accounts.stage.mozaws.net), see MIGRATING.md
+      # its default is Mozilla's stage accounts (api-accounts.stage.mozaws.net), see docs/migrating.md
       SYNC_TOKENSERVER__FXA_EMAIL_DOMAIN: api.accounts.firefox.com
       SYNC_TOKENSERVER__FXA_OAUTH_SERVER_URL: http://mock-fxa-server:6000
       SYNC_TOKENSERVER__INIT_NODE_URL: ${OLD_DOMAIN}
 EOF
   src_write "${SRC_PROJECT}_default" http://syncserver:8000
   src_stop docker-compose.postgres.yaml syncserver
-  echo "== dumps (MIGRATING.md, two PostgreSQL databases)"
+  echo "== dumps (docs/migrating.md, two PostgreSQL databases)"
   cd "${SRC}" || exit 1
   guide 'dc="docker compose -f docker/docker-compose.postgres.yaml exec -T"' \
     '$dc tokenserver-db pg_dump -U test --no-owner --no-acl tokenserver > syncserver.sql' \
@@ -537,7 +537,7 @@ EOF
   cd - > /dev/null || exit 1
   src_write "${SRC_PROJECT}_default" http://syncserver:8000
   (cd "${SRC}" && docker compose stop syncserver) > /dev/null 2>&1
-  echo "== dumps (MIGRATING.md, dan-r)"
+  echo "== dumps (docs/migrating.md, dan-r)"
   cd "${SRC}" || exit 1
   guide "docker exec firefox_mariadb sh -c 'mariadb-dump -uroot -p\"\$MYSQL_ROOT_PASSWORD\" --single-transaction --no-tablespaces tokenserver_rs' > tokenserver.sql"
   check "$?" 0 "tokenserver_rs dump"
@@ -588,7 +588,7 @@ EOF
   cd - > /dev/null || exit 1
   src_write "${SRC_PROJECT}_default" http://syncstorage:8000
   (cd "${SRC}" && docker compose -f docker-compose.yaml -f migrate-test.yaml stop syncstorage) > /dev/null 2>&1
-  echo "== dumps (MIGRATING.md, jeena)"
+  echo "== dumps (docs/migrating.md, jeena)"
   cd "${SRC}" || exit 1
   guide "docker exec firefox_tokenserver_db sh -c 'mariadb-dump -u\"\$MARIADB_USER\" -p\"\$MARIADB_PASSWORD\" --single-transaction --no-tablespaces tokenserver' > tokenserver.sql"
   check "$?" 0 "tokenserver dump"
@@ -673,7 +673,7 @@ EOF
   check "$?" 0 "old stack up" || { tail -20 "${WORK}/src-up.log"; exit 1; }
   src_write "${SRC_PROJECT}_default" http://syncserver:8000
   (cd "${SRC}" && docker compose stop syncserver) > /dev/null 2>&1
-  echo "== dumps (MIGRATING.md, NixOS, as root on the host: here in the database container)"
+  echo "== dumps (docs/migrating.md, NixOS, as root on the host: here in the database container)"
   cd "${SRC}" || exit 1
   if [ "${db}" = mysql ]; then
     local tables listed="users nodes services __diesel_schema_migrations bso collections user_collections batch_uploads batch_upload_items"
@@ -760,7 +760,7 @@ EOF
   check "$?" 0 "old stack up" || { tail -20 "${WORK}/src-up.log"; exit 1; }
   src_write "${SRC_PROJECT}_default" http://syncserver:8000
   (cd "${SRC}" && docker compose stop syncserver) > /dev/null 2>&1
-  echo "== dumps (MIGRATING.md, YunoHost, as root on the server: here in the database container)"
+  echo "== dumps (docs/migrating.md, YunoHost, as root on the server: here in the database container)"
   cd "${SRC}" || exit 1
   local cmd
   for cmd in "sudo -u postgres pg_dump --no-owner --no-acl syncserver_rs_tokenserver > syncserver.sql" \
@@ -848,7 +848,7 @@ EOF
   volumes_before=$(docker volume ls -q --filter "label=com.docker.compose.project=${DST_PROJECT}" | sort | paste -sd' ')
   echo "  volumes: ${volumes_before}"
 
-  echo "== upgrade in place (MIGRATING.md, older firefox-sync releases)"
+  echo "== upgrade in place (docs/upgrading.md#older-firefox-sync-releases, older firefox-sync releases)"
   # "Get the new files": this tree over the old one, the .env kept
   local f
   # (docker-compose.postgres.yml: old releases need the symlink copied too;

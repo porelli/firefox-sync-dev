@@ -498,7 +498,7 @@ func (h *Health) measureSizes(ctx context.Context) {
 }
 
 // releasesDue: time to ask GitHub again, every 12 hours. Never with ADMIN_UPDATE_CHECK=false:
-// with ADMIN_PUBLIC_CHECK=false too, nothing connects to the internet (ADMIN.md)
+// with ADMIN_PUBLIC_CHECK=false too, nothing connects to the internet (docs/admin/monitoring.md#public-checks)
 func (h *Health) releasesDue(now time.Time) bool {
 	return updateChecks() && now.Sub(h.latestAt) > 12*time.Hour
 }

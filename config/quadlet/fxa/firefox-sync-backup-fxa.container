@@ -1,4 +1,4 @@
-# Backups of the accounts databases (ADMIN.md#backups), with firefox-sync-backup.service
+# Backups of the accounts databases (docs/backups.md#the-backup-service), with firefox-sync-backup.service
 # (its timer), just before it: it records the result in the tokenserver database
 [Unit]
 Description=Firefox Sync - Mozilla accounts - Backup of the database

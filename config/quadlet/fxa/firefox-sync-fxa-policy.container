@@ -17,7 +17,7 @@ Environment="FXA_MYSQL_PASSWORD=%FXA_MYSQL_PASSWORD%"
 Environment="FXA_ADMIN_DB_PASSWORD=%FXA_ADMIN_DB_PASSWORD%"
 Environment="FXA_SIGNUPS=%FXA_SIGNUPS%"
 Environment="FXA_SIGNUP_ALLOWLIST=%FXA_SIGNUP_ALLOWLIST%"
-# the most accounts (empty: initial:unlimited), see FXA.md
+# the most accounts (empty: initial:unlimited), see docs/limits.md#fxa_max_accounts
 Environment="FXA_MAX_ACCOUNTS=%FXA_MAX_ACCOUNTS%"
 Exec=fxa-init
 

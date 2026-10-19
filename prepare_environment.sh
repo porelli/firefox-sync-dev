@@ -43,7 +43,7 @@ sed_escape() {
     printf '%s' "${1}" | sed -e 's/[\\/&|]/\\&/g'
 }
 
-# The Sync server's settings, renamed to the SYNC_ prefix (MIGRATING.md#renamed-settings):
+# The Sync server's settings, renamed to the SYNC_ prefix (docs/upgrading.md#renamed-settings):
 # new=old. The old names still work, compose and the Quadlets read them when the new one is
 # not set, and will be removed in a later release; --upgrade renames them in .env
 RENAMED_SETTINGS=(
@@ -114,7 +114,7 @@ env_value() {
     [ -z "$(env_plain "${1}")" ] && [ -n "${old}" ] && value=$(env_line "${old}")
     printf '%s\n' "${value}"
 }
-# the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
+# the SQL for your own database server, with the names and passwords of .env (docs/databases.md#create-the-databases-and-users)
 render_sql() {
     local template=${1} out=${2} pair expressions=()
     shift 2
@@ -226,7 +226,7 @@ fxa_mariadb_image_check() {
     fi
     if [ "${rc}" = 2 ]; then
         echo "NOTE: could not read the labels of ${image}: MariaDB 12 needs an accounts image with mozilla/fxa#21494"
-        echo "  (label org.firefox-sync.upstream-patches, see FXA.md#mysql-or-mariadb)"
+        echo "  (label org.firefox-sync.upstream-patches, see docs/accounts.md#mysql-or-mariadb)"
         echo ""
         return 0
     fi
@@ -237,7 +237,7 @@ fxa_mariadb_image_check() {
     fi
     echo "  which ${image} does not have (Mozilla's images, or ours built before it): on a new"
     echo "  database Mozilla's migrations stop. Use our images (FXA_IMAGE=ghcr.io/porelli/firefox-sync,"
-    echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11 (FXA_MARIADB_IMAGE=mariadb:11), see FXA.md#mysql-or-mariadb"
+    echo "  FXA_VERSION=fxa-mono-latest) or MariaDB 11 (FXA_MARIADB_IMAGE=mariadb:11), see docs/accounts.md#mysql-or-mariadb"
     echo ""
 }
 # the options of fxa-db (FXA_MYSQL_ARGS) for accounts images without mozilla/fxa#21554: their
@@ -258,7 +258,7 @@ fxa_mysql_image_check() {
     if ! mysql_8 "${db_image}" && [ "${native}" = yes ]; then
         echo "WARNING: FXA_MYSQL_ARGS has --mysql-native-password=ON, which MySQL ${db_image##*:} (FXA_MYSQL_IMAGE=${db_image})"
         echo "  refuses: fxa-db would not start. On MySQL 9 the accounts need an image with mozilla/fxa#21554 and"
-        echo "  their users on caching_sha2_password first: MIGRATING.md#mysql-lts (or FXA_MYSQL_IMAGE=mysql:8)"
+        echo "  their users on caching_sha2_password first: docs/upgrading.md#mysql-8-to-9 (or FXA_MYSQL_IMAGE=mysql:8)"
         echo ""
         return 0
     fi
@@ -270,13 +270,13 @@ fxa_mysql_image_check() {
             echo ""
         elif [ "${native}" = yes ] && [ "${UPGRADING:-}" = yes ]; then
             echo "NOTE: ${image} has mozilla/fxa#21554 (caching_sha2_password): the accounts database can move"
-            echo "  from MySQL 8 with mysql_native_password to MySQL lts, when you choose: MIGRATING.md#mysql-lts"
+            echo "  from MySQL 8 with mysql_native_password to MySQL lts, when you choose: docs/upgrading.md#mysql-8-to-9"
             echo ""
         elif mysql_8 "${db_image}" && [ "${UPGRADING:-}" = yes ]; then
             # (the users' plugins are not known here)
             echo "NOTE: fxa-db is on MySQL 8 without FXA_MYSQL_ARGS (mysql_native_password off): users created before on"
             echo "  mysql_native_password cannot log in. Moving from the pin: step 2 (the users) before step 3 (the options),"
-            echo "  MIGRATING.md#mysql-lts; SELECT user, host, plugin FROM mysql.user shows them"
+            echo "  docs/upgrading.md#mysql-8-to-9; SELECT user, host, plugin FROM mysql.user shows them"
             echo ""
         fi
         return 0
@@ -285,7 +285,7 @@ fxa_mysql_image_check() {
     mysql_8 "${db_image}" && [ "${native}" = yes ] && return 0
     if [ "${rc}" = 2 ]; then
         echo "NOTE: could not read the labels of ${image}: MySQL ${db_image##*:} without mysql_native_password"
-        echo "  needs an accounts image with mozilla/fxa#21554 (label org.firefox-sync.upstream-patches, FXA.md#mysql-or-mariadb)"
+        echo "  needs an accounts image with mozilla/fxa#21554 (label org.firefox-sync.upstream-patches, docs/accounts.md#mysql-or-mariadb)"
         echo ""
         return 0
     fi
@@ -293,7 +293,7 @@ fxa_mysql_image_check() {
     echo "  with mozilla/fxa#21554, which ${image} does not have (Mozilla's images, or ours built before it):"
     echo "  they cannot log in. Use our images (FXA_IMAGE=ghcr.io/porelli/firefox-sync, FXA_VERSION=fxa-mono-latest)"
     echo "  or FXA_MYSQL_IMAGE=mysql:8 with FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}"
-    echo "  (on a new database only: MySQL 8 cannot open MySQL 9's data), see FXA.md#mysql-or-mariadb"
+    echo "  (on a new database only: MySQL 8 cannot open MySQL 9's data), see docs/accounts.md#mysql-or-mariadb"
     echo ""
 }
 # this host's architecture as the images name it
@@ -393,17 +393,17 @@ sync_mariadb_major() {
 }
 
 # ./prepare_environment.sh --upgrade: the .env of an install that runs (docker compose), given
-# the settings of this release that need a value of their own (MIGRATING.md), nothing else
+# the settings of this release that need a value of their own (docs/upgrading.md#older-firefox-sync-releases), nothing else
 # changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
 # Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
 # container (SYNC_POSTGRES_APP_USER, SYNC_POSTGRES_APP_PASSWORD), and in COMPOSE_FILE the new name of
 # docker-compose.postgres.yml (docker-compose.sync-postgres.yml), and with the accounts on
 # MariaDB FXA_MARIADB_IMAGE=mariadb:11, the major they run (the compose default is now
-# mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, FXA.md), on MySQL
+# mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, docs/upgrading.md#mariadb), on MySQL
 # FXA_MYSQL_IMAGE=mysql:8 and FXA_MYSQL_ARGS with mysql_native_password, Sync on MySQL
-# SYNC_MYSQL_IMAGE=mysql:8 (the default is now mysql:lts, 9; MIGRATING.md#mysql-lts). A value already set is kept; the
+# SYNC_MYSQL_IMAGE=mysql:8 (the default is now mysql:lts, 9; docs/upgrading.md#mysql-8-to-9). A value already set is kept; the
 # old file is kept as .env.before-upgrade. With your own database server database-setup.sql
-# is written again, to run there first. Quadlets: run this script again (MIGRATING.md).
+# is written again, to run there first. Quadlets: run this script again (docs/upgrading.md#with-quadlets).
 # First the settings of RENAMED_SETTINGS get their new names, their values as they are.
 upgrade_env() {
     local env_file name changed=()
@@ -453,7 +453,7 @@ upgrade_env() {
             changed+=("${new}")
         done
         [ "${#moved[@]}" = 0 ] && return
-        echo "Renamed in .env, the values as they were (MIGRATING.md#renamed-settings):"
+        echo "Renamed in .env, the values as they were (docs/upgrading.md#renamed-settings):"
         printf '  %s\n' "${moved[@]}"
         [ "${#notes[@]}" = 0 ] || printf '  NOTE: %s\n' "${notes[@]}"
         if [ "${#warnings[@]}" != 0 ]; then
@@ -491,7 +491,7 @@ upgrade_env() {
     done
     [ -n "$(env_value ADMIN_DB_PASSWORD)" ] || set_value ADMIN_DB_PASSWORD "$(generate_random_string 32)"
     # docker-compose.postgres.yml is now docker-compose.sync-postgres.yml (the old name is a
-    # symlink to it for a transition period, MIGRATING.md): the new name in COMPOSE_FILE
+    # symlink to it for a transition period, docs/upgrading.md#files-that-moved): the new name in COMPOSE_FILE
     local compose_file compose_new part parts=() renamed=no
     compose_file=$(env_value COMPOSE_FILE | tail -n 1)
     case "${compose_file}" in
@@ -518,14 +518,14 @@ upgrade_env() {
     if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && ! grep -q '^SYNC_POSTGRES_IMAGE=' "${env_file}"; then
         set_value SYNC_POSTGRES_IMAGE postgres:18
         echo "SYNC_POSTGRES_IMAGE=postgres:18: the Sync database stays on PostgreSQL 18. To move it to"
-        echo "  a newer major: a dump and restore (ADMIN.md#restoring) or pg_upgrade (DATABASES.md#another-postgresql-major)"
+        echo "  a newer major: a dump and restore or pg_upgrade (docs/upgrading.md#postgresql)"
     fi
     # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11, they stay there (unset
     # it is now mariadb:lts, which would upgrade their data to 12 at the next start)
     if [ "$(env_value FXA_DB)" = mariadb ] && ! grep -q '^FXA_MARIADB_IMAGE=' "${env_file}"; then
         set_value FXA_MARIADB_IMAGE mariadb:11
         echo "FXA_MARIADB_IMAGE=mariadb:11: the accounts database stays on MariaDB 11. To move it to"
-        echo "  MariaDB lts, 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
+        echo "  MariaDB lts, 12 (a backup first, there is no way back): docs/upgrading.md#mariadb"
     fi
     # the accounts on MySQL, from before FXA_MYSQL_IMAGE: on 8 with mysql_native_password, they
     # stay there. Unset it is now mysql:lts (9), which would upgrade their data at the next start
@@ -536,7 +536,7 @@ upgrade_env() {
         env_has FXA_MYSQL_ARGS || set_value FXA_MYSQL_ARGS "${FXA_MYSQL_NATIVE_ARGS}"
         echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
         echo "  stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9 (its users first, a backup, no"
-        echo "  way back): MIGRATING.md#mysql-lts"
+        echo "  way back): docs/upgrading.md#mysql-8-to-9"
     fi
     # Sync on MariaDB containers, from before SYNC_MARIADB_IMAGE (they ran mariadb:lts): on the
     # major their data holds, they stay there (unset, a pull after the next major would upgrade
@@ -546,7 +546,7 @@ upgrade_env() {
         if major=$(sync_mariadb_major); then
             set_value SYNC_MARIADB_IMAGE "mariadb:${major}"
             echo "SYNC_MARIADB_IMAGE=mariadb:${major}: the Sync databases stay on MariaDB ${major}, the major of their data. To follow"
-            echo "  MariaDB lts again (a backup first, there is no way back): SYNC_MARIADB_IMAGE=mariadb:lts (DATABASES.md)"
+            echo "  MariaDB lts again (a backup first, there is no way back): SYNC_MARIADB_IMAGE=mariadb:lts (docs/upgrading.md#database-majors)"
         else
             echo "WARNING: could not read the MariaDB major of the Sync databases (no volume or running container found):"
             echo "  SYNC_MARIADB_IMAGE is not set; set it to the major they run, SYNC_MARIADB_IMAGE=mariadb:<major>. Until then the"
@@ -558,7 +558,7 @@ upgrade_env() {
     if [ "$(env_value SYNC_DB)" = mysql ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && ! env_has SYNC_MYSQL_IMAGE; then
         set_value SYNC_MYSQL_IMAGE mysql:8
         echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases stay on MySQL 8. To move them to MySQL lts, 9"
-        echo "  (a backup first, there is no way back): MIGRATING.md#mysql-lts"
+        echo "  (a backup first, there is no way back): docs/upgrading.md#mysql-8-to-9"
     fi
     old_names_in_environment
     if [ "${#changed[@]}" = 0 ]; then
@@ -570,7 +570,7 @@ upgrade_env() {
     fi
     if [ "$(env_value SYNC_DB_CONTAINERS)" = 0 ]; then
         [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && render_sync_sql postgres || render_sync_sql mariadb
-        echo "Your own database server: run database-setup.sql there first, as its administrator (DATABASES.md)."
+        echo "Your own database server: run database-setup.sql there first, as its administrator (docs/databases.md#create-the-databases-and-users)."
     fi
     fxa_mariadb_image_check
     fxa_installed && UPGRADING=yes fxa_mysql_image_check
@@ -665,7 +665,7 @@ read -e -p "Syncstorage image tag [latest/<tag>] [${DEFAULT_SYNCSTORAGE_IMAGE_TA
 SYNC_IMAGE_TAG=${SYNC_IMAGE_TAG:-${DEFAULT_SYNCSTORAGE_IMAGE_TAG}}
 
 # admin UI
-read -r -e -p "Enable the admin UI? Max users, and sign-ups and accounts with self-hosted accounts, see ADMIN.md (Y/n): " ADMIN_UI
+read -r -e -p "Enable the admin UI? Max users, and sign-ups and accounts with self-hosted accounts, see docs/admin/README.md (Y/n): " ADMIN_UI
 case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
 # with the admin UI, max users is managed there: SYNC_MAX_USERS=initial:N sets it only on the
 # first start. A plain number is set again on every start (read-only in the admin UI)
@@ -675,8 +675,8 @@ case "${ADMIN_UI}" in n|N|no) ADMIN_UI=no ;; *) ADMIN_UI=yes ;; esac
 ADMIN_ALLOWED_USERS=""
 ADMIN_HOST=""
 
-# self-hosted Mozilla accounts (FXA.md)
-read -r -e -p "Also self-host Mozilla accounts? See FXA.md (y/N): " SELF_HOST_FXA
+# self-hosted Mozilla accounts (docs/accounts.md)
+read -r -e -p "Also self-host Mozilla accounts? See docs/accounts.md (y/N): " SELF_HOST_FXA
 case "${SELF_HOST_FXA}" in y|Y|yes) SELF_HOST_FXA=yes ;; *) SELF_HOST_FXA=no ;; esac
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     DEFAULT_FXA_DOMAIN=${SYNC_FQDN#*.}
@@ -711,7 +711,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
 fi
 
-# your own database server (DATABASES.md), asked last so that scripted answers for the
+# your own database server (docs/databases.md#your-own-server), asked last so that scripted answers for the
 # questions above still line up
 EXTERNAL_DB=no
 EXTERNAL_FXA_DB=no
@@ -724,7 +724,7 @@ valid_host() {
         "") echo "ERROR: the database host is required"; exit 1 ;;
         localhost|127.*|0.0.0.0)
             echo "ERROR: '${1}' would be the container itself: use an address of this host the containers"
-            echo "  can reach (e.g. 172.17.0.1 for Docker, host.containers.internal for Podman), see DATABASES.md"
+            echo "  can reach (e.g. 172.17.0.1 for Docker, host.containers.internal for Podman), see docs/databases.md#server-requirements"
             exit 1 ;;
         # IPv6 literals would need [ ] in the database URLs, which not every client parses
         *:*) echo "ERROR: '${1}': use a host name or an IPv4 address (no IPv6 address)"; exit 1 ;;
@@ -732,7 +732,7 @@ valid_host() {
     esac
 }
 valid_port() { case "${1}" in ''|*[!0-9]*) echo "ERROR: not a port: '${1}'"; exit 1 ;; esac; }
-read -r -e -p "Use an existing database server instead of starting one? See DATABASES.md (y/N): " EXTERNAL_DB
+read -r -e -p "Use an existing database server instead of starting one? See docs/databases.md#your-own-server (y/N): " EXTERNAL_DB
 case "${EXTERNAL_DB}" in y|Y|yes) EXTERNAL_DB=yes ;; *) EXTERNAL_DB=no ;; esac
 if [ "${EXTERNAL_DB}" = "yes" ]; then
     read -r -e -p "Database server host, as the containers reach it: " DB_HOST
@@ -763,7 +763,7 @@ if [ "${EXTERNAL_DB}" = "yes" ]; then
     fi
 fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    read -r -e -p "Use an existing MySQL 8.4/9 or MariaDB 11.4+ server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See DATABASES.md (y/N): " EXTERNAL_FXA_DB
+    read -r -e -p "Use an existing MySQL 8.4/9 or MariaDB 11.4+ server for the accounts$([ "${EXTERNAL_DB}" = "yes" ] && echo " too")? See docs/databases.md#your-own-server (y/N): " EXTERNAL_FXA_DB
     case "${EXTERNAL_FXA_DB}" in y|Y|yes) EXTERNAL_FXA_DB=yes ;; *) EXTERNAL_FXA_DB=no ;; esac
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Accounts database server host${DB_HOST:+ [${DB_HOST}]}: " FXA_MYSQL_HOST
@@ -782,7 +782,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         read -r -e -p "Is that server MySQL or MariaDB? (mysql/mariadb) [mysql]: " FXA_DB
     else
-        read -r -e -p "Accounts database: mysql (MySQL lts, what Mozilla runs) or mariadb (MariaDB lts, see FXA.md) [mysql]: " FXA_DB
+        read -r -e -p "Accounts database: mysql (MySQL lts, what Mozilla runs) or mariadb (MariaDB lts, see docs/accounts.md#mysql-or-mariadb) [mysql]: " FXA_DB
     fi
     case "${FXA_DB}" in
         ""|mysql|MySQL) FXA_DB=mysql ;;
@@ -801,19 +801,19 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     [ "${ADMIN_UI}" = "yes" ] && FXA_MAX_ACCOUNTS=initial:${FXA_MAX_ACCOUNTS}
 fi
 
-# the security history of the accounts (FXA.md), asked last for the same reason
+# the security history of the accounts (docs/accounts.md#security-history), asked last for the same reason
 FXA_ACCOUNT_EVENTS=false
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
-    echo "Security history: every sign-in, password and 2-step change is kept with its IP address, for the owner and the admin UI to see (FXA.md)."
+    echo "Security history: every sign-in, password and 2-step change is kept with its IP address, for the owner and the admin UI to see (docs/accounts.md#security-history)."
     read -r -e -p "Record the security history of the accounts? (y/N): " FXA_ACCOUNT_EVENTS
     case "${FXA_ACCOUNT_EVENTS}" in y|Y|yes) FXA_ACCOUNT_EVENTS=true ;; *) FXA_ACCOUNT_EVENTS=false ;; esac
 fi
 
-# the alerts of the admin UI to other destinations than email (ADMIN.md#alerts), asked last
+# the alerts of the admin UI to other destinations than email (docs/admin/alerts.md#destinations), asked last
 # for the same reason. Not shown as typed: the URLs hold tokens
 ADMIN_NOTIFY=""
 if [ "${ADMIN_UI}" = "yes" ]; then
-    echo "Alerts of the admin UI: by email (ADMIN_ALERT_EMAIL in .env, with an SMTP server), and/or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (ADMIN.md#alerts)."
+    echo "Alerts of the admin UI: by email (ADMIN_ALERT_EMAIL in .env, with an SMTP server), and/or to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (docs/admin/alerts.md#destinations)."
     read -r -s -p "Also send alerts to Slack, Discord, ntfy...? Paste a destination URL (e.g. ntfy://ntfy.sh/<topic>, slack://hooks.slack.com/services/...) or leave empty: " ADMIN_NOTIFY
     echo ""
     # scheme://host of a destination, … for what cannot be named safely (an @ after the
@@ -844,7 +844,7 @@ if [ "${ADMIN_UI}" = "yes" ]; then
         esac
         if [ -n "${notify_kind}" ]; then
             read -r -e -p "That is a ${notify_kind} webhook URL: use it as ${notify_kind}://... (Y/n): " notify_convert
-            case "${notify_convert}" in n|N|no) echo "ERROR: https:// is no destination of ADMIN_NOTIFY, see ADMIN.md#alerts"; exit 1 ;; esac
+            case "${notify_convert}" in n|N|no) echo "ERROR: https:// is no destination of ADMIN_NOTIFY, see docs/admin/alerts.md#destinations"; exit 1 ;; esac
             notify_entry="${notify_kind}://${notify_entry#https://}"
         fi
         notify_base="" notify_shown="…"
@@ -853,7 +853,7 @@ if [ "${ADMIN_UI}" = "yes" ]; then
             notify_shown=$(notify_name "${notify_entry}")
         fi
         if ! [[ "${notify_base}" =~ ^(slack|discord|teams|ntfy|gotify|telegram|matrix|webhook)$ ]]; then
-            echo "ERROR: ${notify_shown} is no destination of ADMIN_NOTIFY: slack://, discord://, teams://, ntfy://, gotify://, telegram://, matrix:// or webhook://, see ADMIN.md#alerts"
+            echo "ERROR: ${notify_shown} is no destination of ADMIN_NOTIFY: slack://, discord://, teams://, ntfy://, gotify://, telegram://, matrix:// or webhook://, see docs/admin/alerts.md#destinations"
             exit 1
         fi
         if [ "${notify_base}" != telegram ] && [ "${notify_shown}" = "${notify_shown%://…}://…" ]; then
@@ -1048,7 +1048,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     # accounts image has mozilla/fxa#21554; else MySQL 8 with mysql_native_password, the only
     # authentication of the images without it (Mozilla's, ours from before). One that ran MySQL
     # before FXA_MYSQL_IMAGE, or whose fxa-db volume is still there, runs 8 like that: pinned,
-    # its users are on mysql_native_password (MIGRATING.md#mysql-lts). Your own server: the
+    # its users are on mysql_native_password (docs/upgrading.md#mysql-8-to-9). Your own server: the
     # image is the backups' client, and without the patch the accounts' user is created with
     # mysql_native_password in database-setup-fxa.sql
     if [ "${FXA_DB}" = "mysql" ]; then
@@ -1127,7 +1127,7 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-postgres|"
     apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-postgres-init|"
     # the database container: the Sync server gets a role of its own, SYNC_POSTGRES_USER is the
-    # container's superuser (your own server: SYNC_POSTGRES_USER is the plain owner, DATABASES.md)
+    # container's superuser (your own server: SYNC_POSTGRES_USER is the plain owner, docs/reference/database-users.md#postgresql)
     if [ "${EXTERNAL_DB}" != "yes" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|"
         apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(generate_random_string 32)|"
@@ -1136,7 +1136,7 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
     apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_PIN}")|"
 fi
 
-# the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
+# the SQL for your own database server, with the names and passwords of .env (docs/databases.md#create-the-databases-and-users)
 [ "${EXTERNAL_DB}" = "yes" ] && render_sync_sql "${DATABASE_BACKEND}"
 if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
     fxa_template=${SCRIPT_DIR}/db/mysql/fxa-${FXA_DB}.sql
@@ -1320,7 +1320,7 @@ fi
 if [ "${ADMIN_UI}" = "yes" ]; then
     echo ""
     echo "Admin UI: http://localhost:8090 on this host (over SSH: ssh -L 8090:127.0.0.1:8090 <host>),"
-    echo "  password: ADMIN_PASSWORD in .env. See ADMIN.md"
+    echo "  password: ADMIN_PASSWORD in .env. See docs/admin/README.md"
     [ -n "${ADMIN_ALLOWED_USERS:-}" ] && echo "  or https://${ADMIN_HOST}, signed in with the accounts of ${ADMIN_ALLOWED_USERS}"
 fi
 
@@ -1328,7 +1328,7 @@ echo ""
 
 # your own database server: what to run there first
 if [ "${EXTERNAL_DB}" = "yes" ]; then
-    echo "First, on your database server (see DATABASES.md):"
+    echo "First, on your database server (see docs/databases.md#create-the-databases-and-users):"
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         echo "  psql -h ${DB_HOST} -p ${DB_PORT} -U postgres -f database-setup.sql"
         echo "  pg_hba.conf: a host line (not hostssl) for the containers' addresses, scram-sha-256"
@@ -1340,17 +1340,17 @@ if [ "${EXTERNAL_DB}" = "yes" ]; then
     fi
 fi
 if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
-    [ "${EXTERNAL_DB}" = "yes" ] || echo "First, on your database server (see DATABASES.md):"
+    [ "${EXTERNAL_DB}" = "yes" ] || echo "First, on your database server (see docs/databases.md#create-the-databases-and-users):"
     if [ "${FXA_DB}" = "mariadb" ]; then
         echo "  mariadb -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
-        echo "  MariaDB 11.4 or later (12: with our accounts images, FXA.md), with binary logging: log_bin_trust_function_creators=ON"
+        echo "  MariaDB 11.4 or later (12: with our accounts images, docs/accounts.md#mariadb-12), with binary logging: log_bin_trust_function_creators=ON"
     else
         echo "  mysql -h ${FXA_MYSQL_HOST} -P ${FXA_MYSQL_PORT} -u root -p < database-setup-fxa.sql"
         if [ "${FXA_MYSQL2}" = 0 ]; then
             echo "  MySQL 8.4 or 9 with log_bin_trust_function_creators=ON"
         else
             echo "  MySQL 8.4 started with mysql_native_password=ON and log_bin_trust_function_creators=ON: the accounts"
-            echo "  image has no mozilla/fxa#21554, its driver speaks mysql_native_password only (FXA.md#mysql-or-mariadb)"
+            echo "  image has no mozilla/fxa#21554, its driver speaks mysql_native_password only (docs/accounts.md#mysql-or-mariadb)"
         fi
     fi
 fi
@@ -1358,16 +1358,16 @@ fi
 if [ "${SELF_HOST_FXA}" = "yes" ]; then
     if [ "${PINNED_FXA_MARIADB:-}" = "yes" ]; then
         echo "FXA_MARIADB_IMAGE=mariadb:11: the accounts database of this install stays on MariaDB 11."
-        echo "  To move it to MariaDB lts, 12 (a backup first, there is no way back): FXA.md#moving-to-a-newer-mariadb"
+        echo "  To move it to MariaDB lts, 12 (a backup first, there is no way back): docs/upgrading.md#mariadb"
     fi
     if [ -n "${FXA_MARIADB_VOLUME:-}" ]; then
         echo "FXA_MARIADB_IMAGE=mariadb:11: found the accounts database of an earlier install (${FXA_MARIADB_VOLUME}),"
         echo "  its data stays on MariaDB 11. Already on 12: set FXA_MARIADB_IMAGE=mariadb:lts. A new install: remove the volume"
-        echo "  (its accounts are lost) and run this again. Moving it to lts: FXA.md#moving-to-a-newer-mariadb"
+        echo "  (its accounts are lost) and run this again. Moving it to lts: docs/upgrading.md#mariadb"
     fi
     if [ "${PINNED_FXA_MYSQL:-}" = "yes" ]; then
         echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
-        echo "  of this install stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9: MIGRATING.md#mysql-lts"
+        echo "  of this install stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9: docs/upgrading.md#mysql-8-to-9"
     fi
     if [ -n "${FXA_MYSQL_VOLUME:-}" ] && [ "${FXA_MYSQL_VOLUME_MAJOR}" -ge 9 ]; then
         echo "FXA_MYSQL_IMAGE=mysql:lts: found the accounts database of an earlier install (${FXA_MYSQL_VOLUME}), on"
@@ -1376,7 +1376,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: found the accounts database"
         echo "  of an earlier install (${FXA_MYSQL_VOLUME}), its data stays on MySQL 8 with mysql_native_password."
         echo "  A new install: remove the volume"
-        echo "  (its accounts are lost) and run this again. Moving it to lts: MIGRATING.md#mysql-lts"
+        echo "  (its accounts are lost) and run this again. Moving it to lts: docs/upgrading.md#mysql-8-to-9"
     elif [ "${FXA_DB}" = mysql ] && [ "${EXTERNAL_FXA_DB}" != yes ] && [ "${PREVIOUS_FXA_MYSQL}" != yes ] && [ "${FXA_MYSQL2}" != 0 ]; then
         if [ "${FXA_MYSQL2}" = 2 ]; then
             echo "NOTE: could not read the labels of $(env_value FXA_IMAGE):$(env_value FXA_VERSION): MySQL lts (9) needs"
@@ -1389,18 +1389,18 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
             echo "  built before it), which MySQL lts (9) needs"
         fi
         echo "  an accounts image with mozilla/fxa#21554 (the mysql2 driver): fxa-db runs MySQL 8 with mysql_native_password"
-        echo "  (FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}), see FXA.md#mysql-or-mariadb"
+        echo "  (FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}), see docs/accounts.md#mysql-or-mariadb"
     fi
     fxa_mariadb_image_check
     [ "${FXA_DB}" = mysql ] && fxa_mysql_image_check
 fi
 if [ "${DATABASE_BACKEND}" = postgres ] && [ -n "${SYNC_POSTGRES_MAJOR:-}" ]; then
     echo "SYNC_POSTGRES_IMAGE=postgres:${SYNC_POSTGRES_MAJOR}: PostgreSQL ${SYNC_POSTGRES_MAJOR}, the major of postgres:latest today, pinned: a newer"
-    echo "  major cannot open its data. Moving later: DATABASES.md#another-postgresql-major"
+    echo "  major cannot open its data. Moving later: docs/upgrading.md#postgresql"
 elif [ "${DATABASE_BACKEND}" = postgres ] && [ -n "${SYNC_POSTGRES_VOLUME}" ]; then
     echo "SYNC_POSTGRES_IMAGE=${SYNC_POSTGRES_PIN}: found the Sync database of an earlier install (${SYNC_POSTGRES_VOLUME}),"
     echo "  PostgreSQL ${SYNC_POSTGRES_VOLUME_MAJOR}: it stays on it. A new install: remove the volume (its data is lost) and run this"
-    echo "  again. Moving to a newer major: DATABASES.md#another-postgresql-major"
+    echo "  again. Moving to a newer major: docs/upgrading.md#postgresql"
 fi
 if [ -n "${SYNC_MARIADB_FOUND}" ]; then
     echo "SYNC_MARIADB_IMAGE=${SYNC_MARIADB_PIN}: found the Sync databases of an earlier install on MariaDB ${SYNC_MARIADB_FOUND}: they stay on it."
@@ -1408,7 +1408,7 @@ if [ -n "${SYNC_MARIADB_FOUND}" ]; then
 fi
 if [ "${PINNED_SYNC_MYSQL:-}" = "yes" ]; then
     echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases of this install stay on MySQL 8. To move them to MySQL lts, 9:"
-    echo "  MIGRATING.md#mysql-lts"
+    echo "  docs/upgrading.md#mysql-8-to-9"
 fi
 if [ -n "${SYNC_MYSQL_VOLUME:-}" ] && [ "${SYNC_MYSQL_VOLUME_MAJOR}" -ge 9 ]; then
     echo "SYNC_MYSQL_IMAGE=mysql:lts: found the Sync databases of an earlier install (${SYNC_MYSQL_VOLUME}), on MySQL"
@@ -1416,7 +1416,7 @@ if [ -n "${SYNC_MYSQL_VOLUME:-}" ] && [ "${SYNC_MYSQL_VOLUME_MAJOR}" -ge 9 ]; th
 elif [ -n "${SYNC_MYSQL_VOLUME:-}" ]; then
     echo "SYNC_MYSQL_IMAGE=mysql:8: found the Sync databases of an earlier install (${SYNC_MYSQL_VOLUME}), their data"
     echo "  stays on MySQL 8. A new install: remove the volumes and run"
-    echo "  this again. Moving them to lts: MIGRATING.md#mysql-lts"
+    echo "  this again. Moving them to lts: docs/upgrading.md#mysql-8-to-9"
 fi
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
@@ -1430,15 +1430,15 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     if [ "${SELF_HOST_FXA}" = "yes" ]; then
         echo "     systemctl --user start firefox-sync-fxa-content.service firefox-sync-fxa-profile.service \\"
         echo "       firefox-sync-fxa-profile-worker.service firefox-sync-fxa-profile-static.service"
-        echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see FXA.md)"
+        echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see docs/firefox.md#self-hosted-accounts)"
     fi
     echo "  2. (Optional) loginctl enable-linger \$USER"
-    echo "  3. (Optional) nightly backups: systemctl --user enable --now firefox-sync-backup.timer (ADMIN.md#backups)"
+    echo "  3. (Optional) nightly backups: systemctl --user enable --now firefox-sync-backup.timer (docs/backups.md#the-backup-service)"
     echo ""
     echo "To check status:"
     echo "  systemctl --user status firefox-sync-syncstorage.service"
     echo ""
-    echo "See PODMAN.md for detailed instructions"
+    echo "See docs/install/podman.md for detailed instructions"
 elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         COMPOSE_FILES="-f docker-compose.sync-postgres.yml"
@@ -1452,14 +1452,14 @@ elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     echo "  1. systemctl --user enable --now podman.socket"
     echo "  2. export DOCKER_HOST=unix://\${XDG_RUNTIME_DIR}/podman/podman.sock"
     echo "  3. docker compose ${COMPOSE_FILES} up -d"
-    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (ADMIN.md#backups)"
+    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
     echo ""
-    echo "See PODMAN.md for detailed instructions (podman-compose is not supported)"
+    echo "See docs/install/podman.md for detailed instructions (podman-compose is not supported)"
 else
     echo "Next steps:"
     echo "  1. docker compose up -d"
-    [ "${SELF_HOST_FXA}" = "yes" ] && echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see FXA.md)"
-    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (ADMIN.md#backups)"
+    [ "${SELF_HOST_FXA}" = "yes" ] && echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see docs/firefox.md#self-hosted-accounts)"
+    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
     echo "  2. (Optional) Install systemd service:"
     echo "     sudo cp config/systemd/syncstorage-rs.service /etc/systemd/system/"
     echo "     sudo systemctl enable --now syncstorage-rs.service"

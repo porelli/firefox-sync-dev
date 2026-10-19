@@ -475,7 +475,7 @@ func missingProcedures(ctx context.Context, db *sql.DB) ([]string, error) {
 }
 
 func fxaInit(ctx context.Context) error {
-	// the policy user, or the accounts' own (Quadlets have no ${a:-${b}}): DATABASES.md.
+	// the policy user, or the accounts' own (Quadlets have no ${a:-${b}}): docs/reference/database-users.md#the-accounts.
 	// User and password as a pair: a policy password left over must not go with FXA_MYSQL_USER
 	user, password := env("FXA_DB_ROOT_USER", ""), env("FXA_DB_ROOT_PASSWORD", "")
 	if user == "" {
@@ -513,14 +513,14 @@ func fxaInit(ctx context.Context) error {
 	}
 
 	// information_schema lists only the routines this user may run: without EXECUTE on
-	// fxa.* (your own server, DATABASES.md) they look missing too
+	// fxa.* (your own server, docs/reference/database-users.md#the-accounts) they look missing too
 	missing, err := missingProcedures(ctx, db)
 	if err != nil {
 		return err
 	}
 	stmts := fxaPolicySQL
 	if len(missing) > 0 {
-		log.Printf("WARNING: %s missing from the accounts database (a newer FxA release renamed it, or %s has no EXECUTE on fxa.*, DATABASES.md): what the admin UI does with it answers with an error (ADMIN.md)",
+		log.Printf("WARNING: %s missing from the accounts database (a newer FxA release renamed it, or %s has no EXECUTE on fxa.*, docs/reference/database-users.md#the-accounts): what the admin UI does with it answers with an error (docs/admin/accounts.md)",
 			strings.Join(missing, ", "), user)
 		stmts = policySQL(missing)
 	}
@@ -547,7 +547,7 @@ func fxaInit(ctx context.Context) error {
 		switch {
 		case errors.As(err, &myErr) && myErr.Number == errSpecificAccessDenied:
 			// your own server: no CREATE USER for the policy user (it could change any
-			// account's password), the administrator created ffs_admin (DATABASES.md).
+			// account's password), the administrator created ffs_admin (docs/reference/database-users.md#the-accounts).
 			// Nothing earlier versions granted to revoke there, and REVOKE ALL needs it too
 			log.Printf("ffs_admin: created by the administrator of the database server, granting")
 			grants = grants[1:]
@@ -561,7 +561,7 @@ func fxaInit(ctx context.Context) error {
 		default:
 			// on MySQL caching_sha2_password, whatever the server's default: this driver speaks
 			// it, and MySQL 9 has no mysql_native_password, which a pinned mysql:8 with
-			// --authentication-policy=mysql_native_password gives it (MIGRATING.md#mysql-lts).
+			// --authentication-policy=mysql_native_password gives it (docs/upgrading.md#mysql-8-to-9).
 			// MariaDB has no caching_sha2_password: its default
 			alter := "ALTER USER 'ffs_admin'@'%' IDENTIFIED BY ?"
 			var version string

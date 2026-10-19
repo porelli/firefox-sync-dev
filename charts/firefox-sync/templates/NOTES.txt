@@ -14,10 +14,10 @@ Publish {{ include "firefox-sync.fullname" . }}-syncstorage:{{ .Values.syncstora
   {{ trimSuffix "/" .Values.syncDomain }}/1.0/sync/1.5
 
 as identity.sync.tokenserver.uri in about:config, see
-https://github.com/porelli/firefox-sync/blob/main/SYNC.md#firefox-setup
+https://github.com/porelli/firefox-sync/blob/main/docs/firefox.md
 {{- if not .Values.database.bundled }}
 
-Your own database server {{ .Values.database.external.host }}: the databases and users of DATABASES.md's SQL
+Your own database server {{ .Values.database.external.host }}: the databases and users of docs/databases.md#create-the-databases-and-users
 must be there, with the passwords of the Secret {{ include "firefox-sync.secretName" . }}; the pods wait for it, and
 stop in their init containers while a login is refused.
 {{- if ne .Values.database.backend "postgres" }} The init container{{ if .Values.backup.enabled }} and the backups{{ end }}
@@ -30,12 +30,12 @@ MySQL's own is self-signed); true needs one from a CA the images trust.
 {{- end }}
 {{- if .Values.database.bundled }}
 
-The bundled database runs {{ include "firefox-sync.dbImage" . }}: a helm upgrade that would move it to another major is refused{{ if ne .Values.database.backend "postgres" }} unless database.allowMajorUpgrade=true (set it back to false after the move: --reuse-values keeps it){{ end }} (HELM.md#upgrades).
+The bundled database runs {{ include "firefox-sync.dbImage" . }}: a helm upgrade that would move it to another major is refused{{ if ne .Values.database.backend "postgres" }} unless database.allowMajorUpgrade=true (set it back to false after the move: --reuse-values keeps it){{ end }} (docs/upgrading.md#database-majors).
 {{- end }}
 {{- if and .Values.database.bundled (eq .Values.database.backend "postgres") (hasSuffix ":latest" .Values.database.image.postgres) }}
 
 database.image.postgres is {{ .Values.database.image.postgres }}: pin the major the server runs now in your
-values, or a new PostgreSQL major leaves it unable to start on its data (HELM.md#upgrades):
+values, or a new PostgreSQL major leaves it unable to start on its data (docs/upgrading.md#database-majors):
 
   kubectl -n {{ .Release.Namespace }} exec sts/{{ include "firefox-sync.fullname" . }}-postgres -- postgres --version
   database.image.postgres: docker.io/library/postgres:<that major>
@@ -43,7 +43,7 @@ values, or a new PostgreSQL major leaves it unable to start on its data (HELM.md
 {{- if and .Values.admin.enabled .Values.admin.ingress.enabled }}
 
 The admin UI is published by the Ingress {{ include "firefox-sync.adminService" . }} at {{ .Values.admin.ingress.host }}: keep it
-behind your own sign-in (ADMIN.md#signing-in).
+behind your own sign-in (docs/admin/signing-in.md).
 {{- if not .Values.admin.ingress.tls.enabled }}
 WARNING: admin.ingress.tls.enabled is false: unless your controller adds TLS, the admin
 password and session cookie cross the network in plain HTTP.
@@ -68,7 +68,7 @@ Backups: the CronJob {{ include "firefox-sync.fullname" . }}-backup ({{ .Values.
 
   kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "firefox-sync.fullname" . }}-backup backup-now-$(date +%s)
 
-Restoring: https://github.com/porelli/firefox-sync/blob/main/HELM.md#restoring
+Restoring: https://github.com/porelli/firefox-sync/blob/main/docs/backups.md#restore-on-kubernetes
 {{- end }}
 {{- if not .Values.existingSecret }}
 

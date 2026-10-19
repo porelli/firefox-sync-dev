@@ -1,4 +1,4 @@
--- The Sync server on your PostgreSQL 11+ server (DATABASES.md).
+-- The Sync server on your PostgreSQL 11+ server (docs/databases.md#your-own-server).
 -- Run as a superuser (or a role with CREATEROLE and CREATEDB). prepare_environment.sh
 -- fills in the placeholders from .env and writes the result to database-setup.sql.
 CREATE ROLE @SYNC_POSTGRES_USER@ LOGIN PASSWORD '@SYNC_POSTGRES_PASSWORD@';
@@ -19,7 +19,7 @@ REVOKE ALL ON DATABASE @SYNC_POSTGRES_DATABASE@ FROM PUBLIC;
 -- @ADMIN_SYNC_USER@, which reads the Sync tables and has nothing on the admin UI's database
 -- (the code the owner above can put in its database runs as it). The init container (as
 -- the owner of the Sync tables) gives it SELECT on them, UPDATE of max users, DELETE of rows
--- of users and of what they store (DATABASES.md)
+-- of users and of what they store (docs/reference/database-users.md#postgresql)
 CREATE ROLE @ADMIN_USER@ LOGIN PASSWORD '@ADMIN_PASSWORD@';
 CREATE ROLE @ADMIN_SYNC_USER@ LOGIN PASSWORD '@ADMIN_PASSWORD@';
 ALTER ROLE @ADMIN_USER@ PASSWORD '@ADMIN_PASSWORD@';

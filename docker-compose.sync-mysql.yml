@@ -1,5 +1,5 @@
 # The Sync databases (syncstorage_db, tokenserver_db) on MySQL instead of MariaDB
-# (SYNC_DB=mysql, see DATABASES.md), on top of docker-compose.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
+# (SYNC_DB=mysql, see docs/databases.md#mysql-instead-of-mariadb), on top of docker-compose.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
 # (with Podman: -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml).
 # Same images for the Sync server (syncstorage-rs-mysql) and the init container: upstream
 # syncstorage-rs is developed and tested on MySQL 8, the tests here run it on lts and 8 too.
@@ -8,7 +8,7 @@
 x-sync-mysql: &sync-mysql
   # SYNC_MYSQL_IMAGE: mysql:lts by default, MySQL's newest long-term major (9 today); the
   # installs from before run mysql:8 (prepare_environment.sh --upgrade writes it, moving to
-  # lts: MIGRATING.md#mysql-lts). On data of another major the containers do not start unless
+  # lts: docs/upgrading.md#mysql-8-to-9). On data of another major the containers do not start unless
   # SYNC_MYSQL_IMAGE is set (db/mysql/keep-major.sh): MySQL would upgrade it for good
   image: ${SYNC_MYSQL_IMAGE:-mysql:lts}
   # no binary logging, like the MariaDB containers: no replica reads it, and it would keep

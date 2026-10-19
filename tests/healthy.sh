@@ -97,7 +97,7 @@ health_parity() {
     case "${s}" in ffs-admin) unit=firefox-sync-admin ;; *) unit=firefox-sync-${s//_/-} ;; esac
     q=${dir}/${unit}.container
     if [ ! -f "${q}" ]; then
-      # the pairing server has no Quadlet (PODMAN.md)
+      # the pairing server has no Quadlet (docs/install/podman.md)
       [ "${s}" = fxa-pairing ] || out="${out}; ${s}: no ${unit}.container"
       continue
     fi

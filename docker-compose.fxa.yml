@@ -2,7 +2,7 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.fxa.yml up -d
 #
 # Uses amd64 and arm64 builds of Mozilla's releases (mozilla/fxa-mono). The public URLs below
-# must be served by your reverse proxy, see FXA.md:
+# must be served by your reverse proxy, see docs/reverse-proxy.md#host-names-and-ports:
 #   FXA_CONTENT_URL  -> fxa-content:3030 (accounts web pages, Firefox reads /.well-known from here)
 #   FXA_AUTH_URL     -> fxa-auth:9000    (accounts API and OAuth; with the admin UI,
 #                       POST /v1/account/create -> ffs-admin:8081, the sign-up gate)
@@ -13,14 +13,14 @@
 # and FXA_EMAIL_DOMAIN to the host name of FXA_AUTH_URL.
 
 x-fxa: &fxa
-  # amd64 and arm64 builds of Mozilla's releases, tested before publishing (see FXA.md)
+  # amd64 and arm64 builds of Mozilla's releases, tested before publishing (see docs/reference/images.md#accounts)
   image: ${FXA_IMAGE:-ghcr.io/porelli/firefox-sync}:${FXA_VERSION:-fxa-mono-latest}
   platform: linux/${FXA_ARCH:-amd64}
   restart: unless-stopped
 
 # the accounts database: fxa-db (MySQL, MariaDB with docker-compose.fxa-mariadb.yml), or your own
 # MySQL 8.4 or 9 (9 with our images) or MariaDB 11.4+ server (12 with our images;
-# FXA_DB_CONTAINERS=0, DATABASES.md)
+# FXA_DB_CONTAINERS=0, docs/reference/database-users.md#the-accounts)
 x-fxa-mysql: &fxa-mysql
   MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
   MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
@@ -37,10 +37,10 @@ services:
     # --authentication-policy=mysql_native_password: their driver speaks nothing else, and
     # MySQL 9 has no such plugin (nor these options: it refuses to start with them).
     # prepare_environment.sh writes both (--upgrade: mysql:8 for the installs from before);
-    # moving to lts: MIGRATING.md#mysql-lts. On data of another major the container does not
+    # moving to lts: docs/upgrading.md#mysql-8-to-9. On data of another major the container does not
     # start unless FXA_MYSQL_IMAGE is set (db/mysql/keep-major.sh)
     image: ${FXA_MYSQL_IMAGE:-mysql:lts}
-    # 0: your own server (DATABASES.md); compose then skips the dependency on it
+    # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
     deploy:
       replicas: ${FXA_DB_CONTAINERS:-1}
     environment:
@@ -111,7 +111,7 @@ services:
     restart: "no"
 
   # who can create an account (FXA_SIGNUPS, FXA_SIGNUP_ALLOWLIST, FXA_MAX_ACCOUNTS), enforced by the
-  # accounts database itself; also the database user of the admin UI. See ADMIN.md
+  # accounts database itself; also the database user of the admin UI. See docs/reference/database-users.md#the-accounts
   fxa-policy:
     image: ${ADMIN_IMAGE:-${IMAGE_REPOSITORY:-${REPOSITORY:-}}:admin-latest}
     command: [fxa-init]
@@ -163,7 +163,7 @@ services:
       # the client IP for the rate limits is this far from the end of X-Forwarded-For:
       # 2 = one reverse proxy in front (Mozilla's default, 3, lets clients pick their IP)
       CLIENT_ADDRESS_DEPTH: ${FXA_CLIENT_ADDRESS_DEPTH:-2}
-      # how long Firefox's access tokens live (Mozilla's default: 365 minutes), see ADMIN.md
+      # how long Firefox's access tokens live (Mozilla's default: 365 minutes), see docs/admin/accounts.md#sign-out-and-disable
       FXA_EXPIRATION_ACCESS_TOKEN: ${FXA_ACCESS_TOKEN_LIFETIME:-60 minutes}
       # when sessions were last used (the admin UI shows it): for every account, Mozilla
       # samples 30% of them
@@ -232,7 +232,7 @@ services:
       # IP addresses), shown in the account settings and the admin UI: FXA_ACCOUNT_EVENTS
       ACCOUNT_EVENTS_ENABLED: ${FXA_ACCOUNT_EVENTS:-false}
       # with it Mozilla skips the sign-in code for 7 days after a confirmed sign-in from the
-      # same IP address: never here, a password alone does not sign in (FXA.md)
+      # same IP address: never here, a password alone does not sign in (docs/accounts.md#security-history)
       IP_PROFILING_RECENCY: 0
       LOG_LEVEL: ${FXA_LOG_LEVEL:-INFO}
     volumes:
@@ -419,7 +419,7 @@ services:
       ADMIN_GATE_EXPORT_PORT: ${ADMIN_GATE_EXPORT_PORT:-127.0.0.1:8091}
       FXA_CLIENT_ADDRESS_DEPTH: ${FXA_CLIENT_ADDRESS_DEPTH:-2}
       FXA_ACCESS_TOKEN_LIFETIME: ${FXA_ACCESS_TOKEN_LIFETIME:-60 minutes}
-      # with ADMIN_FXA_CLIENT_ID, sign in with these accounts (see ADMIN.md), unless set otherwise
+      # with ADMIN_FXA_CLIENT_ID, sign in with these accounts (see docs/admin/signing-in.md#self-hosted-accounts), unless set otherwise
       ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-${ADMIN_FXA_CLIENT_ID:+${FXA_CONTENT_URL}}}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-${ADMIN_FXA_CLIENT_ID:-}}
       ADMIN_OIDC_CLIENT_SECRET: ${ADMIN_OIDC_CLIENT_SECRET:-${ADMIN_FXA_CLIENT_SECRET:-}}

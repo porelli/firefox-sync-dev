@@ -45,7 +45,7 @@ ALLOWED_DIFFERENCES = {
     "*:admin/ADMIN_K8S_CHART": "chart-only: where the chart was published, for the helm upgrade commands the admin UI shows",
     "*:admin/ADMIN_K8S_CHART_VERSION": "chart-only: the release's chart version, the --version of the helm upgrade commands the admin UI shows",
     "*:admin/ADMIN_EXPORT_PORT": "compose-only: the host port compose publishes the admin UI on; the chart has a Service (and an Ingress)",
-    # the old names of .env (MIGRATING.md#renamed-settings): compose tells its containers which
+    # the old names of .env (docs/upgrading.md#renamed-settings): compose tells its containers which
     # are still set, or set with their new ones; the chart has no .env
     "*:migrate/FFS_BOTH_ENV_NAMES": "compose-only: the old .env names set with their new ones; the chart has no .env",
     "*:syncstorage/FFS_BOTH_ENV_NAMES": "as migrate's",
@@ -73,7 +73,7 @@ ALLOWED_DIFFERENCES = {
     "inherits true; no effect: the backup image is MySQL's, backup.sh reads it with the MariaDB client only",
     "mariadb,mysql:db/FFS_MYSQL_IMAGE": "compose-only: SYNC_MARIADB_IMAGE or SYNC_MYSQL_IMAGE as set in .env (empty: the "
     "compose file's default), for db/mysql/keep-major.sh; the chart's image is always database.image.<backend>, chosen in "
-    "the values, and checkDbMajor refuses another major (HELM.md#upgrades)",
+    "the values, and checkDbMajor refuses another major (docs/upgrading.md#database-majors)",
     "mariadb,mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
     "postgres:db/FFS_POSTGRES_IMAGE": "compose-only in the server's container: SYNC_POSTGRES_IMAGE for the message of "
     "db/postgres/keep-major.sh, which the chart runs as its db-major init container (with database.image.postgres)",
@@ -190,7 +190,7 @@ CASES = {
     "mariadb": (["docker-compose.yml"], {}, ["--set", "database.backend=mariadb"]),
     "mysql": (["docker-compose.yml", "docker-compose.sync-mysql.yml"], {"SYNC_DB": "mysql"}, ["--set", "database.backend=mysql"]),
     "postgres": (["docker-compose.sync-postgres.yml"], {"SYNC_POSTGRES_APP_USER": "syncserver_app"}, ["--set", "database.backend=postgres"]),
-    # your own server (DATABASES.md, prepare_environment.sh): no database containers, no TLS
+    # your own server (docs/databases.md#your-own-server, prepare_environment.sh): no database containers, no TLS
     # check (MySQL's self-signed certificate); PostgreSQL without the Sync role
     "external-mariadb": (["docker-compose.yml"],
                          {"SYNC_DB_CONTAINERS": "0", "SYNC_DB_TLS_VERIFY": "false", "SYNC_TOKENSERVER_DB_HOST": EXTDB,
@@ -226,7 +226,7 @@ def run(cmd, env=None):
 # --- the test .env: .env-example filled as tests/e2e.sh does it ---------------------------
 
 def set_line(lines, name, value):
-    """NAME=value of .env-example's names (the SYNC_ ones, MIGRATING.md#renamed-settings)"""
+    """NAME=value of .env-example's names (the SYNC_ ones, docs/upgrading.md#renamed-settings)"""
     pattern = re.compile(rf"^{re.escape(name)}=")
     hits = [i for i, line in enumerate(lines) if pattern.match(line)]
     if not hits:

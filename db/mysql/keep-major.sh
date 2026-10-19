@@ -35,7 +35,7 @@ if [ -z "${FFS_MYSQL_IMAGE:-}" ] && [ -d "${data}/mysql" ]; then
     echo "  the default, ${name}:lts). Not started: the server would upgrade the data to ${server} for good." >&2
     echo "  To stay on ${was}: ${setting}=${name}:${was} in .env (./prepare_environment.sh --upgrade writes it," >&2
     echo "  with what else the installs from before need). To move to ${server}: a backup first, then" >&2
-    echo "  ${setting}=${name}:lts in .env (MySQL: MIGRATING.md#mysql-lts first)." >&2
+    echo "  ${setting}=${name}:lts in .env (MySQL: docs/upgrading.md#mysql-8-to-9 first)." >&2
     exit 1
   fi
 fi

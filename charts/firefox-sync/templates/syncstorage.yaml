@@ -119,7 +119,7 @@ spec:
             - |
               if [ -n "$${FFS_BOTH_ENV_NAMES:-}" ]; then
                 for p in $$FFS_BOTH_ENV_NAMES; do
-                  echo "ERROR: $${p%%/*} and $${p#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset $${p#*/} in your shell (MIGRATING.md#renamed-settings)"
+                  echo "ERROR: $${p%%/*} and $${p#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset $${p#*/} in your shell (docs/upgrading.md#renamed-settings)"
                 done
                 exit 1
               fi

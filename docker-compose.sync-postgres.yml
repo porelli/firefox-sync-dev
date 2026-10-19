@@ -2,14 +2,14 @@
 # Usage: docker compose -f docker-compose.sync-postgres.yml up -d
 # (or set COMPOSE_FILE=docker-compose.sync-postgres.yml in .env, prepare_environment.sh does it for you)
 
-# the old names of the Sync settings (MIGRATING.md#renamed-settings) set in .env or in the
+# the old names of the Sync settings (docs/upgrading.md#renamed-settings) set in .env or in the
 # environment: they still work, the init container and the admin UI say they are there
 x-old-env-names: &old-env-names "${MARIADB_TOKENSERVER_DATABASE:+MARIADB_TOKENSERVER_DATABASE }${MARIADB_TOKENSERVER_USER:+MARIADB_TOKENSERVER_USER }${MARIADB_TOKENSERVER_PASSWORD:+MARIADB_TOKENSERVER_PASSWORD }${MARIADB_TOKENSERVER_SERVER:+MARIADB_TOKENSERVER_SERVER }${MARIADB_TOKENSERVER_SERVER_PORT:+MARIADB_TOKENSERVER_SERVER_PORT }${MARIADB_SYNCSTORAGE_DATABASE:+MARIADB_SYNCSTORAGE_DATABASE }${MARIADB_SYNCSTORAGE_USER:+MARIADB_SYNCSTORAGE_USER }${MARIADB_SYNCSTORAGE_PASSWORD:+MARIADB_SYNCSTORAGE_PASSWORD }${MARIADB_SYNCSTORAGE_SERVER:+MARIADB_SYNCSTORAGE_SERVER }${MARIADB_SYNCSTORAGE_SERVER_PORT:+MARIADB_SYNCSTORAGE_SERVER_PORT }${POSTGRES_DATABASE:+POSTGRES_DATABASE }${POSTGRES_USER:+POSTGRES_USER }${POSTGRES_PASSWORD:+POSTGRES_PASSWORD }${POSTGRES_SERVER:+POSTGRES_SERVER }${POSTGRES_SERVER_PORT:+POSTGRES_SERVER_PORT }${POSTGRES_SYNC_USER:+POSTGRES_SYNC_USER }${POSTGRES_SYNC_PASSWORD:+POSTGRES_SYNC_PASSWORD }${POSTGRES_IMAGE:+POSTGRES_IMAGE }${MARIADB_TLS_VERIFY:+MARIADB_TLS_VERIFY }${DB_CONTAINERS:+DB_CONTAINERS }${MAX_USERS:+MAX_USERS }${CONTAINER_EXPORT_PORT:+CONTAINER_EXPORT_PORT }${SYNCSTORAGE_DOMAIN:+SYNCSTORAGE_DOMAIN }${METRICS_HASH_SECRET:+METRICS_HASH_SECRET }${REPOSITORY:+REPOSITORY }${SYNCSTORAGE_IMAGE:+SYNCSTORAGE_IMAGE }${SYNCSTORAGE_IMAGE_TAG:+SYNCSTORAGE_IMAGE_TAG }${SYNCSTORAGE_INIT_IMAGE:+SYNCSTORAGE_INIT_IMAGE }${SYNCSTORAGE_INIT_IMAGE_TAG:+SYNCSTORAGE_INIT_IMAGE_TAG }"
 
 # the Sync settings set under both names (new/old): compose takes the new one, which is then
 # often a line added from .env-example (placeholder passwords, default hosts): the
 # migrations and the init container refuse to start, ./prepare_environment.sh --upgrade
-# merges them (MIGRATING.md#renamed-settings)
+# merges them (docs/upgrading.md#renamed-settings)
 x-both-env-names: &both-env-names "${SYNC_TOKENSERVER_DB_NAME:+${MARIADB_TOKENSERVER_DATABASE:+SYNC_TOKENSERVER_DB_NAME/MARIADB_TOKENSERVER_DATABASE }}${SYNC_TOKENSERVER_DB_USER:+${MARIADB_TOKENSERVER_USER:+SYNC_TOKENSERVER_DB_USER/MARIADB_TOKENSERVER_USER }}${SYNC_TOKENSERVER_DB_PASSWORD:+${MARIADB_TOKENSERVER_PASSWORD:+SYNC_TOKENSERVER_DB_PASSWORD/MARIADB_TOKENSERVER_PASSWORD }}${SYNC_TOKENSERVER_DB_HOST:+${MARIADB_TOKENSERVER_SERVER:+SYNC_TOKENSERVER_DB_HOST/MARIADB_TOKENSERVER_SERVER }}${SYNC_TOKENSERVER_DB_PORT:+${MARIADB_TOKENSERVER_SERVER_PORT:+SYNC_TOKENSERVER_DB_PORT/MARIADB_TOKENSERVER_SERVER_PORT }}${SYNC_STORAGE_DB_NAME:+${MARIADB_SYNCSTORAGE_DATABASE:+SYNC_STORAGE_DB_NAME/MARIADB_SYNCSTORAGE_DATABASE }}${SYNC_STORAGE_DB_USER:+${MARIADB_SYNCSTORAGE_USER:+SYNC_STORAGE_DB_USER/MARIADB_SYNCSTORAGE_USER }}${SYNC_STORAGE_DB_PASSWORD:+${MARIADB_SYNCSTORAGE_PASSWORD:+SYNC_STORAGE_DB_PASSWORD/MARIADB_SYNCSTORAGE_PASSWORD }}${SYNC_STORAGE_DB_HOST:+${MARIADB_SYNCSTORAGE_SERVER:+SYNC_STORAGE_DB_HOST/MARIADB_SYNCSTORAGE_SERVER }}${SYNC_STORAGE_DB_PORT:+${MARIADB_SYNCSTORAGE_SERVER_PORT:+SYNC_STORAGE_DB_PORT/MARIADB_SYNCSTORAGE_SERVER_PORT }}${SYNC_POSTGRES_NAME:+${POSTGRES_DATABASE:+SYNC_POSTGRES_NAME/POSTGRES_DATABASE }}${SYNC_POSTGRES_USER:+${POSTGRES_USER:+SYNC_POSTGRES_USER/POSTGRES_USER }}${SYNC_POSTGRES_PASSWORD:+${POSTGRES_PASSWORD:+SYNC_POSTGRES_PASSWORD/POSTGRES_PASSWORD }}${SYNC_POSTGRES_HOST:+${POSTGRES_SERVER:+SYNC_POSTGRES_HOST/POSTGRES_SERVER }}${SYNC_POSTGRES_PORT:+${POSTGRES_SERVER_PORT:+SYNC_POSTGRES_PORT/POSTGRES_SERVER_PORT }}${SYNC_POSTGRES_APP_USER:+${POSTGRES_SYNC_USER:+SYNC_POSTGRES_APP_USER/POSTGRES_SYNC_USER }}${SYNC_POSTGRES_APP_PASSWORD:+${POSTGRES_SYNC_PASSWORD:+SYNC_POSTGRES_APP_PASSWORD/POSTGRES_SYNC_PASSWORD }}${SYNC_POSTGRES_IMAGE:+${POSTGRES_IMAGE:+SYNC_POSTGRES_IMAGE/POSTGRES_IMAGE }}${SYNC_DB_TLS_VERIFY:+${MARIADB_TLS_VERIFY:+SYNC_DB_TLS_VERIFY/MARIADB_TLS_VERIFY }}${SYNC_DB_CONTAINERS:+${DB_CONTAINERS:+SYNC_DB_CONTAINERS/DB_CONTAINERS }}${SYNC_MAX_USERS:+${MAX_USERS:+SYNC_MAX_USERS/MAX_USERS }}${SYNC_EXPORT_PORT:+${CONTAINER_EXPORT_PORT:+SYNC_EXPORT_PORT/CONTAINER_EXPORT_PORT }}${SYNC_PUBLIC_URL:+${SYNCSTORAGE_DOMAIN:+SYNC_PUBLIC_URL/SYNCSTORAGE_DOMAIN }}${SYNC_METRICS_HASH_SECRET:+${METRICS_HASH_SECRET:+SYNC_METRICS_HASH_SECRET/METRICS_HASH_SECRET }}${IMAGE_REPOSITORY:+${REPOSITORY:+IMAGE_REPOSITORY/REPOSITORY }}${SYNC_IMAGE:+${SYNCSTORAGE_IMAGE:+SYNC_IMAGE/SYNCSTORAGE_IMAGE }}${SYNC_IMAGE_TAG:+${SYNCSTORAGE_IMAGE_TAG:+SYNC_IMAGE_TAG/SYNCSTORAGE_IMAGE_TAG }}${SYNC_INIT_IMAGE:+${SYNCSTORAGE_INIT_IMAGE:+SYNC_INIT_IMAGE/SYNCSTORAGE_INIT_IMAGE }}${SYNC_INIT_IMAGE_TAG:+${SYNCSTORAGE_INIT_IMAGE_TAG:+SYNC_INIT_IMAGE_TAG/SYNCSTORAGE_INIT_IMAGE_TAG }}"
 
 x-syncstorage-env: &syncstorage-env
@@ -19,7 +19,7 @@ x-syncstorage-env: &syncstorage-env
   SYNC_HUMAN_LOGS: 1
   SYNC_MASTER_SECRET: ${SYNC_MASTER_SECRET}
   # the Sync server's own role (SYNC_POSTGRES_APP_USER), which is no superuser: the init
-  # container gives it the Sync tables (DATABASES.md). Without it (an install from before,
+  # container gives it the Sync tables (docs/reference/database-users.md#postgresql). Without it (an install from before,
   # or your own server) SYNC_POSTGRES_USER
   SYNC_SYNCSTORAGE__DATABASE_URL: postgres://${SYNC_POSTGRES_APP_USER:-${POSTGRES_SYNC_USER:-${SYNC_POSTGRES_USER:-${POSTGRES_USER:-}}}}:${SYNC_POSTGRES_APP_PASSWORD:-${POSTGRES_SYNC_PASSWORD:-${SYNC_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD:-}}}}@${SYNC_POSTGRES_HOST:-${POSTGRES_SERVER:-}}:${SYNC_POSTGRES_PORT:-${POSTGRES_SERVER_PORT:-}}/${SYNC_POSTGRES_NAME:-${POSTGRES_DATABASE:-}}
   SYNC_TOKENSERVER__ENABLED: "true"
@@ -48,7 +48,7 @@ services:
   # the Sync server's own role (SYNC_POSTGRES_APP_USER), before the migrations: created, given
   # the Sync tables (those of a database from before it) and the right to create them. Then
   # no superuser session reads or writes a table that role owns (its triggers, rules, views
-  # and functions would run as the superuser), see DATABASES.md. Without SYNC_POSTGRES_APP_USER
+  # and functions would run as the superuser), see docs/reference/database-users.md#postgresql. Without SYNC_POSTGRES_APP_USER
   # (an install from before it, or your own server) nothing
   sync_role_init:
     image: ${IMAGE_REPOSITORY:-${REPOSITORY:-}}:${SYNC_INIT_IMAGE:-${SYNCSTORAGE_INIT_IMAGE:-}}-${SYNC_INIT_IMAGE_TAG:-${SYNCSTORAGE_INIT_IMAGE_TAG:-}}
@@ -78,7 +78,7 @@ services:
       - |
         if [ -n "$${FFS_BOTH_ENV_NAMES:-}" ]; then
           for p in $$FFS_BOTH_ENV_NAMES; do
-            echo "ERROR: $${p%%/*} and $${p#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset $${p#*/} in your shell (MIGRATING.md#renamed-settings)"
+            echo "ERROR: $${p%%/*} and $${p#*/} are both set (in .env or in the environment docker compose runs in): run ./prepare_environment.sh --upgrade for .env, or unset $${p#*/} in your shell (docs/upgrading.md#renamed-settings)"
           done
           exit 1
         fi
@@ -151,11 +151,11 @@ services:
     # postgres:<the major of postgres:latest> for new installs, postgres:18 for those from
     # before it); unset: postgres:latest. An image of another major than the data's does not
     # start: db/postgres/keep-major.sh stops it and says what to set (the image's entrypoint
-    # refuses too; DATABASES.md#another-postgresql-major)
+    # refuses too; docs/upgrading.md#postgresql)
     image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:latest}}
     entrypoint: [sh, /ffs-db/keep-major.sh, docker-entrypoint.sh]
     command: [postgres]
-    # 0: your own server (DATABASES.md); compose then skips the dependency on it
+    # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
     deploy:
       replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
     environment:
@@ -195,18 +195,18 @@ services:
       # the settings under both names: it refuses to start
       FFS_BOTH_ENV_NAMES: *both-env-names
       # the Sync server's own role, created here and given the Sync tables when SYNC_POSTGRES_USER
-      # is a superuser (the database container), see DATABASES.md
+      # is a superuser (the database container), see docs/reference/database-users.md#postgresql
       POSTGRES_SYNC_USER: ${SYNC_POSTGRES_APP_USER:-${POSTGRES_SYNC_USER:-}}
       POSTGRES_SYNC_PASSWORD: ${SYNC_POSTGRES_APP_PASSWORD:-${POSTGRES_SYNC_PASSWORD:-}}
       # the admin UI's roles and database: created here when SYNC_POSTGRES_USER is a superuser
       # (the database container), by database-setup.sql on your own server; the reader of
-      # the Sync data given its grants on the Sync tables (DATABASES.md)
+      # the Sync data given its grants on the Sync tables (docs/reference/database-users.md#postgresql)
       ADMIN_DB_USER: ${ADMIN_DB_USER:-ffs_admin_ui}
       ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
       ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}
       ADMIN_DB_NAME: ${ADMIN_DB_NAME:-ffs_admin}
 
-  # optional admin UI (COMPOSE_PROFILES=admin), see ADMIN.md
+  # optional admin UI (COMPOSE_PROFILES=admin), see docs/admin/README.md
   ffs-admin:
     image: ${ADMIN_IMAGE:-${IMAGE_REPOSITORY:-${REPOSITORY:-}}:admin-latest}
     profiles: [admin]
@@ -214,7 +214,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # initial:N: the admin UI manages max users, otherwise .env does (read-only)
       MAX_USERS: ${SYNC_MAX_USERS:-${MAX_USERS:-}}
-      # its own roles and database, out of the Sync server's reach (DATABASES.md): one for
+      # its own roles and database, out of the Sync server's reach (docs/reference/database-users.md#the-admin-uis-own-database): one for
       # its database, one that reads the Sync data. Without ADMIN_DB_PASSWORD (an install
       # from before it) the Sync server's role (never the superuser SYNC_POSTGRES_USER when there
       # is one), and its tables in the Sync database: only then does TOKENSERVER_DB_PASSWORD
@@ -239,7 +239,7 @@ services:
       # every hour the public https URLs, their certificates (and the sign-up gate); false: never
       ADMIN_PUBLIC_CHECK: ${ADMIN_PUBLIC_CHECK:-true}
       ALERT_EMAIL: ${ADMIN_ALERT_EMAIL:-}
-      # alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (ADMIN.md#alerts)
+      # alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook (docs/admin/alerts.md#destinations)
       ADMIN_NOTIFY: ${ADMIN_NOTIFY:-}
       SMTP_HOST: ${FXA_SMTP_HOST:-}
       SMTP_PORT: ${FXA_SMTP_PORT:-587}
@@ -252,12 +252,12 @@ services:
       ADMIN_STALE_DAYS: ${ADMIN_STALE_DAYS:-90}
       ADMIN_RETENTION_DAYS: ${ADMIN_RETENTION_DAYS:-30}
       ADMIN_AUDIT_RETENTION_DAYS: ${ADMIN_AUDIT_RETENTION_DAYS:-365}
-      # the alerts on a spike of Sync errors and on the growth of the databases (ADMIN.md)
+      # the alerts on a spike of Sync errors and on the growth of the databases (docs/admin/monitoring.md#errors-and-growth)
       ADMIN_ERROR_RATE_PERCENT: ${ADMIN_ERROR_RATE_PERCENT:-10}
       ADMIN_ERROR_RATE_MIN_ERRORS: ${ADMIN_ERROR_RATE_MIN_ERRORS:-20}
       ADMIN_DB_GROWTH_MB: ${ADMIN_DB_GROWTH_MB:-1024}
       ADMIN_DB_GROWTH_FACTOR: ${ADMIN_DB_GROWTH_FACTOR:-5}
-      # the daily purge of the Sync storage, the old unconfirmed accounts, sign-up bursts (ADMIN.md)
+      # the daily purge of the Sync storage, the old unconfirmed accounts, sign-up bursts (docs/admin/storage.md#maintenance-and-retention)
       ADMIN_PURGE: ${ADMIN_PURGE:-}
       ADMIN_DELETE_UNCONFIRMED_DAYS: ${ADMIN_DELETE_UNCONFIRMED_DAYS:-}
       ADMIN_SIGNUP_BURST: ${ADMIN_SIGNUP_BURST:-10}
@@ -270,7 +270,7 @@ services:
       ADMIN_DEPLOYMENT: compose
       # the configuration page (no secrets): the databases, where the admin UI is published
       ADMIN_EXPORT_PORT: ${ADMIN_EXPORT_PORT:-127.0.0.1:8090}
-      # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
+      # sign-in (see docs/admin/signing-in.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
       ADMIN_OIDC_ISSUER: ${ADMIN_OIDC_ISSUER:-}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-}
       ADMIN_OIDC_CLIENT_SECRET: ${ADMIN_OIDC_CLIENT_SECRET:-}
@@ -300,7 +300,7 @@ services:
     restart: unless-stopped
 
   # optional nightly backups (COMPOSE_PROFILES=backup) of the database into the backups
-  # volume, see ADMIN.md#backups. Run one now: docker compose exec backup sh /ffs-backup/backup.sh now
+  # volume, see docs/backups.md#the-backup-service. Run one now: docker compose exec backup sh /ffs-backup/backup.sh now
   backup:
     image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:latest}}
     profiles: [backup]
@@ -314,7 +314,7 @@ services:
       TOKENSERVER_DB_HOST: ${SYNC_POSTGRES_HOST:-${POSTGRES_SERVER:-}}
       TOKENSERVER_DB_PORT: ${SYNC_POSTGRES_PORT:-${POSTGRES_SERVER_PORT:-}}
       TOKENSERVER_DB_NAME: ${SYNC_POSTGRES_NAME:-${POSTGRES_DATABASE:-}}
-      # as the Sync server's own role, the owner of every table (ADMIN.md#restoring loads the
+      # as the Sync server's own role, the owner of every table (docs/backups.md#restore loads the
       # dump as it too); without SYNC_POSTGRES_APP_USER SYNC_POSTGRES_USER
       TOKENSERVER_DB_USER: ${SYNC_POSTGRES_APP_USER:-${POSTGRES_SYNC_USER:-${SYNC_POSTGRES_USER:-${POSTGRES_USER:-}}}}
       TOKENSERVER_DB_PASSWORD: ${SYNC_POSTGRES_APP_PASSWORD:-${POSTGRES_SYNC_PASSWORD:-${SYNC_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD:-}}}}

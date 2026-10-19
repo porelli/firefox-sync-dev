@@ -33,14 +33,14 @@
 #                    else mariadb:11, as for the installs from before, e.g. with Mozilla's images)
 #   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, FXA_MYSQL_IMAGE
 #                    (FXA_MARIADB_IMAGE with FXA_DB=mariadb) (SYNC_DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
-#                    DATABASES.md), container EXTDB, created with only the grants of
+#                    docs/databases.md#your-own-server), container EXTDB, created with only the grants of
 #                    db/mysql/; kept with KEEP, reused by RERUN. fxa: only the accounts
 #                    there, with one user for the accounts and the sign-up policy
 #   SLOT             runs next to each other on one host (tests/slot.sh): 0 (default) project
 #                    ffs-e2e-fxa, port 28653 and the other ports of .env-example; 1, 2...: -s<SLOT>
 #                    after the project, 1000 * SLOT added to 28653, the others at 28700-28706 + 1000 * SLOT
 #   INIT_TAG         tag suffix of the init image (default: TAG), e.g. one built from this tree
-#   DEMO             set to 1 for the demo of ADMIN.md's screenshots instead of the tests: a fresh
+#   DEMO             set to 1 for the screenshot demo (docs/development/testing.md#the-screenshot-demo) instead of the tests: a fresh
 #                    stack seeded by tests/demo_seed.py (a household, sign-ups on an allowlist,
 #                    a backup run), kept running (KEEP=1); the admin UI on ADMIN_EXPORT_PORT
 set -u
@@ -150,7 +150,7 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
   # the backup service is for the database containers
   sed -i "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=pairing,admin|" "${ENV_FILE}"
   if [ "${EXTERNAL_DB}" = fxa ]; then
-    # one user for both (DATABASES.md): a policy password left in .env must not be used
+    # one user for both (docs/reference/database-users.md#the-accounts): a policy password left in .env must not be used
     sed -i "s|^FXA_MYSQL_POLICY_PASSWORD=.*|FXA_MYSQL_POLICY_PASSWORD=unused|" "${ENV_FILE}"
   else
     sed -i -e "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|" -e "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|" \
@@ -192,7 +192,7 @@ if [ "${FXA_DB}" = mariadb ]; then
     *) FXA_DB_SERVER='MariaDB [0-9]+\.[0-9]+' ;;
   esac
   DB_CLIENT=mariadb EXTDB_IMAGE=${FXA_MARIADB_IMAGE}
-  # binary logging is off by default on MariaDB: on, as DATABASES.md expects it may be
+  # binary logging is off by default on MariaDB: on, as docs/databases.md#server-requirements expects it may be
   EXTDB_ARGS=(--log-bin --log-bin-trust-function-creators=ON)
 else
   # a major (mysql:8): MySQL 8.x; lts or another name: any version
@@ -203,7 +203,7 @@ else
     *) FXA_DB_SERVER='MySQL [0-9]+\.[0-9]+' ;;
   esac
   DB_CLIENT=mysql EXTDB_IMAGE=${FXA_MYSQL_IMAGE}
-  # your own server as DATABASES.md says: mysql_native_password=ON only for an accounts image
+  # your own server as docs/reference/database-users.md#the-accounts says: mysql_native_password=ON only for an accounts image
   # without mozilla/fxa#21554 (the accounts' user then on it, the "-- native:" lines)
   EXTDB_ARGS=(--log-bin-trust-function-creators=ON)
   [[ " ${FXA_MYSQL_ARGS:-} " == *" --mysql-native-password=ON "* ]] && EXTDB_ARGS=(--mysql-native-password=ON "${EXTDB_ARGS[@]}")
@@ -481,7 +481,7 @@ check "$(env_value FXA_DB) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-co
 check "$(env_value FXA_MARIADB_IMAGE) $(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mariadb:lts|source: fxa-db-mariadb|- mariadbd)$')" "mariadb:lts 3" "fxa-db on MariaDB lts for a new install, in its own volume"
 check "$(setup_compose --profile backup config | sed -n '/^  backup-fxa:/,/^  [a-z]/p' | grep -cE '^ +image: mariadb:lts$')" 1 "the backups of the accounts with the same MariaDB"
 # an install from before FXA_MARIADB_IMAGE (MariaDB 11): the new files alone move it to lts
-# (MIGRATING.md says so), run again it is pinned to 11 and stays there
+# (docs/upgrading.md#the-database-majors-of-an-install-from-before says so), run again it is pinned to 11 and stays there
 sed -i '/^FXA_MARIADB_IMAGE=/d' "${SETUP}/.env"
 check "$(setup_compose --profile backup config | awk '/^  [a-z]/ { on = ($1 == "fxa-db:" || $1 == "backup-fxa:") } on' | grep -cE '^ +image: mariadb:lts$')" 2 "without FXA_MARIADB_IMAGE: fxa-db and its backups on MariaDB lts"
 printf '%s\n' "${answers[@]}" n n mariadb | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-mariadb-again.log" 2>&1
@@ -516,7 +516,7 @@ check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c '
 check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:8|- --mysql-native-password=ON|- --authentication-policy=mysql_native_password)$')" 3 "fxa-db on MySQL 8 with mysql_native_password after running it again"
 sed -i -e '/^FXA_MYSQL_IMAGE=/d' -e '/^FXA_MYSQL_ARGS=/d' "${SETUP}/.env"
 (cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-upgrade.log" 2>&1
-check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c 'stays on MySQL 8 with mysql_native_password' "${WORK}/setup-fxa-mysql-upgrade.log") $(grep -c 'MIGRATING.md#mysql-lts' "${WORK}/setup-fxa-mysql-upgrade.log")" \
+check "$? $(env_value FXA_MYSQL_IMAGE) [$(env_value FXA_MYSQL_ARGS)] $(grep -c 'stays on MySQL 8 with mysql_native_password' "${WORK}/setup-fxa-mysql-upgrade.log") $(grep -c 'docs/upgrading.md#mysql-8-to-9' "${WORK}/setup-fxa-mysql-upgrade.log")" \
   "0 mysql:8 [${NATIVE_ARGS}] 1 $([ -n "${SETUP_MYSQL2}" ] && echo 2 || echo 1)" "prepare_environment.sh --upgrade pins the accounts on MySQL 8 with mysql_native_password$([ -n "${SETUP_MYSQL2}" ] && echo ", says the image can move to lts")"
 check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:8|- --mysql-native-password=ON|- --authentication-policy=mysql_native_password)$')" 3 "fxa-db on MySQL 8 with mysql_native_password after --upgrade"
 # MySQL lts with Mozilla's images (no mozilla/fxa#21554): a warning; the options on lts: another
@@ -597,13 +597,13 @@ docker network rm "${EXTDB}" > /dev/null 2>&1
 if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   echo "== external database server ${EXTDB} (${EXTDB_IMAGE}) for $([ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && echo "Sync and ")the accounts"
   docker network create "${EXTDB}" > /dev/null
-  # as DATABASES.md says: binary logging with the trigger and function of the sign-up policy
+  # as docs/databases.md#server-requirements says: binary logging with the trigger and function of the sign-up policy
   # and of SYNC_MAX_USERS (and mysql_native_password=ON for an image without mozilla/fxa#21554)
   docker run -d --rm --name "${EXTDB}" --network "${EXTDB}" --tmpfs /var/lib/mysql -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" \
     "${EXTDB_IMAGE}" "${EXTDB_ARGS[@]}" > /dev/null
   extdb_admin() { docker exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" "${DB_CLIENT}" -uroot -h 127.0.0.1 --protocol=tcp -sN "$@"; }
   for _ in $(seq 1 90); do extdb_admin -e 'SELECT 1' < /dev/null > /dev/null 2>&1 && break; sleep 2; done
-  # one user for both: as DATABASES.md says, without the policy user's own lines
+  # one user for both: as docs/reference/database-users.md#the-accounts says, without the policy user's own lines
   if [ -z "${FXA_MYSQL_POLICY_USER}" ]; then
     fxa_policy_lines() { grep -v "^[A-Z ]* USER [A-Z ]*'@FXA_POLICY_USER@'" | sed "s|@FXA_POLICY_USER@|@FXA_USER@|g"; }
   else
@@ -831,7 +831,7 @@ if [ -z "${RERUN:-}" ] && [ "${FXA_DB_CONTAINERS:-1}" = 1 ] && [ "${SYNC_DB_CONT
   run_dir=$(dc exec -T backup-fxa sh -c 'ls -1 /backups/accounts | tail -1' | tr -d '\r')
   check "$(dc exec -T backup-fxa sh -c "cd /backups/accounts/${run_dir} && for f in *.sql.gz; do gzip -t \$f && echo \$f; done" | LC_ALL=C sort | paste -sd' ')" \
     "ffs.sql.gz fxa.sql.gz fxa_oauth.sql.gz fxa_profile.sql.gz pushbox.sql.gz" "the five accounts databases, each passing gzip -t"
-  # a restore as ADMIN.md says (the same definer user, root here), into a scratch database
+  # a restore as docs/backups.md#restore says (the same definer user, root here), into a scratch database
   accounts=$(fxa_sql "SELECT COUNT(*) FROM fxa.accounts")
   dc exec -T -e MYSQL_PWD="${FXA_MYSQL_PASSWORD}" backup-fxa sh -c "${DB_CLIENT} -h fxa-db -uroot -e 'CREATE DATABASE ffs_restore_test' &&
     gunzip -c /backups/accounts/${run_dir}/fxa.sql.gz | ${DB_CLIENT} -h fxa-db -uroot ffs_restore_test" > "${WORK}/restore.log" 2>&1

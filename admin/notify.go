@@ -25,7 +25,7 @@ import (
 // Alerts to other destinations than email (ADMIN_NOTIFY): Slack, Discord, Microsoft
 // Teams, ntfy, Gotify, Telegram, Matrix and any webhook. ADMIN_NOTIFY is a list of URLs,
 // one per destination, separated by commas (or spaces), whose scheme says the kind:
-// slack://hooks.slack.com/services/..., ntfy://ntfy.sh/topic... (ADMIN.md#alerts). Each
+// slack://hooks.slack.com/services/..., ntfy://ntfy.sh/topic... (docs/admin/alerts.md#destinations). Each
 // destination gets the same alerts as the email, collected the same way
 // (ALERT_INTERVAL_SECONDS, at most maxAlertsPerKind of each kind), each with its own queue:
 // one that fails does not hold up the others, and gets what it missed once it works.
@@ -618,7 +618,7 @@ func (n *matrixNotifier) Send(ctx context.Context, a Alert) error {
 	return err
 }
 
-// webhook: any other service: a POST of the alert as JSON (ADMIN.md#alerts has the schema)
+// webhook: any other service: a POST of the alert as JSON (docs/admin/alerts.md#webhook-schema has the schema)
 type webhookNotifier struct{ hook }
 
 type webhookPayload struct {

@@ -866,7 +866,7 @@ e2e() {
   trap 'rc=$?; if ((rc)); then diagnostics; fi; kind delete cluster --name "${CLUSTER}"' EXIT
   kind create cluster --name "${CLUSTER}" --wait 120s
   kubectl config use-context "kind-${CLUSTER}" > /dev/null
-  # the namespace at PodSecurity baseline (HELM.md#what-you-need), enforced: every pod of the
+  # the namespace at PodSecurity baseline (docs/install/helm.md#requirements), enforced: every pod of the
   # chart (and of the tests) is admitted under it, a refused one fails the run
   kubectl label ns default pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/enforce-version=latest > /dev/null
   if [[ -z "${SKIP_BUILD:-}" ]]; then
@@ -1070,7 +1070,7 @@ e2e() {
   echo "=== e2e (${backend}) passed ==="
 }
 
-# helm uninstall, then helm install with the same release name and values (HELM.md#upgrades):
+# helm uninstall, then helm install with the same release name and values (docs/upgrading.md#helm):
 # the Secret (helm.sh/resource-policy: keep) and the PVCs (the databases', the backups') are
 # still there, the new install takes them as they are, and alice's Sync data of the client
 # flow is read back
@@ -1110,7 +1110,7 @@ admin_toggle() {
     --set image.adminTag="${ADMIN_TAG}" "${admin_args[@]}" --wait --timeout 10m || fail "helm upgrade with the admin UI did not get Ready"
   check "admin UI on: Ready"
   # PodSecurity restricted (a dry run of the label: the API server names the pods it would
-  # refuse): the admin UI's pod meets it, the others need baseline (HELM.md#what-you-need)
+  # refuse): the admin UI's pod meets it, the others need baseline (docs/install/helm.md#requirements)
   local restricted
   restricted=$(kubectl label --dry-run=server --overwrite ns default pod-security.kubernetes.io/enforce=restricted 2>&1 | grep '^Warning: ' || true)
   echo "${restricted}" | sed -E 's/^/  restricted: /; s/(.{400}).*/\1.../'
@@ -1148,7 +1148,7 @@ admin_toggle() {
     kill "${pf}"; fail "sign-in with the Secret's ADMIN_PASSWORD refused: $(head -c 500 <<< "${page}")"
   fi
   check "signed in to the admin UI with the Secret's ADMIN_PASSWORD"
-  # a backup now, the command of the overview's help; restored as ADMIN.md#restoring says
+  # a backup now, the command of the overview's help; restored as docs/backups.md#restore says
   backup_restore
   # the first health check runs at the start, the version once the Sync server answered
   deadline=$(( $(date +%s) + 180 ))
@@ -1219,11 +1219,11 @@ admin_token_off() {
 }
 
 # backup_restore: a run of the backup CronJob now (kubectl create job --from=cronjob/...,
-# as the admin UI says), then its dumps restored the way ADMIN.md#restoring says on a new
+# as the admin UI says), then its dumps restored the way docs/backups.md#restore says on a new
 # host: into empty database servers like the chart's (pods of the StatefulSets' spec, with
 # empty volumes), by pods of the backup's own spec (its variables, its volume: compose's
 # `docker compose run --rm --no-deps --entrypoint sh backup -c '...'`), as the stack's users,
-# with ADMIN.md's commands. The same users and Sync items there as in the chart's databases
+# with the commands of docs/backups.md#restore. The same users and Sync items there as in the chart's databases
 backup_restore() {
   kubectl create job --from="cronjob/${FULL}-backup" backup-now > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
   wait_job backup-now 300 || fail "the backup-now Job did not complete"
@@ -1237,7 +1237,7 @@ backup_restore() {
   check "a run in the backups volume: ${run}"
 
   # 1. empty database servers, as on a new host (the chart's spec, empty volumes; your own:
-  # one more like it, with DATABASES.md's SQL)
+  # one more like it, with the SQL of docs/databases.md#create-the-databases-and-users)
   local servers ts st ts_ip st_ip
   if [[ -n "${EXTERNAL}" ]]; then
     servers=
@@ -1266,10 +1266,10 @@ backup_restore() {
   [[ -z "${EXTERNAL}" ]] || like="your own, with its SQL"
   check "empty database servers like ${like}: ${ts} ${st}"
 
-  # 4. the tokenserver (PostgreSQL: the one database), with ADMIN.md's commands
+  # 4. the tokenserver (PostgreSQL: the one database), with the commands of docs/backups.md#restore
   local restore
   restore=$(admin_md_restore "$([[ "${BACKEND}" == postgres ]] && echo 2 || echo 1)")
-  [[ -n "${restore}" ]] || fail "no restore command of step 4 in ADMIN.md#restoring"
+  [[ -n "${restore}" ]] || fail "no restore command of step 4 in docs/backups.md#restore"
   [[ "${BACKEND}" == mysql ]] && restore=$(sed 's/^\( *\)mariadb /\1mysql /' <<< "${restore}")
   if [[ "${BACKEND}" == postgres && -z "${EXTERNAL}" ]]; then
     # into the empty database as the Sync server's role, which sync_role_init creates first:
@@ -1288,12 +1288,12 @@ backup_restore() {
   check "the restore of a run that is not there fails, loads nothing"
   backup_pod restore-tokenserver "$(jq -nc --arg c "${restore//20261013T030000Z/${run}}" '["sh", "-c", $c]')" "TOKENSERVER_DB_HOST=${ts_ip}" \
     || fail "the restore of the tokenserver (step 4) failed"
-  check "the tokenserver restored as its user (ADMIN.md#restoring step 4)"
+  check "the tokenserver restored as its user (docs/backups.md#restore step 4)"
   # 6. the storage, "as in step 4 with $STORAGE_DB_NAME..." (PostgreSQL: in the one dump)
   if [[ "${BACKEND}" != postgres ]]; then
     backup_pod restore-storage "$(jq -nc --arg c "$(sed 's/TOKENSERVER_DB_/STORAGE_DB_/g' <<< "${restore//20261013T030000Z/${run}}")" '["sh", "-c", $c]')" \
       "STORAGE_DB_HOST=${st_ip}" || fail "the restore of the storage (step 6) failed"
-    check "the storage restored as its user (ADMIN.md#restoring step 6)"
+    check "the storage restored as its user (docs/backups.md#restore step 6)"
   fi
 
   local bso=bso users_now items_now
@@ -1468,7 +1468,7 @@ database_users() {
 }
 
 # EXTERNAL_DB=1: who the Sync server is on your own server (the users of its SQL, no
-# administrator, no superuser), and the admin UI's users reaching only what DATABASES.md says
+# administrator, no superuser), and the admin UI's users reaching only what docs/reference/database-users.md#the-admin-uis-own-database says
 external_users() {
   local pod_ip=$1 users
   if [[ "${BACKEND}" == mysql ]]; then
@@ -1516,7 +1516,7 @@ extdb_admin() {
 # EXTERNAL_DB=1: a database server the chart does not manage, mirroring tests/e2e.sh's
 # start_extdb (a plain StatefulSet and Service extdb, a test fixture: MySQL 8 with binary
 # logging, or PostgreSQL 18 administered by a role that is no superuser), the databases and
-# users of DATABASES.md (db/<engine>/sync.sql with its placeholders filled in) under names
+# users of docs/databases.md#create-the-databases-and-users (db/<engine>/sync.sql with its placeholders filled in) under names
 # other than the defaults, and the Secret of existingSecret with the same passwords
 start_extdb() {
   EXT_ADMIN_DB=own_admin EXT_ADMIN_USER=own_admin_ui EXT_ADMIN_SYNC=own_admin_sync
@@ -1537,7 +1537,7 @@ start_extdb() {
   fi
   ! grep -q '@[A-Z_]*@' "${EXT_SQL}" || fail "placeholders left in db/${BACKEND}/sync.sql: $(grep -o '@[A-Z_]*@' "${EXT_SQL}" | sort -u | paste -sd' ' -)"
   extdb_server extdb
-  check "your own database server (${EXTDB_IMAGE}, not the chart's) with DATABASES.md's SQL (db/${BACKEND}/sync.sql) run as the administrator$([[ ${BACKEND} == postgres ]] && echo ' (CREATEROLE, CREATEDB, no superuser)')"
+  check "your own database server (${EXTDB_IMAGE}, not the chart's) with the SQL of docs/databases.md#create-the-databases-and-users (db/${BACKEND}/sync.sql) run as the administrator$([[ ${BACKEND} == postgres ]] && echo ' (CREATEROLE, CREATEDB, no superuser)')"
   # your Secret: the stack's secrets and the passwords of that SQL
   local keys=(--from-literal=SYNC_MASTER_SECRET="$(rnd)" --from-literal=METRICS_HASH_SECRET="$(rnd)" --from-literal=ADMIN_PASSWORD="$(rnd)"
     --from-literal=ADMIN_DB_PASSWORD="${admin}" --from-literal=ADMIN_METRICS_TOKEN=e2e-token)

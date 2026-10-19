@@ -1,4 +1,4 @@
-# Backups of the tokenserver and storage databases (ADMIN.md#backups): started by
+# Backups of the tokenserver and storage databases (docs/backups.md#the-backup-service): started by
 # firefox-sync-backup.timer, off until you enable it:
 #   systemctl --user enable --now firefox-sync-backup.timer
 # One now: systemctl --user start firefox-sync-backup.service

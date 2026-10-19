@@ -1,6 +1,6 @@
--- Self-hosted Mozilla accounts on your MariaDB 11.4 or later server (FXA_DB=mariadb, DATABASES.md);
+-- Self-hosted Mozilla accounts on your MariaDB 11.4 or later server (FXA_DB=mariadb, docs/reference/database-users.md#the-accounts);
 -- 12.x with our accounts images only: Mozilla's migrations drop foreign keys by names MariaDB 12
--- does not give them, fixed in ours (FXA.md#mariadb-12).
+-- does not give them, fixed in ours (docs/accounts.md#mariadb-12).
 -- Run as an administrator of the server. prepare_environment.sh fills in the placeholders
 -- from .env and writes the result to database-setup-fxa.sql.
 -- The server needs (my.cnf, or the parameter group of a managed service):

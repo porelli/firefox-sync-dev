@@ -651,7 +651,7 @@ def test_prometheus():
         assert line in res.text, line
 
 
-# account support: how an account signs in, and helping its owner (ADMIN.md)
+# account support: how an account signs in, and helping its owner (docs/admin/accounts.md#helping-account-owners)
 
 def totp_code(secret, at=None):
     """The code of an authenticator app (RFC 6238, SHA-1, 30 s, 6 digits)"""
@@ -1074,7 +1074,7 @@ def test_notes_and_the_disable_reason(admin):
     assert f"Removed the note of {address} (uid {uid[:8]}) by admin (password)" in events, events
 
 
-# email delivery, what the server sees of its public URLs, onboarding (ADMIN.md)
+# email delivery, what the server sees of its public URLs, onboarding (docs/admin/monitoring.md)
 
 def health_row(admin, component, timeout=90):
     """The status cell of a component in the health table, once it is up (or the last one)"""
@@ -1283,7 +1283,7 @@ def test_configuration_page(admin):
         assert wrong not in hints, hints
 
 
-# the life of an account: deleting it, its Sync data, pruning (ADMIN.md)
+# the life of an account: deleting it, its Sync data, pruning (docs/admin/accounts.md)
 
 @pytest.fixture(scope="module")
 def fxa_db():

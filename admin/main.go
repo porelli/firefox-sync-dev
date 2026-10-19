@@ -1,4 +1,4 @@
-// ffs-admin: a small admin service for firefox-sync, see ADMIN.md
+// ffs-admin: a small admin service for firefox-sync, see docs/admin/README.md
 //
 //	ffs-admin serve        web UI, and the sign-up gate for the self-hosted accounts
 //	ffs-admin fxa-init     installs the sign-up policy in the accounts database (one-shot)

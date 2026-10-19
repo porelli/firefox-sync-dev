@@ -71,8 +71,9 @@
     names: without it the migrations stop on MariaDB 12 on a new database.
   when_released: >-
     MariaDB 12 then works with every accounts image from that release on, Mozilla's too: say
-    so (the release) instead of "our images" in FXA.md (MariaDB 12, MySQL or MariaDB),
-    DATABASES.md, PODMAN.md, README.md, .env-example and prepare_environment.sh, and make
+    so (the release) instead of "our images" in docs/accounts.md (MariaDB 12, MySQL or MariaDB),
+    docs/databases.md#supported-versions, docs/reference/images.md#upstream-patches,
+    docs/troubleshooting.md, .env-example and prepare_environment.sh, and make
     fxa_mariadb_image_check in prepare_environment.sh compare FXA_VERSION with that release
     instead of reading the label.
 
@@ -126,8 +127,9 @@
     connect with caching_sha2_password, so fxa-db can be MySQL 9 (mysql:lts).
   when_released: >-
     Every accounts image from that release on, Mozilla's too, works on MySQL 9 and on 8.4
-    without mysql_native_password: say so (the release) instead of "our images" in FXA.md,
-    DATABASES.md, PODMAN.md, README.md, .env-example and prepare_environment.sh, make
+    without mysql_native_password: say so (the release) instead of "our images" in docs/accounts.md,
+    docs/databases.md#supported-versions, docs/reference/images.md#upstream-patches,
+    docs/upgrading.md#database-majors, .env-example and prepare_environment.sh, make
     fxa_mysql_image_check in prepare_environment.sh (and the image checks of tests/e2e-fxa.sh
     and tests/fxa-upgrade.sh) compare FXA_VERSION with that release instead of reading the
     label, and remove upstream-patches/fxa-mysql2.

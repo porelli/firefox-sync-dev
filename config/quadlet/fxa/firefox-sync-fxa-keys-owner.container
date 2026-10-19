@@ -7,7 +7,7 @@ Image=%FXA_IMAGE%:%FXA_VERSION%
 ContainerName=firefox-sync-fxa-keys-owner
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-keys-owner
-# Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
+# Mozilla publishes amd64 images only (emulated elsewhere), see docs/reference/images.md#accounts for arm64 images
 # --arch only for another architecture than this host's (Mozilla's amd64 image, emulated): with it
 # podman 4 pulls the tag from the registry at every start, over the local image
 PodmanArgs=%FXA_ARCH_ARGS%

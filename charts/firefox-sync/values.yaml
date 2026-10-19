@@ -13,7 +13,7 @@ image:
 
 # The names of the chart's objects: <release>-<nameOverride, default firefox-sync>, or
 # fullnameOverride as it is (the release name alone when it contains firefox-sync). Names
-# over Kubernetes' limits are refused at render time (HELM.md#limits)
+# over Kubernetes' limits are refused at render time (docs/install/helm.md#limits)
 nameOverride: ""
 fullnameOverride: ""
 
@@ -47,11 +47,11 @@ database:
   # wait for the server): compose's images (SYNC_MYSQL_IMAGE for MySQL, POSTGRES_IMAGE for
   # PostgreSQL). MariaDB's and MySQL's lts move to their next long-term major by themselves:
   # the server upgrades the data at its next start, with no way back but a backup; pin a
-  # major (e.g. docker.io/library/mysql:9) to choose when (HELM.md#upgrades). It pins the
+  # major (e.g. docker.io/library/mysql:9) to choose when (docs/upgrading.md#database-majors). It pins the
   # major of the install for PostgreSQL: the official PostgreSQL image keeps its data at
   # /var/lib/postgresql/<major>/docker and refuses to start on an older major's data, so
-  # moving to a newer one needs a dump and restore (ADMIN.md#restoring) or pg_upgrade
-  # (DATABASES.md#another-postgresql-major). With your own server (bundled: false) it is only
+  # moving to a newer one needs a dump and restore (docs/backups.md#restore) or pg_upgrade
+  # (docs/upgrading.md#postgresql). With your own server (bundled: false) it is only
   # the client: pg_dump must be at least the server's major. Fully qualified (Docker Hub's
   # official images), for the nodes whose runtime has no default registry or another one
   image:
@@ -60,7 +60,7 @@ database:
     # PostgreSQL has no lts: latest is its newest major, which a newer one replaces. A chart
     # cannot read the image's major at install as prepare_environment.sh does: pin it in your
     # values from the first install, docker.io/library/postgres:<major> (helm show values,
-    # HELM.md#upgrades); left on latest a new PostgreSQL major does not start on the data
+    # docs/upgrading.md#database-majors); left on latest a new PostgreSQL major does not start on the data
     # (the image's entrypoint refuses another major's, its db-major init container says what to pin)
     postgres: docker.io/library/postgres:latest
 
@@ -68,16 +68,16 @@ database:
   # another major (a pin changed, a numbered major to lts or latest; read from the running
   # StatefulSet, not by helm template; lts itself moving on keeps the same image name and is not
   # seen: pin a major for that): true lets MariaDB and MySQL upgrade their data in place, a
-  # backup first, there is no way back (HELM.md#upgrades). Never PostgreSQL, which cannot
+  # backup first, there is no way back (docs/upgrading.md#database-majors). Never PostgreSQL, which cannot
   allowMajorUpgrade: false
 
   # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),
-  # no superuser, the owner of the Sync tables (DATABASES.md). Not used with your own server,
+  # no superuser, the owner of the Sync tables (docs/reference/database-users.md#postgresql). Not used with your own server,
   # where POSTGRES_USER (external.postgresUser) is the owner
   postgresSyncUser: syncserver_app
 
   # The admin UI's own database and its two users, both with ADMIN_DB_PASSWORD (compose's
-  # ADMIN_DB_NAME, ADMIN_DB_USER, ADMIN_DB_SYNC_USER, DATABASES.md#the-admin-uis-own-database),
+  # ADMIN_DB_NAME, ADMIN_DB_USER, ADMIN_DB_SYNC_USER, docs/reference/database-users.md#the-admin-uis-own-database),
   # on the tokenserver's server: created by the bundled servers, by your database-setup.sql
   # on your own. Names: a-z, 0-9 and _
   admin:
@@ -85,14 +85,14 @@ database:
     user: ffs_admin_ui
     syncUser: ffs_admin_sync
 
-  # Your own database server (bundled: false), as DATABASES.md: create the databases and
+  # Your own database server (bundled: false), as docs/databases.md#your-own-server: create the databases and
   # users first with its SQL (db/mysql/sync.sql, db/postgres/sync.sql), the names below and
   # those of database.admin in it, and put their passwords in existingSecret (required then):
   # TOKENSERVER_DB_PASSWORD and STORAGE_DB_PASSWORD (mariadb, mysql) or POSTGRES_PASSWORD
   # (postgres: the password of postgresUser), ADMIN_DB_PASSWORD (the admin UI's users)
   external:
     # compose's MARIADB_TOKENSERVER_SERVER or POSTGRES_SERVER (required): a host name or an
-    # IPv4 address the pods reach (plain connections, DATABASES.md#server-requirements)
+    # IPv4 address the pods reach (plain connections, docs/databases.md#server-requirements)
     host: ""
     # its port (1-65535, a number or quoted); empty for 3306 (mariadb, mysql) or 5432 (postgres)
     port: ""
@@ -119,7 +119,7 @@ database:
   # which Kubernetes never changes. Set them before the first install: a helm upgrade with
   # another size or storageClass fails (forbidden: updates to statefulset spec). To grow a
   # volume, resize its PVC (data-<release>-firefox-sync-<server>-0) with a StorageClass that
-  # has allowVolumeExpansion (HELM.md#database-volumes)
+  # has allowVolumeExpansion (docs/install/helm.md#database-volumes)
   persistence:
     # Size of persistent volume
     size: 8Gi
@@ -129,7 +129,7 @@ database:
   # The database servers' container (each of them: two with MariaDB and MySQL, one with
   # PostgreSQL), e.g. requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1Gi}. Empty:
   # none, as the Sync server's: what they need grows with the data and the accounts, and a
-  # memory limit set too low gets the server OOM-killed mid-write (HELM.md#resources)
+  # memory limit set too low gets the server OOM-killed mid-write (docs/install/helm.md#resources)
   resources: {}
 
 # Name of existing secret containing database passwords and secrets, with the keys
@@ -177,7 +177,7 @@ syncstorage:
     # Service port
     port: 8000
 
-# The admin UI (compose's ffs-admin, see ADMIN.md): max users, accounts, health, metrics,
+# The admin UI (compose's ffs-admin, see docs/admin/README.md): max users, accounts, health, metrics,
 # alerts. Not published: kubectl port-forward svc/<release>-firefox-sync-admin 8090:8080,
 # or admin.ingress below behind your own sign-in. The Sync server sends it its metrics
 # (statsd, SYNC_STATSD_HOST) only while it is on. As in .env-example, with the names of .env
@@ -199,7 +199,7 @@ admin:
     # true: TLS from the start (port 465); false: STARTTLS
     secure: false
     sender: ""
-  # ADMIN_OIDC_*: sign-in with OpenID Connect (ADMIN.md#signing-in); the client secret
+  # ADMIN_OIDC_*: sign-in with OpenID Connect (docs/admin/signing-in.md#openid-connect); the client secret
   # (ADMIN_OIDC_CLIENT_SECRET, empty: a public client) goes into the Secret, as the values say
   oidc:
     issuer: ""
@@ -213,7 +213,7 @@ admin:
     name: ""
     # the claim with the groups, default "groups"
     groupsClaim: ""
-    # true: accept emails without email_verified=true (risky, see ADMIN.md)
+    # true: accept emails without email_verified=true (risky, see docs/admin/signing-in.md#openid-connect)
     trustUnverifiedEmail: ""
   # ADMIN_AUTH_HEADER, ADMIN_AUTH_GROUPS_HEADER, ADMIN_TRUSTED_PROXIES: sign-in with the
   # header of a forward-auth proxy, only from these CIDRs (the proxy as the pod sees it)
@@ -227,7 +227,7 @@ admin:
     users: ""
     groups: ""
   # ADMIN_NOTIFY: alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or
-  # a webhook (ADMIN.md#alerts): a list of URLs, one per destination (or one string, the
+  # a webhook (docs/admin/alerts.md#destinations): a list of URLs, one per destination (or one string, the
   # URLs separated by commas, as in .env), e.g.
   #   notify: ["ntfy://ntfy.sh/my-secret-topic", "slack://hooks.slack.com/services/T000/B000/XXXX"]
   # They hold tokens: into the Secret as the values say (empty: off, see existingSecret)
@@ -247,7 +247,7 @@ admin:
   # events of the admins, kept
   retentionDays: 30
   auditRetentionDays: 365
-  # ADMIN_PURGE: "1" deletes the Sync data nobody reads any more every day (ADMIN.md#storage)
+  # ADMIN_PURGE: "1" deletes the Sync data nobody reads any more every day (docs/admin/storage.md)
   purge: ""
   # ADMIN_ERROR_RATE_PERCENT, ADMIN_ERROR_RATE_MIN_ERRORS: an alert on a spike of Sync errors
   errorRatePercent: 10
@@ -266,7 +266,7 @@ admin:
   # Its own Ingress, apart from the Sync server's: <release>-firefox-sync-admin:8080 at / of
   # host (required, not the Sync server's), only while admin.enabled and this are both on.
   # Put it behind your own sign-in (OpenID Connect, a forward-auth proxy, an allowlist):
-  # the admin UI can delete accounts and change who signs up (ADMIN.md#signing-in)
+  # the admin UI can delete accounts and change who signs up (docs/admin/signing-in.md)
   ingress:
     enabled: false
     className: ""
@@ -276,13 +276,13 @@ admin:
       secretName: ""
     annotations: {}
 
-# The backups, compose's backup service (ADMIN.md#backups): a CronJob <release>-firefox-sync-backup
+# The backups, compose's backup service (docs/backups.md#the-backup-service): a CronJob <release>-firefox-sync-backup
 # dumps the Sync databases and the admin UI's into the PVC <release>-firefox-sync-backups
 # (kept on helm uninstall), sync/<UTC time>/<database>.sql.gz, as the stack's users (PostgreSQL:
 # the Sync server's role, never the superuser); each run shows on the admin UI's Backups card.
 # One now (a new Job name each time):
 #   kubectl create job --from=cronjob/<release>-firefox-sync-backup backup-now-$(date +%s)
-# Restoring: HELM.md#restoring. With your own server too (database.bundled=false: as the users
+# Restoring: docs/backups.md#restore-on-kubernetes. With your own server too (database.bundled=false: as the users
 # of its SQL, PostgreSQL as postgresUser, with database.image.<backend> as the client, at least
 # the server's major), next to the server's own backups
 backup:

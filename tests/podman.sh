@@ -23,7 +23,7 @@
 #                   ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.1, or a digest (default: REPOSITORY:fxa-mono-latest)
 #   UPGRADE_FROM    a checkout of an earlier release (e.g. git worktree add /tmp/ffs-from <tag>):
 #                   the quadlets (SYNC_DB=mariadb) start as an install of it, its files, admin UI
-#                   and init image (built from it), then are upgraded to this tree as MIGRATING.md
+#                   and init image (built from it), then are upgraded to this tree as docs/upgrading.md#with-quadlets
 #                   says for the Quadlets, and checked as a new install
 set -u
 
@@ -196,7 +196,7 @@ compose_test() {
   else
     sync_user=$(env_of SYNC_TOKENSERVER_DB_USER) sync_password=$(env_of SYNC_TOKENSERVER_DB_PASSWORD) sync_db=$(env_of SYNC_TOKENSERVER_DB_NAME)
   fi
-  # and from before the SYNC_ names of the settings (MIGRATING.md#renamed-settings): the old
+  # and from before the SYNC_ names of the settings (docs/upgrading.md#renamed-settings): the old
   # ones only, which compose still reads
   local pair old_lines
   for pair in "${RENAMED_SETTINGS[@]}"; do sed -i "s|^${pair%%=*}=|${pair#*=}=|" .env; done
@@ -216,7 +216,7 @@ compose_test() {
     sed -i '/^\(SYNC_\)\{0,1\}POSTGRES_IMAGE=/d' .env
     old_lines=$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env)
   fi
-  # the upgrade, as MIGRATING.md says: prepare_environment.sh --upgrade fills in what is missing
+  # the upgrade, as docs/upgrading.md#with-docker-compose says: prepare_environment.sh --upgrade fills in what is missing
   ./prepare_environment.sh --upgrade > "upgrade-${backend}.log" 2>&1
   check "$?" 0 "prepare_environment.sh --upgrade (${backend})"
   check "$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env) $(grep -c '^Renamed in .env' "upgrade-${backend}.log") $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "upgrade-${backend}.log")" \
@@ -305,7 +305,7 @@ env_keys_diff() {
 echo "== quadlets (${SYNC_DB})"
 export QUADLET_DIR=${HOME}/.config/containers/systemd
 if [ -n "${UPGRADE_FROM:-}" ]; then
-  echo "== first the quadlets of ${UPGRADE_FROM}, then upgraded as MIGRATING.md says"
+  echo "== first the quadlets of ${UPGRADE_FROM}, then upgraded as docs/upgrading.md#with-quadlets says"
   [ "${SYNC_DB}" = mariadb ] || { echo "UPGRADE_FROM is for SYNC_DB=mariadb"; exit 2; }
   FROM=${WORK}/from
   cp -r "${UPGRADE_FROM}" "${FROM}" && rm -f "${FROM}/.env" && example "${FROM}" || exit 1
@@ -336,11 +336,11 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   for _ in $(seq 1 30); do [ "$(from_ts_sql 'SELECT COUNT(*) FROM ffs_events' 2> /dev/null)" -gt 0 ] 2> /dev/null && break; sleep 2; done
   from_ts_sql "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the Quadlet upgrade by admin (password)')"
   check "$?" 0 "an audit event in the tokenserver database, as before (quadlets)"
-  # the upgrade: the units stopped, the one-shot ones too, as MIGRATING.md says
+  # the upgrade: the units stopped, the one-shot ones too, as docs/upgrading.md#with-quadlets says
   STOP='systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'
   check "$(grep -cF "\`${STOP}\`" "${CODE}/MIGRATING.md")" 1 "MIGRATING.md says \`${STOP}\`"
   timeout 300 ${STOP}
-  # (the images of this tree are local: what MIGRATING.md pulls is here already)
+  # (the images of this tree are local: what docs/upgrading.md#with-quadlets pulls is here already)
   podman tag localhost/ffs-admin:upgrade-to "${REPOSITORY}:admin-latest" && podman tag localhost/ffs-init:upgrade-to "${INIT_IMAGE}"
   podman rmi localhost/ffs-admin:upgrade-to localhost/ffs-init:upgrade-to > /dev/null 2>&1
 fi
@@ -366,7 +366,7 @@ QUADLET=$(ls /usr/libexec/podman/quadlet /usr/lib/podman/quadlet 2> /dev/null | 
 "${QUADLET}" -dryrun -user > quadlet-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files"
 if [ -n "${UPGRADE_FROM:-}" ]; then
-  # MIGRATING.md: the database containers (they create the admin UI's users with the new
+  # docs/upgrading.md#with-quadlets: the database containers (they create the admin UI's users with the new
   # ADMIN_DB_PASSWORD), then the Sync users' new passwords, as the old ones
   timeout 300 systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
   for db in TOKENSERVER STORAGE; do
@@ -441,7 +441,7 @@ check "$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/m
   "ffs_admin.sql.gz syncstorage.sql.gz tokenserver.sql.gz" "the dumps in the firefox-sync-backups volume (quadlets)"
 [ "${FAILED}" = 0 ] || journalctl --user -u firefox-sync-backup.service --no-pager | tail -20
 
-echo "== a backup restores, the way ADMIN.md#restoring says for the Quadlets"
+echo "== a backup restores, the way docs/backups.md#restore-with-quadlets says for the Quadlets"
 st_sql() { podman exec -e MYSQL_PWD="$(grep '^SYNC_STORAGE_DB_PASSWORD=' .env | cut -d= -f2)" firefox-sync-syncstorage-db \
   sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -u"$(grep '^SYNC_STORAGE_DB_USER=' .env | cut -d= -f2)" "$(grep '^SYNC_STORAGE_DB_NAME=' .env | cut -d= -f2)" -sN -e "$1"; }
 # every table of a database with its rows, its triggers and procedures: <sql function>
@@ -466,7 +466,7 @@ st_sql "SET @c = (SELECT id FROM collections WHERE name = 'bookmarks'), @m = UNI
     (${uid}, @c, 'restore-2', CONCAT('line', CHAR(10), 'break'), 20, @m, @m + 86400000);"
 payloads() { st_sql "SELECT MD5(GROUP_CONCAT(id, ':', payload ORDER BY id SEPARATOR '|')) FROM bso"; }
 PAYLOADS=$(payloads)
-# the units stopped as ADMIN.md says (nothing writes: the databases hold what the dump holds)
+# the units stopped as docs/backups.md#restore-with-quadlets says (nothing writes: the databases hold what the dump holds)
 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service \
   firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service
 BEFORE=$(inventory ts_sql | sed 's/^/tokenserver /'; inventory st_sql | sed 's/^/storage /')
@@ -484,7 +484,7 @@ run=$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mari
 dump() { podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts gunzip -c "/backups/$1"; }
 # shellcheck disable=SC2016 # (expanded in the database container)
 if [ "${SYNC_DB}" = mysql ]; then load='mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'; else load='mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'; fi
-# with set -o pipefail, as ADMIN.md says: a run that is not there fails, instead of loading nothing
+# with set -o pipefail, as docs/backups.md#restore-with-quadlets says: a run that is not there fails, instead of loading nothing
 check "$(grep -cxF 'set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore' ADMIN.md)" 1 "ADMIN.md's Quadlet restore sets pipefail"
 missing=$( (set -o pipefail; dump "sync/20000101T000000Z/tokenserver.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${load}") >> restore.log 2>&1 || echo failed)
 check "${missing}" failed "a restore of a run that is not there fails (quadlets)"
@@ -492,7 +492,7 @@ for db in tokenserver syncstorage; do
   (set -o pipefail; dump "sync/${run}/${db}.sql.gz" | podman exec -i "firefox-sync-${db}-db" sh -c "${load}") >> restore.log 2>&1
   check "$?" 0 "${db} restored from ${run} as its user (quadlets)"
 done
-# the admin UI's database, as its user (the line of ADMIN.md, the client of the image)
+# the admin UI's database, as its user (the line of docs/backups.md#restore-with-quadlets, the client of the image)
 # shellcheck disable=SC2016
 admin_load='mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
 check "$(grep -cF "dump sync/\$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c '${admin_load}'" ADMIN.md)" 1 "ADMIN.md's Quadlet restore of the admin UI's database"

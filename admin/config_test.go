@@ -112,7 +112,7 @@ func secretName(name string) bool {
 var adminSecrets = map[string]bool{"ADMIN_PASSWORD": true, "ADMIN_OIDC_CLIENT_SECRET": true, "ADMIN_FXA_CLIENT_SECRET": true, "ADMIN_METRICS_TOKEN": true,
 	"FXA_SMTP_PASS": true, "ADMIN_DB_PASSWORD": true, "FXA_ADMIN_DB_PASSWORD": true,
 	"SYNC_TOKENSERVER_DB_PASSWORD": true, "SYNC_STORAGE_DB_PASSWORD": true, "SYNC_POSTGRES_PASSWORD": true, "SYNC_POSTGRES_APP_PASSWORD": true,
-	// their old names, still read when the new ones are not set (MIGRATING.md#renamed-settings)
+	// their old names, still read when the new ones are not set (docs/upgrading.md#renamed-settings)
 	"MARIADB_TOKENSERVER_PASSWORD": true, "MARIADB_SYNCSTORAGE_PASSWORD": true, "POSTGRES_PASSWORD": true, "POSTGRES_SYNC_PASSWORD": true}
 
 func TestConfigVarsClassified(t *testing.T) {
@@ -349,7 +349,7 @@ func TestConfigPage(t *testing.T) {
 	}
 	// with the Quadlets their steps, --upgrade writes no unit
 	page = configPage(t, false, func(app *App, _ *fakeFxa) { app.sync.own, app.deployment = nil, deployment{kind: "quadlets"} })
-	if got := configRowOf(page, "Admin UI database"); !strings.Contains(got, "the steps of MIGRATING.md for the Quadlets") || strings.Contains(got, "--upgrade") {
+	if got := configRowOf(page, "Admin UI database"); !strings.Contains(got, "the steps of docs/upgrading.md#with-quadlets for the Quadlets") || strings.Contains(got, "--upgrade") {
 		t.Errorf("before ADMIN_DB_PASSWORD, Quadlets: %q", got)
 	}
 	t.Setenv("ADMIN_DB_PASSWORD", "hunter2hunter3")
@@ -368,7 +368,7 @@ func TestConfigPage(t *testing.T) {
 	page = configPage(t, true, func(app *App, _ *fakeFxa) { app.emailDomain = "accounts.example.com" })
 	for setting, want := range map[string]string{
 		"Max accounts":          "unlimited (3 accounts) FXA_MAX_ACCOUNTS FXA_MAX_ACCOUNTS=not set, initial:unlimited: set to unlimited on a new database only",
-		"Database":              "MariaDB FXA_DB fxa, fxa_oauth, fxa_profile, pushbox and ffs, on your own server (DATABASES.md)",
+		"Database":              "MariaDB FXA_DB fxa, fxa_oauth, fxa_profile, pushbox and ffs, on your own server (docs/databases.md#your-own-server)",
 		"Sign-ups":              "open FXA_SIGNUPS , FXA_SIGNUP_ALLOWLIST",
 		"Pairing server":        "https://pairing.example.com FXA_PAIRING_URL",
 		"Trusted proxies":       "172.18.0.1 ADMIN_TRUSTED_PROXIES",

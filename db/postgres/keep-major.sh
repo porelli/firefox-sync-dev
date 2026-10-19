@@ -20,7 +20,7 @@ if [ -n "${PG_MAJOR:-}" ] && [ ! -s "${PGDATA:-/nonexistent}/PG_VERSION" ]; then
     echo "keep-major.sh: this database is PostgreSQL ${was} (${f%/PG_VERSION}), the image is PostgreSQL ${PG_MAJOR}," >&2
     echo "  which cannot open it (${setting}: ${FFS_POSTGRES_IMAGE:-not set, postgres:latest}). Not started." >&2
     echo "  Set ${setting} to the major of the data, postgres:${was}. Moving to ${PG_MAJOR}: a dump and restore or" >&2
-    echo "  pg_upgrade (DATABASES.md#another-postgresql-major, HELM.md#upgrades)." >&2
+    echo "  pg_upgrade (docs/upgrading.md#postgresql)." >&2
     exit 1
   done
 fi

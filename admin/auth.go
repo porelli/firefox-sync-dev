@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 )
 
-// Sign-in methods, enabled by their configuration (see ADMIN.md): the password,
+// Sign-in methods, enabled by their configuration (see docs/admin/signing-in.md): the password,
 // OpenID Connect, and a header set by a trusted forward-auth proxy. They all end
 // in the same session.
 type authConfig struct {

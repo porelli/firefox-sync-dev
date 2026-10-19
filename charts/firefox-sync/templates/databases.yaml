@@ -77,7 +77,7 @@ spec:
     spec:
       {{- include "firefox-sync.podSpec" $root | nindent 6 }}
       # root at the start (the image's entrypoint chowns the data, then drops to its user
-      # with gosu): PodSecurity baseline, not restricted (HELM.md#what-you-need)
+      # with gosu): PodSecurity baseline, not restricted (docs/install/helm.md#requirements)
       securityContext:
         seccompProfile:
           type: RuntimeDefault

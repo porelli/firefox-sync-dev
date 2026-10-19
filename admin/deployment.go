@@ -76,7 +76,7 @@ func (d deployment) Kubectl() string {
 
 // helmUpgrade: helm upgrade of the release with the values it has, plus those given, in
 // the chart version it runs: --reuse-values with another version would apply the old
-// release's values to the new chart (HELM.md#upgrading), and without --version helm takes
+// release's values to the new chart (docs/upgrading.md#helm), and without --version helm takes
 // the newest
 func (d deployment) helmUpgrade(set string) string {
 	ns := ""
