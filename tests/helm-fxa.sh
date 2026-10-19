@@ -320,7 +320,11 @@ fxa_ingress_lint() {
   out=$(notes -f "${fxa}" --set fxa.database.backend=mariadb)
   grep -q "^Their database runs docker.io/library/mariadb:lts:" <<< "${out}" && ! grep -q 'mozilla/fxa#21554' <<< "${out}" || fail "NOTES: the accounts database on MariaDB: ${out}"
   ! grep -q '^Their database runs' <<< "$(notes -f "${CHART_DIR}/ci/fxa-external-values.yaml")" || fail "NOTES: the bundled accounts database with your own server"
-  check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL; the accounts database's image, its major guard, MySQL 8's native password or lts' patch"
+  # the GitOps hint (without existingSecret): the accounts' keys too, fxaGeneratedKeys (as checkSecretKeys)
+  keys=$(sed -n '/define "firefox-sync.fxaGeneratedKeys"/{n;p;}' "${CHART_DIR}/templates/_fxa.tpl")
+  [[ $(wc -w <<< "${keys}") -eq 9 && ${keys} == *FXA_REDIS_PASSWORD* ]] || fail "fxaGeneratedKeys not the nine keys with FXA_REDIS_PASSWORD: ${keys}"
+  grep -qxF "With the self-hosted accounts, also ${keys// /, }" <<< "$(notes -f "${fxa}")" || fail "NOTES: the existingSecret hint without the accounts' keys: $(notes -f "${fxa}")"
+  check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL; the accounts database's image, its major guard, MySQL 8's native password or lts' patch; the existingSecret hint with the accounts' nine keys"
 }
 
 # the pairing server (fxa.pairing.enabled), compose's fxa-pairing: its env, its healthcheck as
@@ -625,6 +629,11 @@ fxa_objects_lint() {
     and .volumes == [{name: "data", emptyDir: {}}] and .containers[0].readinessProbe.exec.command == ["redis-cli", "ping"])' <<< "${objs}" > /dev/null \
     || fail "fxa-redis: not Recreate, uid 999/1000 with /data in an emptyDir and redis-cli ping"
   check "fxa-redis: Recreate, the image's redis (999, 1000), /data an emptyDir, redis-cli ping"
+  # a new Redis pod when the chart's Secret (its FXA_REDIS_PASSWORD) changes; none with existingSecret
+  redis_annotations() { jq -c '[.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-redis") | .spec.template.metadata.annotations // {} | keys]'; }
+  [[ "$(redis_annotations <<< "${objs}")" == '[["checksum/secrets"]]' ]] || fail "fxa-redis: not checksum/secrets alone: $(redis_annotations <<< "${objs}")"
+  [[ "$(fxa_objs --set existingSecret=mine | redis_annotations)" == '[[]]' ]] || fail "fxa-redis: checksum/secrets with existingSecret"
+  check "fxa-redis: checksum/secrets (none with existingSecret)"
 
   # Redis' password (chart-only): read by redis-server from stdin, never in the pod spec;
   # REDISCLI_AUTH of the probes and wait-redis, each <SUBSYSTEM>_REDIS_PASSWORD of auth
