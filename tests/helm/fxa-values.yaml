@@ -15,9 +15,19 @@ smtp:
   port: 1025
   user: ""
   sender: "Mozilla accounts <no-reply@fxa.test>"
-# (test_fxa_flow.py's reset of the Sync data)
+# as tests/e2e-fxa.sh's stack: max users managed in the admin UI (SYNC_MAX_USERS=initial:10)
+maxUsers: initial:10
+# the admin UI (test_fxa_flow.py's reset of the Sync data, test_fxa_admin.py), signing in with
+# the accounts too (ADMIN_FXA_CLIENT_ID, ADMIN_ALLOWED_USERS=@example.com), alerts to the mail
+# catcher and Prometheus with the token of tests/docker-compose.fxa-test.yml (its faster
+# intervals: admin_test_env of tests/helm-fxa.sh, test-only, after every helm install/upgrade)
 admin:
   enabled: true
+  fxaSignIn: true
+  allowed:
+    users: "@example.com"
+  alertEmail: admin@fxa.test
+  metricsToken: ffs-test-metrics-token
   ingress:
     enabled: true
     className: traefik
@@ -29,6 +39,11 @@ fxa:
   contentUrl: https://accounts.fxa.test
   authUrl: https://api.fxa.test
   profileUrl: https://profile.fxa.test
+  # tests/e2e-fxa.sh's: the sign-up allowlist, the admin UI's OAuth client, the security history
+  signups: allowlist
+  signupAllowlist: "@example.com,invited@example.net"
+  adminClientId: ad41a7e5f0c0ffee
+  accountEvents: true
   # the accounts' servers trust the test CA (compose's NODE_EXTRA_CA_CERTS=/caddy-ca/root.crt)
   extraCaCerts:
     configMap: fxa-test-ca

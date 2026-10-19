@@ -243,3 +243,127 @@ func TestDeploymentKubernetesNoOldNamesCheck(t *testing.T) {
 		t.Errorf("node check, kubernetes: %s", c.Text)
 	}
 }
+
+// the chart with the self-hosted accounts (fxa.enabled): their commands are kubectl's on the
+// chart's objects (the auth pod runs the migrations and the policy as init containers, one
+// backup Job dumps both scopes), their settings the values' names, no compose or Quadlets
+func TestDeploymentKubernetesFxA(t *testing.T) {
+	d := deployment{kind: "kubernetes", release: "t", prefix: "t-firefox-sync", secret: "t-firefox-sync"}
+	bad := []string{"docker compose", "fxa-policy", "backup-fxa", "fxa-migrations", "systemctl", "Quadlets", ".env"}
+	noneOf := func(what, page string) {
+		t.Helper()
+		for _, b := range bad {
+			if i := strings.Index(page, b); i >= 0 {
+				t.Errorf("%s with ADMIN_DEPLOYMENT=kubernetes and the accounts: %q in %s", what, b, page[max(0, i-200):min(len(page), i+100)])
+			}
+		}
+	}
+	const restart, keys = "kubectl rollout restart deployment/t-firefox-sync-fxa-auth", "<code>t-firefox-sync-fxa-keys</code>"
+
+	// the overview: sign-ups, max accounts (managed here or by the values), the backups card
+	for _, editable := range []bool{true, false} {
+		var b strings.Builder
+		data := map[string]any{"CSRF": "x", "FxA": true, "Health": []Component{{Name: "Sync server", Up: true}},
+			"Policy": &SignupPolicy{Mode: "allowlist"}, "AccountLimit": Limit{Count: 1, Max: 10}, "MaxAccountsEditable": editable,
+			"Backup":     map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": false, "Kubernetes": d.Kubernetes()},
+			"Kubernetes": d.Kubernetes()}
+		if err := templates.ExecuteTemplate(&b, "dashboard.html", data); err != nil {
+			t.Fatal(err)
+		}
+		page := b.String()
+		noneOf("dashboard", page)
+		for _, want := range []string{restart, keys, "<code>fxa.keys.existingSecret</code>", "<code>fxa.signups</code>", "<code>fxa.signupAllowlist</code>",
+			"<code>fxa.maxAccounts", "kubectl logs deploy/t-firefox-sync-fxa-auth -c policy", "both scopes"} {
+			if !strings.Contains(page, want) {
+				t.Errorf("dashboard (max accounts editable %v): no %q", editable, want)
+			}
+		}
+		card := page[strings.Index(page, `id="backups-card"`):]
+		card = card[:strings.Index(card, "</section>")]
+		if !strings.Contains(card, keys) || !strings.Contains(card, "create job --from=cronjob/t-firefox-sync-backup") {
+			t.Errorf("backups card: %s", card)
+		}
+	}
+
+	// the account page without the security history: how to turn it on
+	var b strings.Builder
+	acc := &FxaAccount{UID: fakeUID, Email: fakeEmail, CreatedAt: time.Now()}
+	if err := templates.ExecuteTemplate(&b, "user.html", map[string]any{"CSRF": "x", "FxA": true, "UID": fakeUID, "Account": acc,
+		"Security": &Security{}, "AccountEvents": false, "Quadlets": false, "Kubernetes": d.Kubernetes()}); err != nil {
+		t.Fatal(err)
+	}
+	user := b.String()
+	noneOf("user page", user)
+	for _, want := range []string{"<code>fxa.accountEvents: true</code>", "helm upgrade t ", "--set fxa.accountEvents=true"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("user page: no %q", want)
+		}
+	}
+
+	// the configuration page, with the chart's bundled accounts database
+	t.Setenv("FXA_DB_HOST", "t-firefox-sync-fxa-db")
+	t.Setenv("FXA_AUTH_UPSTREAM", "http://t-firefox-sync-fxa-auth:9000")
+	t.Setenv("FXA_REDIS", "t-firefox-sync-fxa-redis:6379")
+	t.Setenv("FXA_SIGNUPS", "allowlist")
+	t.Setenv("FXA_MAX_ACCOUNTS", "initial:unlimited")
+	t.Setenv("ADMIN_GATE_EXPORT_PORT", "t-firefox-sync-admin:8081")
+	t.Setenv("FXA_CONTENT_URL", "https://accounts.example.com")
+	t.Setenv("ADMIN_OIDC_ISSUER", "https://accounts.example.com")
+	page := configPage(t, true, func(app *App, _ *fakeFxa) { app.deployment = d })
+	noneOf("configuration page", page)
+	for _, want := range []string{restart, "PersistentVolumeClaim t-firefox-sync-fxa-keys", "<code>fxa.signups</code>", "<code>fxa.maxAccounts</code>", "<code>fxa.contentUrl</code>"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("configuration page: no %q", want)
+		}
+	}
+	for _, name := range []string{"FXA_SIGNUPS", "FXA_MAX_ACCOUNTS", "FXA_CONTENT_URL"} {
+		if strings.Contains(page, "<code>"+name+"</code>") {
+			t.Errorf("configuration page: %s, not the values' name", name)
+		}
+	}
+	if got := configRowOf(page, "Database"); !strings.Contains(got, "a container of the stack") {
+		t.Errorf("the bundled accounts database: %q", got)
+	}
+	if got := configRowOf(page, "Sign-up gate published on"); !strings.Contains(got, "t-firefox-sync-admin") || !strings.Contains(got, "8081") {
+		t.Errorf("the gate: %q", got)
+	}
+	if got := configRowOf(page, "OpenID Connect issuer"); !strings.Contains(got, "admin.fxaSignIn") {
+		t.Errorf("sign-in with the accounts: %q", got)
+	}
+	if !d.stackHost("t-firefox-sync-fxa-db") || d.stackHost("fxa-db") {
+		t.Error("the chart's bundled accounts database")
+	}
+
+	// the public check of the gate, the read-only max accounts, an error naming fxa-policy
+	if got := d.gateHint(); !strings.Contains(got, "fxa.ingress.enabled") || !strings.Contains(got, "admin.enabled") || strings.Contains(got, "ADMIN_GATE_EXPORT_PORT") {
+		t.Errorf("gate hint: %s", got)
+	}
+	if got := (&App{deployment: d}).maxAccountsReadOnly().Error(); strings.Contains(got, ".env") || !strings.Contains(got, "fxa.maxAccounts") {
+		t.Errorf("max accounts read-only: %s", got)
+	}
+	if got := d.translate("deleteAccount_24 is missing from the accounts database: see the log of fxa-policy"); got !=
+		"deleteAccount_24 is missing from the accounts database: see kubectl logs deploy/t-firefox-sync-fxa-auth -c policy" {
+		t.Errorf("fxa-policy's log: %s", got)
+	}
+	// compose's as before
+	compose := deployment{kind: "compose"}
+	if !strings.Contains(compose.gateHint(), "ADMIN_GATE_EXPORT_PORT") || compose.translate("see the log of fxa-policy") != "see the log of fxa-policy" ||
+		!strings.Contains((&App{}).maxAccountsReadOnly().Error(), "FXA_MAX_ACCOUNTS in .env") {
+		t.Error("compose's texts changed")
+	}
+}
+
+// the setup check of the accounts' SMTP server names the chart's value
+func TestDeploymentKubernetesFxASMTP(t *testing.T) {
+	t.Setenv("SMTP_HOST", "")
+	app := &App{fxa: (&fakeFxa{}).db(""), deployment: deployment{kind: "kubernetes", release: "t", prefix: "t-firefox-sync", secret: "t-firefox-sync"}}
+	for _, c := range app.setupChecks(t.Context(), nil, nil) {
+		if strings.HasPrefix(c.Name, "Email of the accounts") {
+			if c.Name != "Email of the accounts (smtp.host)" || !strings.Contains(c.Text, "smtp.host is not set in your values") || strings.Contains(c.Text, ".env") {
+				t.Errorf("kubernetes: %+v", c)
+			}
+			return
+		}
+	}
+	t.Error("no check of the accounts' SMTP server")
+}

@@ -90,7 +90,7 @@ spec:
               value: {{ $f.pairing.url | default "wss://channelserver.services.mozilla.com" | quote }}
             # as in auth: the admin UI never skips the sign-in code (Mozilla's default + the admin UI)
             - name: SERVICES_WITH_EMAIL_VERIFICATION
-              value: {{ printf "32aaeb6f1c21316a,%s" $f.adminClientId | quote }}
+              value: {{ printf "32aaeb6f1c21316a,%s" (include "firefox-sync.fxaAdminClientId" .) | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FLOW_ID_KEY" "key" "FXA_FLOW_ID_KEY") | nindent 12 }}
             - name: FEATURE_FLAGS_REDIS_HOST
               value: {{ $fullname }}-fxa-redis

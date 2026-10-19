@@ -114,7 +114,13 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 		checks = append(checks, c)
 	}
 	if a.fxa != nil {
-		checks = append(checks, accountsSMTPCheck(smtpServer()))
+		c := accountsSMTPCheck(smtpServer())
+		if a.deployment.Kubernetes() != nil {
+			// the chart's smtp values, no .env
+			c.Name = "Email of the accounts (smtp.host)"
+			c.Text = strings.Replace(c.Text, "FXA_SMTP_HOST is not set (or still the placeholder of .env-example)", "smtp.host is not set in your values of the chart", 1)
+		}
+		checks = append(checks, c)
 	}
 	if a.emailDomain != "" {
 		if counts, err := a.sync.EmailDomains(ctx); err != nil {

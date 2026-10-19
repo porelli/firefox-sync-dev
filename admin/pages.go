@@ -85,7 +85,7 @@ func (a *App) userPage(w http.ResponseWriter, r *http.Request, s *session) {
 			if data["SecurityEvents"], err = a.fxa.SecurityEvents(ctx, uid, securityHistoryRows); err != nil {
 				errs = append(errs, "Security history: "+err.Error())
 			}
-			data["SecurityHistoryRows"], data["Quadlets"] = securityHistoryRows, a.deployment.Quadlets()
+			data["SecurityHistoryRows"], data["Quadlets"], data["Kubernetes"] = securityHistoryRows, a.deployment.Quadlets(), a.deployment.Kubernetes()
 		}
 	}
 	if data["Account"] == nil && user == nil && len(errs) == 0 {

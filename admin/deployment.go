@@ -149,9 +149,67 @@ func (d deployment) name() string {
 func (d deployment) stackHost(host string) bool {
 	if d.Kubernetes() != nil {
 		full := d.fullname()
-		return host == full+"-tokenserver-db" || host == full+"-storage-db" || host == full+"-postgres"
+		return host == full+"-tokenserver-db" || host == full+"-storage-db" || host == full+"-postgres" || host == full+"-fxa-db"
 	}
 	return stackHosts[host]
+}
+
+// the self-hosted accounts (fxa.enabled): their auth pod runs compose's fxa-migrations and
+// fxa-policy as its init containers (migrations, policy), so a new pod of it applies the
+// values again; one backup Job dumps the accounts before the Sync databases
+func (d deployment) authDeployment() string { return "deployment/" + d.fullname() + "-fxa-auth" }
+
+// FxaKeys: the PVC of the accounts' signing keys
+func (d deployment) FxaKeys() string { return d.fullname() + "-fxa-keys" }
+
+// RestartFxa: a new auth pod, which runs the migrations and the policy again first
+func (d deployment) RestartFxa() string {
+	return d.Kubectl() + " rollout restart " + d.authDeployment()
+}
+
+// FxaLogs: the log of one of the auth pod's containers (migrations, policy, auth)
+func (d deployment) FxaLogs(container string) string {
+	return d.Kubectl() + " logs deploy/" + d.fullname() + "-fxa-auth -c " + container
+}
+
+// HelmSet: helm upgrade of the release with one value set
+func (d deployment) HelmSet(value string) string { return d.helmUpgrade("--set " + value) }
+
+// translate: a message written for compose (the policy's errors, in the accounts database)
+// with this deployment's command
+func (d deployment) translate(msg string) string {
+	if d.Kubernetes() == nil {
+		return msg
+	}
+	return strings.ReplaceAll(msg, "see the log of fxa-policy", "see "+d.FxaLogs("policy"))
+}
+
+// gateHint: where POST /v1/account/create must go, for the public check of the gate
+func (d deployment) gateHint() string {
+	if d.Kubernetes() != nil {
+		return "Send it to the Service " + d.AdminService() + ", port 8081: the chart's Ingress routes it with fxa.ingress.enabled and admin.enabled, your own needs an Exact path /v1/account/create there (HELM.md)"
+	}
+	return "Send it to ADMIN_GATE_EXPORT_PORT, see ADMIN.md"
+}
+
+// chartValues: the values of the chart that set the accounts' variables (of .env in compose)
+var chartValues = map[string]string{
+	"FXA_SIGNUPS": "fxa.signups", "FXA_SIGNUP_ALLOWLIST": "fxa.signupAllowlist", "FXA_MAX_ACCOUNTS": "fxa.maxAccounts",
+	"FXA_ACCOUNT_EVENTS": "fxa.accountEvents", "FXA_CLIENT_ADDRESS_DEPTH": "fxa.clientAddressDepth",
+	"FXA_ACCESS_TOKEN_LIFETIME": "fxa.accessTokenLifetime", "FXA_CONTENT_URL": "fxa.contentUrl", "FXA_AUTH_URL": "fxa.authUrl",
+	"FXA_PROFILE_URL": "fxa.profileUrl", "FXA_PAIRING_URL": "fxa.pairing.url", "FXA_DB": "fxa.database.backend",
+	"FXA_MYSQL_HOST": "fxa.database.external.host", "FXA_MYSQL_PORT": "fxa.database.external.port",
+	"FXA_SMTP_HOST": "smtp.host", "FXA_SMTP_PORT": "smtp.port", "FXA_SMTP_USER": "smtp.user", "FXA_SMTP_PASS": "smtp.password",
+	"FXA_SMTP_SECURE": "smtp.secure", "FXA_SMTP_SENDER": "smtp.sender",
+}
+
+// valueName: a variable of .env as this deployment sets it: with the chart, the accounts'
+// as the values' names (FXA_SIGNUPS: fxa.signups), the others as they are
+func (d deployment) valueName(name string) string {
+	if v, ok := chartValues[name]; ok && d.Kubernetes() != nil {
+		return v
+	}
+	return name
 }
 
 // setting: the name of a setting as this deployment has it, of .env (compose and the

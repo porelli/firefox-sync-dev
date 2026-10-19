@@ -1,12 +1,14 @@
 {{- /*
-fxa.networkPolicy (chart-only: compose's databases are on a network of its own): Redis takes
-connections from the accounts' servers alone, the bundled accounts database from them and the
-admin UI (it reads the accounts). Their own pods by the chart's labels; enforced where the
-cluster's network plugin does
+fxa.networkPolicy (chart-only: compose's databases are on a network of its own): Redis and the
+bundled accounts database take connections from the accounts' servers and the admin UI alone
+(it reads the accounts, revokes their tokens). Their own pods by the chart's labels; enforced
+where the cluster's network plugin does
 */ -}}
 {{- if and .Values.fxa.enabled .Values.fxa.networkPolicy.enabled }}
 {{- $clients := dict "fxa-redis" (list "fxa-auth" "fxa-content" "fxa-profile") "fxa-db" (list "fxa-auth" "fxa-profile") }}
 {{- if .Values.admin.enabled }}
+{{- /* (Redis: the admin UI revokes tokens and reads the sessions' last use, with its password) */}}
+{{- $_ := set $clients "fxa-redis" (append (get $clients "fxa-redis") "admin") }}
 {{- $_ := set $clients "fxa-db" (append (get $clients "fxa-db") "admin") }}
 {{- end }}
 {{- $ports := dict "fxa-redis" 6379 "fxa-db" 3306 }}

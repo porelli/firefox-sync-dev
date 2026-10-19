@@ -282,15 +282,18 @@ spec:
             # when sessions were last used (the admin UI shows it): for every account
             - name: LASTACCESSTIME_UPDATES_SAMPLE_RATE
               value: "1"
-            # the OAuth client of the admin UI (config/fxa/oauth-clients.js)
+            # the OAuth client of the admin UI (config/fxa/oauth-clients.js), with admin.fxaSignIn:
+            # fxa.adminClientId or derived (firefox-sync.fxaAdminClientId); empty: none
+            {{- $adminClient := include "firefox-sync.fxaAdminClientId" . }}
             - name: ADMIN_FXA_CLIENT_ID
-              value: {{ $f.adminClientId | quote }}
+              value: {{ $adminClient | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_FXA_CLIENT_SECRET" "key" "ADMIN_FXA_CLIENT_SECRET" "optional" true) | nindent 12 }}
             - name: ADMIN_OIDC_REDIRECT_URL
-              value: {{ .Values.admin.oidc.redirectUrl | quote }}
-            # clients that never skip the sign-in code: Mozilla's defaults and the admin UI
+              value: {{ include "firefox-sync.adminRedirectUrl" . | quote }}
+            # clients that never skip the sign-in code: Mozilla's defaults and the admin UI (as
+            # compose renders it: a trailing comma without the admin UI's)
             - name: SERVICES_WITH_EMAIL_VERIFICATION
-              value: {{ printf "32aaeb6f1c21316a,98e6508e88680e1a,%s" $f.adminClientId | quote }}
+              value: {{ printf "32aaeb6f1c21316a,98e6508e88680e1a,%s" $adminClient | quote }}
             # secrets: the auth server signs OAuth assertions with OAUTH_SERVER_SECRET_KEY and
             # accepts those signed with one of AUTH_SERVER_SECRETS: they share the secret
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "OAUTH_SERVER_SECRET_KEY" "key" "FXA_OAUTH_SECRET") | nindent 12 }}

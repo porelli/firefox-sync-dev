@@ -156,11 +156,58 @@ FXA_MYSQL_PASSWORD FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_OAUTH_SECRET FXA_PR
 {{- end }}
 
 {{/*
+Sign-in to the admin UI with the accounts (admin.fxaSignIn, with the accounts and the admin UI
+on): "true", else empty
+*/}}
+{{- define "firefox-sync.fxaSignIn" -}}
+{{- if and .Values.fxa.enabled .Values.admin.enabled .Values.admin.fxaSignIn }}true{{ end }}
+{{- end }}
+
+{{/*
+ADMIN_FXA_CLIENT_ID, the admin UI's OAuth client in the accounts (config/fxa/oauth-clients.js):
+fxa.adminClientId, else derived from the namespace and the release (the same on every render and
+upgrade, no lookup: GitOps renders it too; no secret, a public PKCE client); empty without
+sign-in with the accounts, as compose with ADMIN_FXA_CLIENT_ID empty
+*/}}
+{{- define "firefox-sync.fxaAdminClientId" -}}
+{{- if include "firefox-sync.fxaSignIn" . }}
+{{- .Values.fxa.adminClientId | default (printf "%s/%s/admin-oidc" .Release.Namespace .Release.Name | sha256sum | trunc 16) }}
+{{- end }}
+{{- end }}
+
+{{/*
+ADMIN_OIDC_REDIRECT_URL: admin.oidc.redirectUrl, else (sign-in with the accounts) /auth/callback
+of admin.ingress.host, as prepare_environment.sh writes it
+*/}}
+{{- define "firefox-sync.adminRedirectUrl" -}}
+{{- if and (include "firefox-sync.fxaSignIn" .) (not .Values.admin.oidc.redirectUrl) }}
+{{- printf "https://%s/auth/callback" .Values.admin.ingress.host }}
+{{- else }}
+{{- .Values.admin.oidc.redirectUrl }}
+{{- end }}
+{{- end }}
+
+{{/*
 What the accounts need of the values, or the render fails saying so (fail closed); called by
 firefox-sync.checkValues
 */}}
 {{- define "firefox-sync.checkFxaValues" -}}
 {{- $f := .Values.fxa }}
+{{- $a := .Values.admin }}
+{{- if and $a.enabled $a.fxaSignIn (not $f.enabled) }}
+{{- fail "firefox-sync: admin.fxaSignIn needs fxa.enabled: it signs in with the self-hosted accounts (OpenID Connect of another provider: admin.oidc.*)" }}
+{{- end }}
+{{- if include "firefox-sync.fxaSignIn" . }}
+{{- if not (or $a.allowed.users $a.allowed.groups) }}
+{{- fail "firefox-sync: admin.fxaSignIn needs admin.allowed.users or admin.allowed.groups: who of the accounts is an admin (ADMIN.md#signing-in)" }}
+{{- end }}
+{{- if not (or $a.oidc.redirectUrl $a.ingress.host) }}
+{{- fail "firefox-sync: admin.fxaSignIn needs admin.oidc.redirectUrl or admin.ingress.host: the admin UI's public https://<host>/auth/callback, where the accounts send the admins back" }}
+{{- end }}
+{{- if and $a.oidc.redirectUrl (not (regexMatch "^https?://[^/]+(/.*)?/auth/callback$" $a.oidc.redirectUrl)) }}
+{{- fail (printf "firefox-sync: admin.oidc.redirectUrl must be the admin UI's https://<host>/auth/callback (the accounts register exactly that), not %s" $a.oidc.redirectUrl) }}
+{{- end }}
+{{- end }}
 {{- if $f.enabled }}
 {{- if not (and $f.contentUrl $f.authUrl $f.profileUrl) }}
 {{- fail "firefox-sync: fxa.enabled needs fxa.contentUrl, fxa.authUrl and fxa.profileUrl, the public URLs of the accounts' pages, API and profiles, each on a host of its own (FXA.md)" }}

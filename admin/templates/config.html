@@ -3,7 +3,7 @@
 <div class="page-head">
   <div>
     <h1>Configuration</h1>
-    {{with .Kubernetes}}<p class="hint">What this server runs with, as the admin UI sees it: the values of the chart it is given, named as the variables of <code>.env</code>, and the limits and sign-ups of the databases. Change them in your values, then <code>helm upgrade {{.Release}}</code>; the limits and the sign-ups on the overview. Secrets are never shown, only whether they are set.</p>{{else}}<p class="hint">What this server runs with, as the admin UI sees it: the settings of <code>.env</code> it is given, and the limits and sign-ups of the databases. Change them in <code>.env</code>, then <code>docker compose up -d</code> (or restart the Quadlets); the limits and the sign-ups on the overview. Secrets are never shown, only whether they are set.</p>{{end}}
+    {{with .Kubernetes}}<p class="hint">What this server runs with, as the admin UI sees it: the values of the chart it is given, named as the containers' variables (those of the accounts as the values, <code>fxa.*</code> and <code>smtp.*</code>), and the limits and sign-ups of the databases. Change them in your values, then <code>helm upgrade {{.Release}}</code>; the limits and the sign-ups on the overview. Secrets are never shown, only whether they are set.</p>{{else}}<p class="hint">What this server runs with, as the admin UI sees it: the settings of <code>.env</code> it is given, and the limits and sign-ups of the databases. Change them in <code>.env</code>, then <code>docker compose up -d</code> (or restart the Quadlets); the limits and the sign-ups on the overview. Secrets are never shown, only whether they are set.</p>{{end}}
   </div>
 </div>
 {{template "flash" .}}

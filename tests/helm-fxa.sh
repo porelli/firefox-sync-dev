@@ -224,6 +224,7 @@ fxa_lint() {
 
   fxa_objects_lint
   fxa_ingress_lint
+  fxa_admin_lint
 
   # chart 0.1.0's render, with the accounts off: the same objects for every ci/*.yaml it had,
   # but the chart label, ADMIN_K8S_CHART_VERSION and the generated secrets
@@ -242,7 +243,7 @@ fxa_ingress_lint() {
   }
   local f=test-release-firefox-sync
   want='[{"name":"'${f}'-fxa-content","component":"fxa-content","class":null,"annotations":null,"tls":[{"hosts":["accounts.example.test"]}],"rules":[{"host":"accounts.example.test","paths":[["/","Prefix","'${f}'-fxa-content",3030]]}]},'
-  want+='{"name":"'${f}'-fxa-auth","component":"fxa-auth","class":null,"annotations":null,"tls":[{"hosts":["api.example.test"]}],"rules":[{"host":"api.example.test","paths":[["/","Prefix","'${f}'-fxa-auth",9000]]}]},'
+  want+='{"name":"'${f}'-fxa-auth","component":"fxa-auth","class":null,"annotations":null,"tls":[{"hosts":["api.example.test"]}],"rules":[{"host":"api.example.test","paths":[["/","Prefix","'${f}'-fxa-auth",9000],["/v1/account/create","Exact","'${f}'-admin",8081]]}]},'
   want+='{"name":"'${f}'-fxa-profile","component":"fxa-profile","class":null,"annotations":null,"tls":[{"hosts":["profile.example.test"]}],"rules":[{"host":"profile.example.test","paths":[["/","Prefix","'${f}'-fxa-profile",1111],["/img/","Prefix","'${f}'-fxa-profile",1114]]}]}]'
   out=$(fxa_ingresses)
   [[ "${out}" == "${want}" ]] || fail "the accounts' Ingresses of ci/fxa-values.yaml: ${out}"
@@ -263,8 +264,11 @@ fxa_ingress_lint() {
     || fail "fxa.ingress.className, annotations, tls.secretNames, a host with a port: ${out}"
   [[ "$(fxa_ingresses --set fxa.ingress.tls.enabled=false | jq -c 'map(.tls)')" == '[null,null,null]' ]] || fail "fxa.ingress.tls.enabled=false: tls in the Ingresses"
   [[ "$(fxa_ingresses --set fxa.ingress.enabled=false)" == '[]' ]] || fail "fxa.ingress.enabled=false: the accounts' Ingresses rendered"
+  # (the sign-up gate only with the admin UI, which serves it)
+  [[ "$(fxa_ingresses --set admin.enabled=false | jq -c '.[1].rules[0].paths')" == '[["/","Prefix","'${f}'-fxa-auth",9000]]' ]] \
+    || fail "admin.enabled=false: the auth Ingress: $(fxa_ingresses --set admin.enabled=false | jq -c '.[1].rules[0].paths')"
   [[ "$(fxa_ingresses --set fxa.enabled=false --set fxa.ingress.enabled=true)" == '[]' ]] || fail "fxa.enabled=false: the accounts' Ingresses rendered"
-  check "Ingresses <fullname>-fxa-content (/ 3030), -fxa-auth (/ 9000), -fxa-profile (/ 1111, /img/ 1114) on their URLs' hosts, kubeconform -strict; fxa.ingress class, annotations, a certificate each; none with fxa.ingress.enabled=false"
+  check "Ingresses <fullname>-fxa-content (/ 3030), -fxa-auth (/ 9000, with the admin UI /v1/account/create Exact to -admin 8081), -fxa-profile (/ 1111, /img/ 1114) on their URLs' hosts, kubeconform -strict; fxa.ingress class, annotations, a certificate each; none with fxa.ingress.enabled=false"
 
   # NOTES: the four URLs, Firefox's setting, the keys' export, the memory, http:// warned of
   out=$(notes -f "${fxa}")
@@ -287,6 +291,107 @@ fxa_ingress_lint() {
   ! grep -q 'fxa-keys.tar' <<< "$(notes -f "${fxa}" --set fxa.keys.existingSecret=mine)" || fail "NOTES: the keys' export with fxa.keys.existingSecret"
   ! grep -qi 'accounts' <<< "$(notes -f "${CHART_DIR}/ci/default-values.yaml")" || fail "NOTES without the accounts: names them"
   check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL"
+}
+
+# the admin UI with the accounts: compose's ffs-admin block of docker-compose.fxa.yml (and the
+# chart's own: Redis' password, the servers' Services, the test CA), the sign-up gate's port, its
+# wait for auth; sign-in with the accounts (admin.fxaSignIn): the client id given or derived, the
+# redirect URL, the client in auth (and content) as compose renders them
+fxa_admin_lint() {
+  local fxa="${CHART_DIR}/ci/fxa-values.yaml" out want id f=test-release-firefox-sync
+  # admin_objs <release> <helm args>: the objects of ci/fxa-values.yaml with them
+  admin_objs() { helm template "$1" "${CHART_DIR}" -f "${fxa}" "${@:2}" | manifests; }
+  # admin_pod_of <objects> <component>: the pod of the Deployment of that component
+  admin_pod_of() { jq -c --arg c "$2" '.[] | select(.kind == "Deployment" and .metadata.labels["app.kubernetes.io/component"] == $c) | .spec.template' <<< "$1"; }
+  # admin_env_of <pod> <container> <regex>: those of its variables, NAME=value|... (secret:KEY)
+  admin_env_of() { jq -r --arg c "$2" '.spec.containers[] | select(.name == $c) | (.env // [])[] | "\(.name)=\(.value // ("secret:" + .valueFrom.secretKeyRef.key))"' <<< "$1" | grep -E "$3" | paste -sd'|' -; }
+  local signin=(--set admin.fxaSignIn=true --set admin.allowed.users=@example.test --set admin.ingress.host=admin.example.test)
+
+  # compose's FxA block of ffs-admin, in its order, then the chart's own
+  local objs admin
+  objs=$(admin_objs test-release)
+  admin=$(admin_pod_of "${objs}" admin)
+  want="FXA_OAUTH_SERVER_URL=http://${f}-fxa-auth:9000/v1|FXA_EMAIL_DOMAIN=api.example.test|FXA_DB_HOST=${f}-fxa-db|FXA_DB_PORT=3306"
+  want+="|FXA_DB_PASSWORD=secret:FXA_ADMIN_DB_PASSWORD|FXA_MAX_ACCOUNTS=initial:unlimited|FXA_AUTH_UPSTREAM=http://${f}-fxa-auth:9000"
+  want+="|FXA_PAIRING_URL=wss://pairing.example.test|FXA_ACCOUNT_EVENTS=false|FXA_CONTENT_URL=https://accounts.example.test|FXA_AUTH_URL=https://api.example.test"
+  want+="|FXA_PROFILE_URL=https://profile.example.test|FXA_DB=mysql|ADMIN_GATE_EXPORT_PORT=${f}-admin:8081|FXA_CLIENT_ADDRESS_DEPTH=2|FXA_ACCESS_TOKEN_LIFETIME=60 minutes"
+  want+="|FXA_REDIS=${f}-fxa-redis:6379|FXA_REDIS_PASSWORD=secret:FXA_REDIS_PASSWORD|FXA_CONTENT_INTERNAL_URL=http://${f}-fxa-content:3030"
+  want+="|FXA_PROFILE_INTERNAL_URL=http://${f}-fxa-profile:1111|FXA_PAIRING_INTERNAL_URL=http://${f}-fxa-pairing:8000"
+  out=$(admin_env_of "${admin}" admin '^(FXA_|ADMIN_GATE_|SSL_CERT_)')
+  [[ "${out}" == "${want}" ]] || fail "the admin UI's env with the accounts: ${out}"
+  # (the other values; MariaDB, no pairing, your own accounts server)
+  out=$(admin_env_of "$(admin_pod_of "$(admin_objs test-release --set fxa.database.backend=mariadb --set fxa.pairing.enabled=false --set-string fxa.maxAccounts=5 \
+    --set fxa.accountEvents=true --set fxa.clientAddressDepth=3 --set-string fxa.accessTokenLifetime='30 minutes')" admin)" admin '^(FXA_(DB|MAX|PAIRING|ACCOUNT_EVENTS|CLIENT|ACCESS)_?)')
+  [[ "${out}" == "FXA_DB_HOST=${f}-fxa-db|FXA_DB_PORT=3306|FXA_DB_PASSWORD=secret:FXA_ADMIN_DB_PASSWORD|FXA_MAX_ACCOUNTS=5|FXA_PAIRING_URL=|FXA_ACCOUNT_EVENTS=true|FXA_DB=mariadb|FXA_CLIENT_ADDRESS_DEPTH=3|FXA_ACCESS_TOKEN_LIFETIME=30 minutes" ]] \
+    || fail "the admin UI's env with other values of the accounts: ${out}"
+  out=$(admin_env_of "$(admin_pod_of "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" --set admin.enabled=true | manifests)" admin)" admin '^FXA_DB_(HOST|PORT)=')
+  [[ "${out}" == "FXA_DB_HOST=fxadb.example.test|FXA_DB_PORT=3306" ]] || fail "the admin UI with your own accounts server: ${out}"
+  # the gate's port on the Service and the container, the wait for auth (compose's depends_on fxa-policy)
+  jq -e --arg f "${f}" '[.[] | select(.kind == "Service" and .metadata.name == "\($f)-admin") | .spec.ports[] | [.name, .port, .targetPort, .protocol]]
+    == [["http", 8080, "http", "TCP"], ["statsd", 8125, "statsd", "UDP"], ["gate", 8081, "gate", "TCP"]]' <<< "${objs}" > /dev/null \
+    || fail "the admin UI's Service: $(jq -c --arg f "${f}" '.[] | select(.kind == "Service" and .metadata.name == "\($f)-admin") | .spec.ports' <<< "${objs}")"
+  jq -e --arg f "${f}" '(.spec.containers[0].ports | map("\(.name)/\(.containerPort)/\(.protocol)")) == ["http/8080/TCP", "statsd/8125/UDP", "gate/8081/TCP"]
+    and ([.spec.initContainers[].name] == ["wait-sync", "wait-fxa"])
+    and (.spec.initContainers[1] | .image == "ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-latest" and (.args[0] | contains("curl -sf -o /dev/null http://\($f)-fxa-auth:9000/__heartbeat__"))
+      and .securityContext == {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}})' <<< "${admin}" > /dev/null \
+    || fail "the admin UI's ports and init containers: $(jq -c '[.spec.containers[0].ports, .spec.initContainers]' <<< "${admin}")"
+  # (the test CA of fxa.extraCaCerts: Go's SSL_CERT_DIR, besides the system's)
+  out=$(admin_pod_of "$(admin_objs test-release --set fxa.extraCaCerts.configMap=my-ca --set fxa.extraCaCerts.key=root.pem)" admin)
+  jq -e '(.spec.containers[0] | (.env[] | select(.name == "SSL_CERT_DIR") | .value == "/ffs-ca") and .volumeMounts == [{name: "ffs-ca", mountPath: "/ffs-ca", readOnly: true}])
+    and .spec.volumes == [{name: "ffs-ca", configMap: {name: "my-ca"}}]' <<< "${out}" > /dev/null || fail "fxa.extraCaCerts: the admin UI without /ffs-ca: $(jq -c '.spec.containers[0].volumeMounts, .spec.volumes' <<< "${out}")"
+  jq -e '(.spec.containers[0] | has("volumeMounts") | not) and (.spec | has("volumes") | not)' <<< "${admin}" > /dev/null || fail "no fxa.extraCaCerts: volumes in the admin UI"
+  check "admin UI with the accounts: compose's FxA block (FXA_DB_*, FXA_MAX_ACCOUNTS, FXA_AUTH_UPSTREAM, ..., ADMIN_GATE_EXPORT_PORT ${f}-admin:8081), Redis with its password, the servers' Services; gate 8081 on its Service; wait-fxa; SSL_CERT_DIR with fxa.extraCaCerts"
+
+  # without sign-in with the accounts: no client in auth (compose with ADMIN_FXA_CLIENT_ID empty:
+  # SERVICES_WITH_EMAIL_VERIFICATION with its trailing comma), the admin UI's OIDC its values
+  out=$(admin_env_of "$(admin_pod_of "${objs}" fxa-auth)" auth '^(ADMIN_|SERVICES_)')
+  [[ "${out}" == "ADMIN_FXA_CLIENT_ID=|ADMIN_FXA_CLIENT_SECRET=secret:ADMIN_FXA_CLIENT_SECRET|ADMIN_OIDC_REDIRECT_URL=|SERVICES_WITH_EMAIL_VERIFICATION=32aaeb6f1c21316a,98e6508e88680e1a," ]] \
+    || fail "auth without admin.fxaSignIn: ${out}"
+  out=$(admin_env_of "${admin}" admin '^ADMIN_OIDC_')
+  [[ "${out}" == "ADMIN_OIDC_ISSUER=|ADMIN_OIDC_CLIENT_ID=|ADMIN_OIDC_CLIENT_SECRET=secret:ADMIN_OIDC_CLIENT_SECRET|ADMIN_OIDC_REDIRECT_URL=|ADMIN_OIDC_SCOPES=|ADMIN_OIDC_NAME=|ADMIN_OIDC_GROUPS_CLAIM=|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=" ]] \
+    || fail "the admin UI without admin.fxaSignIn: ${out}"
+
+  # admin.fxaSignIn: the id derived from the namespace and the release (the same on every
+  # render, 16 hex, another for another release), the redirect URL of admin.ingress.host
+  id=$(printf %s "default/test-release/admin-oidc" | sha256sum | cut -c1-16)
+  objs=$(admin_objs test-release "${signin[@]}")
+  out=$(admin_env_of "$(admin_pod_of "${objs}" fxa-auth)" auth '^(ADMIN_|SERVICES_)')
+  [[ "${out}" == "ADMIN_FXA_CLIENT_ID=${id}|ADMIN_FXA_CLIENT_SECRET=secret:ADMIN_FXA_CLIENT_SECRET|ADMIN_OIDC_REDIRECT_URL=https://admin.example.test/auth/callback|SERVICES_WITH_EMAIL_VERIFICATION=32aaeb6f1c21316a,98e6508e88680e1a,${id}" ]] \
+    || fail "auth with admin.fxaSignIn: ${out} (the id: ${id})"
+  [[ "${id}" =~ ^[0-9a-f]{16}$ ]] || fail "the derived client id: ${id}"
+  [[ "$(admin_env_of "$(admin_pod_of "$(admin_objs test-release "${signin[@]}")" fxa-auth)" auth '^ADMIN_FXA_CLIENT_ID=')" == "ADMIN_FXA_CLIENT_ID=${id}" ]] || fail "the derived client id differs between two renders"
+  out=$(admin_env_of "$(admin_pod_of "$(admin_objs other "${signin[@]}")" fxa-auth)" auth '^ADMIN_FXA_CLIENT_ID=')
+  [[ "${out}" =~ ^ADMIN_FXA_CLIENT_ID=[0-9a-f]{16}$ && "${out}" != "ADMIN_FXA_CLIENT_ID=${id}" && "${out}" == "ADMIN_FXA_CLIENT_ID=$(printf %s "default/other/admin-oidc" | sha256sum | cut -c1-16)" ]] \
+    || fail "another release's derived client id: ${out} (test-release: ${id})"
+  [[ "$(admin_env_of "$(admin_pod_of "${objs}" fxa-content)" content '^SERVICES_')" == "SERVICES_WITH_EMAIL_VERIFICATION=32aaeb6f1c21316a,${id}" ]] \
+    || fail "content with admin.fxaSignIn: $(admin_env_of "$(admin_pod_of "${objs}" fxa-content)" content '^SERVICES_')"
+  out=$(admin_env_of "$(admin_pod_of "${objs}" admin)" admin '^ADMIN_OIDC_')
+  [[ "${out}" == "ADMIN_OIDC_ISSUER=https://accounts.example.test|ADMIN_OIDC_CLIENT_ID=${id}|ADMIN_OIDC_CLIENT_SECRET=secret:ADMIN_FXA_CLIENT_SECRET|ADMIN_OIDC_REDIRECT_URL=https://admin.example.test/auth/callback|ADMIN_OIDC_SCOPES=|ADMIN_OIDC_NAME=Mozilla account|ADMIN_OIDC_GROUPS_CLAIM=|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true" ]] \
+    || fail "the admin UI with admin.fxaSignIn: ${out}"
+  # (fxa.adminClientId and the admin.oidc values over the defaults, as compose's ${...:-...})
+  objs=$(admin_objs test-release "${signin[@]}" --set fxa.adminClientId=0123456789abcdef --set admin.oidc.redirectUrl=https://ops.example.test/admin/auth/callback \
+    --set admin.oidc.name=Accounts --set admin.oidc.clientSecret=s3cret --set admin.oidc.trustUnverifiedEmail=false)
+  [[ "$(admin_env_of "$(admin_pod_of "${objs}" fxa-auth)" auth '^(ADMIN_FXA_CLIENT_ID|ADMIN_OIDC_REDIRECT_URL)=')" == "ADMIN_FXA_CLIENT_ID=0123456789abcdef|ADMIN_OIDC_REDIRECT_URL=https://ops.example.test/admin/auth/callback" ]] \
+    || fail "auth with fxa.adminClientId, admin.oidc.redirectUrl: $(admin_env_of "$(admin_pod_of "${objs}" fxa-auth)" auth '^ADMIN_')"
+  out=$(admin_env_of "$(admin_pod_of "${objs}" admin)" admin '^ADMIN_OIDC_(CLIENT_ID|CLIENT_SECRET|REDIRECT_URL|NAME|TRUST_UNVERIFIED_EMAIL)=')
+  [[ "${out}" == "ADMIN_OIDC_CLIENT_ID=0123456789abcdef|ADMIN_OIDC_CLIENT_SECRET=secret:ADMIN_OIDC_CLIENT_SECRET|ADMIN_OIDC_REDIRECT_URL=https://ops.example.test/admin/auth/callback|ADMIN_OIDC_NAME=Accounts|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=false" ]] \
+    || fail "the admin UI with fxa.adminClientId and admin.oidc.*: ${out}"
+  # (another provider of admin.oidc.issuer: its unverified emails not trusted by default)
+  [[ "$(admin_env_of "$(admin_pod_of "$(admin_objs test-release "${signin[@]}" --set admin.oidc.issuer=https://dex.example.test)" admin)" admin '^ADMIN_OIDC_(ISSUER|TRUST_UNVERIFIED_EMAIL)=')" \
+    == "ADMIN_OIDC_ISSUER=https://dex.example.test|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=" ]] || fail "admin.fxaSignIn with another admin.oidc.issuer: trusts its unverified emails"
+  # (no admin UI: no client in auth)
+  [[ "$(admin_env_of "$(admin_pod_of "$(admin_objs test-release "${signin[@]}" --set admin.enabled=false)" fxa-auth)" auth '^ADMIN_FXA_CLIENT_ID=')" == "ADMIN_FXA_CLIENT_ID=" ]] \
+    || fail "admin.fxaSignIn without the admin UI: a client in auth"
+  # what sign-in needs, or the render fails saying so
+  out=$(helm template test-release "${CHART_DIR}" -f "${fxa}" --set admin.fxaSignIn=true --set admin.ingress.host=admin.example.test 2>&1) && fail "admin.fxaSignIn without admin.allowed: renders"
+  grep -qF "admin.fxaSignIn needs admin.allowed.users or admin.allowed.groups" <<< "${out}" || fail "admin.fxaSignIn without admin.allowed: ${out}"
+  out=$(helm template test-release "${CHART_DIR}" -f "${fxa}" --set admin.fxaSignIn=true --set admin.allowed.groups=ops 2>&1) && fail "admin.fxaSignIn without a redirect URL: renders"
+  grep -qF "admin.fxaSignIn needs admin.oidc.redirectUrl or admin.ingress.host" <<< "${out}" || fail "admin.fxaSignIn without a redirect URL: ${out}"
+  out=$(helm template test-release "${CHART_DIR}" -f "${fxa}" "${signin[@]}" --set admin.oidc.redirectUrl=https://admin.example.test/callback 2>&1) && fail "a redirect URL not of /auth/callback: renders"
+  grep -qF "admin.oidc.redirectUrl must be the admin UI's https://<host>/auth/callback" <<< "${out}" || fail "a redirect URL not of /auth/callback: ${out}"
+  out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "${signin[@]}" 2>&1) && fail "admin.fxaSignIn without the accounts: renders"
+  grep -qF "admin.fxaSignIn needs fxa.enabled" <<< "${out}" || fail "admin.fxaSignIn without the accounts: ${out}"
+  check "admin.fxaSignIn: ADMIN_FXA_CLIENT_ID derived (sha256 of <namespace>/<release>/admin-oidc, 16 hex, the same on every render, another per release) or fxa.adminClientId; the redirect URL of admin.ingress.host; auth's, content's and the admin UI's env as compose's; refused without admin.allowed, a redirect URL, the accounts"
 }
 
 # the accounts' objects: the database, Redis, the keys, the auth pod and its init containers,
@@ -391,13 +496,14 @@ fxa_objects_lint() {
   fxa_policies() { fxa_objs "$@" | jq -c '[.[] | select(.kind == "NetworkPolicy") | {name: .metadata.name, to: .spec.podSelector.matchLabels["app.kubernetes.io/component"],
     types: .spec.policyTypes, from: .spec.ingress[0].from[0].podSelector | [.matchLabels["app.kubernetes.io/instance"], .matchExpressions[0].values],
     ports: [.spec.ingress[0].ports[] | "\(.protocol)/\(.port)"]}]'; }
-  [[ "$(fxa_policies)" == '[{"name":"test-release-firefox-sync-fxa-redis","to":"fxa-redis","types":["Ingress"],"from":["test-release",["fxa-auth","fxa-content","fxa-profile"]],"ports":["TCP/6379"]},{"name":"test-release-firefox-sync-fxa-db","to":"fxa-db","types":["Ingress"],"from":["test-release",["fxa-auth","fxa-profile","admin"]],"ports":["TCP/3306"]}]' ]] \
+  [[ "$(fxa_policies)" == '[{"name":"test-release-firefox-sync-fxa-redis","to":"fxa-redis","types":["Ingress"],"from":["test-release",["fxa-auth","fxa-content","fxa-profile","admin"]],"ports":["TCP/6379"]},{"name":"test-release-firefox-sync-fxa-db","to":"fxa-db","types":["Ingress"],"from":["test-release",["fxa-auth","fxa-profile","admin"]],"ports":["TCP/3306"]}]' ]] \
     || fail "the NetworkPolicies: $(fxa_policies)"
-  [[ "$(fxa_policies --set admin.enabled=false | jq -c '.[1].from[1]')" == '["fxa-auth","fxa-profile"]' ]] || fail "admin.enabled=false: the admin UI still allowed to fxa-db"
+  [[ "$(fxa_policies --set admin.enabled=false | jq -c '[.[].from[1]]')" == '[["fxa-auth","fxa-content","fxa-profile"],["fxa-auth","fxa-profile"]]' ]] \
+    || fail "admin.enabled=false: the admin UI still allowed to fxa-redis or fxa-db"
   [[ "$(fxa_policies --set fxa.networkPolicy.enabled=false)" == '[]' ]] || fail "fxa.networkPolicy.enabled=false: NetworkPolicies rendered"
   [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq -r '[.[] | select(.kind == "NetworkPolicy") | .metadata.name] | join(" ")')" == \
     test-release-firefox-sync-fxa-redis ]] || fail "your own accounts server: not the fxa-redis NetworkPolicy alone"
-  check "fxa.networkPolicy: fxa-redis from fxa-auth, fxa-content, fxa-profile; fxa-db from them and the admin UI (when on); none with it off, no fxa-db one with your own server"
+  check "fxa.networkPolicy: fxa-redis from fxa-auth, fxa-content, fxa-profile; fxa-db from fxa-auth, fxa-profile; both from the admin UI (when on); none with it off, no fxa-db one with your own server"
 
   # the scripts of config/fxa, byte for byte, in the ConfigMap
   local file
@@ -449,9 +555,10 @@ fxa_objects_lint() {
   want+=" FLOW_ID_KEY=secret:FXA_FLOW_ID_KEY FEATURE_FLAGS_REDIS_HOST=test-release-firefox-sync-fxa-redis REDIS_HOST=test-release-firefox-sync-fxa-redis"
   want+=" REDIS_PASSWORD=secret:FXA_REDIS_PASSWORD GEODB_ENABLED=false"
   [[ "$(fxa_env "${content}" content | paste -sd' ' -)" == "${want}" ]] || fail "content's env: $(fxa_env "${content}" content | paste -sd' ' -)"
-  [[ "$(fxa_env "$(fxa_pod content --set fxa.pairing.enabled=false --set fxa.pairing.url= --set fxa.adminClientId=0123456789abcdef)" content | grep -E '^(PAIRING|SERVICES)' | paste -sd' ' -)" == \
+  local signin=(--set admin.fxaSignIn=true --set admin.allowed.users=@example.test --set admin.oidc.redirectUrl=https://admin.example.test/auth/callback)
+  [[ "$(fxa_env "$(fxa_pod content --set fxa.pairing.enabled=false --set fxa.pairing.url= --set fxa.adminClientId=0123456789abcdef "${signin[@]}")" content | grep -E '^(PAIRING|SERVICES)' | paste -sd' ' -)" == \
     "PAIRING_SERVER_BASE_URI=wss://channelserver.services.mozilla.com SERVICES_WITH_EMAIL_VERIFICATION=32aaeb6f1c21316a,0123456789abcdef" ]] \
-    || fail "content without pairing, with fxa.adminClientId: $(fxa_env "$(fxa_pod content --set fxa.pairing.enabled=false --set fxa.pairing.url= --set fxa.adminClientId=0123456789abcdef)" content | grep -E '^(PAIRING|SERVICES)')"
+    || fail "content without pairing, with admin.fxaSignIn and fxa.adminClientId: $(fxa_env "$(fxa_pod content --set fxa.pairing.enabled=false --set fxa.pairing.url= --set fxa.adminClientId=0123456789abcdef "${signin[@]}")" content | grep -E '^(PAIRING|SERVICES)')"
   jq -e '[.[] | select(.kind == "Service" and .metadata.name == "test-release-firefox-sync-fxa-content") | .spec.ports] == [[{name: "http", port: 3030, targetPort: "http"}]]' <<< "${objs}" > /dev/null \
     || fail "no Service test-release-firefox-sync-fxa-content, http 3030"
   check "content: wait-accounts (auth's and profile's heartbeats, no env), compose's command, env (REDIS_PASSWORD too), workingDir and healthcheck, no readOnlyRootFilesystem; Service http 3030"
@@ -674,6 +781,7 @@ fxa_e2e() {
     --set image.adminTag="${ADMIN_TAG}" --set fxa.image.repository="${fxa_image%:*}" --set fxa.image.tag="${fxa_image##*:}" "${db_args[@]}")
   helm install "${install[@]}" --wait --timeout 20m || fail "helm install with the accounts did not get Ready"
   check "helm install with the accounts (${backend}) Ready, in a namespace enforcing PodSecurity baseline"
+  admin_test_env
 
   # the auth server only after its init containers, in compose's order, all succeeded
   local inits
@@ -838,13 +946,13 @@ fxa_e2e() {
   check "test_fxa_flow.py through the Ingresses over HTTPS: ${got}"
   # every rule of the accounts' Ingresses, and their certificates
   ingress_is "${FULL}-fxa-content" traefik accounts.fxa.test "${FULL}-fxa-content" 3030
-  ingress_is "${FULL}-fxa-auth" traefik api.fxa.test "${FULL}-fxa-auth" 9000
+  ingress_is "${FULL}-fxa-auth" traefik api.fxa.test "${FULL}-fxa-auth" 9000 /v1/account/create Exact "${FULL}-admin" 8081
   ingress_is "${FULL}-fxa-profile" traefik profile.fxa.test "${FULL}-fxa-profile" 1111 /img/ Prefix "${FULL}-fxa-profile" 1114
   for name in content:accounts auth:api profile:profile; do
     got=$(kubectl get ingress "${FULL}-fxa-${name%%:*}" -o json | jq -c '.spec.tls')
     [[ "${got}" == "[{\"hosts\":[\"${name#*:}.fxa.test\"],\"secretName\":\"fxa-test-tls\"}]" ]] || fail "Ingress ${FULL}-fxa-${name%%:*}: tls ${got}"
   done
-  check "Ingresses ${FULL}-fxa-content (accounts.fxa.test /: 3030), -fxa-auth (api.fxa.test /: 9000), -fxa-profile (profile.fxa.test /: 1111, /img/: 1114), each with fxa-test-tls"
+  check "Ingresses ${FULL}-fxa-content (accounts.fxa.test /: 3030), -fxa-auth (api.fxa.test /: 9000, /v1/account/create Exact: ${FULL}-admin 8081, the sign-up gate), -fxa-profile (profile.fxa.test /: 1111, /img/: 1114), each with fxa-test-tls"
 
   # the client's own address through the Ingress (Review Focus 3): alice's wrong passwords
   # from one pod block that pod, not alice from another one
@@ -938,6 +1046,65 @@ PY
   kubectl delete pod ip-a ip-b --wait=true > /dev/null
   check "avatars: the default one at https://profile.fxa.test/img/a/0… 200; alice's upload (profile:write) read back as the volume's bytes, the same after kubectl rollout restart ${profile}"
 
+  # the admin UI with the accounts, as tests/e2e-fxa.sh's test_fxa_admin.py: the sign-up gate
+  # behind the Ingress (refusals readable, the database refusing them without it), sign-in
+  # with the accounts (ADMIN_FXA_CLIENT_ID), max accounts, the health of every component
+  # (Redis with its password), the public URLs and their certificates, the security history
+  # (FXA_DB_SERVER as tests/e2e-fxa.sh sets it: the version the health table shows, a regex)
+  local fxa_db_server='MySQL 8' db_tag=${db_image##*:} admin_db_password fxa_mysql_password
+  if [[ ${backend} == mariadb ]]; then
+    case "${db_tag}" in
+      [0-9]*.[0-9]*) fxa_db_server="MariaDB ${db_tag//./\\.}" ;;
+      [0-9]*) fxa_db_server="MariaDB ${db_tag}\\." ;;
+      *) fxa_db_server='MariaDB [0-9]+\.[0-9]+' ;;
+    esac
+  fi
+  admin_db_password=$(kubectl get secret "${SECRET}" -o jsonpath='{.data.ADMIN_DB_PASSWORD}' | base64 -d)
+  fxa_mysql_password=$(kubectl get secret "${SECRET}" -o jsonpath='{.data.FXA_MYSQL_PASSWORD}' | base64 -d)
+  # (the databases as the admin UI has them: its env)
+  admin_env() { kubectl get "deploy/${FULL}-admin" -o json | jq -r --arg n "$1" '.spec.template.spec.containers[0].env[] | select(.name == $n) | .value'; }
+  local fxa_db_url admin_db_url
+  fxa_db_url="mysql://root:${fxa_mysql_password}@$(admin_env FXA_DB_HOST):$(admin_env FXA_DB_PORT)/fxa"
+  admin_db_url="mysql://$(admin_env ADMIN_DB_USER):${admin_db_password}@$(admin_env TOKENSERVER_DB_HOST):$(admin_env TOKENSERVER_DB_PORT)/$(admin_env ADMIN_DB_NAME)"
+  [[ "${fxa_db_url}" == "mysql://root:${fxa_mysql_password}@${FULL}-fxa-db:3306/fxa" && "${admin_db_url}" == "mysql://ffs_admin_ui:${admin_db_password}@${FULL}-tokenserver-db:3306/ffs_admin" ]] \
+    || fail "the admin UI's databases: ${fxa_db_url//${fxa_mysql_password}/***} ${admin_db_url//${admin_db_password}/***}"
+  # (test-only: the tests look at the accounts database as root, as tests/e2e-fxa.sh on compose's
+  # network; the chart's fxa.networkPolicy lets only the accounts' servers and the admin UI in,
+  # a second policy adds the test pod)
+  jq -n --arg rel "${REL}" '{apiVersion: "networking.k8s.io/v1", kind: "NetworkPolicy", metadata: {name: "ffs-e2e-fxa-db"},
+    spec: {podSelector: {matchLabels: {"app.kubernetes.io/instance": $rel, "app.kubernetes.io/component": "fxa-db"}}, policyTypes: ["Ingress"],
+      ingress: [{from: [{podSelector: {matchLabels: {"ffs-e2e": "fxa-test-admin"}}}], ports: [{protocol: "TCP", port: 3306}]}]}}' | kubectl apply -f - > /dev/null
+  local admin_k="admin_needs_the_password or signup_refused_with_a_readable_error or signup_refused_without_the_gate"
+  admin_k+=" or allowlist_matches_emails_and_domains or signups_closed_and_reopened or admin_lists_accounts or admin_sso_client_registered"
+  admin_k+=" or admin_sso_with_an_allowed_account or admin_sso_refuses_other_accounts or max_accounts_from_admin"
+  admin_k+=" or spoofed_forwarded_for_does_not_bypass_rate_limit or health_and_sizes or public_urls_and_certificates or gate_probe_creates_nothing"
+  admin_k+=" or schema_levels or security_history"
+  fxa_job admin "${SYNC_IMAGE}" "/tests/test_fxa_admin.py -rs -k \"${admin_k}\"" ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee FXA_ACCOUNT_EVENTS=true \
+    FXA_DB_SERVER="${fxa_db_server}" FXA_TEST_DB_URL="${fxa_db_url}" ADMIN_DB_URL="${admin_db_url}" || fail "test_fxa_admin.py failed"
+  # (16 tests; of -k security_history, test_security_history_off is skipped with the history on)
+  got=$(kubectl logs job/fxa-test-admin | tail -1)
+  [[ "${got}" =~ ^16\ passed,\ 1\ skipped,\ [0-9]+\ deselected(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_admin.py: not the 16 tests passed: ${got}"
+  kubectl logs job/fxa-test-admin | grep '^SKIPPED' | grep -qv 'FXA_ACCOUNT_EVENTS is true' && fail "test_fxa_admin.py skipped: $(kubectl logs job/fxa-test-admin | grep '^SKIPPED')"
+  check "test_fxa_admin.py (the gate, sign-in with the accounts, max accounts, health, certificates, security history): ${got}"
+
+  # the admin UI off: the auth Ingress without the gate, the database still refuses what
+  # the policy does not allow (straight to auth, and through the Ingress)
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=false --wait --timeout 15m > /dev/null || fail "helm upgrade with admin.enabled=false failed"
+  admin_test_env
+  ingress_is "${FULL}-fxa-auth" traefik api.fxa.test "${FULL}-fxa-auth" 9000
+  fxa_client_pod gate-off
+  out=$(fxa_py gate-off <<'PY'
+import test_fxa_admin as t
+t.test_signup_refused_without_the_gate()
+address = t.email("example.org")
+res = t.create(address)
+assert res.status_code >= 400 and not t.exists(address), res.text
+print(res.status_code)
+PY
+) || fail "admin.enabled=false: test_signup_refused_without_the_gate: ${out}"
+  kubectl delete pod gate-off --wait=true > /dev/null
+  check "admin.enabled=false: the auth Ingress has / alone; test_signup_refused_without_the_gate passes, a refused sign-up through it gets ${out}"
+
   # fxa.volumeOwnerInit=false on new volumes: no root init container; auth writes its keys
   # and profile its avatars. (kind's local-path volumes are hostPath ones, a directory of
   # root's, 0777, where the kubelet applies no fsGroup: the fsGroup case itself is the docker
@@ -963,6 +1130,17 @@ PY
   echo "=== e2e of the accounts (${backend}) passed ==="
 }
 
+# admin_test_env: tests/docker-compose.fxa-test.yml's test-only settings of the admin UI (its
+# checks every 5 s, no update check, accounts inactive and unconfirmed at once), after every
+# helm install and upgrade (they put its values back); nothing without the admin UI
+admin_test_env() {
+  local admin="deploy/${FULL}-admin"
+  kubectl get "${admin}" > /dev/null 2>&1 || return 0
+  kubectl set env "${admin}" -c admin METRICS_FLUSH_SECONDS=5 HEALTH_CHECK_SECONDS=5 ALERT_INTERVAL_SECONDS=5 ADMIN_UPDATE_CHECK=false \
+    ADMIN_STALE_DAYS=0 ADMIN_UNCONFIRMED_HOURS=0 > /dev/null || fail "kubectl set env ${admin} failed"
+  kubectl rollout status "${admin}" --timeout 10m > /dev/null || fail "${admin} not rolled out with the test settings"
+}
+
 # wait_init_failed <init container> <seconds>: in the only pod of POD_SELECTOR, that init
 # container exited with an error (now or in its previous run)
 wait_init_failed() {
@@ -985,7 +1163,7 @@ wait_init_failed() {
 # (ConfigMap ffs-fxa-tests)
 fxa_fixtures() {
   kubectl apply -f "${SCRIPT_DIR}/helm/traefik.yaml" > /dev/null
-  # a CA for 90 days and its certificate of *.fxa.test (the extensions Python 3.13's strict
+  # a CA for 90 days and its certificate of *.fxa.test (30 days) (the extensions Python 3.13's strict
   # verification wants: keyUsage on the CA, the key identifiers)
   local d corefile
   d=$(mktemp -d)
@@ -995,7 +1173,9 @@ fxa_fixtures() {
   openssl req -newkey rsa:2048 -nodes -subj "/CN=*.fxa.test" -keyout "${d}/tls.key" -out "${d}/tls.csr" 2> /dev/null || fail "the test certificate's request not created"
   printf '%s\n' "subjectAltName=DNS:*.fxa.test" "basicConstraints=critical,CA:FALSE" "keyUsage=critical,digitalSignature,keyEncipherment" \
     "extendedKeyUsage=serverAuth" "subjectKeyIdentifier=hash" "authorityKeyIdentifier=keyid,issuer" > "${d}/ext"
-  openssl x509 -req -in "${d}/tls.csr" -CA "${d}/root.crt" -CAkey "${d}/ca.key" -CAcreateserial -days 90 -sha256 -extfile "${d}/ext" \
+  # (the certificate for 30 days, as Caddy's internal CA's: test_public_urls_and_certificates
+  # wants 14 to 30 days left)
+  openssl x509 -req -in "${d}/tls.csr" -CA "${d}/root.crt" -CAkey "${d}/ca.key" -CAcreateserial -days 30 -sha256 -extfile "${d}/ext" \
     -out "${d}/tls.crt" 2> /dev/null || fail "the test certificate not signed"
   kubectl create secret tls fxa-test-tls --cert="${d}/tls.crt" --key="${d}/tls.key" > /dev/null
   kubectl create configmap fxa-test-ca --from-file=root.crt="${d}/root.crt" > /dev/null

@@ -3,15 +3,27 @@ The accounts' public hosts (fxa.ingress.enabled), an Ingress each, as config/ngi
 server blocks: one host failing (its certificate, its rule) leaves the others up, and a
 certificate each (tls.secretNames.<host>, empty: the controller's default) keeps cert-manager's
 per-host issuance working. The profile host's /img/ goes to img-proxy (port img), which strips
-the prefix as nginx's proxy_pass .../ does, so no controller-specific rewrite is needed
+the prefix as nginx's proxy_pass .../ does, so no controller-specific rewrite is needed. With the
+admin UI, the API host's POST /v1/account/create goes to its sign-up gate (port 8081), as
+fxa-example.conf's location = /v1/account/create: an Exact path for every method, the gate
+passes on what is not that POST (OPTIONS preflights) to auth; the database refuses what the
+policy does not allow whatever the routing, the gate makes the refusals readable.
+Each path: (path pathType Service port)
 */ -}}
 {{- if and .Values.fxa.enabled .Values.fxa.ingress.enabled }}
 {{- $fullname := include "firefox-sync.fullname" . }}
 {{- $f := .Values.fxa }}
+{{- $content := printf "%s-fxa-content" $fullname }}
+{{- $auth := printf "%s-fxa-auth" $fullname }}
+{{- $profile := printf "%s-fxa-profile" $fullname }}
+{{- $authPaths := list (list "/" "Prefix" $auth 9000) }}
+{{- if .Values.admin.enabled }}
+{{- $authPaths = append $authPaths (list "/v1/account/create" "Exact" (include "firefox-sync.adminService" .) 8081) }}
+{{- end }}
 {{- $ingresses := list
-  (dict "name" "content" "url" $f.contentUrl "paths" (list (list "/" 3030)))
-  (dict "name" "auth" "url" $f.authUrl "paths" (list (list "/" 9000)))
-  (dict "name" "profile" "url" $f.profileUrl "paths" (list (list "/" 1111) (list "/img/" 1114))) }}
+  (dict "name" "content" "url" $f.contentUrl "paths" (list (list "/" "Prefix" $content 3030)))
+  (dict "name" "auth" "url" $f.authUrl "paths" $authPaths)
+  (dict "name" "profile" "url" $f.profileUrl "paths" (list (list "/" "Prefix" $profile 1111) (list "/img/" "Prefix" $profile 1114))) }}
 {{- range $ingresses }}
 {{- $host := include "firefox-sync.fxaHost" (dict "root" $ "url" .url) }}
 {{- $service := printf "%s-fxa-%s" $fullname .name }}
@@ -44,13 +56,12 @@ spec:
         paths:
           {{- range .paths }}
           - path: {{ index . 0 }}
-            pathType: Prefix
+            pathType: {{ index . 1 }}
             backend:
               service:
-                # the Service of the same name
-                name: {{ $service }}
+                name: {{ index . 2 }}
                 port:
-                  number: {{ index . 1 }}
+                  number: {{ index . 3 }}
           {{- end }}
 {{- end }}
 {{- end }}

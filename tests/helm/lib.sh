@@ -45,6 +45,7 @@ ingress_is() {
     want+=",\"$1\",\"$2\",\"$3\",$4"
     shift 4
   done
+  (($# == 0)) || fail "ingress_is: incomplete path group"
   want+="]]"
   got=$(kubectl get ingress "${name}" -o json 2> /dev/null | jq -c '[.spec.ingressClassName, [.spec.rules[] | .host, (.http.paths[] | .path, .pathType,
     .backend.service.name, .backend.service.port.number)]]') || true

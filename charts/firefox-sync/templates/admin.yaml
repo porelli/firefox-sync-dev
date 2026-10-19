@@ -11,6 +11,8 @@ Its Service is also the statsd host of the Sync server (SYNC_STATSD_HOST, syncst
 {{- $st := dict "root" . "db" "storage" }}
 {{- $a := .Values.admin }}
 {{- $smtp := include "firefox-sync.smtp" . | fromJson }}
+{{- $f := .Values.fxa }}
+{{- $signIn := include "firefox-sync.fxaSignIn" . }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -30,6 +32,13 @@ spec:
       port: 8125
       targetPort: statsd
       protocol: UDP
+    {{- if $f.enabled }}
+    # the sign-up gate (POST /v1/account/create of the accounts' API, fxa-ingress.yaml)
+    - name: gate
+      port: 8081
+      targetPort: gate
+      protocol: TCP
+    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -87,6 +96,28 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- if $f.enabled }}
+        # compose's depends_on fxa-policy: the accounts' auth server answers once its migrations
+        # and the sign-up policy (its init containers) succeeded, which made the admin UI's
+        # database user ffs_admin
+        - name: wait-fxa
+          image: {{ include "firefox-sync.image" (dict "root" . "name" "syncstorage") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              until curl -sf -o /dev/null http://{{ $fullname }}-fxa-auth:9000/__heartbeat__; do
+                echo "waiting for the accounts"; sleep 5
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          {{- with $a.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
       containers:
         - name: admin
           image: {{ include "firefox-sync.image" (dict "root" . "name" "admin") }}
@@ -221,22 +252,88 @@ spec:
             - name: SYNC_DB
               value: {{ $backend }}
             {{- end }}
-            # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header
+            {{- if $f.enabled }}
+            # the self-hosted accounts, docker-compose.fxa.yml's ffs-admin: their database as
+            # ffs_admin (made by the policy init container of auth), the sign-up gate in front of
+            # auth (port gate), the checks of their public URLs
+            - name: FXA_DB_HOST
+              value: {{ include "firefox-sync.fxaDbHost" . | quote }}
+            - name: FXA_DB_PORT
+              value: {{ include "firefox-sync.fxaDbPort" . | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FXA_DB_PASSWORD" "key" "FXA_ADMIN_DB_PASSWORD") | nindent 12 }}
+            # initial:N (the default): the admin UI manages max accounts, otherwise the chart does (read-only)
+            - name: FXA_MAX_ACCOUNTS
+              value: {{ include "firefox-sync.number" $f.maxAccounts | quote }}
+            - name: FXA_AUTH_UPSTREAM
+              value: http://{{ $fullname }}-fxa-auth:9000
+            # health check of the optional pairing server
+            - name: FXA_PAIRING_URL
+              value: {{ ternary $f.pairing.url "" $f.pairing.enabled | quote }}
+            # the security history of the accounts, as auth records it
+            - name: FXA_ACCOUNT_EVENTS
+              value: {{ $f.accountEvents | toString | quote }}
+            # the accounts pages, allowed to read the refusals (CORS)
+            - name: FXA_CONTENT_URL
+              value: {{ $f.contentUrl | quote }}
+            # the public checks (ADMIN_PUBLIC_CHECK), the sign-up gate through FXA_AUTH_URL
+            - name: FXA_AUTH_URL
+              value: {{ $f.authUrl | quote }}
+            - name: FXA_PROFILE_URL
+              value: {{ $f.profileUrl | quote }}
+            # the configuration page: the accounts database, the gate's Service, what auth runs with
+            - name: FXA_DB
+              value: {{ $f.database.backend | quote }}
+            - name: ADMIN_GATE_EXPORT_PORT
+              value: {{ include "firefox-sync.adminService" . }}:8081
+            - name: FXA_CLIENT_ADDRESS_DEPTH
+              value: {{ include "firefox-sync.number" $f.clientAddressDepth | quote }}
+            - name: FXA_ACCESS_TOKEN_LIFETIME
+              value: {{ $f.accessTokenLifetime | quote }}
+            # (chart-only: compose's names are its containers', its Redis without a password on a
+            # network of its own) Redis, the accounts' servers inside the cluster
+            - name: FXA_REDIS
+              value: {{ $fullname }}-fxa-redis:6379
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FXA_REDIS_PASSWORD" "key" "FXA_REDIS_PASSWORD") | nindent 12 }}
+            - name: FXA_CONTENT_INTERNAL_URL
+              value: http://{{ $fullname }}-fxa-content:3030
+            - name: FXA_PROFILE_INTERNAL_URL
+              value: http://{{ $fullname }}-fxa-profile:1111
+            {{- if $f.pairing.enabled }}
+            - name: FXA_PAIRING_INTERNAL_URL
+              value: http://{{ $fullname }}-fxa-pairing:8000
+            {{- end }}
+            {{- if $f.extraCaCerts.configMap }}
+            # fxa.extraCaCerts (chart-only): the public checks and sign-in trust that CA too, next
+            # to the system's (tests/docker-compose.fxa-test.yml: SSL_CERT_FILE)
+            - name: SSL_CERT_DIR
+              value: /ffs-ca
+            {{- end }}
+            {{- end }}
+            # sign-in (see ADMIN.md): ADMIN_PASSWORD, OpenID Connect and/or a trusted proxy's header;
+            # with admin.fxaSignIn the self-hosted accounts by default, as compose's
+            # ${ADMIN_OIDC_...:-${ADMIN_FXA_CLIENT_ID:+...}}
+            {{- $fxaIssuer := and (eq $signIn "true") (not $a.oidc.issuer) }}
             - name: ADMIN_OIDC_ISSUER
-              value: {{ $a.oidc.issuer | quote }}
+              value: {{ $a.oidc.issuer | default (ternary $f.contentUrl "" (eq $signIn "true")) | quote }}
             - name: ADMIN_OIDC_CLIENT_ID
-              value: {{ $a.oidc.clientId | quote }}
+              value: {{ $a.oidc.clientId | default (include "firefox-sync.fxaAdminClientId" .) | quote }}
+            {{- if and $signIn (not $a.oidc.clientSecret) }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_OIDC_CLIENT_SECRET" "key" "ADMIN_FXA_CLIENT_SECRET" "optional" true) | nindent 12 }}
+            {{- else }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_OIDC_CLIENT_SECRET" "key" "ADMIN_OIDC_CLIENT_SECRET" "optional" true) | nindent 12 }}
+            {{- end }}
             - name: ADMIN_OIDC_REDIRECT_URL
-              value: {{ $a.oidc.redirectUrl | quote }}
+              value: {{ include "firefox-sync.adminRedirectUrl" . | quote }}
             - name: ADMIN_OIDC_SCOPES
               value: {{ $a.oidc.scopes | quote }}
             - name: ADMIN_OIDC_NAME
-              value: {{ $a.oidc.name | quote }}
+              value: {{ $a.oidc.name | default (ternary "Mozilla account" "" (eq $signIn "true")) | quote }}
             - name: ADMIN_OIDC_GROUPS_CLAIM
               value: {{ $a.oidc.groupsClaim | quote }}
+            # (the accounts' own: confirmed by their sign-in code, SERVICES_WITH_EMAIL_VERIFICATION
+            # of auth, as prepare_environment.sh writes it)
             - name: ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL
-              value: {{ $a.oidc.trustUnverifiedEmail | toString | quote }}
+              value: {{ ternary "true" (toString $a.oidc.trustUnverifiedEmail) (and $fxaIssuer (eq (toString $a.oidc.trustUnverifiedEmail) "")) | quote }}
             - name: ADMIN_AUTH_HEADER
               value: {{ $a.trustedHeader.header | quote }}
             - name: ADMIN_AUTH_GROUPS_HEADER
@@ -254,6 +351,11 @@ spec:
             - name: statsd
               containerPort: 8125
               protocol: UDP
+            {{- if $f.enabled }}
+            - name: gate
+              containerPort: 8081
+              protocol: TCP
+            {{- end }}
           # the image's HEALTHCHECK (/ffs-admin healthcheck: GET /healthz, every 30s, 5s timeout)
           # over HTTP, the image has no shell. It listens once its database is ready: the
           # first start moves the tables of an older install, within 10 minutes
@@ -282,4 +384,16 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if $f.enabled }}
+          {{- with include "firefox-sync.fxaCaVolumeMount" . }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+      {{- if $f.enabled }}
+      {{- with include "firefox-sync.fxaCaVolume" . }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- end }}
 {{- end }}

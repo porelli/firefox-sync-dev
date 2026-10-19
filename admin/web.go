@@ -824,11 +824,11 @@ func (a *App) doneTo(w http.ResponseWriter, r *http.Request, s *session, to, mes
 	if errors.As(err, &partial) {
 		detail := auditText(s, message+" ("+err.Error()+")", r.PostFormValue("reason"))
 		log.Printf("%s: %s", r.URL.Path, detail)
-		s.message, s.failed = message, err.Error()
+		s.message, s.failed = message, a.deployment.translate(err.Error())
 		go a.event("admin", detail)
 	} else if err != nil {
 		log.Printf("%s: %v", r.URL.Path, err)
-		s.message, s.failed = "", err.Error()
+		s.message, s.failed = "", a.deployment.translate(err.Error())
 	} else {
 		detail := auditText(s, message, r.PostFormValue("reason"))
 		log.Printf("%s: %s", r.URL.Path, detail)
@@ -915,6 +915,17 @@ func (a *App) setMaxUsers(w http.ResponseWriter, r *http.Request, s *session) {
 
 var errMaxAccountsReadOnly = errors.New("max accounts is managed by FXA_MAX_ACCOUNTS in .env: set FXA_MAX_ACCOUNTS=initial:N there to manage it here")
 
+// the same with the Helm chart
+var errMaxAccountsReadOnlyChart = errors.New("max accounts is managed by fxa.maxAccounts in the chart's values: set fxa.maxAccounts: initial:N there and helm upgrade to manage it here")
+
+// maxAccountsReadOnly: why max accounts cannot be changed here, as this deployment sets it
+func (a *App) maxAccountsReadOnly() error {
+	if a.deployment.Kubernetes() != nil {
+		return errMaxAccountsReadOnlyChart
+	}
+	return errMaxAccountsReadOnly
+}
+
 // setMaxAccounts: FXA_MAX_ACCOUNTS of the self-hosted accounts, from the Sign-ups card
 func (a *App) setMaxAccounts(w http.ResponseWriter, r *http.Request, s *session) {
 	if a.fxa == nil {
@@ -923,7 +934,7 @@ func (a *App) setMaxAccounts(w http.ResponseWriter, r *http.Request, s *session)
 	}
 	if !a.maxAccountsEditable {
 		// fxa-policy sets FXA_MAX_ACCOUNTS again on its next start
-		a.doneTo(w, r, s, "/#signups", "", errMaxAccountsReadOnly)
+		a.doneTo(w, r, s, "/#signups", "", a.maxAccountsReadOnly())
 		return
 	}
 	n, unlimited, err := limitForm(r.PostFormValue("max_accounts"), r.PostFormValue("unlimited"))

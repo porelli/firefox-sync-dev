@@ -147,7 +147,7 @@ func (h *Health) gateProbe(ctx context.Context, auth string) (string, error) {
 		return "POST " + host + "/v1/account/create goes through the sign-up gate", nil
 	}
 	// the trigger still refuses what the policy does not allow, without saying why
-	return "", warning{fmt.Sprintf("POST %s/v1/account/create does not reach the sign-up gate (status %d): the reverse proxy sends it to the accounts service, and refused sign-ups get \"Unexpected error\" instead of why. Send it to ADMIN_GATE_EXPORT_PORT, see ADMIN.md", host, res.StatusCode)}
+	return "", warning{fmt.Sprintf("POST %s/v1/account/create does not reach the sign-up gate (status %d): the reverse proxy sends it to the accounts service, and refused sign-ups get \"Unexpected error\" instead of why. %s", host, res.StatusCode, h.app.deployment.gateHint())}
 }
 
 // syncNodes: the public URLs the tokenserver hands out (nodes in use)

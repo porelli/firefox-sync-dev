@@ -83,9 +83,10 @@ fxa:
   accessTokenLifetime: "60 minutes"
   # FXA_LOG_LEVEL of the auth server
   logLevel: INFO
-  # ADMIN_FXA_CLIENT_ID: the OAuth client of the admin UI's sign-in with these accounts (16 hex
-  # characters; empty: derived with admin.fxaSignIn), ADMIN_FXA_CLIENT_SECRET (64 hex, into the
-  # Secret as the values say; keep it empty: the accounts refuse PKCE from clients with a secret)
+  # ADMIN_FXA_CLIENT_ID: the OAuth client of the admin UI's sign-in with these accounts, used with
+  # admin.fxaSignIn (16 hex characters; empty: derived from the namespace and the release, the
+  # same on every upgrade), ADMIN_FXA_CLIENT_SECRET (64 hex, into the Secret as the values say;
+  # keep it empty: the accounts refuse PKCE from clients with a secret)
   adminClientId: ""
   adminClientSecret: ""
   # a ConfigMap with the CA of your SMTP server or of your own HTTPS hosts (NODE_EXTRA_CA_CERTS
@@ -414,7 +415,10 @@ admin:
   deleteUnconfirmedDays: ""
   signupBurst: 10
   # with fxa.enabled: sign in to the admin UI with the self-hosted accounts (OpenID Connect,
-  # ADMIN_FXA_CLIENT_ID), who may in admin.allowed (required then)
+  # ADMIN_FXA_CLIENT_ID), who may in admin.allowed (required then). It comes back to
+  # oidc.redirectUrl, empty: https://<ingress.host>/auth/callback (one of them required); the
+  # oidc.* left empty take the accounts' (issuer fxa.contentUrl, name "Mozilla account",
+  # trustUnverifiedEmail true: the accounts confirm every sign-in by email)
   fxaSignIn: false
 
   # the admin UI's container and its init container (wait-sync)

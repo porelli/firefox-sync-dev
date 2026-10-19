@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +39,15 @@ func dialRedis(ctx context.Context, addr string) (*redisConn, error) {
 		return nil, err
 	}
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
-	return &redisConn{conn: conn, r: bufio.NewReader(conn)}, nil
+	c := &redisConn{conn: conn, r: bufio.NewReader(conn)}
+	// a Redis with a password (the Helm chart's, FXA_REDIS_PASSWORD): signed in first
+	if password := os.Getenv("FXA_REDIS_PASSWORD"); password != "" {
+		if _, err := c.Do("AUTH", password); err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
+	return c, nil
 }
 
 func (c *redisConn) Close() error { return c.conn.Close() }

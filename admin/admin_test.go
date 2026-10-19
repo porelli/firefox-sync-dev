@@ -983,3 +983,70 @@ func TestAdminGrantsChangeNothingDirectly(t *testing.T) {
 		t.Error("no FxA procedure called")
 	}
 }
+
+// FXA_REDIS_PASSWORD (the chart's Redis has one): every connection signs in first, a wrong
+// password is an error, without it nothing is sent before the command
+func TestRedisPassword(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	got := make(chan string, 10)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			r := bufio.NewReader(conn)
+			for {
+				reply, err := readReply(r)
+				if err != nil {
+					break
+				}
+				parts, _ := reply.([]any)
+				var words []string
+				for _, p := range parts {
+					s, _ := p.(string)
+					words = append(words, s)
+				}
+				got <- strings.Join(words, " ")
+				switch {
+				case len(words) == 2 && words[0] == "AUTH" && words[1] == "a b\"c":
+					conn.Write([]byte("+OK\r\n"))
+				case words[0] == "AUTH":
+					conn.Write([]byte("-WRONGPASS invalid username-password pair or user is disabled.\r\n"))
+				default:
+					conn.Write([]byte("+PONG\r\n"))
+				}
+			}
+			conn.Close()
+		}
+	}()
+	ping := func() error {
+		conn, err := dialRedis(context.Background(), ln.Addr().String())
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		_, err = conn.Do("PING")
+		return err
+	}
+	t.Setenv("FXA_REDIS_PASSWORD", "a b\"c")
+	if err := ping(); err != nil || <-got != "AUTH a b\"c" || <-got != "PING" {
+		t.Errorf("with the password: %v", err)
+	}
+	t.Setenv("FXA_REDIS_PASSWORD", "wrong")
+	if err := ping(); err == nil || !strings.Contains(err.Error(), "WRONGPASS") {
+		t.Errorf("a wrong password: %v", err)
+	}
+	<-got
+	t.Setenv("FXA_REDIS_PASSWORD", "")
+	if err := ping(); err != nil || <-got != "PING" {
+		t.Errorf("without a password: %v", err)
+	}
+	if !configVars["FXA_REDIS_PASSWORD"] {
+		t.Error("FXA_REDIS_PASSWORD is not a secret of the configuration page")
+	}
+}

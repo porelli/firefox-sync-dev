@@ -31,6 +31,8 @@ var configVars = map[string]bool{
 	"ADMIN_DB_PASSWORD":        true,
 	// the destinations of the alerts: URLs with their tokens, shown as scheme://host
 	"ADMIN_NOTIFY": true,
+	// the password of the accounts' Redis (the Helm chart's)
+	"FXA_REDIS_PASSWORD": true,
 	// fxa-init (the fxa-policy container)
 	"FXA_ADMIN_DB_PASSWORD": true,
 	"FXA_DB_ROOT_PASSWORD":  true,
@@ -61,7 +63,7 @@ var configVars = map[string]bool{
 	// the admin UI itself
 	"ADMIN_LISTEN": false, "GATE_LISTEN": false, "METRICS_LISTEN": false, "ADMIN_EXPORT_PORT": false, "ADMIN_GATE_EXPORT_PORT": false,
 	"ADMIN_DEPLOYMENT": false, "ADMIN_K8S_RELEASE": false, "ADMIN_K8S_NAMESPACE": false,
-	"ADMIN_K8S_FULLNAME": false, "ADMIN_K8S_SECRET": false, "ADMIN_K8S_CHART": false, "ADMIN_K8S_CHART_VERSION": false, "ADMIN_TZ": false, "TZ": false, "SSL_CERT_FILE": false,
+	"ADMIN_K8S_FULLNAME": false, "ADMIN_K8S_SECRET": false, "ADMIN_K8S_CHART": false, "ADMIN_K8S_CHART_VERSION": false, "ADMIN_TZ": false, "TZ": false, "SSL_CERT_FILE": false, "SSL_CERT_DIR": false,
 	// email, alerts, metrics and checks
 	"SMTP_HOST": false, "SMTP_PORT": false, "SMTP_USER": false, "SMTP_SECURE": false, "SMTP_SENDER": false, "SMTP_INSECURE_AUTH": false,
 	"ALERT_EMAIL": false, "ALERT_INTERVAL_SECONDS": false, "HEALTH_CHECK_SECONDS": false, "METRICS_FLUSH_SECONDS": false,
@@ -429,6 +431,11 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			dbName = a.deployment.dbServer(components, "Accounts database", "MariaDB", "MariaDB", fxaHost)
 		}
 		accounts.Intro = "The self-hosted Mozilla accounts (docker-compose.fxa.yml)."
+		k := a.deployment.Kubernetes()
+		if k != nil {
+			accounts.Intro = "The self-hosted Mozilla accounts (fxa.enabled of the chart). Their auth pod runs the migrations and the sign-up policy first, as its init containers: " +
+				k.RestartFxa() + " runs them again (their logs: " + k.FxaLogs("migrations") + ", -c policy)."
+		}
 		accounts.Rows = append(accounts.Rows,
 			fact("Database", dbName, "fxa, fxa_oauth, fxa_profile, pushbox and ffs, on "+a.deployment.whereDB(fxaHost), "FXA_DB"),
 			fact("Server", dbAddress(shown("FXA_DB_USER", "ffs_admin"), fxaHost, shown("FXA_DB_PORT", "3306"), ""),
@@ -437,13 +444,22 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			setting("Password of ffs_admin (accounts)", "FXA_DB_PASSWORD", "FXA_ADMIN_DB_PASSWORD", "not set", "the accounts' database user, not ADMIN_DB_USER"),
 			setting("Redis", "FXA_REDIS", "", "fxa-redis:6379", "the sessions' last use, tokens revoked"))
 		if policy != nil {
-			accounts.Rows = append(accounts.Rows, fact("Sign-ups", describePolicy(policy), "in the database: from .env when changed there (on the next start), otherwise as set on the overview", "FXA_SIGNUPS", "FXA_SIGNUP_ALLOWLIST"))
+			note := "in the database: from .env when changed there (on the next start), otherwise as set on the overview"
+			if k != nil {
+				note = "in the database: from your values when changed there (on the next start of the auth pod: helm upgrade, or " + k.RestartFxa() + "), otherwise as set on the overview"
+			}
+			accounts.Rows = append(accounts.Rows, fact("Sign-ups", describePolicy(policy), note, "FXA_SIGNUPS", "FXA_SIGNUP_ALLOWLIST"))
 		}
 		accounts.Rows = append(accounts.Rows,
 			setting("Client IP address", "FXA_CLIENT_ADDRESS_DEPTH", "", "2", "the position in X-Forwarded-For of the rate limits: 2 for one reverse proxy"),
 			setting("Access token lifetime", "FXA_ACCESS_TOKEN_LIFETIME", "", "60 minutes", "of the access tokens of Firefox"),
 			fact("Security history", onText[a.accountEvents], "the sign-ins and changes of each account, with their IP addresses (FXA.md)", "FXA_ACCOUNT_EVENTS").unset(),
 			setting("Accounts API, inside the stack", "FXA_AUTH_UPSTREAM", "", "http://fxa-auth:9000", "where the sign-up gate passes the allowed sign-ups"))
+		if k != nil {
+			// not in the backups (an RWO volume of the auth pod's node): NOTES.txt says how to export them
+			accounts.Rows = append(accounts.Rows, fact("Signing keys", "the PersistentVolumeClaim "+k.FxaKeys()+" (or your fxa.keys.existingSecret)",
+				"kept on helm uninstall, not in the backups: without them every account signs in again; export them as the chart's NOTES say"))
+		}
 	}
 
 	// the limits of accounts
@@ -452,7 +468,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		limitNote("SYNC_MAX_USERS", configLookup("MAX_USERS"), "", "on the overview"), "SYNC_MAX_USERS"))
 	if fxa {
 		limits.Rows = append(limits.Rows, fact("Max accounts", limitValue(accountLimit),
-			limitNote("FXA_MAX_ACCOUNTS", configLookup("FXA_MAX_ACCOUNTS"), "initial:unlimited", "on the overview"), "FXA_MAX_ACCOUNTS"))
+			limitNote(a.deployment.valueName("FXA_MAX_ACCOUNTS"), configLookup("FXA_MAX_ACCOUNTS"), "initial:unlimited", "on the overview"), "FXA_MAX_ACCOUNTS"))
 	}
 
 	// signing in to the admin UI
@@ -469,6 +485,9 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		note := "your identity provider"
 		if fxa && strings.TrimSuffix(issuer, "/") == a.contentURL {
 			note = "the self-hosted accounts (ADMIN_FXA_CLIENT_ID with docker compose)"
+			if a.deployment.Kubernetes() != nil {
+				note = "the self-hosted accounts (admin.fxaSignIn of the chart)"
+			}
 		}
 		admin.Rows = append(admin.Rows,
 			setting("OpenID Connect issuer", "ADMIN_OIDC_ISSUER", "", "", note),
@@ -503,7 +522,12 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	}
 	admin.Rows = append(admin.Rows, fact("Session cookie", cookie, "", "ADMIN_INSECURE_COOKIE"), published)
 	if fxa {
-		admin.Rows = append(admin.Rows, setting("Sign-up gate published on", "ADMIN_GATE_EXPORT_PORT", "", "127.0.0.1:8091", "POST /v1/account/create of FXA_AUTH_URL goes there"))
+		gate := setting("Sign-up gate published on", "ADMIN_GATE_EXPORT_PORT", "", "127.0.0.1:8091", "POST /v1/account/create of FXA_AUTH_URL goes there")
+		if k := a.deployment.Kubernetes(); k != nil {
+			gate = fact("Sign-up gate published on", "the Service "+k.AdminService()+", port 8081",
+				"POST /v1/account/create of fxa.authUrl goes there: the Ingress of the accounts' API routes it, with fxa.ingress.enabled and admin.enabled", "ADMIN_GATE_EXPORT_PORT")
+		}
+		admin.Rows = append(admin.Rows, gate)
 	}
 	zone := adminZone.String()
 	deployVars := []string{"ADMIN_DEPLOYMENT"}
@@ -657,7 +681,16 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		fact("Public checks", onText[publicChecks()], "every hour the public https URLs, their certificates and the sign-up gate", "ADMIN_PUBLIC_CHECK").unset(),
 		fact("New releases", onText[updateChecks()], "every 12 hours on GitHub", "ADMIN_UPDATE_CHECK").unset())
 
-	data["Groups"] = []configGroup{public, syncGroup, accounts, limits, admin, email, alerts, backupGroup, maintenance, metrics}
+	groups := []configGroup{public, syncGroup, accounts, limits, admin, email, alerts, backupGroup, maintenance, metrics}
+	// the chart: the accounts' settings by the names of its values
+	for _, g := range groups {
+		for _, r := range g.Rows {
+			for i, name := range r.Vars {
+				r.Vars[i] = a.deployment.valueName(name)
+			}
+		}
+	}
+	data["Groups"] = groups
 	data["Hints"] = a.configHints(r, status, components, backups)
 	data["Errors"], data["Kubernetes"] = errs, a.deployment.Kubernetes()
 	a.render(w, "config.html", data)
@@ -682,7 +715,7 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 	}
 	for _, name := range urls {
 		if v := configLookup(name); v != "" && httpsURL(v) == nil && !loopbackURL(v) {
-			hints = append(hints, attention{Text: fmt.Sprintf("%s is %s, not an https:// URL: Firefox needs https (other than on localhost), and the public checks skip it.", dotenvName(name), v), Href: "#public-settings", Link: "Public URLs"})
+			hints = append(hints, attention{Text: fmt.Sprintf("%s is %s, not an https:// URL: Firefox needs https (other than on localhost), and the public checks skip it.", a.deployment.valueName(dotenvName(name)), v), Href: "#public-settings", Link: "Public URLs"})
 		}
 	}
 	// FXA.md: one host name each, the proxy sends each of them to another port
@@ -694,9 +727,9 @@ func (a *App) configHints(r *http.Request, status *SyncStatus, components []Comp
 		}
 		host := strings.ToLower(u.Host)
 		if other, ok := hosts[host]; ok {
-			hints = append(hints, attention{Text: fmt.Sprintf("%s and %s are both on %s: the Sync server, the accounts pages, the accounts API and the profile server need a host name each, the reverse proxy sends each to another port.", other, dotenvName(name), u.Host), Href: "#public-settings", Link: "Public URLs"})
+			hints = append(hints, attention{Text: fmt.Sprintf("%s and %s are both on %s: the Sync server, the accounts pages, the accounts API and the profile server need a host name each, the reverse proxy sends each to another port.", other, a.deployment.valueName(dotenvName(name)), u.Host), Href: "#public-settings", Link: "Public URLs"})
 		} else {
-			hosts[host] = dotenvName(name)
+			hosts[host] = a.deployment.valueName(dotenvName(name))
 		}
 	}
 	if v := configLookup("FXA_PAIRING_URL"); fxa && v != "" && !strings.HasPrefix(v, "wss://") {

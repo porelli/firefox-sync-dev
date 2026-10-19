@@ -127,7 +127,7 @@
     <input type="hidden" name="loaded" value="{{$.Allowlist}}">
     <button type="submit">Save sign-ups</button>
   </form>
-  <p class="hint">Accounts already created are not affected. <code>FXA_SIGNUPS</code> and <code>FXA_SIGNUP_ALLOWLIST</code> in .env replace these settings when they change there.</p>
+  {{with $.Kubernetes}}<p class="hint">Accounts already created are not affected. <code>fxa.signups</code> and <code>fxa.signupAllowlist</code> in your values replace these settings when they change there, on the next start of the auth pod (helm upgrade, or <code>{{.RestartFxa}}</code>: it runs the migrations and the policy again, <code>{{.FxaLogs "policy"}}</code> shows what it applied).</p>{{else}}<p class="hint">Accounts already created are not affected. <code>FXA_SIGNUPS</code> and <code>FXA_SIGNUP_ALLOWLIST</code> in .env replace these settings when they change there.</p>{{end}}
   {{with $.Domains}}<h3>Domains on the list</h3>
   <div class="scroll"><table id="allowlist-domains" aria-label="Domains on the allowlist">
     <thead><tr><th>Domain</th><th><span class="sr">Actions</span></th></tr></thead>
@@ -138,7 +138,7 @@
   {{/* FXA_MAX_ACCOUNTS: the count against it, the form folded until it is close */}}
   {{with .AccountLimit}}{{$state := .State}}
   <h3 id="max-accounts-title">Max accounts</h3>
-  <p id="max-accounts-line">{{if .Unlimited}}<span id="fxa-accounts">{{.Count}}</span> {{if eq .Count 1}}account{{else}}accounts{{end}} created, no limit (<code>FXA_MAX_ACCOUNTS=<span id="fxa-max-accounts">unlimited</span></code>).{{else}}<span id="fxa-accounts">{{.Count}}</span> of <span id="fxa-max-accounts">{{.Max}}</span> accounts created{{if eq .Max 0}}: nobody new can sign up{{else if eq $state "full"}}; sign-ups are refused now{{else}}; sign-ups are refused once all are{{end}}.{{if eq $state "full"}} <span class="pill warn">full</span>{{else if eq $state "near"}} <span class="pill warn">near the limit</span>{{end}}{{end}}</p>
+  <p id="max-accounts-line">{{if .Unlimited}}<span id="fxa-accounts">{{.Count}}</span> {{if eq .Count 1}}account{{else}}accounts{{end}} created, no limit (<code>{{if $.Kubernetes}}fxa.maxAccounts: {{else}}FXA_MAX_ACCOUNTS={{end}}<span id="fxa-max-accounts">unlimited</span></code>).{{else}}<span id="fxa-accounts">{{.Count}}</span> of <span id="fxa-max-accounts">{{.Max}}</span> accounts created{{if eq .Max 0}}: nobody new can sign up{{else if eq $state "full"}}; sign-ups are refused now{{else}}; sign-ups are refused once all are{{end}}.{{if eq $state "full"}} <span class="pill warn">full</span>{{else if eq $state "near"}} <span class="pill warn">near the limit</span>{{end}}{{end}}</p>
   <details class="fold"{{if ne $state "ok"}} open{{end}}>
   <summary>Change the limit</summary>
   <form method="post" action="/accounts/max-accounts" class="inline limit-form" id="max-accounts">
@@ -149,9 +149,9 @@
     <button type="submit"{{if not $.MaxAccountsEditable}} disabled{{end}}>Save</button>
   </form>
   {{if $.MaxAccountsEditable}}
-  <p class="hint" id="max-accounts-mode">Every account of the accounts service counts, confirmed or not, disabled too: delete those that are gone to make room. Managed here (<code>FXA_MAX_ACCOUNTS=initial:N</code> in .env, or not set, applies only to a new database). "No limit" wins over the number.</p>
+  <p class="hint" id="max-accounts-mode">Every account of the accounts service counts, confirmed or not, disabled too: delete those that are gone to make room. Managed here ({{if $.Kubernetes}}<code>fxa.maxAccounts: initial:N</code> in your values, the default, applies{{else}}<code>FXA_MAX_ACCOUNTS=initial:N</code> in .env, or not set, applies{{end}} only to a new database). "No limit" wins over the number.</p>
   {{else}}
-  <p class="hint" id="max-accounts-mode">Read-only: managed by <code>FXA_MAX_ACCOUNTS</code> in .env; set <code>FXA_MAX_ACCOUNTS=initial:{{.Setting}}</code> to manage it here. Every account of the accounts service counts, confirmed or not.</p>
+  {{if $.Kubernetes}}<p class="hint" id="max-accounts-mode">Read-only: managed by <code>fxa.maxAccounts</code> in your values, set on every start of the auth pod (its policy init container); set <code>fxa.maxAccounts: initial:{{.Setting}}</code> and helm upgrade to manage it here. Every account of the accounts service counts, confirmed or not.</p>{{else}}<p class="hint" id="max-accounts-mode">Read-only: managed by <code>FXA_MAX_ACCOUNTS</code> in .env; set <code>FXA_MAX_ACCOUNTS=initial:{{.Setting}}</code> to manage it here. Every account of the accounts service counts, confirmed or not.</p>{{end}}
   {{end}}
   </details>
   {{end}}
@@ -159,7 +159,7 @@
 
 <section class="card" aria-labelledby="invite-title" id="invitations">
   <h2 id="invite-title">Invitations</h2>
-  <p class="hint">{{with .Policy}}{{if eq .Mode "allowlist"}}Adds the email to the list and{{else if eq .Mode "closed"}}Sign-ups are closed: it{{else}}Anybody can sign up: it{{end}}{{end}} sends a plain email{{if not .Mailer}} (no SMTP server: <code>FXA_SMTP_HOST</code>){{end}} with the sign-up link and the steps of <a href="/connect">Connect a device</a>. At most 20 an hour.</p>
+  <p class="hint">{{with .Policy}}{{if eq .Mode "allowlist"}}Adds the email to the list and{{else if eq .Mode "closed"}}Sign-ups are closed: it{{else}}Anybody can sign up: it{{end}}{{end}} sends a plain email{{if not .Mailer}} (no SMTP server: <code>{{if $.Kubernetes}}smtp.host{{else}}FXA_SMTP_HOST{{end}}</code>){{end}} with the sign-up link and the steps of <a href="/connect">Connect a device</a>. At most 20 an hour.</p>
   <form method="post" action="/accounts/invite" id="invite">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <label for="invite-email">Email to invite</label>
@@ -227,17 +227,17 @@
   <details class="fold" id="backup-help"{{if not $.Backups}} open{{end}}>
     <summary>Where they are, one now, restoring</summary>
     <dl class="backup-facts">
-      <div><dt>What</dt><dd>The Sync databases: the tokenserver (accounts, max users, notes, the event log) and the storage (the data, encrypted by Firefox){{if $.FxA}}; the accounts databases (fxa, fxa_oauth, fxa_profile, pushbox, ffs: the accounts, their devices, the sign-up policy){{end}}. {{with .Kubernetes}}Not the Secret <code>{{.Secret}}</code> (or your existingSecret) and your values of the chart: keep a copy of them elsewhere.{{else}}Not <code>.env</code>{{if $.FxA}} or the <code>fxa-keys</code> volume{{end}}: copy {{if $.FxA}}them{{else}}it{{end}} off the host yourself.{{end}}</dd></div>
+      <div><dt>What</dt><dd>The Sync databases: the tokenserver (accounts, max users, notes, the event log) and the storage (the data, encrypted by Firefox){{if $.FxA}}; the accounts databases (fxa, fxa_oauth, fxa_profile, pushbox, ffs: the accounts, their devices, the sign-up policy){{end}}. {{with .Kubernetes}}Not the Secret <code>{{.Secret}}</code> (or your existingSecret){{if $.FxA}}, the keys volume <code>{{.FxaKeys}}</code> (or your <code>fxa.keys.existingSecret</code>){{end}} and your values of the chart: keep a copy of them elsewhere.{{else}}Not <code>.env</code>{{if $.FxA}} or the <code>fxa-keys</code> volume{{end}}: copy {{if $.FxA}}them{{else}}it{{end}} off the host yourself.{{end}}</dd></div>
       <div><dt>When</dt><dd>{{if $.Backups}}Every night{{else}}Once it is on, every night{{end}} at {{template "backup-time" .}}{{if .Kubernetes}}, by the backup CronJob (<code>backup.schedule</code>); after a night the cluster was down, once it is back{{else if .Quadlets}}; after a night the host was off, at its next start{{else}}; a backup container started after that time runs the day's at once{{end}}.</dd></div>
       <div><dt>Kept</dt><dd>{{if eq .Keep 1}}The newest run{{else}}The newest {{.Keep}} runs{{end}} (<code>BACKUP_KEEP</code>); a failed run deletes nothing.</dd></div>
       <div><dt>Where</dt><dd>{{with .Kubernetes}}The PersistentVolumeClaim <code>{{.BackupVolume}}</code>{{else}}{{if .Quadlets}}The Podman volume <code>firefox-sync-backups</code>{{else}}The <code>backups</code> volume of the stack (<code>&lt;project&gt;_backups</code>, e.g. <code>firefox-sync_backups</code>){{end}}{{end}}: <code>sync/&lt;UTC time&gt;/&lt;database&gt;.sql.gz</code>{{if $.FxA}} and <code>accounts/&lt;UTC time&gt;/</code>{{end}}, readable by root only. It is on the same disk as the databases: copy it elsewhere too.</dd></div>
     </dl>
     <h3 class="h3">One now</h3>
-    <p class="hint">{{with .Kubernetes}}<code>{{.BackupNow}}</code>{{else}}{{if .Quadlets}}<code>systemctl --user start firefox-sync-backup.service</code>{{if $.FxA}} (the accounts first){{end}}{{else}}<code>docker compose exec backup sh /ffs-backup/backup.sh now</code>{{if $.FxA}}, and <code>backup-fxa</code> instead of <code>backup</code> for the accounts{{end}}{{end}}{{end}}. The run shows up here within a minute.</p>
+    <p class="hint">{{with .Kubernetes}}<code>{{.BackupNow}}</code>{{if $.FxA}} (both scopes run in one Job, the accounts first){{end}}{{else}}{{if .Quadlets}}<code>systemctl --user start firefox-sync-backup.service</code>{{if $.FxA}} (the accounts first){{end}}{{else}}<code>docker compose exec backup sh /ffs-backup/backup.sh now</code>{{if $.FxA}}, and <code>backup-fxa</code> instead of <code>backup</code> for the accounts{{end}}{{end}}{{end}}. The run shows up here within a minute.</p>
     <h3 class="h3">How to turn them on</h3>
     <p class="hint">{{with .Kubernetes}}<code>{{.BackupsOn}}</code>.{{else}}{{if .Quadlets}}The units are installed, off: <code>systemctl --user enable --now firefox-sync-backup.timer</code>.{{else}}Add <code>backup</code> to <code>COMPOSE_PROFILES</code> in .env (e.g. <code>COMPOSE_PROFILES=admin,backup</code>), then <code>docker compose up -d</code>.{{end}}{{end}} With your own database servers, use their own backups; they can record their runs here (ADMIN.md).</p>
     <h3 class="h3">Restoring</h3>
-    <p class="hint">Stop the stack, load the dumps into the databases as their own users, start it again. Leave the Sync storage empty: each Firefox uploads its data again, while last night's copy would give back what was changed or deleted since. The steps are in <a href="https://github.com/porelli/firefox-sync/blob/main/ADMIN.md#restoring" rel="noreferrer">ADMIN.md, Restoring</a>{{if $.FxA}}; the accounts need the same <code>.env</code> and <code>fxa-keys</code>{{end}}.</p>
+    <p class="hint">Stop the stack, load the dumps into the databases as their own users, start it again. Leave the Sync storage empty: each Firefox uploads its data again, while last night's copy would give back what was changed or deleted since. The steps are in <a href="https://github.com/porelli/firefox-sync/blob/main/ADMIN.md#restoring" rel="noreferrer">ADMIN.md, Restoring</a>{{if $.FxA}}; the accounts need the same {{with .Kubernetes}}Secret and the keys volume <code>{{.FxaKeys}}</code> (or your <code>fxa.keys.existingSecret</code>){{else}}<code>.env</code> and <code>fxa-keys</code>{{end}}{{end}}.</p>
   </details>
   {{end}}
 </section>
