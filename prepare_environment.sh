@@ -5,6 +5,8 @@
 
 # Set the locale to UTF-8
 export LC_CTYPE=C
+# set by the script itself only (env_file_read): one exported in the shell would redirect every read of .env
+unset ENV_READ
 
 # Detect container runtime
 detect_runtime() {
