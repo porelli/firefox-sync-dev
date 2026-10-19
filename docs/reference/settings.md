@@ -46,7 +46,7 @@ The stack's own database containers. For a server you run yourself, see also [Yo
 | `.env` | Helm | Default | Meaning | Old name |
 |---|---|---|---|---|
 | `SYNC_DB` | `database.backend` | `mariadb` | the Sync database containers: `mariadb` or `mysql` ([MySQL instead of MariaDB](../databases.md#mysql-instead-of-mariadb)). PostgreSQL: `docker-compose.sync-postgres.yml` in `COMPOSE_FILE` (Helm: `postgres`) | |
-| – (fixed `mariadb:lts`) | `database.image.mariadb` | `docker.io/library/mariadb:lts` | the MariaDB image of the Sync databases and of their backups | |
+| `SYNC_MARIADB_IMAGE` | `database.image.mariadb` | unset: `mariadb:lts` (Helm `docker.io/library/mariadb:lts`) | with `SYNC_DB=mariadb`, the MariaDB image of the Sync databases and of their backups. Pins: [Database majors](../upgrading.md#database-majors) | |
 | `SYNC_MYSQL_IMAGE` | `database.image.mysql` | unset: `mysql:lts` (Helm `docker.io/library/mysql:lts`) | with `SYNC_DB=mysql`, the MySQL image of the Sync databases and of their backups. Pins: [Database majors](../upgrading.md#database-majors) | |
 | `SYNC_POSTGRES_IMAGE` | `database.image.postgres` | unset: `postgres:latest`; `prepare_environment.sh` writes the major it finds | the PostgreSQL image of the Sync database and of its backups. Pin the major: [PostgreSQL](../upgrading.md#postgresql) | `POSTGRES_IMAGE` |
 | `SYNC_TOKENSERVER_DB_PASSWORD` | Secret: `TOKENSERVER_DB_PASSWORD` | generated | the tokenserver user's password (MariaDB, MySQL) | `MARIADB_TOKENSERVER_PASSWORD` |
@@ -216,6 +216,7 @@ Values of the chart with no `.env` counterpart, besides those in the tables abov
 |---|---|---|
 | `nameOverride`, `fullnameOverride` | empty | the names of the chart's objects: [Limits](../install/helm.md#limits) |
 | `existingSecret` | empty: the chart generates `<release>-firefox-sync` | a Secret of your own: [existingSecret](../install/helm.md#existingsecret) |
+| `database.allowMajorUpgrade` | `false` | `true` lets one `helm upgrade` move the bundled MariaDB or MySQL to another major (never PostgreSQL); set it back to `false` after: [Database majors](../upgrading.md#database-majors) |
 | `syncstorage.replicas` | `1` | keep 1: the migrations and the max users init run in its init containers |
 | `syncstorage.resources`, `syncstorage.initResources` | none | the Sync server and its init containers: [Resources](../install/helm.md#resources) |
 | `syncstorage.service.port` | `8000` | the Sync server's Service port |

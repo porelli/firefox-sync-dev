@@ -66,7 +66,7 @@ Every pod has `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false
 
 1. [Set up Firefox](../firefox.md), with `https://sync.example.com`.
 
-With PostgreSQL, pin its major in your values after the first install: see [Upgrading](../upgrading.md#postgresql).
+With PostgreSQL, pin its major in your values after the first install: see [Upgrading](../upgrading.md#postgresql). `helm upgrade` refuses a database image of another major than the one running: see [Database majors](../upgrading.md#database-majors).
 
 Every value is in [values.yaml](/charts/firefox-sync/values.yaml), with what it does. Each setting of `.env` and its value are in [Settings](../reference/settings.md), in the Helm column. The chart's schema refuses a key it does not know, so a typo such as `admin.enable` fails the install instead of doing nothing. The maps of Kubernetes (annotations, resources, the scheduling) are not checked.
 

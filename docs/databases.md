@@ -49,7 +49,7 @@ The patches are [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) f
 
 ### Default tags and pins
 
-The defaults follow each database's long-term tag: `mariadb:lts` and `mysql:lts`. PostgreSQL has no such tag, so each install is pinned to the major `postgres:latest` had when it was set up. When `lts` moves, the server upgrades the data at its first start on it, and there is no way back but a backup.
+The defaults follow each database's long-term tag: `mariadb:lts` and `mysql:lts`. PostgreSQL has no such tag, so each install is pinned to the major `postgres:latest` had when it was set up. When `lts` moves, a server set to it upgrades the data at its first start on the new major, and there is no way back but a backup. With no image setting at all, the containers refuse data of another major instead.
 
 Each setting, its default, the pins `prepare_environment.sh` writes, and how to move to a newer major: [Database majors](upgrading.md#database-majors). The images the stack builds on top of these (the init containers): [Images](reference/images.md#sync-server).
 

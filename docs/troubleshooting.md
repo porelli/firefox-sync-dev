@@ -17,9 +17,9 @@ Symptoms and their fixes, by area. Each entry starts with what you see: an error
 - **`ERROR 2026 ... self-signed certificate in certificate chain`, then "Timeout waiting for database connection" in the init container.** Set `SYNC_DB_TLS_VERIFY=false` (Helm: `database.external.tlsVerify: false`).
 - **"Timeout waiting for database connection", or the migrations never finish.** The containers cannot reach the server. Check the host (not `localhost`), the port, the server's listen address, the firewall and the users' host part. Test from the stack's network: `docker compose run --rm --no-deps --entrypoint mariadb tokenserver_db_init --host=... --user=... -p --skip-ssl-verify-server-cert -e 'SELECT 1'`. With the Helm chart: `kubectl logs deploy/<release>-firefox-sync-syncstorage -c wait-db` (the server answers) and `-c migrate` (the login).
 - **`Access denied` from PostgreSQL, or `no pg_hba.conf entry`.** Add a `host` line for the containers' addresses: see [Server requirements](databases.md#server-requirements).
-- **A MySQL container does not start, with `keep-major.sh: this database is MySQL 8, the image is MySQL 9`.** `FXA_MYSQL_IMAGE` (or `SYNC_MYSQL_IMAGE`) is not set, and its default `mysql:lts` is another major than the data. `./prepare_environment.sh --upgrade` pins it ([The database majors of an install from before](upgrading.md#the-database-majors-of-an-install-from-before)). To move the data to the new major instead: [MySQL 8 to 9](upgrading.md#mysql-8-to-9).
+- **A MariaDB or MySQL container does not start, with `keep-major.sh: this database is MySQL 8, the image is MySQL 9`** (or MariaDB). Its image setting (`SYNC_MARIADB_IMAGE`, `SYNC_MYSQL_IMAGE`, `FXA_MARIADB_IMAGE` or `FXA_MYSQL_IMAGE`) is not set, and its `lts` default is another major than the data. `./prepare_environment.sh --upgrade` pins it ([The database majors of an install from before](upgrading.md#the-database-majors-of-an-install-from-before)). To move the data to the new major instead: [MySQL 8 to 9](upgrading.md#mysql-8-to-9).
 - **`Plugin 'mysql_native_password' is not loaded`** (MySQL 9, also for `root`). A user is still on `mysql_native_password`: for example an install from before moved to `mysql:lts` without step 2 of [MySQL 8 to 9](upgrading.md#mysql-8-to-9). Back on `FXA_MYSQL_IMAGE=mysql:8` the data no longer opens, because MySQL 9 upgraded it. Either restore the backup of that procedure ([Restore](backups.md#restore)), or start MySQL 9 once with `--skip-grant-tables`, run `FLUSH PRIVILEGES` and the `ALTER USER` of step 2.
-- **The PostgreSQL container does not start after a pull, on an older major's data.** `SYNC_POSTGRES_IMAGE` is unset and `postgres:latest` moved to a new major. Pin the major the data has: see [PostgreSQL](upgrading.md#postgresql).
+- **The PostgreSQL container does not start, with `keep-major.sh: this database is PostgreSQL 18 ... Not started.`** The image is another major than the data: `SYNC_POSTGRES_IMAGE` is unset and `postgres:latest` moved on, or the pin changed. Set it to the major the data has (the message names it): see [PostgreSQL](upgrading.md#postgresql).
 - **The setup check of the event log fails, and the admin UI's log says the event log is in the tokenserver database.** An install from before `ADMIN_DB_PASSWORD`: see [The admin UI's own database](upgrading.md#the-admin-uis-own-database).
 
 ## Self-hosted accounts
@@ -61,6 +61,7 @@ Symptoms and their fixes, by area. Each entry starts with what you see: an error
     ```
 
     Or use MariaDB (the default) or PostgreSQL. Docker's containers are not affected: they run in `docker-default`.
+- **`helm upgrade` fails with `firefox-sync: database.image.<backend> is ... but the bundled database ... runs ...`.** The new image would move the data to another major: see [Database majors](upgrading.md#database-majors).
 
 ## Admin UI
 
