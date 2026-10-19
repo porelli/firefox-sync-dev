@@ -372,7 +372,7 @@ The host of the Sync server's Ingress: ingress.host, else the host of syncDomain
 {{/*
 What the values must have, or the render fails saying so (fail closed): your own server needs
 its host and existingSecret (the chart cannot generate passwords your server knows); the admin
-UI's Ingress a host of its own
+UI's Ingress a host of its own; the self-hosted accounts', firefox-sync.checkFxaValues (_fxa.tpl)
 */}}
 {{- define "firefox-sync.checkValues" -}}
 {{- if not .Values.database.bundled }}
@@ -406,6 +406,7 @@ names are case-insensitive (and a trailing dot the same host) */ -}}
 {{- fail (printf "firefox-sync: admin.ingress.host %s is the Sync server's host: give the admin UI a host of its own" .Values.admin.ingress.host) }}
 {{- end }}
 {{- end }}
+{{- include "firefox-sync.checkFxaValues" . }}
 {{- end }}
 
 {{/*
@@ -479,9 +480,9 @@ The admin UI's Service: its http port and the statsd port the Sync server sends 
 
 {{/*
 The data of the chart's Secret (see secret.yaml) as JSON: read back from the cluster, the
-missing secrets generated, the admin UI's of the values. Computed once per render and kept
-on the root context, so that secret.yaml and the checksum of admin.yaml see the same
-generated values
+missing secrets generated (the self-hosted accounts' too), the optional ones of the values.
+Computed once per render and kept on the root context, so that secret.yaml and the checksum
+of admin.yaml see the same generated values
 */}}
 {{- define "firefox-sync.secretData" -}}
 {{- if not (hasKey $ "ffsSecretData") }}
@@ -501,6 +502,11 @@ the superuser's */ -}}
 {{- else }}
 {{- $keys = concat $keys (list "TOKENSERVER_DB_PASSWORD" "STORAGE_DB_PASSWORD") }}
 {{- end }}
+{{- /* the self-hosted accounts' (prepare_environment.sh's list), kept once they are off
+again: turned on again, they find the passwords the kept fxa-db volume has */ -}}
+{{- if .Values.fxa.enabled }}
+{{- $keys = concat $keys (splitList " " (include "firefox-sync.fxaGeneratedKeys" .)) }}
+{{- end }}
 {{- range $keys }}
 {{- if not (hasKey $data .) }}
 {{- $_ := set $data . (randAlphaNum 32 | b64enc) }}
@@ -512,10 +518,13 @@ the superuser's */ -}}
 {{- end }}
 {{- /* its optional secrets (.env's names) are the values', never the cluster's: empty
 there is empty here, the feature off (existingSecret to manage them out of band) */ -}}
-{{- $_ := set $data "FXA_SMTP_PASS" (.Values.admin.smtp.password | toString | b64enc) }}
+{{- $_ := set $data "FXA_SMTP_PASS" (.Values.smtp.password | default "" | toString | b64enc) }}
 {{- $_ := set $data "ADMIN_OIDC_CLIENT_SECRET" (.Values.admin.oidc.clientSecret | toString | b64enc) }}
 {{- $_ := set $data "ADMIN_METRICS_TOKEN" (.Values.admin.metricsToken | toString | b64enc) }}
 {{- $_ := set $data "ADMIN_NOTIFY" (include "firefox-sync.adminNotify" . | b64enc) }}
+{{- if .Values.fxa.enabled }}
+{{- $_ := set $data "ADMIN_FXA_CLIENT_SECRET" (.Values.fxa.adminClientSecret | default "" | toString | b64enc) }}
+{{- end }}
 {{- $_ := set $ "ffsSecretData" $data }}
 {{- end }}
 {{- toJson (get $ "ffsSecretData") }}
@@ -582,6 +591,12 @@ Service 63 (a DNS label)
 {{- $names = append $names (list "postgres" "StatefulSet" 52) }}
 {{- else }}
 {{- $names = concat $names (list (list "tokenserver-db" "StatefulSet" 52) (list "storage-db" "StatefulSet" 52)) }}
+{{- end }}
+{{- end }}
+{{- if .Values.fxa.enabled }}
+{{- $names = append $names (list "fxa-profile" "Service" 63) }}
+{{- if .Values.fxa.database.bundled }}
+{{- $names = append $names (list "fxa-db" "StatefulSet" 52) }}
 {{- end }}
 {{- end }}
 {{- range $names }}

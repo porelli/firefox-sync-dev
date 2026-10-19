@@ -1,0 +1,24 @@
+# The self-hosted accounts on (bundled MySQL), with the admin UI, pairing and their Ingresses
+syncDomain: https://sync.example.test
+smtp:
+  host: smtp.example.test
+  password: ci-smtp
+  sender: "Mozilla accounts <no-reply@example.test>"
+admin:
+  enabled: true
+fxa:
+  enabled: true
+  contentUrl: https://accounts.example.test
+  authUrl: https://api.example.test
+  profileUrl: https://profile.example.test
+  signups: allowlist
+  signupAllowlist:
+    - "@example.test"
+    - you@example.org
+  pairing:
+    enabled: true
+    url: wss://pairing.example.test
+  ingress:
+    enabled: true
+    tls:
+      enabled: true

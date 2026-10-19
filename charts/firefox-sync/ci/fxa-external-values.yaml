@@ -1,0 +1,15 @@
+# The self-hosted accounts on your own MariaDB server (its users and passwords in existingSecret)
+syncDomain: https://sync.example.test
+existingSecret: mine
+admin:
+  enabled: true
+fxa:
+  enabled: true
+  contentUrl: https://accounts.example.test
+  authUrl: https://api.example.test
+  profileUrl: https://profile.example.test
+  database:
+    backend: mariadb
+    bundled: false
+    external:
+      host: fxadb.example.test

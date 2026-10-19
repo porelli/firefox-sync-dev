@@ -119,7 +119,7 @@ kubectl get secret ffs-firefox-sync -o json \
   | jq '{apiVersion, kind, type, data, metadata: (.metadata | {name, labels, annotations})}' > ffs-secret.json
 ```
 
-The optional secrets of the admin UI are the values' alone: `admin.smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` are written into the Secret on every install and upgrade (`FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY`), and an empty value turns that feature off, whatever was put into the Secret by hand.
+The optional secrets of the admin UI are the values' alone: `smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` are written into the Secret on every install and upgrade (`FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY`), and an empty value turns that feature off, whatever was put into the Secret by hand.
 
 ### existingSecret
 
@@ -139,7 +139,7 @@ Its keys:
 | `POSTGRES_PASSWORD` | `postgres` | the superuser of the bundled server; on your own server the owner, `database.external.postgresUser` |
 | `POSTGRES_SYNC_PASSWORD` | `postgres`, bundled | the Sync server's own role `syncserver_app` (`database.postgresSyncUser`), no superuser |
 | `ADMIN_PASSWORD` | optional | the admin UI's password; missing or empty: no password form (sign in with OpenID Connect or a header, [ADMIN.md](ADMIN.md#signing-in)) |
-| `FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY` | optional | the admin UI's; missing or empty: that feature off. With `existingSecret` the values of `admin.password`, `admin.smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` are not read |
+| `FXA_SMTP_PASS`, `ADMIN_OIDC_CLIENT_SECRET`, `ADMIN_METRICS_TOKEN`, `ADMIN_NOTIFY` | optional | the admin UI's; missing or empty: that feature off. With `existingSecret` the values of `admin.password`, `smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` are not read |
 
 E.g. for MariaDB or MySQL:
 
@@ -171,14 +171,14 @@ The admin UI never shares that Ingress: see below.
 admin:
   enabled: true
   alertEmail: you@example.com
-  smtp:
-    host: smtp.example.com
-    user: sync@example.com
-    password: <the SMTP password>
-    sender: sync@example.com
+smtp:
+  host: smtp.example.com
+  user: sync@example.com
+  password: <the SMTP password>
+  sender: sync@example.com
 ```
 
-The values are those of `.env` under other names: `admin.alertEmail` is `ADMIN_ALERT_EMAIL`, `admin.smtp.*` `FXA_SMTP_*`, `admin.oidc.*` `ADMIN_OIDC_*`, `admin.notify` `ADMIN_NOTIFY` (a list of URLs), `admin.tz` `ADMIN_TZ`, and so on, each one in [values.yaml](/charts/firefox-sync/values.yaml). Its pages then give the chart's commands (`kubectl`, `helm upgrade ... --version <the release's chart version> --reuse-values --set ...`, a change of a setting in the version that runs) and the names of the values instead of `.env` and docker compose.
+The values are those of `.env` under other names: `admin.alertEmail` is `ADMIN_ALERT_EMAIL`, `smtp.*` `FXA_SMTP_*` (the SMTP server, shared with the self-hosted accounts), `admin.oidc.*` `ADMIN_OIDC_*`, `admin.notify` `ADMIN_NOTIFY` (a list of URLs), `admin.tz` `ADMIN_TZ`, and so on, each one in [values.yaml](/charts/firefox-sync/values.yaml). Its pages then give the chart's commands (`kubectl`, `helm upgrade ... --version <the release's chart version> --reuse-values --set ...`, a change of a setting in the version that runs) and the names of the values instead of `.env` and docker compose.
 
 It is not published. Reach it with a port-forward and open `http://localhost:8090`:
 

@@ -97,7 +97,7 @@ Sign-in: `ADMIN_PASSWORD` from `.env` (Kubernetes: from the Secret), or single s
 
 ### Kubernetes
 
-With the [Helm chart](HELM.md#the-admin-ui): `admin.enabled: true` in your values, and the settings of this page under their names there (`admin.alertEmail` for `ADMIN_ALERT_EMAIL`, `admin.smtp.*` for `FXA_SMTP_*`, `admin.oidc.*` for `ADMIN_OIDC_*`, `admin.notify` for `ADMIN_NOTIFY`..., each in [values.yaml](/charts/firefox-sync/values.yaml)), then `helm upgrade`. `ADMIN_PASSWORD` and `ADMIN_DB_PASSWORD` are in the chart's Secret (or your `existingSecret`), generated unless you set `admin.password`:
+With the [Helm chart](HELM.md#the-admin-ui): `admin.enabled: true` in your values, and the settings of this page under their names there (`admin.alertEmail` for `ADMIN_ALERT_EMAIL`, `smtp.*` for `FXA_SMTP_*`, `admin.oidc.*` for `ADMIN_OIDC_*`, `admin.notify` for `ADMIN_NOTIFY`..., each in [values.yaml](/charts/firefox-sync/values.yaml)), then `helm upgrade`. `ADMIN_PASSWORD` and `ADMIN_DB_PASSWORD` are in the chart's Secret (or your `existingSecret`), generated unless you set `admin.password`:
 
 ```bash
 kubectl get secret ffs-firefox-sync -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d

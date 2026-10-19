@@ -28,12 +28,180 @@ syncDomain: ""
 # (a number like 5 is taken as "5")
 maxUsers: "1"
 
-# Firefox Accounts configuration
+# FXA_SMTP_*: the SMTP server of the self-hosted accounts' emails (confirmation codes, sign-in
+# codes) and of the admin UI's alerts and invitations (empty host: no emails from the admin UI).
+# The password (FXA_SMTP_PASS) goes into the Secret, as the values say (see existingSecret)
+smtp:
+  host: ""
+  port: 587
+  user: ""
+  password: ""
+  # true: TLS from the start (port 465); false: STARTTLS
+  secure: false
+  # e.g. "Mozilla accounts <no-reply@example.com>"
+  sender: ""
+
+# The Mozilla accounts Firefox signs in with: Mozilla's (the default), or your own with
+# fxa.enabled (compose's docker-compose.fxa.yml, see FXA.md), with the names of .env below
 fxa:
-  # OAuth server URL for Firefox Accounts
+  # Mozilla's accounts (fxa.enabled false): FXA_OAUTH_SERVER_URL and FXA_EMAIL_DOMAIN of .env.
+  # Ignored with fxa.enabled: the chart's auth server (http://<release>-firefox-sync-fxa-auth:9000/v1)
+  # and the host of fxa.authUrl
   oauthServerUrl: https://oauth.accounts.firefox.com/v1
-  # Email domain for Firefox Accounts
   emailDomain: api.accounts.firefox.com
+
+  # the self-hosted accounts: their database, Redis, auth, content and profile servers (about
+  # 3-4 GB of memory), on the three public URLs below (required), each a host of its own
+  enabled: false
+  # FXA_IMAGE (empty: image.repository) and FXA_VERSION: our builds of Mozilla's releases, amd64
+  # and arm64; pin a release with e.g. fxa-mono-v1.347.1 (FXA.md#upgrades). Mozilla's own
+  # (amd64 only): repository docker.io/mozilla/fxa-mono, tag v1.347.1
+  image:
+    repository: ""
+    tag: fxa-mono-latest
+  # FXA_CONTENT_URL, FXA_AUTH_URL, FXA_PROFILE_URL, e.g. https://accounts.example.com,
+  # https://api.example.com, https://profile.example.com
+  contentUrl: ""
+  authUrl: ""
+  profileUrl: ""
+  # FXA_SIGNUPS: who can create an account: open, allowlist (only the emails and @domains of
+  # signupAllowlist) or closed; the admin UI changes them too. Existing accounts not affected
+  signups: open
+  # FXA_SIGNUP_ALLOWLIST: a list of emails and @domains (or one string, comma-separated)
+  signupAllowlist: ""
+  # FXA_MAX_ACCOUNTS: the most accounts that can be created, confirmed or not (0: nobody new),
+  # formats as maxUsers: N or unlimited (or fixed:N) set on every start, read-only in the admin
+  # UI; initial:N set once, then managed in the admin UI
+  maxAccounts: "initial:unlimited"
+  # FXA_ACCOUNT_EVENTS: true records the security history of every account (sign-ins, password,
+  # 2-step and recovery key changes) with the IP address of each (FXA.md)
+  accountEvents: false
+  # FXA_CLIENT_ADDRESS_DEPTH: the reverse proxies in front of the auth server + 1, for the client
+  # IP of the rate limits: 2 for the Ingress controller alone (FXA.md)
+  clientAddressDepth: 2
+  # FXA_ACCESS_TOKEN_LIFETIME: how long Firefox's access tokens live (Mozilla's: "365 minutes")
+  accessTokenLifetime: "60 minutes"
+  # FXA_LOG_LEVEL of the auth server
+  logLevel: INFO
+  # ADMIN_FXA_CLIENT_ID: the OAuth client of the admin UI's sign-in with these accounts (16 hex
+  # characters; empty: derived with admin.fxaSignIn), ADMIN_FXA_CLIENT_SECRET (64 hex, into the
+  # Secret as the values say; keep it empty: the accounts refuse PKCE from clients with a secret)
+  adminClientId: ""
+  adminClientSecret: ""
+  # a ConfigMap with the CA of your SMTP server or of your own HTTPS hosts (NODE_EXTRA_CA_CERTS
+  # of the accounts' servers): its name and the key of the PEM file. Empty: the system CAs
+  extraCaCerts:
+    configMap: ""
+    key: ca.crt
+  # true: root init containers (keys-owner, images-owner, compose's fxa-keys-owner) chown the
+  # new volumes to the image's user 10001, with CHOWN alone. false: none, fsGroup 10001 instead,
+  # for a StorageClass that applies fsGroup (PodSecurity restricted then)
+  volumeOwnerInit: true
+
+  # the accounts database: compose's fxa-db, or your own server (DATABASES.md)
+  database:
+    # FXA_DB: mysql (MySQL 8, what Mozilla supports) or mariadb (FXA.md#mysql-or-mariadb).
+    # Independent of database.backend
+    backend: mysql
+    # FXA_DB_CONTAINERS: true runs the server (StatefulSet <release>-firefox-sync-fxa-db, as
+    # root with FXA_MYSQL_PASSWORD); false: your own below, its passwords in existingSecret
+    # (required then): FXA_MYSQL_PASSWORD (of external.user), FXA_MYSQL_POLICY_PASSWORD (of
+    # external.policyUser)
+    bundled: true
+    # the server's image, also the client of the backups and of the wait for the server
+    image:
+      mysql: docker.io/library/mysql:8
+      mariadb: docker.io/library/mariadb:lts
+    external:
+      # FXA_MYSQL_HOST (required): a host name or an IPv4 address the pods reach
+      host: ""
+      # FXA_MYSQL_PORT: empty for 3306
+      port: ""
+      # FXA_MYSQL_USER: owns the accounts' databases
+      user: fxa
+      # FXA_MYSQL_POLICY_USER: installs the sign-up policy and grants the admin UI's user
+      # (empty: user above, with its password)
+      policyUser: ffs_policy
+    # the StatefulSet's volumeClaimTemplate, as database.persistence: set before the first install
+    persistence:
+      size: 8Gi
+      storageClass: ""
+    resources:
+      requests:
+        memory: 512Mi
+
+  # the accounts' caches and rate limits (compose's fxa-redis), in memory: the sessions and
+  # refresh tokens are in the database
+  redis:
+    image: docker.io/library/redis:7-alpine
+    resources:
+      requests:
+        memory: 64Mi
+
+  # the auth server's signing keys: never regenerated silently, losing them signs everyone
+  # out. On the PVC <release>-firefox-sync-fxa-keys (kept on helm uninstall), or in a Secret
+  # of yours (existingSecret: secret-key.json, public-key.json, vapid-keys.json,
+  # openid-key.json; the PVC is then not created), see HELM.md
+  keys:
+    existingSecret: ""
+    persistence:
+      size: 1Gi
+      storageClass: ""
+
+  # the avatars (PVC <release>-firefox-sync-fxa-profile-images, kept on helm uninstall)
+  profileImages:
+    persistence:
+      size: 1Gi
+      storageClass: ""
+
+  # the QR code pairing server (compose's profile pairing) instead of Mozilla's
+  pairing:
+    enabled: false
+    # FXA_PAIRING_URL (required with enabled), e.g. wss://pairing.example.com
+    url: ""
+    # FXA_PAIRING_IMAGE, empty: <image.repository>:fxa-channelserver-latest
+    image: ""
+    # FXA_PAIRING_TRUSTED_PROXIES: the proxies whose X-Forwarded-For it reads
+    trustedProxies: "127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+    resources: {}
+
+  # the containers' resources: memory requests by default, no limits (init: the init
+  # containers, empty: none)
+  resources:
+    auth:
+      requests:
+        memory: 1Gi
+    content:
+      requests:
+        memory: 512Mi
+    profile:
+      requests:
+        memory: 256Mi
+    profileWorker:
+      requests:
+        memory: 128Mi
+    profileStatic:
+      requests:
+        memory: 64Mi
+    imgProxy:
+      requests:
+        memory: 32Mi
+    init: {}
+
+  # the four public hosts (contentUrl, authUrl, profileUrl, pairing.url) as Ingresses, one each;
+  # with the admin UI also its sign-up gate on the auth host
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    tls:
+      enabled: false
+      # the certificates (empty: the controller's default)
+      secretNames:
+        content: ""
+        auth: ""
+        profile: ""
+        pairing: ""
 
 # Database configuration
 database:
@@ -124,9 +292,14 @@ database:
 # with your own server POSTGRES_PASSWORD alone, the owner's: required then, see database.external);
 # optional, for the admin UI (missing or empty: that feature off): FXA_SMTP_PASS,
 # ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_NOTIFY. The admin.password,
-# admin.smtp.password, admin.oidc.clientSecret, admin.metricsToken and admin.notify values
+# smtp.password, admin.oidc.clientSecret, admin.metricsToken and admin.notify values
 # are ignored then.
-# Without existingSecret those four are managed by the values alone: written into the
+# With fxa.enabled also FXA_MYSQL_PASSWORD, FXA_ADMIN_DB_PASSWORD, FXA_AUTH_SECRET,
+# FXA_OAUTH_SECRET, FXA_PROFILE_SECRET, FXA_FLOW_ID_KEY, FXA_SESSION_TOKEN_HANDLE_KEY,
+# FXA_CONTENT_SESSION_SECRET (an upgrade that turns the accounts on fails while one is
+# missing), FXA_MYSQL_POLICY_PASSWORD with your own accounts server, and optionally
+# ADMIN_FXA_CLIENT_SECRET (fxa.adminClientSecret ignored then).
+# Without existingSecret those optional ones are managed by the values alone: written into the
 # chart's Secret on every install and upgrade, an empty value is an empty key (the feature
 # off), whatever was set in the Secret by hand. Manage them out of band with existingSecret.
 # If not set, a secret named like the release (<release>-firefox-sync) is generated on the
@@ -172,18 +345,8 @@ admin:
   # kubectl get secret <release>-firefox-sync -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
   password: ""
   # ADMIN_ALERT_EMAIL: email alerts (refused sign-ups, components down, new releases, admin
-  # sign-ins), sent with the SMTP server below
+  # sign-ins), sent with the SMTP server of smtp above
   alertEmail: ""
-  # FXA_SMTP_*: the SMTP server of the alerts and invitations (empty host: no emails);
-  # the password (FXA_SMTP_PASS) goes into the Secret, as the values say (see existingSecret)
-  smtp:
-    host: ""
-    port: 587
-    user: ""
-    password: ""
-    # true: TLS from the start (port 465); false: STARTTLS
-    secure: false
-    sender: ""
   # ADMIN_OIDC_*: sign-in with OpenID Connect (ADMIN.md#signing-in); the client secret
   # (ADMIN_OIDC_CLIENT_SECRET, empty: a public client) goes into the Secret, as the values say
   oidc:
@@ -240,10 +403,13 @@ admin:
   # ADMIN_DB_GROWTH_MB, ADMIN_DB_GROWTH_FACTOR: an alert on a database growing fast
   dbGrowthMb: 1024
   dbGrowthFactor: 5
-  # the self-hosted accounts only (not in this chart yet), passed as compose does:
+  # the self-hosted accounts only (fxa.enabled), passed as compose does:
   # ADMIN_DELETE_UNCONFIRMED_DAYS, ADMIN_SIGNUP_BURST
   deleteUnconfirmedDays: ""
   signupBurst: 10
+  # with fxa.enabled: sign in to the admin UI with the self-hosted accounts (OpenID Connect,
+  # ADMIN_FXA_CLIENT_ID), who may in admin.allowed (required then)
+  fxaSignIn: false
 
   # the admin UI's container and its init container (wait-sync)
   resources: {}

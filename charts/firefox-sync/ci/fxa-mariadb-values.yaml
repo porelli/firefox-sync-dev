@@ -1,0 +1,11 @@
+# The self-hosted accounts on MariaDB (fxa.database.backend), the Sync server on MySQL
+syncDomain: https://sync.example.test
+database:
+  backend: mysql
+fxa:
+  enabled: true
+  contentUrl: https://accounts.example.test
+  authUrl: https://api.example.test
+  profileUrl: https://profile.example.test
+  database:
+    backend: mariadb

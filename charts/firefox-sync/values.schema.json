@@ -42,6 +42,30 @@
         }
       ]
     },
+    "smtp": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": ["integer", "string"]
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "secure": {
+          "type": ["string", "boolean"]
+        },
+        "sender": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "fxa": {
       "type": "object",
       "properties": {
@@ -50,6 +74,344 @@
         },
         "emailDomain": {
           "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "contentUrl": {
+          "type": "string",
+          "pattern": "^(https?://.+)?$"
+        },
+        "authUrl": {
+          "type": "string",
+          "pattern": "^(https?://.+)?$"
+        },
+        "profileUrl": {
+          "type": "string",
+          "pattern": "^(https?://.+)?$"
+        },
+        "signups": {
+          "type": "string",
+          "enum": ["open", "allowlist", "closed"]
+        },
+        "signupAllowlist": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "maxAccounts": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(fixed:|initial:)?([0-9]+|unlimited)$"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "accountEvents": {
+          "type": ["string", "boolean"]
+        },
+        "clientAddressDepth": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ]
+        },
+        "accessTokenLifetime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "logLevel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adminClientId": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{16})?$",
+          "$comment": "the format oauth-clients.js enforces"
+        },
+        "adminClientSecret": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{64})?$",
+          "$comment": "the format oauth-clients.js enforces"
+        },
+        "extraCaCerts": {
+          "type": "object",
+          "properties": {
+            "configMap": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "volumeOwnerInit": {
+          "type": "boolean"
+        },
+        "database": {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": ["mysql", "mariadb"]
+            },
+            "bundled": {
+              "type": "boolean"
+            },
+            "image": {
+              "type": "object",
+              "required": ["mysql", "mariadb"],
+              "properties": {
+                "mysql": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mariadb": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "external": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "$comment": "a number, or the same quoted (checked for 1-65535 at render time), or empty for 3306",
+                  "oneOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^([0-9]{1,5})?$"
+                    }
+                  ]
+                },
+                "user": {
+                  "type": "string",
+                  "pattern": "^[a-z_][a-z0-9_]*$",
+                  "maxLength": 32
+                },
+                "policyUser": {
+                  "type": "string",
+                  "pattern": "^([a-z_][a-z0-9_]*)?$",
+                  "maxLength": 32
+                }
+              },
+              "additionalProperties": false
+            },
+            "persistence": {
+              "type": "object",
+              "properties": {
+                "size": {
+                  "type": "string"
+                },
+                "storageClass": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "resources": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            }
+          },
+          "additionalProperties": false
+        },
+        "redis": {
+          "type": "object",
+          "properties": {
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resources": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            }
+          },
+          "additionalProperties": false
+        },
+        "keys": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "persistence": {
+              "type": "object",
+              "properties": {
+                "size": {
+                  "type": "string"
+                },
+                "storageClass": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "profileImages": {
+          "type": "object",
+          "properties": {
+            "persistence": {
+              "type": "object",
+              "properties": {
+                "size": {
+                  "type": "string"
+                },
+                "storageClass": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "pairing": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^(wss?://.+)?$"
+            },
+            "image": {
+              "type": "string"
+            },
+            "trustedProxies": {
+              "type": "string"
+            },
+            "resources": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            }
+          },
+          "additionalProperties": false
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "auth": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            },
+            "content": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            },
+            "profile": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            },
+            "profileWorker": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            },
+            "profileStatic": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            },
+            "imgProxy": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            },
+            "init": {
+              "type": "object",
+              "$comment": "a container's resources (requests, limits), as Kubernetes has them"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "className": {
+              "type": "string"
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "secretNames": {
+                  "type": "object",
+                  "properties": {
+                    "content": {
+                      "type": "string"
+                    },
+                    "auth": {
+                      "type": "string"
+                    },
+                    "profile": {
+                      "type": "string"
+                    },
+                    "pairing": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -249,30 +611,6 @@
         "alertEmail": {
           "type": "string"
         },
-        "smtp": {
-          "type": "object",
-          "properties": {
-            "host": {
-              "type": "string"
-            },
-            "port": {
-              "type": ["integer", "string"]
-            },
-            "user": {
-              "type": "string"
-            },
-            "password": {
-              "type": "string"
-            },
-            "secure": {
-              "type": ["string", "boolean"]
-            },
-            "sender": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false
-        },
         "oidc": {
           "type": "object",
           "properties": {
@@ -429,6 +767,9 @@
             }
           },
           "additionalProperties": false
+        },
+        "fxaSignIn": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

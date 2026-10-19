@@ -10,6 +10,7 @@ Its Service is also the statsd host of the Sync server (SYNC_STATSD_HOST, syncst
 {{- $ts := dict "root" . "db" "tokenserver" }}
 {{- $st := dict "root" . "db" "storage" }}
 {{- $a := .Values.admin }}
+{{- $smtp := include "firefox-sync.smtp" . | fromJson }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -149,17 +150,18 @@ spec:
             # alerts also to Slack, Discord, Teams, ntfy, Gotify, Telegram, Matrix or a webhook:
             # URLs with their tokens, in the Secret
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "ADMIN_NOTIFY" "key" "ADMIN_NOTIFY" "optional" true) | nindent 12 }}
+            # smtp.*: the server of the alerts and invitations (the self-hosted accounts' too)
             - name: SMTP_HOST
-              value: {{ $a.smtp.host | quote }}
+              value: {{ $smtp.host | quote }}
             - name: SMTP_PORT
-              value: {{ include "firefox-sync.number" $a.smtp.port | quote }}
+              value: {{ $smtp.port | quote }}
             - name: SMTP_USER
-              value: {{ $a.smtp.user | quote }}
+              value: {{ $smtp.user | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "SMTP_PASS" "key" "FXA_SMTP_PASS" "optional" true) | nindent 12 }}
             - name: SMTP_SECURE
-              value: {{ $a.smtp.secure | toString | quote }}
+              value: {{ $smtp.secure | quote }}
             - name: SMTP_SENDER
-              value: {{ $a.smtp.sender | quote }}
+              value: {{ $smtp.sender | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "METRICS_TOKEN" "key" "ADMIN_METRICS_TOKEN" "optional" true) | nindent 12 }}
             - name: ADMIN_UPDATE_CHECK
               value: {{ $a.updateCheck | toString | quote }}

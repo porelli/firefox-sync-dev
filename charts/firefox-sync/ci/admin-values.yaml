@@ -1,14 +1,15 @@
 # The admin UI on, with its optional secrets and sign-in settings
 syncDomain: https://sync.example.test
+# its alerts' SMTP server (shared with the self-hosted accounts)
+smtp:
+  host: smtp.example.test
+  password: ci-smtp
 admin:
   enabled: true
   metricsToken: ci-token
   notify:
     - ntfy://ntfy.sh/ci-topic
     - webhook://hooks.example.test/ci
-  smtp:
-    host: smtp.example.test
-    password: ci-smtp
   oidc:
     issuer: https://id.example.test
     clientId: ffs

@@ -19,6 +19,10 @@ fail() {
   exit 1
 }
 
+# the self-hosted accounts' checks (fxa_lint)
+# shellcheck source=tests/helm-fxa.sh
+source "${SCRIPT_DIR}/helm-fxa.sh"
+
 lint() {
   echo "=== Running Helm lint checks ==="
 
@@ -339,7 +343,7 @@ lint() {
   done
   # its optional secrets: from the values into the Secret, optional in an existingSecret
   output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set admin.enabled=true \
-    --set admin.metricsToken=tok --set admin.smtp.password=pw --set admin.password=adm)
+    --set admin.metricsToken=tok --set smtp.password=pw --set admin.password=adm)
   data=$(echo "${output}" | manifests | jq '.[] | select(.kind == "Secret") | .data')
   [[ "$(echo "${data}" | jq -r '[.ADMIN_METRICS_TOKEN, .FXA_SMTP_PASS, .ADMIN_PASSWORD, .ADMIN_OIDC_CLIENT_SECRET] | map(@base64d) | join(" ")')" == "tok pw adm " ]] \
     || fail "admin secrets in the Secret: ${data}"
@@ -353,11 +357,11 @@ lint() {
   # the three optional ones are the values' alone: an empty value an empty key, never what a
   # lookup of the Secret found (helm template has no cluster: the template must not read them)
   data=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" --set admin.metricsToken= \
-    --set admin.smtp.password= --set admin.oidc.clientSecret= --set admin.notify= | manifests | jq -c '.[] | select(.kind == "Secret") | .data
+    --set smtp.password= --set admin.oidc.clientSecret= --set admin.notify= | manifests | jq -c '.[] | select(.kind == "Secret") | .data
     | [.ADMIN_METRICS_TOKEN, .FXA_SMTP_PASS, .ADMIN_OIDC_CLIENT_SECRET, .ADMIN_NOTIFY]')
   [[ "${data}" == '["","","",""]' ]] || fail "empty admin secrets of the values not empty in the Secret: ${data}"
   for key in FXA_SMTP_PASS ADMIN_OIDC_CLIENT_SECRET ADMIN_METRICS_TOKEN ADMIN_NOTIFY; do
-    grep -qE '^\{\{- \$_ := set \$data "'"${key}"'" \((\.Values\.admin\.|include "firefox-sync\.adminNotify")' "${CHART_DIR}/templates/_helpers.tpl" \
+    grep -qE '^\{\{- \$_ := set \$data "'"${key}"'" \((\.Values\.(admin|smtp)\.|include "firefox-sync\.adminNotify")' "${CHART_DIR}/templates/_helpers.tpl" \
       || fail "${key} not set from the values alone in firefox-sync.secretData"
   done
   check "FXA_SMTP_PASS, ADMIN_OIDC_CLIENT_SECRET, ADMIN_METRICS_TOKEN, ADMIN_NOTIFY from the values alone (empty: empty)"
@@ -405,7 +409,7 @@ lint() {
   check "ADMIN_K8S_CHART: the annotation org.firefox-sync/chart of Chart.yaml (the public repository's chart)"
   # numbers of a values file (float64 there) as integers, never 2e+06
   values=$(mktemp)
-  printf 'admin:\n  dbGrowthMb: 2000000\n  retentionDays: 1000000\n  smtp:\n    port: 465\n' > "${values}"
+  printf 'admin:\n  dbGrowthMb: 2000000\n  retentionDays: 1000000\nsmtp:\n  port: 465\n' > "${values}"
   numbers=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" -f "${values}" | manifests | jq -r '.[]
     | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin") | .spec.template.spec.containers[0].env[]
     | select(.name == "ADMIN_DB_GROWTH_MB" or .name == "ADMIN_RETENTION_DAYS" or .name == "SMTP_PORT") | .value' | paste -sd' ' -)
@@ -418,6 +422,7 @@ lint() {
   pods_lint
   schema_lint
   publish_lint
+  fxa_lint
   # compose's variables, commands, probes and scripts
   parity
 
