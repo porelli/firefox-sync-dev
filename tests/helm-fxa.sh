@@ -310,9 +310,12 @@ fxa_objects_lint() {
 
   # Redis' password (chart-only): read by redis-server from stdin, never in the pod spec;
   # REDISCLI_AUTH of the probes and wait-redis, each <SUBSYSTEM>_REDIS_PASSWORD of auth
-  jq -e '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-redis") | .spec.template.spec.containers[0]
+  # (each byte \xHH in Redis' quotes: a password with spaces or quotes, tested in the e2e)
+  # shellcheck disable=SC2016 # (the script, literally)
+  jq -e --arg script $'pass=$(printf %s "$REDISCLI_AUTH" | od -An -v -tx1 | tr -d \' \\n\' | sed \'s/../\\\\x&/g\')\nexec redis-server - <<EOF\nrequirepass "$pass"\nEOF\n' \
+    '.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-fxa-redis") | .spec.template.spec.containers[0]
     | .env == [{name: "REDISCLI_AUTH", valueFrom: {secretKeyRef: {name: "test-release-firefox-sync", key: "FXA_REDIS_PASSWORD"}}}]
-    and .command == ["/bin/sh", "-c"] and (.args[0] | test("^exec redis-server - <<EOF\nrequirepass \\$REDISCLI_AUTH\nEOF\n$"))' <<< "${objs}" > /dev/null \
+    and .command == ["/bin/sh", "-c"] and .args == [$script]' <<< "${objs}" > /dev/null \
     || fail "fxa-redis: not started with requirepass from stdin and REDISCLI_AUTH"
   out=$(fxa_auth_pod)
   [[ "$(jq -r '[.spec.initContainers[] | select(.name == "wait-redis") | .env[] | "\(.name)=\(.valueFrom.secretKeyRef.key)"] | join(" ")' <<< "${out}")" == "REDISCLI_AUTH=FXA_REDIS_PASSWORD" ]] \
@@ -473,6 +476,26 @@ fxa_e2e() {
   [[ "$(docker run --rm "${redis_image}" id redis)" == "uid=999(redis) gid=1000(redis)"* ]] \
     || fail "${redis_image}: redis is $(docker run --rm "${redis_image}" id redis), not uid 999, gid 1000"
   check "${redis_image}: redis is uid 999, gid 1000"
+  # fxa-redis' start with a password of an existingSecret: spaces, quotes, a backslash, a $ and
+  # a newline are its password as they are (requirepass in Redis' own quoting), on the image
+  local script cid weird=$'a b"c\'d\\e $f\ng' got
+  script=$(helm template "${REL}" "${CHART_DIR}" -f "${SCRIPT_DIR}/helm/fxa-values.yaml" --set fxa.enabled=true | manifests \
+    | jq -r --arg n "${FULL}-fxa-redis" '.[] | select(.kind == "Deployment" and .metadata.name == $n) | .spec.template.spec.containers[0].args[0]')
+  cid=$(docker run -d -e REDISCLI_AUTH="${weird}" --entrypoint /bin/sh "${redis_image}" -c "${script}") || fail "fxa-redis' script did not start"
+  for _ in $(seq 1 20); do
+    got=$(docker exec "${cid}" redis-cli ping 2>&1) || true
+    [[ "${got}" == PONG ]] && break
+    sleep 1
+  done
+  if [[ "${got}" != PONG ]]; then
+    got="${got}; its log: $(docker logs "${cid}" 2>&1 | tail -5)"
+    docker rm -f "${cid}" > /dev/null 2>&1 || true
+    fail "fxa-redis with a password of spaces, quotes and a newline: ${got}"
+  fi
+  got=$(docker exec -e REDISCLI_AUTH='a b' "${cid}" redis-cli ping 2>&1) || true
+  docker rm -f "${cid}" > /dev/null 2>&1 || true
+  [[ "${got}" == *WRONGPASS* ]] || fail "fxa-redis took the password's first word alone: ${got}"
+  check "fxa-redis: a password with spaces, quotes, a backslash, a \$ and a newline is its password as it is"
 
   helm install "${REL}" "${CHART_DIR}" -f "${SCRIPT_DIR}/helm/fxa-values.yaml" --set fxa.enabled=true \
     --set database.backend="${backend}" --set fxa.database.backend="${backend}" \

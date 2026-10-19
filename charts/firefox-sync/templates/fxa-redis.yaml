@@ -63,12 +63,15 @@ spec:
             # its password, also redis-cli's (the probes)
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "REDISCLI_AUTH" "key" "FXA_REDIS_PASSWORD") | nindent 12 }}
           # the image's redis-server, its password in the configuration read from stdin: not
-          # in the pod spec, nor in the process' arguments
+          # in the pod spec, nor in the process' arguments. Every byte of it as \xHH in Redis'
+          # double quotes: a password of an existingSecret with spaces, quotes or a newline is
+          # read as it is
           command: [/bin/sh, -c]
           args:
             - |
+              pass=$(printf %s "$REDISCLI_AUTH" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g')
               exec redis-server - <<EOF
-              requirepass $REDISCLI_AUTH
+              requirepass "$pass"
               EOF
           ports:
             - name: redis
