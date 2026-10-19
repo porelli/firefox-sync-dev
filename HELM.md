@@ -220,6 +220,7 @@ The CronJob `ffs-firefox-sync-backup` runs the backup service of compose ([ADMIN
 - `schedule`: a daily `M H * * *` is also what the admin UI says ("every night at 03:00 UTC"). Any other schedule runs as given, but that text is then approximate; and one rarer than every 36 hours makes the alert of a too old backup fire between runs.
 - `activeDeadlineSeconds` (82800, 23 hours): a run still going then is stopped and fails. One run at a time (`concurrencyPolicy: Forbid`): a hung dump would hold back every later one.
 - With your own database server too (`database.bundled: false`), as the users of its SQL, next to the server's own backups.
+- With the self-hosted accounts (`fxa.enabled`), the same Job first dumps their five databases (compose's `backup-fxa`, in the accounts database's image, as `root` of the bundled server or `fxa.database.external.user`) into `accounts/<UTC time>/`, in its init container `backup-accounts`: a failed dump is recorded and alerted, and the Sync databases are dumped all the same. Their signing keys are not in the backups (see the NOTES for their export).
 
 One now, under a new Job name each time (the command of the admin UI's Backups card):
 
@@ -252,7 +253,7 @@ On the same cluster, or on a new one. On a new one first:
 
 Then, as [ADMIN.md#restoring](ADMIN.md#restoring) says for compose (what to restore and in which order, why the storage is better left empty), with `F=ffs-firefox-sync`:
 
-1. Stop the Sync server and the admin UI: `kubectl scale deploy/$F-syncstorage --replicas=0`, and `kubectl scale deploy/$F-admin --replicas=0` with the admin UI.
+1. Stop the Sync server and the admin UI: `kubectl scale deploy/$F-syncstorage --replicas=0`, and `kubectl scale deploy/$F-admin --replicas=0` with the admin UI; with the self-hosted accounts also their servers, `kubectl scale deploy/$F-fxa-auth deploy/$F-fxa-content deploy/$F-fxa-profile --replicas=0`.
 1. Empty databases: PostgreSQL's dump loads only into an empty database, so there always (the dumps of MariaDB and MySQL drop and create each table again, into the old databases too). The data of a database server is its PVC, `data-<its pod>`:
 
     ```bash
@@ -265,12 +266,13 @@ Then, as [ADMIN.md#restoring](ADMIN.md#restoring) says for compose (what to rest
     done
     ```
 
-1. A run: `run=20261013T030000Z`, one of the list of the pod of [Copy them off the cluster](#copy-them-off-the-cluster) (`kubectl exec ffs-backups -- ls /backups/sync`). Delete that pod before the restores (`kubectl delete pod ffs-backups`): the PVC is `ReadWriteOnce`, and on another node the Jobs below would wait for it. Each restore runs ADMIN.md's command in a Job of the backup CronJob's spec (its variables, its volume), as the stack's users:
+1. A run: `run=20261013T030000Z`, one of the list of the pod of [Copy them off the cluster](#copy-them-off-the-cluster) (`kubectl exec ffs-backups -- ls /backups/sync`, and `/backups/accounts` with the self-hosted accounts). Delete that pod before the restores (`kubectl delete pod ffs-backups`): the PVC is `ReadWriteOnce`, and on another node the Jobs below would wait for it. Each restore runs ADMIN.md's command in a Job of the backup CronJob's spec (its variables, its volume), as the stack's users:
 
     ```bash
-    restore() {   # restore <job name> <command>
+    restore() {   # restore <job name> <command> [container: backup, the Sync scope's, or backup-accounts]
       kubectl create job --from=cronjob/$F-backup "$1" --dry-run=client -o json |
-        jq --arg c "$2" '.spec.template.spec.containers[0] |= (.command = ["sh", "-c", $c] | del(.args))' |
+        jq --arg c "$2" --arg n "${3:-backup}" '.spec.template.spec |= (.containers = [(.initContainers // []) + .containers | .[]
+          | select(.name == $n) | .command = ["sh", "-c", $c] | del(.args)] | del(.initContainers))' |
         kubectl apply -f - || return 1
       local deadline=$(( $(date +%s) + 600 ))
       until kubectl get job "$1" -o jsonpath='{.status.conditions[*].type}' | grep -qE 'Complete|Failed'; do
@@ -280,6 +282,17 @@ Then, as [ADMIN.md#restoring](ADMIN.md#restoring) says for compose (what to rest
       kubectl logs "job/$1"
       [ "$(kubectl get job "$1" -o jsonpath='{.status.succeeded}')" = 1 ]
     }
+    ```
+
+1. With the self-hosted accounts, first their databases, as the user that made the dumps ([ADMIN.md#restoring](ADMIN.md#restoring) step 3), in the container `backup-accounts` (`mariadb` instead of `mysql` with `fxa.database.backend: mariadb`); their run is the same night's in `/backups/accounts`, a few seconds or minutes before the Sync one:
+
+    ```bash
+    accounts_run=20261013T030000Z
+    restore restore-accounts 'run=/backups/accounts/'$accounts_run'
+      for db in fxa fxa_oauth fxa_profile pushbox ffs; do
+        mysql -h "$FXA_DB_HOST" -P "$FXA_DB_PORT" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $db" &&
+        gunzip -t $run/$db.sql.gz && gunzip -c $run/$db.sql.gz | mysql -h "$FXA_DB_HOST" -P "$FXA_DB_PORT" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" $db || exit 1
+      done' backup-accounts
     ```
 
 1. MariaDB and MySQL (`mysql` instead of `mariadb` with MySQL): the tokenserver, then the admin UI's database (the database servers create it, empty, at their start); the storage only when no device has the data any more:
@@ -311,7 +324,7 @@ Then, as [ADMIN.md#restoring](ADMIN.md#restoring) says for compose (what to rest
         PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'
     ```
 
-1. The admin UI again, `kubectl scale deploy/$F-admin --replicas=1`, and remove what the restore left: `kubectl delete job restore-tokenserver restore-admin restore-storage restore-sync --ignore-not-found`. The migrations bring an older schema up to date. A later `helm upgrade` keeps the replicas of the chart (one each).
+1. The admin UI again, `kubectl scale deploy/$F-admin --replicas=1`, with the accounts their servers too, `kubectl scale deploy/$F-fxa-auth deploy/$F-fxa-content deploy/$F-fxa-profile --replicas=1` (auth's init containers install the sign-up policy's trigger again, and the admin UI's user), and remove what the restore left: `kubectl delete job restore-accounts restore-tokenserver restore-admin restore-storage restore-sync --ignore-not-found`. The migrations bring an older schema up to date. A later `helm upgrade` keeps the replicas of the chart (one each).
 
 ## Upgrades
 

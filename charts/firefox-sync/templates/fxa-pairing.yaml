@@ -1,0 +1,101 @@
+{{- /*
+The QR code pairing server (fxa.pairing.enabled), compose's fxa-pairing (COMPOSE_PROFILES=pairing):
+Mozilla's channelserver, which relays the encrypted messages of a computer and a phone pairing
+over websockets. Firefox reaches it at fxa.pairing.url (content's PAIRING_SERVER_BASE_URI), through
+its Ingress (fxa-ingress.yaml). It keeps nothing: nobody (65534) on a read-only root (PodSecurity
+restricted)
+*/ -}}
+{{- if and .Values.fxa.enabled .Values.fxa.pairing.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $p := .Values.fxa.pairing }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-fxa-pairing
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-pairing") | nindent 4 }}
+spec:
+  selector:
+    {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-pairing") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-fxa-pairing
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-pairing") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-pairing") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-pairing") | nindent 8 }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" .) }}{{ . | trim | nindent 6 }}{{ end }}
+    spec:
+      {{- include "firefox-sync.podSpec" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pairing
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "pairing") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with $p.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: PAIR_HOSTNAME
+              value: 0.0.0.0
+            - name: PAIR_PORT
+              value: "8000"
+            - name: PAIR_HUMAN_LOGS
+              value: "true"
+            # the reverse proxy (the Ingress controller), so that X-Forwarded-For is used for
+            # the per client limits
+            - name: PAIR_TRUSTED_PROXY_LIST
+              value: {{ $p.trustedProxies | quote }}
+          ports:
+            - name: http
+              containerPort: 8000
+          # compose's healthcheck, its /__heartbeat__ (the image, debian slim, has no curl or
+          # wget: bash's /dev/tcp); its start_period of 30 s, up to 5 minutes
+          startupProbe:
+            exec:
+              command: ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /__heartbeat__ HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /__heartbeat__ HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /__heartbeat__ HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+{{- end }}

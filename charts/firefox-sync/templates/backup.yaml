@@ -3,7 +3,8 @@ The backups, compose's backup service (COMPOSE_PROFILES=backup, see ADMIN.md#bac
 CronJob: config/backup/backup.sh (a copy in files/, kept identical) runs once a night
 (`backup.sh now`, compose's loop is the schedule here) in the database's image, as the
 stack's users, into the PVC <fullname>-backups. Each run is a row of ffs_backups in the admin
-UI's database, which its Backups card shows. One now:
+UI's database, which its Backups card shows. With the self-hosted accounts (fxa.enabled) the
+same run dumps theirs first (compose's backup-fxa). One now:
   kubectl create job --from=cronjob/<fullname>-backup backup-now-$(date +%s)
 */ -}}
 {{- if .Values.backup.enabled }}
@@ -104,6 +105,45 @@ spec:
           restartPolicy: Never
           securityContext:
             {{- include "firefox-sync.backupPodSecurityContext" . | nindent 12 }}
+          {{- if .Values.fxa.enabled }}
+          # the self-hosted accounts first, compose's backup-fxa (the Quadlets' Before=): in
+          # their database's image (its client), as its root (your own server: its user). Its
+          # result is left in /backups/.status, which the Sync scope records in the same run;
+          # a failed dump is recorded (and alerted) that way, and Sync is dumped all the same
+          initContainers:
+            - name: backup-accounts
+              image: {{ include "firefox-sync.fxaDbImage" . }}
+              imagePullPolicy: IfNotPresent
+              command: [sh, -c, 'sh /ffs-backup/backup.sh now || echo "the accounts backup failed: recorded"']
+              securityContext:
+                {{- include "firefox-sync.backupSecurityContext" . | nindent 16 }}
+              {{- with .Values.backup.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              env:
+                - name: BACKUP_SCOPE
+                  value: accounts
+                - name: BACKUP_KEEP
+                  value: {{ include "firefox-sync.number" .Values.backup.keep | quote }}
+                {{- with include "firefox-sync.backupTime" . }}
+                - name: BACKUP_TIME
+                  value: {{ . | quote }}
+                {{- end }}
+                - name: FXA_DB_HOST
+                  value: {{ include "firefox-sync.fxaDbHost" . | quote }}
+                - name: FXA_DB_PORT
+                  value: {{ include "firefox-sync.fxaDbPort" . | quote }}
+                - name: FXA_DB_USER
+                  value: {{ include "firefox-sync.fxaDbUser" . | quote }}
+                {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FXA_DB_PASSWORD" "key" "FXA_MYSQL_PASSWORD") | nindent 16 }}
+              volumeMounts:
+                - name: scripts
+                  mountPath: /ffs-backup
+                  readOnly: true
+                - name: backups
+                  mountPath: /backups
+          {{- end }}
           containers:
             - name: backup
               # the database's image, its client and dump (as compose)

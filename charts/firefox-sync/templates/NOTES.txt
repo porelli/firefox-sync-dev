@@ -34,7 +34,7 @@ MySQL's own is self-signed); true needs one from a CA the images trust.
 The self-hosted Mozilla accounts serve once their migrations and sign-up policy succeeded
 (the init containers of {{ $fullname }}-fxa-auth).
 {{ if .Values.fxa.ingress.enabled -}}
-Their URLs, published by the Ingresses {{ $fullname }}-fxa-content, -fxa-auth and -fxa-profile{{ if .Values.fxa.ingress.className }} (class {{ .Values.fxa.ingress.className }}){{ end }}:
+Their URLs, published by the Ingresses {{ $fullname }}-fxa-content, -fxa-auth{{ if .Values.fxa.pairing.enabled }}, -fxa-profile and -fxa-pairing{{ else }} and -fxa-profile{{ end }}{{ if .Values.fxa.ingress.className }} (class {{ .Values.fxa.ingress.className }}){{ end }}:
 {{- else -}}
 Publish these Services at these URLs (your reverse proxy, or fxa.ingress.enabled), with HTTPS:
 {{- end }}
@@ -43,7 +43,7 @@ Publish these Services at these URLs (your reverse proxy, or fxa.ingress.enabled
   {{ .Values.fxa.authUrl }}  the API ({{ $fullname }}-fxa-auth:9000)
   {{ .Values.fxa.profileUrl }}  the profiles ({{ $fullname }}-fxa-profile:1111, /img/ to :1114)
 {{- if .Values.fxa.pairing.enabled }}
-  {{ .Values.fxa.pairing.url }}  the pairing server
+  {{ .Values.fxa.pairing.url }}  the pairing server ({{ $fullname }}-fxa-pairing:8000)
 {{- end }}
 {{- range $name := list "contentUrl" "authUrl" "profileUrl" }}
 {{- if hasPrefix "http://" (index $.Values.fxa $name) }}

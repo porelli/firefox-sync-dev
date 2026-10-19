@@ -35,6 +35,9 @@ admin:
     tls:
       enabled: true
       secretName: fxa-test-tls
+# the backups, as tests/e2e-fxa.sh's stack (COMPOSE_PROFILES=backup): both scopes
+backup:
+  enabled: true
 fxa:
   contentUrl: https://accounts.fxa.test
   authUrl: https://api.fxa.test
@@ -44,6 +47,10 @@ fxa:
   signupAllowlist: "@example.com,invited@example.net"
   adminClientId: ad41a7e5f0c0ffee
   accountEvents: true
+  # the pairing server of tests/e2e-fxa.sh's stack (COMPOSE_PROFILES=pairing)
+  pairing:
+    enabled: true
+    url: wss://pairing.fxa.test
   # the accounts' servers trust the test CA (compose's NODE_EXTRA_CA_CERTS=/caddy-ca/root.crt)
   extraCaCerts:
     configMap: fxa-test-ca

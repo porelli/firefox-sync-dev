@@ -227,6 +227,8 @@ fxa_lint() {
 
   fxa_objects_lint
   fxa_ingress_lint
+  fxa_pairing_lint
+  fxa_backup_lint
   fxa_admin_lint
 
   # chart 0.1.0's render, with the accounts off: the same objects for every ci/*.yaml it had,
@@ -247,7 +249,8 @@ fxa_ingress_lint() {
   local f=test-release-firefox-sync
   want='[{"name":"'${f}'-fxa-content","component":"fxa-content","class":null,"annotations":null,"tls":[{"hosts":["accounts.example.test"]}],"rules":[{"host":"accounts.example.test","paths":[["/","Prefix","'${f}'-fxa-content",3030]]}]},'
   want+='{"name":"'${f}'-fxa-auth","component":"fxa-auth","class":null,"annotations":null,"tls":[{"hosts":["api.example.test"]}],"rules":[{"host":"api.example.test","paths":[["/","Prefix","'${f}'-fxa-auth",9000],["/v1/account/create","Exact","'${f}'-admin",8081]]}]},'
-  want+='{"name":"'${f}'-fxa-profile","component":"fxa-profile","class":null,"annotations":null,"tls":[{"hosts":["profile.example.test"]}],"rules":[{"host":"profile.example.test","paths":[["/","Prefix","'${f}'-fxa-profile",1111],["/img/","Prefix","'${f}'-fxa-profile",1114]]}]}]'
+  want+='{"name":"'${f}'-fxa-profile","component":"fxa-profile","class":null,"annotations":null,"tls":[{"hosts":["profile.example.test"]}],"rules":[{"host":"profile.example.test","paths":[["/","Prefix","'${f}'-fxa-profile",1111],["/img/","Prefix","'${f}'-fxa-profile",1114]]}]},'
+  want+='{"name":"'${f}'-fxa-pairing","component":"fxa-pairing","class":null,"annotations":null,"tls":[{"hosts":["pairing.example.test"]}],"rules":[{"host":"pairing.example.test","paths":[["/","Prefix","'${f}'-fxa-pairing",8000]]}]}]'
   out=$(fxa_ingresses)
   [[ "${out}" == "${want}" ]] || fail "the accounts' Ingresses of ci/fxa-values.yaml: ${out}"
   if command -v kubeconform > /dev/null; then
@@ -262,16 +265,20 @@ fxa_ingress_lint() {
   # the host without the URL's port
   out=$(fxa_ingresses --set fxa.ingress.className=nginx --set fxa.ingress.annotations.a=b --set fxa.ingress.tls.secretNames.content=c-tls \
     --set fxa.ingress.tls.secretNames.auth=a-tls --set fxa.ingress.tls.secretNames.profile=p-tls --set fxa.profileUrl=https://profile.example.test:8443/ \
+    --set fxa.ingress.tls.secretNames.pairing=w-tls --set fxa.pairing.url=wss://pairing.example.test:8443 \
     | jq -c 'map([.name, .class, .annotations, .tls, .rules[0].host])')
-  [[ "${out}" == '[["'${f}'-fxa-content","nginx",{"a":"b"},[{"hosts":["accounts.example.test"],"secretName":"c-tls"}],"accounts.example.test"],["'${f}'-fxa-auth","nginx",{"a":"b"},[{"hosts":["api.example.test"],"secretName":"a-tls"}],"api.example.test"],["'${f}'-fxa-profile","nginx",{"a":"b"},[{"hosts":["profile.example.test"],"secretName":"p-tls"}],"profile.example.test"]]' ]] \
+  [[ "${out}" == '[["'${f}'-fxa-content","nginx",{"a":"b"},[{"hosts":["accounts.example.test"],"secretName":"c-tls"}],"accounts.example.test"],["'${f}'-fxa-auth","nginx",{"a":"b"},[{"hosts":["api.example.test"],"secretName":"a-tls"}],"api.example.test"],["'${f}'-fxa-profile","nginx",{"a":"b"},[{"hosts":["profile.example.test"],"secretName":"p-tls"}],"profile.example.test"],["'${f}'-fxa-pairing","nginx",{"a":"b"},[{"hosts":["pairing.example.test"],"secretName":"w-tls"}],"pairing.example.test"]]' ]] \
     || fail "fxa.ingress.className, annotations, tls.secretNames, a host with a port: ${out}"
-  [[ "$(fxa_ingresses --set fxa.ingress.tls.enabled=false | jq -c 'map(.tls)')" == '[null,null,null]' ]] || fail "fxa.ingress.tls.enabled=false: tls in the Ingresses"
+  [[ "$(fxa_ingresses --set fxa.ingress.tls.enabled=false | jq -c 'map(.tls)')" == '[null,null,null,null]' ]] || fail "fxa.ingress.tls.enabled=false: tls in the Ingresses"
+  # (the pairing server's only with it)
+  [[ "$(fxa_ingresses --set fxa.pairing.enabled=false | jq -c 'map(.name)')" == '["'${f}'-fxa-content","'${f}'-fxa-auth","'${f}'-fxa-profile"]' ]] \
+    || fail "fxa.pairing.enabled=false: the Ingresses $(fxa_ingresses --set fxa.pairing.enabled=false | jq -c 'map(.name)')"
   [[ "$(fxa_ingresses --set fxa.ingress.enabled=false)" == '[]' ]] || fail "fxa.ingress.enabled=false: the accounts' Ingresses rendered"
   # (the sign-up gate only with the admin UI, which serves it)
   [[ "$(fxa_ingresses --set admin.enabled=false | jq -c '.[1].rules[0].paths')" == '[["/","Prefix","'${f}'-fxa-auth",9000]]' ]] \
     || fail "admin.enabled=false: the auth Ingress: $(fxa_ingresses --set admin.enabled=false | jq -c '.[1].rules[0].paths')"
   [[ "$(fxa_ingresses --set fxa.enabled=false --set fxa.ingress.enabled=true)" == '[]' ]] || fail "fxa.enabled=false: the accounts' Ingresses rendered"
-  check "Ingresses <fullname>-fxa-content (/ 3030), -fxa-auth (/ 9000, with the admin UI /v1/account/create Exact to -admin 8081), -fxa-profile (/ 1111, /img/ 1114) on their URLs' hosts, kubeconform -strict; fxa.ingress class, annotations, a certificate each; none with fxa.ingress.enabled=false"
+  check "Ingresses <fullname>-fxa-content (/ 3030), -fxa-auth (/ 9000, with the admin UI /v1/account/create Exact to -admin 8081), -fxa-profile (/ 1111, /img/ 1114), -fxa-pairing (/ 8000, with it) on their URLs' hosts, kubeconform -strict; fxa.ingress class, annotations, a certificate each; none with fxa.ingress.enabled=false"
 
   # NOTES: the four URLs, Firefox's setting, the keys' export, the memory, http:// warned of
   out=$(notes -f "${fxa}")
@@ -282,7 +289,10 @@ fxa_ingress_lint() {
     "about 3-4 GB of memory"; do
     grep -qF -- "${want}" <<< "${out}" || fail "NOTES with the accounts: no '${want}': ${out}"
   done
-  grep -q "^Their URLs, published by the Ingresses ${f}-fxa-content, -fxa-auth and -fxa-profile:$" <<< "${out}" || fail "NOTES: not the accounts' Ingresses"
+  grep -q "^Their URLs, published by the Ingresses ${f}-fxa-content, -fxa-auth, -fxa-profile and -fxa-pairing:$" <<< "${out}" || fail "NOTES: not the accounts' Ingresses: ${out}"
+  grep -q "^  wss://pairing.example.test  the pairing server (${f}-fxa-pairing:8000)$" <<< "${out}" || fail "NOTES: not the pairing server's Service: ${out}"
+  grep -q "^Their URLs, published by the Ingresses ${f}-fxa-content, -fxa-auth and -fxa-profile:$" <<< "$(notes -f "${fxa}" --set fxa.pairing.enabled=false)" \
+    || fail "NOTES without the pairing server: not the three Ingresses: $(notes -f "${fxa}" --set fxa.pairing.enabled=false)"
   ! grep -q '^WARNING: fxa\.' <<< "${out}" || fail "NOTES: a warning on https:// URLs"
   grep -q 'Publish these Services at these URLs' <<< "$(notes -f "${fxa}" --set fxa.ingress.enabled=false)" || fail "NOTES without the accounts' Ingresses: not what to publish"
   ! grep -q 'wss://pairing' <<< "$(notes -f "${fxa}" --set fxa.pairing.enabled=false)" || fail "NOTES: the pairing server's URL with it off"
@@ -294,6 +304,79 @@ fxa_ingress_lint() {
   ! grep -q 'fxa-keys.tar' <<< "$(notes -f "${fxa}" --set fxa.keys.existingSecret=mine)" || fail "NOTES: the keys' export with fxa.keys.existingSecret"
   ! grep -qi 'accounts' <<< "$(notes -f "${CHART_DIR}/ci/default-values.yaml")" || fail "NOTES without the accounts: names them"
   check "NOTES with the accounts: the four URLs, identity.fxaccounts.autoconfig.uri, the keys' export (not with fxa.keys.existingSecret), the memory, a warning for each http:// URL"
+}
+
+# the pairing server (fxa.pairing.enabled), compose's fxa-pairing: its env, its healthcheck as
+# the probes, as nobody (65534) on a read-only root (PodSecurity restricted); its URL in content
+# and the admin UI
+fxa_pairing_lint() {
+  local fxa="${CHART_DIR}/ci/fxa-values.yaml" f=test-release-firefox-sync objs pod out
+  objs=$(helm template test-release "${CHART_DIR}" -f "${fxa}" | manifests)
+  pod=$(jq -c --arg n "${f}-fxa-pairing" '.[] | select(.kind == "Deployment" and .metadata.name == $n) | .spec.template' <<< "${objs}")
+  [[ -n "${pod}" ]] || fail "no Deployment ${f}-fxa-pairing with fxa.pairing.enabled"
+  # (compose's healthcheck, verbatim)
+  local hc='exec 3<>/dev/tcp/127.0.0.1/8000 && printf '"'"'GET /__heartbeat__ HTTP/1.0\r\nHost: localhost\r\n\r\n'"'"' >&3 && head -n 1 <&3 | grep -q '"'"' 200 '"'"
+  jq -e --arg hc "${hc}" '.spec.containers | length == 1 and (.[0] | .name == "pairing" and .image == "ghcr.io/porelli/firefox-sync:fxa-channelserver-latest"
+    and ([.env[] | "\(.name)=\(.value)"] == ["PAIR_HOSTNAME=0.0.0.0", "PAIR_PORT=8000", "PAIR_HUMAN_LOGS=true", "PAIR_TRUSTED_PROXY_LIST=127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"])
+    and .ports == [{name: "http", containerPort: 8000}]
+    and .startupProbe == {exec: {command: ["bash", "-c", $hc]}, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 30}
+    and .readinessProbe == {exec: {command: ["bash", "-c", $hc]}, periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 3}
+    and .livenessProbe == {exec: {command: ["bash", "-c", $hc]}, periodSeconds: 30, timeoutSeconds: 5, failureThreshold: 3}
+    and .securityContext == {runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false,
+      capabilities: {drop: ["ALL"]}, seccompProfile: {type: "RuntimeDefault"}})' <<< "${pod}" > /dev/null \
+    || fail "the pairing server's container: $(jq -c '.spec.containers' <<< "${pod}")"
+  jq -e '.spec.securityContext == {runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, seccompProfile: {type: "RuntimeDefault"}}
+    and (.spec | has("initContainers") | not) and (.spec | has("volumes") | not) and .metadata.labels["app.kubernetes.io/component"] == "fxa-pairing"' <<< "${pod}" > /dev/null \
+    || fail "the pairing server's pod: $(jq -c '[.metadata, .spec.securityContext]' <<< "${pod}")"
+  jq -e --arg n "${f}-fxa-pairing" '[.[] | select(.kind == "Service" and .metadata.name == $n) | [.spec.selector["app.kubernetes.io/component"], [.spec.ports[] | [.name, .port, .targetPort]]]]
+    == [["fxa-pairing", [["http", 8000, "http"]]]]' <<< "${objs}" > /dev/null || fail "no Service ${f}-fxa-pairing http 8000"
+  # (the values: its image, the trusted proxies, the resources)
+  pod=$(helm template test-release "${CHART_DIR}" -f "${fxa}" --set fxa.pairing.image=example.test/pairing:1 --set fxa.pairing.trustedProxies=10.0.0.0/8 \
+    --set fxa.pairing.resources.requests.memory=16Mi | manifests | jq -c --arg n "${f}-fxa-pairing" '.[] | select(.kind == "Deployment" and .metadata.name == $n) | .spec.template.spec.containers[0]')
+  jq -e '.image == "example.test/pairing:1" and (.env[3] | .name == "PAIR_TRUSTED_PROXY_LIST" and .value == "10.0.0.0/8") and .resources == {requests: {memory: "16Mi"}}' <<< "${pod}" > /dev/null \
+    || fail "fxa.pairing.image, trustedProxies, resources: $(jq -c '[.image, .env, .resources]' <<< "${pod}")"
+  # none without it, or without the accounts
+  for args in "--set fxa.pairing.enabled=false" "--set fxa.enabled=false"; do
+    # shellcheck disable=SC2086 # (its words)
+    [[ "$(helm template test-release "${CHART_DIR}" -f "${fxa}" ${args} | manifests | jq -c '[.[] | select(.metadata.name | contains("pairing")) | .kind]')" == '[]' ]] \
+      || fail "${args}: pairing objects rendered"
+  done
+  # its URL: content's PAIRING_SERVER_BASE_URI (Firefox's QR code), the admin UI's health check
+  out=$(jq -r --arg f "${f}" '[.[] | select(.kind == "Deployment" and (.metadata.name == "\($f)-fxa-content" or .metadata.name == "\($f)-admin"))
+    | .spec.template.spec.containers[0].env[] | select(.name | test("PAIRING")) | "\(.name)=\(.value)"] | join(" ")' <<< "${objs}")
+  [[ "${out}" == *"PAIRING_SERVER_BASE_URI=wss://pairing.example.test"* && "${out}" == *"FXA_PAIRING_URL=wss://pairing.example.test"* \
+    && "${out}" == *"FXA_PAIRING_INTERNAL_URL=http://${f}-fxa-pairing:8000"* ]] || fail "the pairing server's URL in content and the admin UI: ${out}"
+  check "pairing: Deployment and Service ${f}-fxa-pairing:8000 with compose's env and healthcheck (exec bash /dev/tcp, startup 10/5/30, 30/5/3), 65534 on a read-only root; fxa.pairing.image, trustedProxies, resources; none without it; PAIRING_SERVER_BASE_URI and FXA_PAIRING_URL of fxa.pairing.url"
+}
+
+# the backups of the accounts (backup.enabled with fxa.enabled), compose's backup-fxa: an init
+# container of the backup CronJob, before the Sync scope (the Quadlets' Before=), in the
+# accounts database's image (its client), recorded by the sync scope of the same run
+fxa_backup_lint() {
+  local fxa="${CHART_DIR}/ci/fxa-values.yaml" f=test-release-firefox-sync pod
+  backup_spec() { helm template test-release "${CHART_DIR}" "$@" | manifests | jq -c --arg n "${f}-backup" '.[] | select(.kind == "CronJob" and .metadata.name == $n) | .spec.jobTemplate.spec.template.spec'; }
+  pod=$(backup_spec -f "${fxa}" --set backup.enabled=true)
+  [[ -n "${pod}" ]] || fail "no CronJob ${f}-backup with ci/fxa-values.yaml and backup.enabled"
+  jq -e --arg f "${f}" '(.initContainers | length == 1) and (.initContainers[0] | .name == "backup-accounts" and .image == "docker.io/library/mysql:8"
+    and .command == ["sh", "-c", "sh /ffs-backup/backup.sh now || echo \"the accounts backup failed: recorded\""] and (has("args") | not)
+    and ([.env[] | "\(.name)=\(.value // ("secret:" + .valueFrom.secretKeyRef.key))"] == ["BACKUP_SCOPE=accounts", "BACKUP_KEEP=7", "BACKUP_TIME=03:00",
+      "FXA_DB_HOST=\($f)-fxa-db", "FXA_DB_PORT=3306", "FXA_DB_USER=root", "FXA_DB_PASSWORD=secret:FXA_MYSQL_PASSWORD"])
+    and .volumeMounts == [{name: "scripts", mountPath: "/ffs-backup", readOnly: true}, {name: "backups", mountPath: "/backups"}]
+    and .securityContext == {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}})
+    and ([.containers[] | .name] == ["backup"]) and (.containers[0].env[0] | .name == "BACKUP_SCOPE" and .value == "sync")' <<< "${pod}" > /dev/null \
+    || fail "the backups of the accounts: $(jq -c '[.initContainers, [.containers[].name]]' <<< "${pod}")"
+  # (MariaDB's client with MariaDB; your own server as its user; the values of the backups)
+  jq -e '.initContainers[0].image == "docker.io/library/mariadb:lts"' <<< "$(backup_spec -f "${fxa}" --set backup.enabled=true --set fxa.database.backend=mariadb)" > /dev/null \
+    || fail "the accounts' backups on MariaDB: not its image"
+  pod=$(backup_spec -f "${CHART_DIR}/ci/fxa-external-values.yaml" --set backup.enabled=true --set backup.keep=3 --set backup.schedule='5 23 * * *' --set backup.resources.requests.cpu=5m)
+  [[ "$(jq -r '.initContainers[0] | [(.env[] | select(.name | test("^(BACKUP_KEEP|BACKUP_TIME|FXA_DB_HOST|FXA_DB_PORT|FXA_DB_USER)$")) | "\(.name)=\(.value)"), .resources.requests.cpu] | join(" ")' <<< "${pod}")" \
+    == "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq -r --arg f "${f}" '.[] | select(.kind == "Deployment" and .metadata.name == "\($f)-fxa-auth")
+      | .spec.template.spec.containers[0].env | map(select(.name | test("^MYSQL_(HOST|PORT|USERNAME)$")) | .value) | "BACKUP_KEEP=3 BACKUP_TIME=23:05 FXA_DB_HOST=\(.[0]) FXA_DB_PORT=\(.[1]) FXA_DB_USER=\(.[2]) 5m"')" ]] \
+    || fail "the accounts' backups with your own server, backup.keep, schedule, resources: $(jq -c '.initContainers[0] | [.env, .resources]' <<< "${pod}")"
+  # (none without the accounts: chart 0.1.0's CronJob)
+  jq -e '(has("initContainers") | not) and ([.containers[].name] == ["backup"])' <<< "$(backup_spec -f "${fxa}" --set backup.enabled=true --set fxa.enabled=false)" > /dev/null \
+    || fail "backup.enabled without the accounts: not the Sync scope alone"
+  check "backups with the accounts: init container backup-accounts (fxaDbImage, compose's backup-fxa env, backup.sh now, a failure recorded) before the Sync scope in ${f}-backup; your own server as its user; none without the accounts"
 }
 
 # the admin UI with the accounts: compose's ffs-admin block of docker-compose.fxa.yml (and the
@@ -520,10 +603,13 @@ fxa_objects_lint() {
     || fail "the NetworkPolicies: $(fxa_policies)"
   [[ "$(fxa_policies --set admin.enabled=false | jq -c '[.[].from[1]]')" == '[["fxa-auth","fxa-content","fxa-profile"],["fxa-auth","fxa-profile"]]' ]] \
     || fail "admin.enabled=false: the admin UI still allowed to fxa-redis or fxa-db"
+  # (the backups: the accounts' dump, as root, from the backup CronJob's pods)
+  [[ "$(fxa_policies --set backup.enabled=true | jq -c '[.[].from[1]]')" == '[["fxa-auth","fxa-content","fxa-profile","admin"],["fxa-auth","fxa-profile","admin","backup"]]' ]] \
+    || fail "backup.enabled: the backups not allowed to fxa-db (alone): $(fxa_policies --set backup.enabled=true | jq -c '[.[].from[1]]')"
   [[ "$(fxa_policies --set fxa.networkPolicy.enabled=false)" == '[]' ]] || fail "fxa.networkPolicy.enabled=false: NetworkPolicies rendered"
   [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq -r '[.[] | select(.kind == "NetworkPolicy") | .metadata.name] | join(" ")')" == \
     test-release-firefox-sync-fxa-redis ]] || fail "your own accounts server: not the fxa-redis NetworkPolicy alone"
-  check "fxa.networkPolicy: fxa-redis from fxa-auth, fxa-content, fxa-profile; fxa-db from fxa-auth, fxa-profile; both from the admin UI (when on); none with it off, no fxa-db one with your own server"
+  check "fxa.networkPolicy: fxa-redis from fxa-auth, fxa-content, fxa-profile; fxa-db from fxa-auth, fxa-profile; both from the admin UI (when on), fxa-db from the backups (when on); none with it off, no fxa-db one with your own server"
 
   # the scripts of config/fxa, byte for byte, in the ConfigMap
   local file
@@ -722,6 +808,9 @@ fxa_e2e() {
   # the fixtures' images (tests/helm/traefik.yaml, tests/helm/fxa-fixtures.yaml)
   TRAEFIK_IMAGE=docker.io/library/traefik:v3
   MAILPIT_IMAGE=docker.io/axllent/mailpit:latest
+  # the pairing server's (fxa.pairing.image empty: <image.repository>:fxa-channelserver-latest)
+  PAIRING_IMAGE="${repository}:fxa-channelserver-latest"
+  BROWSER_IMAGE="ffs-fxa-browser:src-$(cd "${SCRIPT_DIR}/browser" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
   POD_SELECTOR="app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-auth"
 
   # the accounts image is about 5 GB in the node, on top of the Sync server's images
@@ -751,12 +840,16 @@ fxa_e2e() {
     "${CHART_DIR}/values.yaml" "${backend}") || fail "no database.image.${backend} in values.yaml"
   # (and the test fixtures': the Ingress controller, the mail catcher)
   local fixtures_images="${TRAEFIK_IMAGE} ${MAILPIT_IMAGE}"
-  for image in "${SYNC_IMAGE}" "${fxa_image}" "${db_image}" "${redis_image}" $([[ ${sync_db_image} == "${db_image}" ]] || echo "${sync_db_image}") ${fixtures_images}; do
+  for image in "${SYNC_IMAGE}" "${fxa_image}" "${PAIRING_IMAGE}" "${db_image}" "${redis_image}" $([[ ${sync_db_image} == "${db_image}" ]] || echo "${sync_db_image}") ${fixtures_images}; do
     docker image inspect "${image}" > /dev/null 2>&1 || docker pull -q "${image}" > /dev/null || fail "${image} not pulled"
     docker save --platform "${platform}" "${image}" | docker exec -i "${CLUSTER}-control-plane" ctr --namespace=k8s.io images import --digests \
       --snapshotter=overlayfs --local --discard-unpacked-layers - > /dev/null || fail "${image} not loaded"
   done
-  check "loaded from the host's docker: ${SYNC_IMAGE} ${fxa_image} ${db_image} ${redis_image}$([[ ${sync_db_image} == "${db_image}" ]] || echo " ${sync_db_image}") ${fixtures_images}"
+  # the tests in Firefox's image (tests/browser), tagged by its files as tests/e2e-fxa.sh does
+  docker image inspect "${BROWSER_IMAGE}" > /dev/null 2>&1 || docker build -q -t "${BROWSER_IMAGE}" "${SCRIPT_DIR}/browser" > /dev/null \
+    || fail "the Firefox test image (tests/browser) not built"
+  kind load docker-image --name "${CLUSTER}" "${BROWSER_IMAGE}" > /dev/null || fail "${BROWSER_IMAGE} not loaded"
+  check "loaded from the host's docker: ${SYNC_IMAGE} ${fxa_image} ${PAIRING_IMAGE} ${BROWSER_IMAGE} ${db_image} ${redis_image}$([[ ${sync_db_image} == "${db_image}" ]] || echo " ${sync_db_image}") ${fixtures_images}"
   fxa_fixtures
   # the user of fxa-redis' pod: the image's redis
   [[ "$(docker run --rm "${redis_image}" id redis)" == "uid=999(redis) gid=1000(redis)"* ]] \
@@ -974,6 +1067,21 @@ fxa_e2e() {
   done
   check "Ingresses ${FULL}-fxa-content (accounts.fxa.test /: 3030), -fxa-auth (api.fxa.test /: 9000, /v1/account/create Exact: ${FULL}-admin 8081, the sign-up gate), -fxa-profile (profile.fxa.test /: 1111, /img/: 1114), each with fxa-test-tls"
 
+  # the pairing server (fxa.pairing.enabled), as nobody on a read-only root: two devices
+  # exchange a message over its websockets through the Ingress (tests/e2e-fxa.sh's
+  # test_fxa_pairing.py, in Firefox's test image), content gives its URL to Firefox
+  # (test_fxa_flow.py's test_client_configuration above, with FXA_PAIRING_URL)
+  local pairing="deploy/${FULL}-fxa-pairing"
+  got=$(kubectl exec "${pairing}" -- bash -c 'id -u; id -g; touch /ffs-write-test 2>&1 || true' | paste -sd' ' -)
+  [[ "${got}" == "65534 65534 "*"Read-only file system"* ]] || fail "the pairing server's user and root: ${got}"
+  ingress_is "${FULL}-fxa-pairing" traefik pairing.fxa.test "${FULL}-fxa-pairing" 8000
+  [[ "$(kubectl get ingress "${FULL}-fxa-pairing" -o json | jq -c '.spec.tls')" == '[{"hosts":["pairing.fxa.test"],"secretName":"fxa-test-tls"}]' ]] \
+    || fail "Ingress ${FULL}-fxa-pairing: tls $(kubectl get ingress "${FULL}-fxa-pairing" -o json | jq -c '.spec.tls')"
+  fxa_job pairing "${BROWSER_IMAGE}" /tests/test_fxa_pairing.py || fail "test_fxa_pairing.py failed"
+  got=$(kubectl logs job/fxa-test-pairing | tail -1)
+  [[ "${got}" =~ ^1\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_pairing.py: ${got}"
+  check "pairing: ${FULL}-fxa-pairing as 65534 on a read-only root, its Ingress (pairing.fxa.test /: 8000, fxa-test-tls), test_fxa_pairing.py through it: ${got}"
+
   # the client's own address through the Ingress (Review Focus 3): alice's wrong passwords
   # from one pod block that pod, not alice from another one
   local alice=alice@example.com alice_pw token
@@ -1107,6 +1215,67 @@ PY
   kubectl logs job/fxa-test-admin | grep '^SKIPPED' | grep -qv 'FXA_ACCOUNT_EVENTS is true' && fail "test_fxa_admin.py skipped: $(kubectl logs job/fxa-test-admin | grep '^SKIPPED')"
   check "test_fxa_admin.py (the gate, sign-in with the accounts, max accounts, health, certificates, security history): ${got}"
 
+  # the backups with the accounts (backup.enabled): one run of the CronJob, the accounts
+  # first (its init container, allowed into fxa-db by fxa.networkPolicy), then Sync, which
+  # records both; the five dumps pass gzip -t; fxa's restored as HELM.md#restoring says
+  # (its restore(), in the container backup-accounts) into a scratch database, as
+  # tests/e2e-fxa.sh: the same accounts and procedures; the run on the admin UI's Backups card
+  kubectl create job --from="cronjob/${FULL}-backup" backup-now-1 > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
+  wait_job backup-now-1 900 > /dev/null || fail "the backup-now-1 Job did not complete: $(kubectl logs job/backup-now-1 --all-containers 2>&1 | tail -20)"
+  got=$(kubectl logs job/backup-now-1 -c backup-accounts)
+  [[ "${got}" =~ backup\ accounts:\ ok:\ /backups/accounts/([0-9]{8}T[0-9]{6}Z), ]] || fail "backup-now-1: the accounts not dumped: ${got}"
+  local stamp=${BASH_REMATCH[1]}
+  kubectl logs job/backup-now-1 -c backup | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now-1: Sync not dumped: $(kubectl logs job/backup-now-1 -c backup)"
+  check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: complete, the accounts dumped first (backup-accounts, ${stamp}), then Sync"
+  # (HELM.md#restoring's restore() and its command of the accounts, as they are there)
+  local helm_md="${REPO_ROOT}/HELM.md" restore_fn restore_cmd
+  restore_fn=$(sed -n '/^    restore() {/,/^    }$/p' "${helm_md}")
+  restore_cmd=$(sed -n "/^    restore restore-accounts 'run=/,/backup-accounts$/p" "${helm_md}")
+  [[ -n "${restore_fn}" && -n "${restore_cmd}" ]] || fail "HELM.md#restoring: no restore() or no restore restore-accounts"
+  eval "${restore_fn}"
+  # shellcheck disable=SC2034 # (HELM.md's restore() reads it)
+  local F=${FULL}
+  got=$(restore restore-ls "cd /backups/accounts/${stamp} && for f in *.sql.gz; do gzip -t \$f && echo \$f; done" backup-accounts 2>&1 | grep '\.sql\.gz$' | LC_ALL=C sort | paste -sd' ' -)
+  [[ "${got}" == "ffs.sql.gz fxa.sql.gz fxa_oauth.sql.gz fxa_profile.sql.gz pushbox.sql.gz" ]] || fail "accounts/${stamp}: ${got}"
+  check "accounts/${stamp}: the five databases (ffs fxa fxa_oauth fxa_profile pushbox), each passing gzip -t"
+  # (the accounts' databases as root, in the server's own pod)
+  fxa_db_sql() { kubectl exec "${FULL}-fxa-db-0" -- sh -c 'MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" "$(command -v mariadb || command -v mysql)" -uroot -N -B -e "$1"' sh "$1"; }
+  local accounts
+  accounts=$(fxa_db_sql "SELECT COUNT(*) FROM fxa.accounts")
+  [[ "${accounts}" =~ ^[1-9][0-9]*$ ]] || fail "no accounts to back up: ${accounts}"
+  routines() { fxa_db_sql "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '$1'"; }
+  # (into the scratch database, fxa alone; MariaDB's client with MariaDB, as HELM.md says)
+  restore_cmd=$(sed -e 's/for db in fxa fxa_oauth fxa_profile pushbox ffs; do/for db in fxa; do/' -e 's/CREATE DATABASE IF NOT EXISTS \$db/CREATE DATABASE IF NOT EXISTS ffs_restore_test/' \
+    -e 's/ \$db || exit 1$/ ffs_restore_test || exit 1/' <<< "${restore_cmd}")
+  [[ ${backend} == mariadb ]] && restore_cmd=${restore_cmd//mysql -h/mariadb -h}
+  [[ "$(grep -c ffs_restore_test <<< "${restore_cmd}")" == 2 ]] || fail "HELM.md's restore of the accounts not made a scratch one: ${restore_cmd}"
+  # shellcheck disable=SC2034 # (the command of HELM.md reads it)
+  local accounts_run=${stamp}
+  eval "${restore_cmd}" > /dev/null || fail "HELM.md's restore of the accounts (into ffs_restore_test) failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
+  [[ "$(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts")" == "${accounts}" ]] || fail "ffs_restore_test.accounts: $(fxa_db_sql "SELECT COUNT(*) FROM ffs_restore_test.accounts"), fxa.accounts ${accounts}"
+  [[ "$(routines ffs_restore_test)" == "$(routines fxa)" ]] || fail "ffs_restore_test's procedures: $(routines ffs_restore_test), fxa's $(routines fxa)"
+  fxa_db_sql "DROP DATABASE ffs_restore_test" > /dev/null
+  kubectl delete job restore-ls restore-accounts --wait=true > /dev/null
+  check "fxa.sql.gz restored with HELM.md#restoring's restore() (backup-accounts, as root) into ffs_restore_test: the same ${accounts} accounts and $(routines fxa) procedures as fxa; dropped"
+  fxa_client_pod backups-card
+  got=$(fxa_py backups-card <<'PY'
+import re, time
+import test_fxa_admin as t
+admin, row = t.Admin(), ""
+for _ in range(60):
+    found = re.search(r'<p class="hint" data-scope="accounts">(.*?)</p>', admin.page(), re.S)
+    row = re.sub(r"<[^>]+>", "", found.group(1)) if found else ""
+    if found and '<span class="ok">ok</span>' in found.group(1):
+        break
+    time.sleep(2)
+print(row)
+PY
+) || fail "the admin UI's Backups card: ${got}"
+  [[ "${got}" == "Last backup of the "*", ok." ]] || fail "the admin UI's Backups card, scope accounts: '${got}'"
+  kubectl delete pod backups-card --wait=true > /dev/null
+  kubectl delete job backup-now-1 --wait=true > /dev/null
+  check "the admin UI's Backups card: a row of the scope accounts (${got})"
+
   # the admin UI off: the auth Ingress without the gate, the database still refuses what
   # the policy does not allow (straight to auth, and through the Ingress)
   helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set admin.enabled=false --wait --timeout 15m > /dev/null || fail "helm upgrade with admin.enabled=false failed"
@@ -1218,14 +1387,15 @@ fxa_fixtures() {
 
 # fxa_test_spec <image> <command (a JSON array)> [NAME=value]...: the pod spec of the tests,
 # as tests/e2e-fxa.sh's runs (as root, /tests, the CA at /caddy-ca, the state at /state, their
-# env with this release's hosts), plus the env given (over the same names)
+# env with this release's hosts, a /dev/shm of 1 GiB: Firefox's --shm-size 1g), plus the env
+# given (over the same names)
 fxa_test_spec() {
   local image=$1 command=$2 extra
   shift 2
   extra=$( (($#)) && printf '%s\n' "$@" | jq -Rn '[inputs | {name: sub("=.*"; ""), value: sub("^[^=]*="; "")}]' || echo '[]')
   jq -n --arg image "${image}" --argjson command "${command}" --argjson extra "${extra}" --arg full "${FULL}" --arg secret "${SECRET}" '
     ([{name: "FXA_CONTENT_URL", value: "https://accounts.fxa.test"}, {name: "FXA_AUTH_URL", value: "https://api.fxa.test"},
-      {name: "FXA_PROFILE_URL", value: "https://profile.fxa.test"}, {name: "FXA_PAIRING_URL", value: ""},
+      {name: "FXA_PROFILE_URL", value: "https://profile.fxa.test"}, {name: "FXA_PAIRING_URL", value: "wss://pairing.fxa.test"},
       {name: "SYNC_PUBLIC_URL", value: "https://sync.fxa.test"}, {name: "MAILPIT_URL", value: "http://mailpit:8025"},
       {name: "ADMIN_URL", value: "https://admin.fxa.test"},
       {name: "ADMIN_PASSWORD", valueFrom: {secretKeyRef: {name: $secret, key: "ADMIN_PASSWORD"}}},
@@ -1235,9 +1405,10 @@ fxa_test_spec() {
     | {restartPolicy: "Never", securityContext: {runAsUser: 0},
       containers: [{name: "test", image: $image, imagePullPolicy: "Never", command: $command, workingDir: "/app", env: .,
         volumeMounts: [{name: "tests", mountPath: "/tests", readOnly: true}, {name: "ca", mountPath: "/caddy-ca", readOnly: true},
-          {name: "state", mountPath: "/state"}]}],
+          {name: "state", mountPath: "/state"}, {name: "shm", mountPath: "/dev/shm"}]}],
       volumes: [{name: "tests", configMap: {name: "ffs-fxa-tests"}}, {name: "ca", configMap: {name: "fxa-test-ca"}},
-        {name: "state", persistentVolumeClaim: {claimName: "fxa-test-state"}}]}'
+        {name: "state", persistentVolumeClaim: {claimName: "fxa-test-state"}},
+        {name: "shm", emptyDir: {medium: "Memory", sizeLimit: "1Gi"}}]}'
 }
 
 # fxa_job <name> <image> <pytest args> [NAME=value]...: pytest with those arguments (quoted as
