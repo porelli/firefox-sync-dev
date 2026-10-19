@@ -44,8 +44,8 @@ database:
   bundled: true
 
   # The image of each backend's database server, also the client of the backups (and of the
-  # wait for the server): compose's images (SYNC_MYSQL_IMAGE for MySQL, POSTGRES_IMAGE for
-  # PostgreSQL). MariaDB's and MySQL's lts move to their next long-term major by themselves:
+  # wait for the server): compose's images (SYNC_MARIADB_IMAGE, SYNC_MYSQL_IMAGE,
+  # SYNC_POSTGRES_IMAGE). MariaDB's and MySQL's lts move to their next long-term major by themselves:
   # the server upgrades the data at its next start, with no way back but a backup; pin a
   # major (e.g. docker.io/library/mysql:9) to choose when (docs/upgrading.md#database-majors). It pins the
   # major of the install for PostgreSQL: the official PostgreSQL image keeps its data at
@@ -71,8 +71,9 @@ database:
   # backup first, there is no way back (docs/upgrading.md#database-majors). Never PostgreSQL, which cannot
   allowMajorUpgrade: false
 
-  # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),
-  # no superuser, the owner of the Sync tables (docs/reference/database-users.md#postgresql). Not used with your own server,
+  # PostgreSQL in the bundled server: the Sync server's own role (compose's
+  # SYNC_POSTGRES_APP_USER), no superuser, the owner of the Sync tables
+  # (docs/reference/database-users.md#postgresql). Not used with your own server,
   # where POSTGRES_USER (external.postgresUser) is the owner
   postgresSyncUser: syncserver_app
 
@@ -91,24 +92,24 @@ database:
   # TOKENSERVER_DB_PASSWORD and STORAGE_DB_PASSWORD (mariadb, mysql) or POSTGRES_PASSWORD
   # (postgres: the password of postgresUser), ADMIN_DB_PASSWORD (the admin UI's users)
   external:
-    # compose's MARIADB_TOKENSERVER_SERVER or POSTGRES_SERVER (required): a host name or an
+    # compose's SYNC_TOKENSERVER_DB_HOST or SYNC_POSTGRES_HOST (required): a host name or an
     # IPv4 address the pods reach (plain connections, docs/databases.md#server-requirements)
     host: ""
     # its port (1-65535, a number or quoted); empty for 3306 (mariadb, mysql) or 5432 (postgres)
     port: ""
-    # mariadb, mysql: the storage database on another server (MARIADB_SYNCSTORAGE_SERVER,
-    # _SERVER_PORT); empty: host and port above
+    # mariadb, mysql: the storage database on another server (SYNC_STORAGE_DB_HOST,
+    # _PORT); empty: host and port above
     storageHost: ""
     storagePort: ""
-    # mariadb, mysql: MARIADB_TOKENSERVER_DATABASE, _USER, MARIADB_SYNCSTORAGE_DATABASE, _USER
+    # mariadb, mysql: SYNC_TOKENSERVER_DB_NAME, _USER, SYNC_STORAGE_DB_NAME, _USER
     tokenserverDatabase: tokenserver
     tokenserverUser: tokenserver
     storageDatabase: syncstorage
     storageUser: syncstorage
-    # postgres: POSTGRES_DATABASE, POSTGRES_USER (the owner of that database, no superuser)
+    # postgres: SYNC_POSTGRES_NAME, SYNC_POSTGRES_USER (the owner of that database, no superuser)
     postgresDatabase: syncserver
     postgresUser: syncserver
-    # mariadb, mysql: MARIADB_TLS_VERIFY of the init container and the backups, whether their
+    # mariadb, mysql: SYNC_DB_TLS_VERIFY of the init container and the backups, whether their
     # client checks the server's certificate: false, as prepare_environment.sh writes for your
     # own server (MySQL's own certificate is self-signed, and the CA of a managed service is
     # not in the images: ERROR 2026). true only with a certificate from a CA the images
