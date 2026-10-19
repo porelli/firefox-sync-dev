@@ -36,7 +36,7 @@ env:
   SERVICE_NAME: syncstorage-rs
   SERVICE_REPOSITORY_SERVER: github.com
   SERVICE_REPOSITORY_NAME: mozilla-services/syncstorage-rs
-  SERVICE_CHANGELOG_PATH: CHANGELOG.md
+  SERVICE_CHANGELOG_PATH: CHANGELOG.md # upstream's file (check-links: ignore)
   # specific for this component (image tags used to name the GitHub release)
   IMAGE_TAGS: mysql
   # bump when the way the app image is built changes (build args, platforms, ...):

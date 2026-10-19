@@ -175,11 +175,11 @@ Some tests read commands from the docs and check them word for word, so a page a
 With `--code` it also checks the doc references of the other tracked text files (`docs/....md#anchor`, or a bare `NAME.md`), such as the admin UI's help links, the scripts' messages and the chart's NOTES. With `--settings` it checks that every setting of [.env-example](/.env-example) and every top-level key of [values.yaml](/charts/firefox-sync/values.yaml) appears in [Settings](../reference/settings.md).
 
 ```bash
-python3 -I tests/check_markdown_links.py --code
+python3 -I tests/check_markdown_links.py --code --settings
 python3 -I tests/test_check_markdown_links.py
 ```
 
-[docs.yml](/.github/workflows/docs.yml) runs both on every push.
+[docs.yml](/.github/workflows/docs.yml) runs both, with `--code --settings`, on every push.
 
 ## The screenshot demo
 
