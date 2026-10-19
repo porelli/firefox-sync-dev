@@ -9,7 +9,9 @@ ContainerName=firefox-sync-fxa-auth
 Network=firefox-sync-network.network
 PodmanArgs=--network-alias=fxa-auth
 # Mozilla publishes amd64 images only (emulated elsewhere), see FXA.md for arm64 images
-PodmanArgs=--arch=%FXA_ARCH%
+# --arch only for another architecture than this host's (Mozilla's amd64 image, emulated): with it
+# podman 4 pulls the tag from the registry at every start, over the local image
+PodmanArgs=%FXA_ARCH_ARGS%
 Environment="MYSQL_HOST=%FXA_MYSQL_HOST%"
 Environment="MYSQL_PORT=%FXA_MYSQL_PORT%"
 Environment="MYSQL_USERNAME=%FXA_MYSQL_USER%"

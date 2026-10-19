@@ -181,7 +181,12 @@ fxa_image_has() {
     case "${image}" in
         mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*) rc=1 ;;
         *)
-            if patches=$(fxa_image_patches_local "${image}"); then
+            # Quadlets of another architecture (--arch): the units pull the registry's at every
+            # start, so that one is what runs
+            if [ "${DEPLOY_METHOD:-}" = quadlets ] && [ "$(env_plain FXA_ARCH)" != "$(host_arch)" ] \
+                && patches=$(fxa_image_patches_remote "${image}"); then
+                has_fxa_patch "${pr}" "${patches}" && rc=0 || rc=1
+            elif patches=$(fxa_image_patches_local "${image}"); then
                 rc=1
                 if has_fxa_patch "${pr}" "${patches}"; then
                     rc=0
@@ -289,6 +294,8 @@ fxa_mysql_image_check() {
     echo "  (on a new database only: MySQL 8 cannot open MySQL 9's data), see FXA.md#mysql-or-mariadb"
     echo ""
 }
+# this host's architecture as the images name it
+host_arch() { case "$(uname -m)" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac; }
 # the accounts of this install self-hosted (prepare_environment.sh wrote their passwords)
 fxa_installed() {
     local pw
@@ -995,7 +1002,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     done
     # the accounts images come from the same registry as the sync images, for this host's architecture
     FXA_REGISTRY=$(grep '^IMAGE_REPOSITORY=' ${SCRIPT_DIR}/.env | cut -d= -f2)
-    case "$(uname -m)" in aarch64|arm64) FXA_ARCH=arm64 ;; *) FXA_ARCH=amd64 ;; esac
+    FXA_ARCH=$(host_arch)
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_IMAGE=.*|FXA_IMAGE=${FXA_REGISTRY}|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${FXA_REGISTRY}:fxa-channelserver-latest|"
     apply_sed ${SCRIPT_DIR}/.env "s|^FXA_ARCH=.*|FXA_ARCH=${FXA_ARCH}|"
@@ -1200,6 +1207,12 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     # fxa-db's extra options, none when not set
     FXA_MYSQL_ARGS=$(env_plain FXA_MYSQL_ARGS)
     export FXA_MYSQL_ARGS
+    # the accounts' units: --arch only for another architecture than this host's (an emulated
+    # image). With it podman 4 pulls the tag from the registry at every start, over the local
+    # image: the units would not run the image whose label chose FXA_MYSQL_IMAGE above
+    FXA_ARCH_ARGS=""
+    [ "$(env_plain FXA_ARCH)" = "$(host_arch)" ] || FXA_ARCH_ARGS="--arch=$(env_plain FXA_ARCH)"
+    export FXA_ARCH_ARGS
 
     # the database containers: the .env names (syncstorage_db) are compose's, here the
     # containers are reached by their names. Your own server: none of them
@@ -1271,7 +1284,8 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
                 rm -f "${QUADLET_DIR}/${filename}"
                 continue
             fi
-            render_quadlet "${file}" | drop_deps > "${target_dir}/${filename}"
+            # (an empty PodmanArgs= would reset the ones before it, the network aliases)
+            render_quadlet "${file}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${target_dir}/${filename}"
             [ "${PIPESTATUS[0]}" = 0 ] || exit 1
             echo "  ✓ ${filename}"
         done
