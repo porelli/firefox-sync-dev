@@ -18,9 +18,25 @@ on:
     branches:
       - main
       - '**'
+    # docs only: no image to rebuild, but docs/backups.md and docs/upgrading.md, whose commands
+    # tests/e2e.sh and tests/podman.sh run (paths-ignore cannot negate, so the pages are listed)
     paths-ignore:
       - '**/README.md'
-      - '**/PODMAN.md'
+      - 'docs/admin/**'
+      - 'docs/install/**'
+      - 'docs/development/**'
+      - 'docs/reference/**'
+      - 'docs/images/**'
+      - 'docs/accounts.md'
+      - 'docs/databases.md'
+      - 'docs/firefox.md'
+      - 'docs/limits.md'
+      - 'docs/migrating.md'
+      - 'docs/reverse-proxy.md'
+      - 'docs/troubleshooting.md'
+      - '.github/workflows/docs.yml'
+      - 'tests/check_markdown_links.py'
+      - 'tests/test_check_markdown_links.py'
 
 # one run at a time per branch: a branch never cancels or waits for main's runs
 concurrency:

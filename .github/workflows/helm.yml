@@ -35,6 +35,8 @@ on:
       - db/**
       - config/backup/**
       - admin/**
+      # tests/helm.sh runs the restore commands of docs/backups.md
+      - docs/backups.md
       - .github/workflows/helm.yml
       - .github/scripts/chart-version.sh
       - .github/scripts/chart-unpublished.sh
