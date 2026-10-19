@@ -394,6 +394,44 @@ docs/upgrading.md#database-majors. Another server (a backend switch) is not a ma
 {{- end }}
 
 {{/*
+database.backend switched on a release whose bundled Sync database exists: the render fails
+before anything is applied. MariaDB and MySQL share the StatefulSets and their data claim
+(the other server would start on the data), PostgreSQL has its own (it would start empty, and
+the old ones would go). Each StatefulSet the release may have is read with lookup (nothing
+where it returns nothing: a fresh install, helm template, a GitOps render); its server is the
+one its db container's env is for (MARIADB_*, MYSQL_*, POSTGRES_*), else its image's name
+*/}}
+{{- define "firefox-sync.checkDbBackend" -}}
+{{- if .Values.database.bundled }}
+{{- $root := . }}
+{{- $backend := .Values.database.backend }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- range list "tokenserver-db" "storage-db" "postgres" }}
+{{- $name := printf "%s-%s" $fullname . }}
+{{- with lookup "apps/v1" "StatefulSet" $root.Release.Namespace $name }}
+{{- $running := "" }}
+{{- range .spec.template.spec.containers }}
+{{- if eq .name "db" }}
+{{- range .env | default list }}
+{{- if eq .name "MARIADB_DATABASE" }}{{ $running = "mariadb" }}
+{{- else if eq .name "MYSQL_DATABASE" }}{{ $running = "mysql" }}
+{{- else if eq .name "POSTGRES_DB" }}{{ $running = "postgres" }}
+{{- end }}
+{{- end }}
+{{- if not $running }}
+{{- $running = first (splitList ":" (include "firefox-sync.imageNameTag" (.image | default ""))) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and (has $running (list "mariadb" "mysql" "postgres")) (ne $running $backend) }}
+{{- fail (printf "firefox-sync: database.backend is %s but the bundled Sync database %s runs %s; switching needs a dump and restore (MariaDB or MySQL to PostgreSQL, or back: start fresh), see docs/migrating.md#moving-the-database" $backend $name $running) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 A new database.image.<backend> on a release whose bundled database runs: the render fails
 before anything is applied when it would move the data to another major. MariaDB and MySQL
 upgrade their data in place at the first start on a newer major, with no way back but a

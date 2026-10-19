@@ -179,6 +179,14 @@ TPL
     fail "database.allowMajorUpgrade=yes not refused by the schema"
   fi
   check "checkDbMajor: run by the databases, reads the running StatefulSet; dbMajorChange on 13 pairs; allowMajorUpgrade a boolean"
+  # the guard of a backend switch (MariaDB and MySQL on each other's data, PostgreSQL empty):
+  # run before checkDbMajor, reads each StatefulSet the release may have (e2e: the refusal)
+  grep -F -x -A1 '{{- include "firefox-sync.checkDbBackend" . }}' "${CHART_DIR}/templates/databases.yaml" | grep -q checkDbMajor \
+    || fail "databases.yaml does not run checkDbBackend before checkDbMajor"
+  grep -q 'range list "tokenserver-db" "storage-db" "postgres"' "${CHART_DIR}/templates/_helpers.tpl" \
+    && grep -q 'firefox-sync: database.backend is %s but the bundled Sync database %s runs %s; switching needs a dump and restore.*docs/migrating.md#moving-the-database' "${CHART_DIR}/templates/_helpers.tpl" \
+    || fail "checkDbBackend does not read the three StatefulSets or say where the switch is documented"
+  check "checkDbBackend: run by the databases before checkDbMajor, reads the tokenserver-db, storage-db and postgres StatefulSets"
   # the bundled PostgreSQL: the db-major init container (db/postgres/keep-major.sh) with the
   # server's image and its data, before the server
   pg=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=postgres --show-only templates/databases.yaml | manifests)
@@ -1030,6 +1038,18 @@ e2e() {
     [[ "$(helm history "${REL}" -o json | jq length) $(sts_image "${db_sts}")" == "${revision} ${running}" ]] \
       || fail "the refused upgrade changed the release or the StatefulSet"
     check "helm upgrade from ${running} to ${other} refused at render time (also allowMajorUpgrade=true for PostgreSQL), nothing applied"
+    # another server on the same data (MariaDB and MySQL share the StatefulSets), or an empty
+    # one (PostgreSQL's own): refused at render time too (checkDbBackend), nothing applied
+    local switch=mysql
+    [[ ${backend} == mysql ]] && switch=mariadb
+    if refused=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.backend="${switch}" 2>&1); then
+      fail "helm upgrade to database.backend=${switch} on ${backend} not refused"
+    fi
+    grep -q "firefox-sync: database.backend is ${switch} but the bundled Sync database ${db_sts} runs ${backend}; switching needs a dump and restore" <<< "${refused}" \
+      || fail "the backend refusal does not say what runs: ${refused}"
+    [[ "$(helm history "${REL}" -o json | jq length) $(sts_image "${db_sts}")" == "${revision} ${running}" ]] \
+      || fail "the refused backend switch changed the release or the StatefulSet"
+    check "helm upgrade from database.backend=${backend} to ${switch} refused at render time, nothing applied"
     if [[ ${backend} == postgres ]]; then
       # a pin to another major goes through the render (from latest, not comparable), the
       # db-major init container then refuses the data and says what to pin; back on the
