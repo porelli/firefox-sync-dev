@@ -37,7 +37,7 @@ Mozilla does not support self-hosting its accounts service, and changes it every
 
 The keys are kept in the `fxa-keys` volume. Don't lose it: without it every session becomes invalid. Back it up with the databases, see [Backups](backups.md#what-to-keep).
 
-<!-- helm-fxa: accounts values go here -->
+With the Helm chart there is no `prepare_environment.sh`: the values do it, see [Self-hosted accounts](install/helm.md#self-hosted-accounts). The keys are on a PVC there: see [The signing keys](install/helm.md#the-signing-keys).
 
 ### Set up by hand
 
@@ -76,6 +76,7 @@ To choose MariaDB:
   ```
 
   With Quadlets, `prepare_environment.sh` installs `config/quadlet/fxa/mariadb/` in place of the MySQL unit.
+- With the Helm chart: `fxa.database.backend: mariadb`, see [MySQL or MariaDB](install/helm.md#mysql-or-mariadb).
 
 Choose before the first start. MariaDB gets its own volume, `fxa-db-mariadb` (Quadlets: `firefox-sync-fxa-db-mariadb`), because it cannot open MySQL's data files. Switching an existing install leaves the MySQL data in `fxa-db` and starts with no accounts. Moving the data takes a dump and a reload, which is not tested here.
 

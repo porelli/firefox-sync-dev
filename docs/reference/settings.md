@@ -18,8 +18,8 @@ How to read the tables:
 | `SYNC_MASTER_SECRET` | Secret: `SYNC_MASTER_SECRET` | generated | signs the Sync tokens. A new one signs every Firefox out | |
 | `SYNC_METRICS_HASH_SECRET` | Secret: `METRICS_HASH_SECRET` | generated | the key of the hash of the account ids in the metrics | `METRICS_HASH_SECRET` |
 | `SYNC_EXPORT_PORT` | – (the Service, port `syncstorage.service.port`, `8000`) | `127.0.0.1:5000` | where the host publishes the Sync server for your reverse proxy: `[address:]port`. A port alone in `.env` publishes it on every interface: [Host names and ports](../reverse-proxy.md#host-names-and-ports) | `CONTAINER_EXPORT_PORT` |
-| `FXA_OAUTH_SERVER_URL` | `fxa.oauthServerUrl` | `https://oauth.accounts.firefox.com/v1` | where the tokenserver checks the sign-in tokens. Self-hosted accounts: `http://fxa-auth:9000/v1` | |
-| `FXA_EMAIL_DOMAIN` | `fxa.emailDomain` | `api.accounts.firefox.com` | the tokenserver keeps each account as `<uid>@FXA_EMAIL_DOMAIN`. Self-hosted accounts: the host of `FXA_AUTH_URL`. A new value makes every account a new one | |
+| `FXA_OAUTH_SERVER_URL` | `fxa.oauthServerUrl` | `https://oauth.accounts.firefox.com/v1` | where the tokenserver checks the sign-in tokens. Self-hosted accounts: `http://fxa-auth:9000/v1` (Helm: the chart sets it with `fxa.enabled`) | |
+| `FXA_EMAIL_DOMAIN` | `fxa.emailDomain` | `api.accounts.firefox.com` | the tokenserver keeps each account as `<uid>@FXA_EMAIL_DOMAIN`. Self-hosted accounts: the host of `FXA_AUTH_URL` (Helm: set by the chart). A new value makes every account a new one | |
 | `COMPOSE_FILE` | – | unset: `docker-compose.yml` | the compose files, separated by `:`: add `docker-compose.sync-postgres.yml`, `docker-compose.sync-mysql.yml`, `docker-compose.fxa.yml`, `docker-compose.fxa-mariadb.yml` as needed | |
 | `COMPOSE_PROFILES` | `admin.enabled`, `backup.enabled` | unset: none | the optional services, comma-separated: `admin`, `backup`, `pairing` (self-hosted accounts) | |
 
@@ -121,7 +121,7 @@ What it does: [Admin UI](../admin/README.md).
 | `ADMIN_ERROR_RATE_MIN_ERRORS` | `admin.errorRateMinErrors` | `20` | the fewest errors for that alert | |
 | `ADMIN_DB_GROWTH_MB` | `admin.dbGrowthMb` | `1024` | an alert when a database grows more than this many MB in a day (`0`: never) | |
 | `ADMIN_DB_GROWTH_FACTOR` | `admin.dbGrowthFactor` | `5` | an alert when a database grows more than this many times its usual daily growth, from 100 MB and 3 days of history (`0`: never): [Errors and growth](../admin/monitoring.md#errors-and-growth) | |
-| `ADMIN_GATE_EXPORT_PORT` | – | `127.0.0.1:8091` | self-hosted accounts: where the host publishes the sign-up gate, for `POST /v1/account/create` of `FXA_AUTH_URL`: [Reverse proxy](../reverse-proxy.md#host-names-and-ports) | |
+| `ADMIN_GATE_EXPORT_PORT` | – (the Service `<release>-firefox-sync-admin`, port 8081) | `127.0.0.1:8091` | self-hosted accounts: where the host publishes the sign-up gate, for `POST /v1/account/create` of `FXA_AUTH_URL`: [Reverse proxy](../reverse-proxy.md#host-names-and-ports) | |
 | – | `admin.resources` | none | the admin UI's container and its init container | |
 | – | `admin.ingress.enabled`, `.className`, `.host`, `.tls.enabled`, `.tls.secretName`, `.annotations` | off | the admin UI's own Ingress, never on the Sync server's host: [Admin UI](../install/helm.md#admin-ui) | |
 
@@ -145,8 +145,8 @@ How each way works: [Signing in](../admin/signing-in.md).
 | `ADMIN_ALLOWED_USERS` | `admin.allowed.users` | empty: nobody by email | with OpenID Connect or the header, who is an admin: emails and `@domains`, comma-separated | |
 | `ADMIN_ALLOWED_GROUPS` | `admin.allowed.groups` | empty: none | the same, by group | |
 | `ADMIN_INSECURE_COOKIE` | `admin.insecureCookie` | empty: `Secure` only | `1`, `true` or `yes` (empty, `0`, `false` or `no`: off; anything else stops the admin UI): the session cookie also goes over plain HTTP other than `http://localhost`, where anybody on the way can take it. Needed for an `http://` `ADMIN_OIDC_REDIRECT_URL`; the Configuration page lists it as a setting that disagrees | |
-| `ADMIN_FXA_CLIENT_ID` | – | empty | sign in with the self-hosted accounts: an OAuth client id (16 hex characters), registered at every start with `ADMIN_OIDC_REDIRECT_URL`: [Self-hosted accounts](../admin/signing-in.md#self-hosted-accounts) | |
-| `ADMIN_FXA_CLIENT_SECRET` | – | empty | keep it empty: the accounts service refuses PKCE from clients with a secret, and the admin UI always uses PKCE | |
+| `ADMIN_FXA_CLIENT_ID` | `fxa.adminClientId`, with `admin.fxaSignIn` | empty (Helm: derived from the namespace and the release, [Sign in with the accounts](../install/helm.md#sign-in-with-the-accounts)) | sign in with the self-hosted accounts: an OAuth client id (16 hex characters), registered at every start with `ADMIN_OIDC_REDIRECT_URL`: [Self-hosted accounts](../admin/signing-in.md#self-hosted-accounts) | |
+| `ADMIN_FXA_CLIENT_SECRET` | `fxa.adminClientSecret` (Secret: `ADMIN_FXA_CLIENT_SECRET`) | empty | keep it empty: the accounts service refuses PKCE from clients with a secret, and the admin UI always uses PKCE | |
 
 ## Notifications
 
@@ -168,46 +168,44 @@ The alerts and the emails of the admin UI: [Alerts](../admin/alerts.md). The sam
 
 ## Accounts
 
-The self-hosted Mozilla accounts, with `docker-compose.fxa.yml` in `COMPOSE_FILE`: [Self-hosted accounts](../accounts.md).
-
-<!-- helm-fxa: accounts values go here -->
+The self-hosted Mozilla accounts, with `docker-compose.fxa.yml` in `COMPOSE_FILE`: [Self-hosted accounts](../accounts.md). With the Helm chart, `fxa.enabled: true`: [Self-hosted accounts](../install/helm.md#self-hosted-accounts). The chart's values with no `.env` counterpart are in [Helm only](#helm-only).
 
 | `.env` | Helm | Default | Meaning | Old name |
 |---|---|---|---|---|
-| `FXA_IMAGE` | – | `ghcr.io/porelli/firefox-sync` | the accounts' image. Mozilla's own: `docker.io/mozilla/fxa-mono` (amd64 only) | |
-| `FXA_VERSION` | – | `fxa-mono-latest` | its tag: the newest tested release, or a pinned one such as `fxa-mono-v1.347.1`. [Upgrading](../upgrading.md#self-hosted-accounts) | |
-| `FXA_ARCH` | – | `amd64` | `amd64` or `arm64`, set by `prepare_environment.sh` (`amd64` with Mozilla's images) | |
-| `FXA_CONTENT_URL` | – | required | the public URL of the accounts pages, for example `https://accounts.example.com` | |
-| `FXA_AUTH_URL` | – | required | the public URL of the accounts API | |
-| `FXA_PROFILE_URL` | – | required | the public URL of the profile server | |
-| `FXA_DB` | – | `mysql` | the accounts database: `mysql` or `mariadb` ([MySQL or MariaDB](../accounts.md#mysql-or-mariadb)). With compose, `mariadb` also needs `docker-compose.fxa-mariadb.yml` in `COMPOSE_FILE` | |
+| `FXA_IMAGE` | `fxa.image.repository` (empty: `image.repository`) | `ghcr.io/porelli/firefox-sync` | the accounts' image. Mozilla's own: `docker.io/mozilla/fxa-mono` (amd64 only) | |
+| `FXA_VERSION` | `fxa.image.tag` | `fxa-mono-latest` | its tag: the newest tested release, or a pinned one such as `fxa-mono-v1.347.1`. [Upgrading](../upgrading.md#self-hosted-accounts) | |
+| `FXA_ARCH` | – (the node's) | `amd64` | `amd64` or `arm64`, set by `prepare_environment.sh` (`amd64` with Mozilla's images) | |
+| `FXA_CONTENT_URL` | `fxa.contentUrl` | required | the public URL of the accounts pages, for example `https://accounts.example.com` | |
+| `FXA_AUTH_URL` | `fxa.authUrl` | required | the public URL of the accounts API | |
+| `FXA_PROFILE_URL` | `fxa.profileUrl` | required | the public URL of the profile server | |
+| `FXA_DB` | `fxa.database.backend` | `mysql` | the accounts database: `mysql` or `mariadb` ([MySQL or MariaDB](../accounts.md#mysql-or-mariadb)). With compose, `mariadb` also needs `docker-compose.fxa-mariadb.yml` in `COMPOSE_FILE` | |
 | `FXA_MYSQL_IMAGE` | `fxa.database.image.mysql` | unset: `mysql:lts` (Helm `docker.io/library/mysql:lts`) | with `FXA_DB=mysql`, the image of `fxa-db` and of its backups. Pins: [Database majors](../upgrading.md#database-majors) | |
 | `FXA_MYSQL_ARGS` | – (from `fxa.database.image.mysql`: the native password options on a MySQL 8 pin, [Database majors](../upgrading.md#database-majors)) | empty | extra options of `fxa-db`'s `mysqld`. On `mysql:8` for accounts images without mozilla/fxa#21554: `--mysql-native-password=ON --authentication-policy=mysql_native_password` | |
 | `FXA_MARIADB_IMAGE` | `fxa.database.image.mariadb` | unset: `mariadb:lts` (Helm `docker.io/library/mariadb:lts`) | with `FXA_DB=mariadb`, the image of `fxa-db` and of its backups | |
-| `FXA_DB_CONTAINERS` | – | `1` | `0`: no `fxa-db` container, use your own MySQL or MariaDB server | |
-| `FXA_MYSQL_HOST` | – | `fxa-db` | the accounts' database server | |
-| `FXA_MYSQL_PORT` | – | `3306` | its port | |
-| `FXA_MYSQL_USER` | – | `root` | the accounts services' user (on your own server, for example `fxa`) | |
-| `FXA_MYSQL_PASSWORD` | – | generated | its password | |
-| `FXA_MYSQL_POLICY_USER` | – | empty: `FXA_MYSQL_USER` | the user that installs the sign-up policy and grants the admin UI's user | |
-| `FXA_MYSQL_POLICY_PASSWORD` | – | empty | its password (not used while `FXA_MYSQL_POLICY_USER` is empty) | |
-| `FXA_ADMIN_DB_PASSWORD` | – | generated | the password of the admin UI's user `ffs_admin` of the accounts database (a user, not the database `ADMIN_DB_NAME`) | |
-| `FXA_AUTH_SECRET`, `FXA_OAUTH_SECRET`, `FXA_PROFILE_SECRET`, `FXA_FLOW_ID_KEY`, `FXA_SESSION_TOKEN_HANDLE_KEY`, `FXA_CONTENT_SESSION_SECRET` | – | generated | the accounts services' secrets | |
-| `FXA_SIGNUPS` | – | `open` | who can create an account: `open`, `allowlist` or `closed`: [Who can sign up](../accounts.md#who-can-sign-up) | |
-| `FXA_SIGNUP_ALLOWLIST` | – | empty | with `allowlist`, the emails and `@domains` allowed, comma-separated | |
-| `FXA_MAX_ACCOUNTS` | – | `initial:unlimited` | the most accounts that can be created: [Limits](../limits.md#fxa_max_accounts) | |
-| `FXA_CLIENT_ADDRESS_DEPTH` | – | `2` | the reverse proxies in front of the accounts API, plus 1: where the rate limits find the client IP address ([Client IP address](../reverse-proxy.md#client-ip-address)) | |
-| `FXA_ACCESS_TOKEN_LIFETIME` | – | `"60 minutes"` | the lifetime of Firefox's access tokens (Mozilla's default: `"365 minutes"`) | |
-| `FXA_ACCOUNT_EVENTS` | – | `false` | `true`: record the security history of every account, with IP addresses: [Security history](../accounts.md#security-history) | |
-| `FXA_PAIRING_URL` | – | unset: Mozilla's channel server | your own pairing server for the QR code, for example `wss://pairing.example.com`, with `pairing` in `COMPOSE_PROFILES` | |
-| `FXA_PAIRING_IMAGE` | – | `ghcr.io/porelli/firefox-sync:fxa-channelserver-latest` | the pairing server's image (Mozilla's own: `docker.io/mozilla/channelserver`, amd64 only) | |
-| `FXA_PAIRING_TRUSTED_PROXIES` | – | unset: `127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16` | the proxies the pairing server trusts for the client address (compose only: the Quadlets have no pairing server) | |
-| `FXA_LOG_LEVEL` | – | unset: `INFO` | the log level of the auth server: `ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE` | |
-| `FXA_CONTENT_EXPORT_PORT` | – | `127.0.0.1:3030` | where the host publishes the accounts pages | |
-| `FXA_AUTH_EXPORT_PORT` | – | `127.0.0.1:9000` | the accounts API | |
-| `FXA_PROFILE_EXPORT_PORT` | – | `127.0.0.1:1111` | the profile server | |
-| `FXA_PROFILE_STATIC_EXPORT_PORT` | – | `127.0.0.1:1112` | the profile server's static files (avatars) | |
-| `FXA_PAIRING_EXPORT_PORT` | – | `127.0.0.1:8058` | the pairing server | |
+| `FXA_DB_CONTAINERS` | `fxa.database.bundled` (`0`: `false`) | `1` (Helm `true`) | `0`: no `fxa-db` container, use your own MySQL or MariaDB server | |
+| `FXA_MYSQL_HOST` | `fxa.database.external.host` | `fxa-db` (Helm: `<release>-firefox-sync-fxa-db` while bundled) | the accounts' database server | |
+| `FXA_MYSQL_PORT` | `fxa.database.external.port` | `3306` (Helm empty: `3306`) | its port | |
+| `FXA_MYSQL_USER` | `fxa.database.external.user` | `root` (Helm: `root` while bundled, else `fxa`) | the accounts services' user (on your own server, for example `fxa`) | |
+| `FXA_MYSQL_PASSWORD` | Secret: `FXA_MYSQL_PASSWORD` | generated | its password | |
+| `FXA_MYSQL_POLICY_USER` | `fxa.database.external.policyUser` | empty: `FXA_MYSQL_USER` (Helm `ffs_policy`) | the user that installs the sign-up policy and grants the admin UI's user | |
+| `FXA_MYSQL_POLICY_PASSWORD` | Secret: `FXA_MYSQL_POLICY_PASSWORD` | empty (Helm: never generated) | its password (not used while `FXA_MYSQL_POLICY_USER` is empty) | |
+| `FXA_ADMIN_DB_PASSWORD` | Secret: `FXA_ADMIN_DB_PASSWORD` | generated | the password of the admin UI's user `ffs_admin` of the accounts database (a user, not the database `ADMIN_DB_NAME`) | |
+| `FXA_AUTH_SECRET`, `FXA_OAUTH_SECRET`, `FXA_PROFILE_SECRET`, `FXA_FLOW_ID_KEY`, `FXA_SESSION_TOKEN_HANDLE_KEY`, `FXA_CONTENT_SESSION_SECRET` | Secret: the same names | generated | the accounts services' secrets | |
+| `FXA_SIGNUPS` | `fxa.signups` | `open` | who can create an account: `open`, `allowlist` or `closed`: [Who can sign up](../accounts.md#who-can-sign-up) | |
+| `FXA_SIGNUP_ALLOWLIST` | `fxa.signupAllowlist` (a list, or one string) | empty | with `allowlist`, the emails and `@domains` allowed, comma-separated | |
+| `FXA_MAX_ACCOUNTS` | `fxa.maxAccounts` | `initial:unlimited` | the most accounts that can be created: [Limits](../limits.md#fxa_max_accounts) | |
+| `FXA_CLIENT_ADDRESS_DEPTH` | `fxa.clientAddressDepth` | `2` | the reverse proxies in front of the accounts API, plus 1: where the rate limits find the client IP address ([Client IP address](../reverse-proxy.md#client-ip-address)) | |
+| `FXA_ACCESS_TOKEN_LIFETIME` | `fxa.accessTokenLifetime` | `"60 minutes"` | the lifetime of Firefox's access tokens (Mozilla's default: `"365 minutes"`) | |
+| `FXA_ACCOUNT_EVENTS` | `fxa.accountEvents` | `false` | `true`: record the security history of every account, with IP addresses: [Security history](../accounts.md#security-history) | |
+| `FXA_PAIRING_URL` | `fxa.pairing.url` | unset: Mozilla's channel server | your own pairing server for the QR code, for example `wss://pairing.example.com`, with `pairing` in `COMPOSE_PROFILES` (Helm: `fxa.pairing.enabled`) | |
+| `FXA_PAIRING_IMAGE` | `fxa.pairing.image` | `ghcr.io/porelli/firefox-sync:fxa-channelserver-latest` (Helm empty: `<image.repository>:fxa-channelserver-latest`) | the pairing server's image (Mozilla's own: `docker.io/mozilla/channelserver`, amd64 only) | |
+| `FXA_PAIRING_TRUSTED_PROXIES` | `fxa.pairing.trustedProxies` | unset: `127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16` | the proxies the pairing server trusts for the client address (not with the Quadlets: they have no pairing server) | |
+| `FXA_LOG_LEVEL` | `fxa.logLevel` | unset: `INFO` | the log level of the auth server: `ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE` | |
+| `FXA_CONTENT_EXPORT_PORT` | – (the Service `<release>-firefox-sync-fxa-content`, port 3030) | `127.0.0.1:3030` | where the host publishes the accounts pages | |
+| `FXA_AUTH_EXPORT_PORT` | – (`-fxa-auth`, 9000) | `127.0.0.1:9000` | the accounts API | |
+| `FXA_PROFILE_EXPORT_PORT` | – (`-fxa-profile`, 1111) | `127.0.0.1:1111` | the profile server | |
+| `FXA_PROFILE_STATIC_EXPORT_PORT` | – (`-fxa-profile`, 1112) | `127.0.0.1:1112` | the profile server's static files (avatars) | |
+| `FXA_PAIRING_EXPORT_PORT` | – (`-fxa-pairing`, 8000) | `127.0.0.1:8058` | the pairing server | |
 
 Which host name goes to which port: [Host names and ports](../reverse-proxy.md#host-names-and-ports).
 
@@ -221,6 +219,20 @@ Values of the chart with no `.env` counterpart, besides those in the tables abov
 | `existingSecret` | empty: the chart generates `<release>-firefox-sync` | a Secret of your own: [existingSecret](../install/helm.md#existingsecret) |
 | `database.allowMajorUpgrade` | `false` | `true` lets one `helm upgrade` move the bundled MariaDB or MySQL to another major (never PostgreSQL); set it back to `false` after: [Database majors](../upgrading.md#database-majors) |
 | `fxa.database.allowMajorUpgrade` | `false` | the same for the bundled accounts database (`fxa.enabled`) |
+| `fxa.enabled` | `false` | the self-hosted accounts: [Self-hosted accounts](../install/helm.md#self-hosted-accounts) |
+| `fxa.database.external.*` | | your own accounts database server, with `fxa.database.bundled: false`: in the [Accounts](#accounts) table |
+| `fxa.database.persistence.size`, `.storageClass` | `8Gi`, the default class | the bundled accounts database's volume, set before the first install |
+| `fxa.database.resources`, `fxa.redis.resources`, `fxa.resources.*`, `fxa.pairing.resources` | memory requests (pairing: none) | the accounts' containers: [Resources and PodSecurity](../install/helm.md#resources-and-podsecurity) |
+| `fxa.redis.image` | `docker.io/library/redis:alpine` | the accounts' Redis: [Database majors](../upgrading.md#database-majors) |
+| `fxa.keys.existingSecret` | empty: the PVC `<release>-firefox-sync-fxa-keys` | a Secret with the accounts' signing keys: [The signing keys](../install/helm.md#the-signing-keys) |
+| `fxa.keys.persistence.size`, `.storageClass` | `1Gi`, the default class | the keys' PVC |
+| `fxa.profileImages.persistence.size`, `.storageClass` | `1Gi`, the default class | the avatars' PVC, `<release>-firefox-sync-fxa-profile-images` |
+| `fxa.pairing.enabled` | `false` | the chart's own pairing server, at `fxa.pairing.url`: [Pairing](../install/helm.md#pairing) |
+| `fxa.ingress.enabled`, `.className`, `.annotations`, `.tls.enabled`, `.tls.secretNames.content`, `.auth`, `.profile`, `.pairing` | off | the accounts' Ingresses, one per host: [Kubernetes](../reverse-proxy.md#kubernetes) |
+| `fxa.extraCaCerts.configMap`, `.key` | empty, `ca.crt` | a ConfigMap with a CA the accounts and the admin UI trust, for your SMTP server or your own HTTPS hosts |
+| `fxa.volumeOwnerInit` | `true` | `false`: no root init container, `fsGroup` instead: [Resources and PodSecurity](../install/helm.md#resources-and-podsecurity) |
+| `fxa.networkPolicy.enabled` | `true` | NetworkPolicies for the accounts' Redis and database: [NetworkPolicies](../install/helm.md#networkpolicies) |
+| `admin.fxaSignIn` | `false` | sign in to the admin UI with the self-hosted accounts: [Sign in with the accounts](../install/helm.md#sign-in-with-the-accounts) |
 | `syncstorage.replicas` | `1` | keep 1: the migrations and the max users init run in its init containers |
 | `syncstorage.resources`, `syncstorage.initResources` | none | the Sync server and its init containers: [Resources](../install/helm.md#resources) |
 | `syncstorage.service.port` | `8000` | the Sync server's Service port |

@@ -121,3 +121,39 @@ Sessions, plain HTTP and signing in: see [Admin UI](admin/README.md#set-up) and 
 With the Helm chart, the chart's Ingress publishes the Sync server, and the admin UI on a host of its own: see [Ingress](install/helm.md#ingress) and [Admin UI](install/helm.md#admin-ui). The rules of this page still apply, in the Ingress controller's terms: [Request size](#request-size) is the one that matters for the Sync server.
 
 With your own reverse proxy in front of the cluster, proxy the Sync server's host name to the Service `<release>-firefox-sync-syncstorage`, port 8000.
+
+### The accounts' Ingresses
+
+With the [self-hosted accounts](install/helm.md#self-hosted-accounts), `fxa.ingress.enabled` makes one Ingress per host. They share `fxa.ingress.className` and `.annotations`, and each has its certificate in `fxa.ingress.tls.secretNames.<content|auth|profile|pairing>` (empty: the controller's default). With `F=<release>-firefox-sync`:
+
+| Host of | Ingress | Paths |
+|---|---|---|
+| `fxa.contentUrl` | `$F-fxa-content` | `/` to `$F-fxa-content:3030` |
+| `fxa.authUrl` | `$F-fxa-auth` | `/` to `$F-fxa-auth:9000`; with the admin UI, `/v1/account/create` (`Exact`) to the gate, `$F-admin:8081` |
+| `fxa.profileUrl` | `$F-fxa-profile` | `/` to `$F-fxa-profile:1111`; `/img/` to its port `img`, 1114, a small proxy that strips `/img` |
+| `fxa.pairing.url` (with `fxa.pairing.enabled`) | `$F-fxa-pairing` | `/` to `$F-fxa-pairing:8000` |
+
+The chart leaves these to the controller:
+
+- **HTTP to HTTPS.** The chart sets no redirect. ingress-nginx redirects a host with TLS by default (`ssl-redirect`). Traefik redirects only when its `web` entry point is told to, for example with `--entrypoints.web.http.redirections.entrypoint.to=websecure`.
+- **TLS.** With `fxa.ingress.tls.enabled: false` the Ingresses have no `tls`: HTTPS then depends on the controller, its default certificate or a load balancer in front that adds it. The URLs stay `https://`.
+- **The pairing websockets.** ingress-nginx closes a connection that is idle for 60 seconds, its default `proxy-read-timeout`, which can cut a pairing in the middle. Raise it in `fxa.ingress.annotations`, as the nginx example's `proxy_read_timeout 600`. These annotations go on all the accounts' Ingresses, which does no harm:
+
+  ```yaml
+  fxa:
+    ingress:
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+  ```
+
+- **The client IP address.** `fxa.clientAddressDepth` (`2`) is for the Ingress controller alone. Add 1 for each proxy in front of it that adds to `X-Forwarded-For`: see [Client IP address](#client-ip-address).
+
+### Your own Ingress or proxy
+
+With `fxa.ingress.enabled: false`, publish the Services of the table above yourself, at the accounts' URLs, with HTTPS. The same with a Gateway API controller, which the chart has no routes for. Two rules need care:
+
+- **The sign-up gate**, with the admin UI: see [Sign-up gate](#sign-up-gate).
+- **The avatars.** Send `/img/` of the profile host either to port 1114 (`img`) with the path as it is, or stripped of `/img` to port 1112 (`static`), as [fxa-example.conf](/config/nginx/fxa-example.conf) does to `127.0.0.1:1112/`.
+
+The pairing server is a websocket, as in [Pairing](#pairing).

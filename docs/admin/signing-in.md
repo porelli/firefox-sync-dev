@@ -137,6 +137,7 @@ The accounts service registers the admin UI as an OAuth client at every start ([
 |---|---|
 | docker compose | the admin UI uses `ADMIN_OIDC_ISSUER=FXA_CONTENT_URL` and this client, named "Mozilla account", unless the `ADMIN_OIDC_*` are set |
 | Quadlets | set `ADMIN_OIDC_ISSUER`, `ADMIN_OIDC_CLIENT_ID` and `ADMIN_OIDC_NAME` too; `prepare_environment.sh` writes them all to `.env` |
+| Helm | `admin.fxaSignIn: true`: the chart derives the client id and sets the rest, see [Sign in with the accounts](../install/helm.md#sign-in-with-the-accounts) |
 
 The accounts service has no `email_verified` claim: its ID tokens carry no email, and its userinfo endpoint (`FXA_PROFILE_URL/v1/profile`) returns the email alone. Hence `ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true`, which is safe here. The stack lists the admin UI's client in the accounts service's `SERVICES_WITH_EMAIL_VERIFICATION`, so it hands out a sign-in only for a confirmed session (the email code of a new account or a new sign-in), never for a password alone.
 

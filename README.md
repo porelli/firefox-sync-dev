@@ -39,7 +39,7 @@ More in [the admin UI](docs/admin/README.md).
 | Sync on your server, Mozilla's accounts, Docker | one HTTPS host name | [Docker compose](docs/install/compose.md) |
 | the same with rootless Podman | Podman 4.4 or later | [Podman](docs/install/podman.md) |
 | the same on Kubernetes | Kubernetes 1.27 or later, Helm 3 | [Helm](docs/install/helm.md) |
-| your own accounts too (no Mozilla server at all) | four HTTPS host names, 3-4 GB of RAM, an SMTP server | the install page, then [self-hosted accounts](docs/accounts.md) |
+| your own accounts too (no Mozilla server at all) | four HTTPS host names, 3-4 GB of RAM, an SMTP server | the install page, then [self-hosted accounts](docs/accounts.md); with Helm, [its section](docs/install/helm.md#self-hosted-accounts) |
 | a database server you already run | MariaDB, MySQL or PostgreSQL | [your own database server](docs/databases.md#your-own-server) |
 | to move from another Sync server | | [Migrating](docs/migrating.md) |
 | to upgrade | | [Upgrading](docs/upgrading.md) |

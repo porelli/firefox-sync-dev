@@ -134,7 +134,7 @@ The Sync server (syncstorage-rs and its tokenserver) sends its statsd metrics to
 | Install | Where the metrics go |
 |---|---|
 | docker compose, Quadlets | inside the stack's network only |
-| Helm | the admin UI's Service, which every pod of the cluster reaches unless a NetworkPolicy of yours says otherwise (the chart has none) |
+| Helm | the admin UI's Service, which every pod of the cluster reaches unless a NetworkPolicy of yours says otherwise (the chart has none for it) |
 
 **The admin UI must be running when the Sync server starts.** syncstorage-rs refuses to start when its metrics host does not resolve, so it sends metrics only when the admin UI was up at its start. It also looks up the admin UI's address only then.
 

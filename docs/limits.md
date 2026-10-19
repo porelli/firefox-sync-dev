@@ -30,7 +30,7 @@ The accounts that can use the Sync server (`1` in [.env-example](/.env-example))
 
 ## `FXA_MAX_ACCOUNTS`
 
-With [self-hosted accounts](accounts.md): how many accounts the accounts service can have, whoever signs up and whatever the sign-up policy. Not set, or empty: `initial:unlimited`, so that existing setups do not change.
+With [self-hosted accounts](accounts.md): how many accounts the accounts service can have, whoever signs up and whatever the sign-up policy. Not set, or empty: `initial:unlimited`, so that existing setups do not change. With the Helm chart: `fxa.maxAccounts`, with the same forms.
 
 - Every row of `fxa.accounts` counts: confirmed or not, disabled too. Delete the accounts that are gone, or the old unconfirmed ones, to make room.
 - `fxa-policy` sets the limit before the accounts service starts.
@@ -51,7 +51,7 @@ The next start is `docker compose up -d`. With Quadlets, after rendering the uni
 systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-admin.service
 ```
 
-With the Helm chart: `helm upgrade` with the new `maxUsers`.
+With the Helm chart: `helm upgrade` with the new `maxUsers` or `fxa.maxAccounts`.
 
 ## Near and full
 

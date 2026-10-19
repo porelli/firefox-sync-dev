@@ -88,7 +88,7 @@ The CronJob `ffs-firefox-sync-backup` runs the same `backup.sh` in the database'
 - `backup.keep` is `BACKUP_KEEP`.
 - `backup.activeDeadlineSeconds` (82800, 23 hours): a run still going then is stopped and fails. One run at a time (`concurrencyPolicy: Forbid`): a hung dump would hold back every later one.
 - With your own database server (`database.bundled: false`) it runs too, as the users of its SQL, next to the server's own backups.
-- With the self-hosted accounts (`fxa.enabled`), the same Job first dumps their five databases into `accounts/<UTC time>/`, as compose's `backup-fxa` does: in its init container `backup-accounts`, in the accounts database's image, as `root` of the bundled server or as `fxa.database.external.user`. A failed dump is recorded and alerted, and the Sync databases are dumped all the same. Their signing keys are not in the backups: the NOTES say how to export them.
+- With the self-hosted accounts (`fxa.enabled`), the same Job first dumps their five databases into `accounts/<UTC time>/`, as compose's `backup-fxa` does: in its init container `backup-accounts`, in the accounts database's image, as `root` of the bundled server or as `fxa.database.external.user`. A failed dump is recorded and alerted, and the Sync databases are dumped all the same. A dump that hangs instead holds back the Sync one, which starts only after it, until `backup.activeDeadlineSeconds` stops the whole run. Their signing keys are not in the backups: see [The signing keys](install/helm.md#the-signing-keys).
 
 Without the admin UI:
 
@@ -286,7 +286,7 @@ Then, on the same cluster or the new one, with `F=ffs-firefox-sync`:
 1. Empty the databases. PostgreSQL's dump loads only into an empty database, so do it there always. The dumps of MariaDB and MySQL drop and create each table again, so they also load into the old databases. The data of a database server is its PVC, `data-<its pod>`:
 
     ```bash
-    for db in postgres; do   # MariaDB and MySQL: tokenserver-db storage-db
+    for db in postgres; do   # MariaDB and MySQL: tokenserver-db storage-db; with the accounts, also fxa-db
       kubectl scale sts/$F-$db --replicas=0
       kubectl wait --for=delete pod/$F-$db-0 --timeout=5m
       kubectl delete pvc data-$F-$db-0
@@ -294,6 +294,8 @@ Then, on the same cluster or the new one, with `F=ffs-firefox-sync`:
       kubectl rollout status sts/$F-$db --timeout=30m
     done
     ```
+
+    The bundled accounts database on MariaDB (`fxa.database.backend: mariadb`) has the PVC `data-mariadb-$F-fxa-db-0` instead. On your own accounts server, empty its databases there, or leave them: the accounts' dumps drop and create each table again.
 
 1. Pick a run: `run=20261013T030000Z`, one of the list of the pod of [Copy them off the cluster](#copy-them-off-the-cluster) (`kubectl exec ffs-backups -- ls /backups/sync`, and `/backups/accounts` with the self-hosted accounts). Delete that pod before the restores (`kubectl delete pod ffs-backups`): the PVC is `ReadWriteOnce`, and on another node the Jobs below would wait for it. Each restore runs the command of [Restore](#restore) in a Job of the backup CronJob's spec (its variables, its volume), as the stack's users:
 
