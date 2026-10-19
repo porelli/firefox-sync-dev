@@ -105,11 +105,13 @@ spec:
           restartPolicy: Never
           securityContext:
             {{- include "firefox-sync.backupPodSecurityContext" . | nindent 12 }}
-          {{- if .Values.fxa.enabled }}
+          {{- if and .Values.fxa.enabled .Values.fxa.database.bundled }}
           # the self-hosted accounts first, compose's backup-fxa (the Quadlets' Before=): in
-          # their database's image (its client), as its root (your own server: its user). Its
-          # result is left in /backups/.status, which the Sync scope records in the same run;
-          # a failed dump is recorded (and alerted) that way, and Sync is dumped all the same
+          # their database's image (its client), as its root. Its result is left in
+          # /backups/.status, which the Sync scope records in the same run; a failed dump is
+          # recorded (and alerted) that way, and Sync is dumped all the same. Not with your own
+          # accounts server, as compose's (docs/backups.md#your-own-database-server): its
+          # accounts' user cannot read ffs, the policy user's, every run would fail
           initContainers:
             - name: backup-accounts
               image: {{ include "firefox-sync.fxaDbImage" . }}
