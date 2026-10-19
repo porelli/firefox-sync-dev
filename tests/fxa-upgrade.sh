@@ -121,6 +121,10 @@ done | sed -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.fxa.test|" \
     -e "s|^FXA_PAIRING_IMAGE=.*|FXA_PAIRING_IMAGE=${REPOSITORY}:fxa-channelserver-latest|" \
     -e "/^COMPOSE_FILE=/d" > "${ENV_FILE}"
 slot_fxa_ports "${ENV_FILE}"
+# the database images and options as the env file has them: not empty ones of the caller's
+# environment (CI passes its matrix values, empty for the defaults), which compose would
+# prefer to the file and which would hide its pins from db/mysql/keep-major.sh
+export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
 set -a; source "${ENV_FILE}"; set +a
 COMPOSE_EXTRA=()
 if [ "${FXA_DB}" = mariadb ]; then

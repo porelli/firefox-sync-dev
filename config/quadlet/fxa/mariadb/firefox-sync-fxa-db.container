@@ -20,7 +20,7 @@ HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=10
 HealthStartPeriod=30s
-# the default authentication is already mysql_native_password, the only one FxA's driver supports
+# the default authentication is mysql_native_password (MariaDB has no caching_sha2_password), which both of the accounts' drivers speak
 Exec=mariadbd --event-scheduler=ON
 
 AutoUpdate=registry

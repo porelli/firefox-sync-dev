@@ -63,6 +63,13 @@ database:
     # HELM.md#upgrades); left on latest a new PostgreSQL major leaves the server unable to start
     postgres: docker.io/library/postgres:latest
 
+  # helm upgrade refuses a database.image.<backend> that would move the bundled server's data to
+  # another major (a pin changed, a numbered major to lts or latest; read from the running
+  # StatefulSet, not by helm template; lts itself moving on keeps the same image name and is not
+  # seen: pin a major for that): true lets MariaDB and MySQL upgrade their data in place, a
+  # backup first, there is no way back (HELM.md#upgrades). Never PostgreSQL, which cannot
+  allowMajorUpgrade: false
+
   # PostgreSQL in the bundled server: the Sync server's own role (compose's POSTGRES_SYNC_USER),
   # no superuser, the owner of the Sync tables (DATABASES.md). Not used with your own server,
   # where POSTGRES_USER (external.postgresUser) is the owner

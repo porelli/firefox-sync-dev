@@ -152,6 +152,41 @@ lint() {
   [[ "$(sed -n 's/^    postgres: //p' "${CHART_DIR}/values.yaml")" == docker.io/library/postgres:latest ]] || fail "database.image.postgres is not docker.io/library/postgres:latest by default"
   check "database.image.<backend> for the server, wait-db, the backups and the binding Job (docker.io/library/ mariadb:lts, mysql:lts, postgres:latest), empty refused"
 
+  # the guard of a database major change (lookup of the running StatefulSet at install and
+  # upgrade, which helm template cannot do): included, its comparison on its own in a copy of
+  # the chart, allowMajorUpgrade in the schema
+  grep -q '^{{- include "firefox-sync.checkDbMajor" . }}$' "${CHART_DIR}/templates/databases.yaml" || fail "databases.yaml does not run checkDbMajor"
+  grep -q 'lookup "apps/v1" "StatefulSet"' "${CHART_DIR}/templates/_helpers.tpl" || fail "checkDbMajor does not read the running StatefulSet"
+  major_change() {
+    local d out
+    d=$(mktemp -d)
+    cp -r "${CHART_DIR}" "${d}/chart"
+    sed -e "s|@OLD@|$1|" -e "s|@NEW@|$2|" > "${d}/chart/templates/zz-major.yaml" <<'TPL'
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: major}
+data:
+  change: '{{ include "firefox-sync.dbMajorChange" (dict "old" "@OLD@" "new" "@NEW@") }}'
+TPL
+    out=$(helm template test-release "${d}/chart" -f "${CHART_DIR}/ci/default-values.yaml" --show-only templates/zz-major.yaml 2>&1 | manifests | jq -r '.[0].data.change') || true
+    rm -rf "${d}"
+    echo "${out}"
+  }
+  for c in "docker.io/library/mysql:8 docker.io/library/mysql:lts true" "docker.io/library/mysql:8 docker.io/library/mysql:8 -" \
+    "mysql:8.4 docker.io/library/mysql:8 -" "docker.io/library/mysql:8 docker.io/library/mysql:9 true" \
+    "docker.io/library/mysql:lts docker.io/library/mysql:9 -" "docker.io/library/mysql:lts mysql:lts -" \
+    "docker.io/library/mariadb:11 docker.io/library/mariadb:lts true" "docker.io/library/mariadb:lts docker.io/library/mariadb:latest true" \
+    "docker.io/library/postgres:latest docker.io/library/postgres:alpine true" "docker.io/library/postgres:18 docker.io/library/postgres:latest true" \
+    "docker.io/library/postgres:18 docker.io/library/postgres:18-alpine -" "docker.io/library/mariadb:lts docker.io/library/mysql:lts -" \
+    "docker.io/library/mysql:8@sha256:00 docker.io/library/mysql:9 true"; do
+    read -r old new want <<< "${c}"
+    [[ "$(major_change "${old}" "${new}")" == "${want/-/}" ]] || fail "dbMajorChange ${old} -> ${new}: '$(major_change "${old}" "${new}")', not '${want/-/}'"
+  done
+  if helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.allowMajorUpgrade=yes > /dev/null 2>&1; then
+    fail "database.allowMajorUpgrade=yes not refused by the schema"
+  fi
+  check "checkDbMajor: run by the databases, reads the running StatefulSet; dbMajorChange on 13 pairs; allowMajorUpgrade a boolean"
+
   # db/mysql/admin-user.sh (the chart's copy identical: parity), run by the MariaDB and MySQL containers
   for backend in mariadb mysql; do
     output=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend="${backend}" --show-only templates/databases.yaml)
@@ -867,6 +902,8 @@ e2e() {
   check "mock FxA is up"
 
   local db_args=(--set backup.enabled=true)
+  # the bundled MySQL as an install from before mysql:lts: on 8, moved below (checkDbMajor)
+  [[ ${backend} == mysql && -z "${EXTERNAL}" ]] && db_args+=(--set database.image.mysql=docker.io/library/mysql:8)
   if [[ -n "${EXTERNAL}" ]]; then
     start_extdb
     # your own server: its names (not the defaults), the passwords in your Secret, the
@@ -951,6 +988,49 @@ e2e() {
   sql "DELETE FROM users;" || fail "could not empty the users table"
   client_flow flow-2 "-k first_sign_in" || fail "client flow after the upgrade failed"
   check "client flow after the upgrade passed"
+
+  # another major of the bundled database: refused at render time, nothing applied; MySQL
+  # moves with database.allowMajorUpgrade (8 to lts, its data upgraded in place)
+  if [[ -z "${EXTERNAL}" ]]; then
+    local revision sts_image other refused
+    revision=$(helm history "${REL}" -o json | jq length)
+    sts_image() { kubectl get sts "$1" -o jsonpath='{.spec.template.spec.containers[?(@.name=="db")].image}'; }
+    case ${backend} in
+      mysql) other=docker.io/library/mysql:lts ;;
+      mariadb) other=docker.io/library/mariadb:latest ;;
+      postgres) other=docker.io/library/postgres:alpine ;;
+    esac
+    local db_sts=${FULL}-tokenserver-db
+    [[ ${backend} == postgres ]] && db_sts=${FULL}-postgres
+    local running
+    running=$(sts_image "${db_sts}")
+    for allow in false true; do
+      [[ ${allow} == true && ${backend} != postgres ]] && continue
+      if refused=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image."${backend}"="${other}" \
+          --set database.allowMajorUpgrade="${allow}" 2>&1); then
+        fail "helm upgrade to ${other} on ${running} (allowMajorUpgrade=${allow}) not refused"
+      fi
+      grep -q "firefox-sync: database.image.${backend} is ${other} but the bundled .* runs ${running}" <<< "${refused}" \
+        || fail "the refusal does not name both images: ${refused}"
+    done
+    [[ "$(helm history "${REL}" -o json | jq length) $(sts_image "${db_sts}")" == "${revision} ${running}" ]] \
+      || fail "the refused upgrade changed the release or the StatefulSet"
+    check "helm upgrade from ${running} to ${other} refused at render time (also allowMajorUpgrade=true for PostgreSQL), nothing applied"
+    if [[ ${backend} == mysql ]]; then
+      helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set database.image.mysql="${other}" --set database.allowMajorUpgrade=true \
+        --wait --timeout 10m || fail "helm upgrade to ${other} with allowMajorUpgrade did not get Ready"
+      kubectl rollout status "sts/${db_sts}" --timeout=10m > /dev/null && kubectl rollout status "sts/${FULL}-storage-db" --timeout=10m > /dev/null \
+        || fail "the MySQL StatefulSets did not roll out on ${other}"
+      kubectl wait --for=condition=Ready pod -l "${POD_SELECTOR}" --timeout=10m > /dev/null || fail "syncstorage not Ready on ${other}"
+      local version
+      version=$(sql "SELECT VERSION();" 2> /dev/null | tail -n 1)
+      [[ "$(sts_image "${db_sts}") ${version%%.*}" =~ ^${other}\ (9|[1-9][0-9])$ ]] \
+        || fail "the bundled MySQL is not on a newer major: $(sts_image "${db_sts}") ${version}"
+      sql "DELETE FROM users;" || fail "could not empty the users table"
+      client_flow flow-2b "-k first_sign_in" || fail "client flow on ${other} failed"
+      check "allowMajorUpgrade: the bundled MySQL moved from 8 to ${other} (${version}), the client flow passes"
+    fi
+  fi
 
   admin_toggle
   reinstall

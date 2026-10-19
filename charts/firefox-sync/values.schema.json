@@ -64,6 +64,9 @@
         "bundled": {
           "type": "boolean"
         },
+        "allowMajorUpgrade": {
+          "type": "boolean"
+        },
         "image": {
           "type": "object",
           "required": ["mariadb", "mysql", "postgres"],

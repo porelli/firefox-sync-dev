@@ -257,13 +257,19 @@ fxa_mysql_image_check() {
     fi
     fxa_image_has mozilla/fxa#21554; rc=$?
     if [ "${rc}" = 0 ]; then
-        if [ -n "${FXA_IMAGE_PULL}" ]; then
-            echo "NOTE: your local ${image} does not have mozilla/fxa#21554, needed on MySQL ${db_image##*:},"
-            echo "  the registry's has it: pull it before starting (docker compose pull, podman pull)"
+        if [ -n "${FXA_IMAGE_PULL}" ] && ! { mysql_8 "${db_image}" && [ "${native}" = yes ]; }; then
+            echo "WARNING: your local ${image} does not have mozilla/fxa#21554, without which the accounts cannot"
+            echo "  log in on MySQL ${db_image##*:}; the registry's has it: pull it before starting (docker compose pull, podman pull)"
             echo ""
         elif [ "${native}" = yes ] && [ "${UPGRADING:-}" = yes ]; then
             echo "NOTE: ${image} has mozilla/fxa#21554 (caching_sha2_password): the accounts database can move"
             echo "  from MySQL 8 with mysql_native_password to MySQL lts, when you choose: MIGRATING.md#mysql-lts"
+            echo ""
+        elif mysql_8 "${db_image}" && [ "${UPGRADING:-}" = yes ]; then
+            # (the users' plugins are not known here)
+            echo "NOTE: fxa-db is on MySQL 8 without FXA_MYSQL_ARGS (mysql_native_password off): users created before on"
+            echo "  mysql_native_password cannot log in. Moving from the pin: step 2 (the users) before step 3 (the options),"
+            echo "  MIGRATING.md#mysql-lts; SELECT user, host, plugin FROM mysql.user shows them"
             echo ""
         fi
         return 0
@@ -288,6 +294,93 @@ fxa_installed() {
     local pw
     pw=$(env_plain FXA_MYSQL_PASSWORD)
     [ -n "${pw}" ] && [[ "${pw}" != *"<REPLACE_WITH_"* ]]
+}
+
+# a database volume of an earlier install (the .env gone, or for another database):
+# "<runtime> volume <name>", for any of the names given (compose: <project>_<name>, Quadlets:
+# firefox-sync-<name>), e.g. db_volume fxa-db-mariadb
+db_volume() {
+    local project runtime volume name
+    # compose's project: COMPOSE_PROJECT_NAME (this shell's, then .env's), else the directory
+    project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
+    project=$(printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+    for runtime in docker podman; do
+        command -v "${runtime}" > /dev/null 2>&1 || continue
+        for name in "$@"; do
+            # (the Quadlets' names only for them: they are the same on every install of this user)
+            for volume in "${project}_${name}" $([ "${DEPLOY_METHOD:-}" = quadlets ] && echo "firefox-sync-${name}"); do
+                ${runtime} volume inspect "${volume}" > /dev/null 2>&1 && { echo "${runtime} volume ${volume}"; return 0; }
+            done
+        done
+    done
+    return 1
+}
+
+# the major of postgres:latest, from its own server ("postgres (PostgreSQL) 18.1 (Debian ...)"):
+# pulled first (a local copy may be older than latest), with Docker, else Podman (a Docker
+# without its daemon fails at once); without a registry, the local copy
+postgres_latest_major() {
+    local runtime image pull out
+    for pull in always missing; do
+        for runtime in docker podman; do
+            command -v "${runtime}" > /dev/null 2>&1 || continue
+            image=postgres:latest
+            [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
+            out=$(${runtime} run --rm --pull="${pull}" --entrypoint postgres "${image}" --version 2> /dev/null) || continue
+            out=$(printf '%s' "${out}" | sed -n 's/^postgres (PostgreSQL) \([0-9][0-9]*\)[^0-9].*/\1/p')
+            [ -n "${out}" ] && { echo "${out}"; return 0; }
+        done
+    done
+    return 1
+}
+# the major of the MySQL data in a volume of db_volume ("<runtime> volume <name>"): the last
+# version of its mysql_upgrade_history (8.4 and later write it); none, an empty volume or one of
+# 8.0: nothing (fails)
+mysql_volume_major() {
+    local runtime=${1} volume=${3} image=mysql:lts
+    [ "${runtime}" = podman ] && image=docker.io/library/mysql:lts
+    ${runtime} run --rm --pull=missing -v "${volume}:/v:ro" --entrypoint sh "${image}" -c 'cat /v/mysql_upgrade_history' 2> /dev/null \
+        | grep -o '"version" *: *"[0-9]*' | tail -n 1 | sed 's/.*"//' | grep -x '[0-9][0-9]*'
+}
+# the major of the PostgreSQL data in a volume of db_volume ("<runtime> volume <name>"): its
+# PG_VERSION (at the top or in data/ before 18, in <major>/docker/ since)
+postgres_volume_major() {
+    local runtime=${1} volume=${3} image=postgres:latest
+    [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
+    ${runtime} run --rm --pull=missing -v "${volume}:/v:ro" --entrypoint sh "${image}" -c \
+        'for f in /v/PG_VERSION /v/data/PG_VERSION /v/*/docker/PG_VERSION; do [ -s "$f" ] && { cat "$f"; exit 0; }; done; exit 1' 2> /dev/null \
+        | grep -x '[0-9][0-9]*'
+}
+
+# the major of the MariaDB data in a volume of db_volume: what mariadb-install-db and
+# mariadb-upgrade wrote ("11.8.9-MariaDB"; mysql_upgrade_info before 10.11)
+mariadb_volume_major() {
+    local runtime=${1} volume=${3} image=mariadb:lts
+    [ "${runtime}" = podman ] && image=docker.io/library/mariadb:lts
+    ${runtime} run --rm --pull=missing -v "${volume}:/v:ro" --entrypoint sh "${image}" -c \
+        'cat /v/mariadb_upgrade_info /v/mysql_upgrade_info 2> /dev/null | tr -d "\0"' 2> /dev/null \
+        | sed -n '1s/^\([0-9][0-9]*\)\..*/\1/p' | grep -x '[0-9][0-9]*'
+}
+# the major of the MariaDB a running Sync database container runs (compose's tokenserver_db of
+# the project, the Quadlets' firefox-sync-tokenserver-db)
+mariadb_running_major() {
+    local project runtime ctr
+    project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
+    project=$(printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+    for runtime in docker podman; do
+        command -v "${runtime}" > /dev/null 2>&1 || continue
+        for ctr in $(${runtime} ps -q --filter "label=com.docker.compose.project=${project}" --filter label=com.docker.compose.service=tokenserver_db 2> /dev/null) \
+            $([ "${DEPLOY_METHOD:-}" = quadlets ] && echo firefox-sync-tokenserver-db); do
+            ${runtime} exec "${ctr}" mariadbd --version 2> /dev/null | sed -n 's/.* Ver \([0-9][0-9]*\)\..*/\1/p' | grep -x '[0-9][0-9]*' && return 0
+        done
+    done
+    return 1
+}
+# the major of the Sync MariaDB data of this install: its volume, else its running server
+sync_mariadb_major() {
+    local volume
+    volume=$(db_volume tokenserver-db syncstorage-db) && mariadb_volume_major ${volume} && return 0
+    mariadb_running_major
 }
 
 # ./prepare_environment.sh --upgrade: the .env of an install that runs (docker compose), given
@@ -435,6 +528,21 @@ upgrade_env() {
         echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
         echo "  stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9 (its users first, a backup, no"
         echo "  way back): MIGRATING.md#mysql-lts"
+    fi
+    # Sync on MariaDB containers, from before SYNC_MARIADB_IMAGE (they ran mariadb:lts): on the
+    # major their data holds, they stay there (unset, a pull after the next major would upgrade
+    # it; the containers refuse that, db/mysql/keep-major.sh)
+    if [ "$(env_value SYNC_DB)" != mysql ] && [ "$(env_value SYNC_IMAGE)" != "syncstorage-rs-postgres" ] \
+        && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && ! env_has SYNC_MARIADB_IMAGE; then
+        if major=$(sync_mariadb_major); then
+            set_value SYNC_MARIADB_IMAGE "mariadb:${major}"
+            echo "SYNC_MARIADB_IMAGE=mariadb:${major}: the Sync databases stay on MariaDB ${major}, the major of their data. To follow"
+            echo "  MariaDB lts again (a backup first, there is no way back): SYNC_MARIADB_IMAGE=mariadb:lts (DATABASES.md)"
+        else
+            echo "WARNING: could not read the MariaDB major of the Sync databases (no volume or running container found):"
+            echo "  SYNC_MARIADB_IMAGE is not set; set it to the major they run, SYNC_MARIADB_IMAGE=mariadb:<major>. Until then the"
+            echo "  containers refuse data of another major than mariadb:lts's (db/mysql/keep-major.sh)"
+        fi
     fi
     # Sync on MySQL containers, from before SYNC_MYSQL_IMAGE: on 8, they stay there (unset it
     # is now mysql:lts, 9)
@@ -762,37 +870,6 @@ SYNC_METRICS_HASH_SECRET=$(generate_random_string 24)
 ADMIN_PASSWORD=$(generate_random_string 24)
 ADMIN_DB_PASSWORD=$(generate_random_string 32)
 
-# a database volume of an earlier install (the .env gone, or for another database):
-# "<runtime> volume <name>", for any of the names given (compose: <project>_<name>, Quadlets:
-# firefox-sync-<name>), e.g. db_volume fxa-db-mariadb
-db_volume() {
-    local project runtime volume name
-    project=$(basename "${SCRIPT_DIR}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
-    for runtime in docker podman; do
-        command -v "${runtime}" > /dev/null 2>&1 || continue
-        for name in "$@"; do
-            for volume in "${project}_${name}" "firefox-sync-${name}"; do
-                ${runtime} volume inspect "${volume}" > /dev/null 2>&1 && { echo "${runtime} volume ${volume}"; return 0; }
-            done
-        done
-    done
-    return 1
-}
-
-# the major of postgres:latest, from its own server ("postgres (PostgreSQL) 18.1 (Debian ...)"):
-# pulled if needed (Docker's first, a Docker without its daemon fails at once, then Podman's)
-postgres_latest_major() {
-    local runtime image=postgres:latest out
-    for runtime in docker podman; do
-        command -v "${runtime}" > /dev/null 2>&1 || continue
-        [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
-        out=$(${runtime} run --rm --pull=missing --entrypoint postgres "${image}" --version 2> /dev/null) || continue
-        out=$(printf '%s' "${out}" | sed -n 's/^postgres (PostgreSQL) \([0-9][0-9]*\)[^0-9].*/\1/p')
-        [ -n "${out}" ] && { echo "${out}"; return 0; }
-    done
-    return 1
-}
-
 # run again on an install: its databases stay on the PostgreSQL, MariaDB or MySQL versions they run
 PREVIOUS_SYNCSTORAGE_IMAGE="" PREVIOUS_POSTGRES_IMAGE=""
 PREVIOUS_FXA_DB="" PREVIOUS_FXA_MARIADB_IMAGE=""
@@ -815,6 +892,44 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
     fi
 fi
 
+# PostgreSQL has no lts (every major is supported for 5 years) and no major opens another's
+# data: the major of the install, decided before .env is written. One that ran PostgreSQL
+# before keeps its SYNC_POSTGRES_IMAGE (postgres:18 without one: every release before it used
+# 18, git log -- docker-compose.sync-postgres.yml); a new setup over the PostgreSQL volume of an
+# earlier install the major of its data; a new install the major postgres:latest is at now, read
+# from the image itself. Unset it would be postgres:latest, which a new major leaves unable to
+# start: not knowing the major is an error
+SYNC_POSTGRES_PIN="" SYNC_POSTGRES_MAJOR="" SYNC_POSTGRES_VOLUME=""
+if [ "${DATABASE_BACKEND}" = postgres ]; then
+    if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
+        SYNC_POSTGRES_PIN=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
+    elif [ "${EXTERNAL_DB}" != "yes" ] && SYNC_POSTGRES_VOLUME=$(db_volume postgres-db) \
+        && SYNC_POSTGRES_VOLUME_MAJOR=$(postgres_volume_major ${SYNC_POSTGRES_VOLUME}); then
+        SYNC_POSTGRES_PIN=postgres:${SYNC_POSTGRES_VOLUME_MAJOR}
+    elif SYNC_POSTGRES_MAJOR=$(postgres_latest_major); then
+        SYNC_POSTGRES_PIN=postgres:${SYNC_POSTGRES_MAJOR}
+        SYNC_POSTGRES_VOLUME=""
+    else
+        echo "ERROR: could not read the major of postgres:latest, which this install is pinned to (SYNC_POSTGRES_IMAGE):"
+        echo "  docker (or podman) run --rm --pull=always --entrypoint postgres postgres:latest --version failed."
+        echo "  Check the container runtime and the access to Docker Hub, and run this again; nothing was written."
+        exit 1
+    fi
+fi
+
+# Sync on the MariaDB containers: lts for new installs; one that ran them before keeps its
+# SYNC_MARIADB_IMAGE, or without one the major its data holds (its volume, else its running
+# server), as a new setup over the MariaDB volumes of an earlier install
+SYNC_MARIADB_PIN=mariadb:lts SYNC_MARIADB_FOUND=""
+if [ "${DATABASE_BACKEND}" = mariadb ] && [ "${EXTERNAL_DB}" != "yes" ]; then
+    if [ -f "${SCRIPT_DIR}/.env" ] && [ "$(env_value SYNC_DB)" != mysql ] && [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" != "syncstorage-rs-postgres" ] \
+        && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && [ -n "$(env_plain SYNC_MARIADB_IMAGE)" ]; then
+        SYNC_MARIADB_PIN=$(env_plain SYNC_MARIADB_IMAGE)
+    elif major=$(sync_mariadb_major); then
+        SYNC_MARIADB_PIN=mariadb:${major} SYNC_MARIADB_FOUND=${major}
+    fi
+fi
+
 # prepare .env file
 cp ${SCRIPT_DIR}/.env-example ${SCRIPT_DIR}/.env
 apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${SYNC_TOKENSERVER_DB_PASSWORD}|"
@@ -832,6 +947,8 @@ apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=${ADMIN_
 [ "${ADMIN_UI}" = "yes" ] && apply_sed ${SCRIPT_DIR}/.env "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
 [ -n "${ADMIN_NOTIFY}" ] && apply_sed ${SCRIPT_DIR}/.env "s|^ADMIN_NOTIFY=.*|ADMIN_NOTIFY='$(sed_escape "${ADMIN_NOTIFY}")'|"
 apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
+[ "${DATABASE_BACKEND}" = mariadb ] && [ "${EXTERNAL_DB}" != "yes" ] && \
+    apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_MARIADB_IMAGE=.*|SYNC_MARIADB_IMAGE=$(sed_escape "${SYNC_MARIADB_PIN}")|"
 if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
     # MySQL's certificate is self-signed: the init container's client does not check it
     # (docker-compose.sync-mysql.yml does the same, this is for the Quadlets)
@@ -846,7 +963,9 @@ if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
         SYNC_MYSQL_IMAGE=${PREVIOUS_SYNC_MYSQL_IMAGE:-mysql:8}
         [ -n "${PREVIOUS_SYNC_MYSQL_IMAGE}" ] || PINNED_SYNC_MYSQL=yes
     elif SYNC_MYSQL_VOLUME=$(db_volume syncstorage-db-mysql tokenserver-db-mysql); then
-        SYNC_MYSQL_IMAGE=mysql:8
+        # (already on 9 or later: lts, MySQL cannot go back to 8)
+        SYNC_MYSQL_VOLUME_MAJOR=$(mysql_volume_major ${SYNC_MYSQL_VOLUME}) || SYNC_MYSQL_VOLUME_MAJOR=8
+        [ "${SYNC_MYSQL_VOLUME_MAJOR}" -ge 9 ] || SYNC_MYSQL_IMAGE=mysql:8
     fi
     apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=$(sed_escape "${SYNC_MYSQL_IMAGE}")|"
 fi
@@ -925,6 +1044,9 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     # mysql_native_password in database-setup-fxa.sql
     if [ "${FXA_DB}" = "mysql" ]; then
         fxa_image_has mozilla/fxa#21554; FXA_MYSQL2=$?
+        # the local copy without it (the registry's has it): it is what would start, so MySQL 8
+        # with mysql_native_password, which works with both; 3: said below
+        [ "${FXA_MYSQL2}" = 0 ] && [ -n "${FXA_IMAGE_PULL}" ] && FXA_MYSQL2=3
         FXA_MYSQL_IMAGE=mysql:lts FXA_MYSQL_ARGS=""
         if [ "${PREVIOUS_FXA_MYSQL}" = yes ]; then
             if [ -n "${PREVIOUS_FXA_MYSQL_IMAGE}" ]; then
@@ -933,7 +1055,10 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
                 FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS} PINNED_FXA_MYSQL=yes
             fi
         elif [ "${EXTERNAL_FXA_DB}" != "yes" ] && FXA_MYSQL_VOLUME=$(db_volume fxa-db); then
-            FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}
+            # (already on 9 or later: lts, its users cannot be on mysql_native_password, and MySQL
+            # cannot go back to 8)
+            FXA_MYSQL_VOLUME_MAJOR=$(mysql_volume_major ${FXA_MYSQL_VOLUME}) || FXA_MYSQL_VOLUME_MAJOR=8
+            [ "${FXA_MYSQL_VOLUME_MAJOR}" -ge 9 ] || FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}
         elif [ "${FXA_MYSQL2}" != 0 ]; then
             FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}
         fi
@@ -998,19 +1123,8 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
         apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_USER=.*|SYNC_POSTGRES_APP_USER=syncserver_app|"
         apply_sed ${SCRIPT_DIR}/.env "s|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=$(generate_random_string 32)|"
     fi
-    # PostgreSQL has no lts (every major is supported for 5 years) and no major opens another's
-    # data: new installs get the major postgres:latest is at now, read from the image itself,
-    # written out (postgres:<major>; unset it is postgres:latest, which a new major would
-    # leave unable to start). One that ran PostgreSQL before SYNC_POSTGRES_IMAGE runs
-    # postgres:18 (every release before it used 18, git log -- docker-compose.sync-postgres.yml)
-    if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
-        SYNC_POSTGRES_IMAGE=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
-    elif SYNC_POSTGRES_MAJOR=$(postgres_latest_major); then
-        SYNC_POSTGRES_IMAGE=postgres:${SYNC_POSTGRES_MAJOR}
-    else
-        SYNC_POSTGRES_IMAGE=""
-    fi
-    [ -z "${SYNC_POSTGRES_IMAGE}" ] || apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_IMAGE}")|"
+    # the major of the install, above
+    apply_sed ${SCRIPT_DIR}/.env "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_PIN}")|"
 fi
 
 # the SQL for your own database server, with the names and passwords of .env (DATABASES.md)
@@ -1079,6 +1193,7 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         fi
         export "${1}=${image}"
     }
+    podman_image SYNC_MARIADB_IMAGE mariadb:lts
     podman_image FXA_MARIADB_IMAGE mariadb:lts
     podman_image FXA_MYSQL_IMAGE mysql:lts
     podman_image SYNC_MYSQL_IMAGE mysql:lts
@@ -1237,14 +1352,21 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: the accounts database"
         echo "  of this install stays on MySQL 8 with mysql_native_password. To move it to MySQL lts, 9: MIGRATING.md#mysql-lts"
     fi
-    if [ -n "${FXA_MYSQL_VOLUME:-}" ]; then
+    if [ -n "${FXA_MYSQL_VOLUME:-}" ] && [ "${FXA_MYSQL_VOLUME_MAJOR}" -ge 9 ]; then
+        echo "FXA_MYSQL_IMAGE=mysql:lts: found the accounts database of an earlier install (${FXA_MYSQL_VOLUME}), on"
+        echo "  MySQL ${FXA_MYSQL_VOLUME_MAJOR} already: it stays on lts. A new install: remove the volume (its accounts are lost) and run this again"
+    elif [ -n "${FXA_MYSQL_VOLUME:-}" ]; then
         echo "FXA_MYSQL_IMAGE=mysql:8, FXA_MYSQL_ARGS=${FXA_MYSQL_NATIVE_ARGS}: found the accounts database"
         echo "  of an earlier install (${FXA_MYSQL_VOLUME}), its data stays on MySQL 8 with mysql_native_password."
-        echo "  Already on 9: set FXA_MYSQL_IMAGE=mysql:lts and remove FXA_MYSQL_ARGS. A new install: remove the volume"
+        echo "  A new install: remove the volume"
         echo "  (its accounts are lost) and run this again. Moving it to lts: MIGRATING.md#mysql-lts"
     elif [ "${FXA_DB}" = mysql ] && [ "${EXTERNAL_FXA_DB}" != yes ] && [ "${PREVIOUS_FXA_MYSQL}" != yes ] && [ "${FXA_MYSQL2}" != 0 ]; then
         if [ "${FXA_MYSQL2}" = 2 ]; then
             echo "NOTE: could not read the labels of $(env_value FXA_IMAGE):$(env_value FXA_VERSION): MySQL lts (9) needs"
+        elif [ "${FXA_MYSQL2}" = 3 ]; then
+            echo "NOTE: your local $(env_value FXA_IMAGE):$(env_value FXA_VERSION) is older than the registry's: it does not have"
+            echo "  mozilla/fxa#21554, the registry's has it. For MySQL lts (9) on this new install: pull it, then before the"
+            echo "  first start set FXA_MYSQL_IMAGE=mysql:lts and remove FXA_MYSQL_ARGS in .env. Until then MySQL lts needs"
         else
             echo "NOTE: $(env_value FXA_IMAGE):$(env_value FXA_VERSION) does not have mozilla/fxa#21554 (Mozilla's images, ours"
             echo "  built before it), which MySQL lts (9) needs"
@@ -1258,18 +1380,25 @@ fi
 if [ "${DATABASE_BACKEND}" = postgres ] && [ -n "${SYNC_POSTGRES_MAJOR:-}" ]; then
     echo "SYNC_POSTGRES_IMAGE=postgres:${SYNC_POSTGRES_MAJOR}: PostgreSQL ${SYNC_POSTGRES_MAJOR}, the major of postgres:latest today, pinned: a newer"
     echo "  major cannot open its data. Moving later: DATABASES.md#another-postgresql-major"
-elif [ "${DATABASE_BACKEND}" = postgres ] && [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" != "syncstorage-rs-postgres" ]; then
-    echo "WARNING: could not read the major of postgres:latest (docker or podman run postgres:latest postgres --version):"
-    echo "  SYNC_POSTGRES_IMAGE is not set, postgres:latest, which a new PostgreSQL major leaves unable to start."
-    echo "  Pin it in .env to the major it runs: SYNC_POSTGRES_IMAGE=postgres:<major> (DATABASES.md#another-postgresql-major)"
+elif [ "${DATABASE_BACKEND}" = postgres ] && [ -n "${SYNC_POSTGRES_VOLUME}" ]; then
+    echo "SYNC_POSTGRES_IMAGE=${SYNC_POSTGRES_PIN}: found the Sync database of an earlier install (${SYNC_POSTGRES_VOLUME}),"
+    echo "  PostgreSQL ${SYNC_POSTGRES_VOLUME_MAJOR}: it stays on it. A new install: remove the volume (its data is lost) and run this"
+    echo "  again. Moving to a newer major: DATABASES.md#another-postgresql-major"
+fi
+if [ -n "${SYNC_MARIADB_FOUND}" ]; then
+    echo "SYNC_MARIADB_IMAGE=${SYNC_MARIADB_PIN}: found the Sync databases of an earlier install on MariaDB ${SYNC_MARIADB_FOUND}: they stay on it."
+    echo "  A new install: remove their volumes (the data is lost) and run this again. To follow lts: SYNC_MARIADB_IMAGE=mariadb:lts"
 fi
 if [ "${PINNED_SYNC_MYSQL:-}" = "yes" ]; then
     echo "SYNC_MYSQL_IMAGE=mysql:8: the Sync databases of this install stay on MySQL 8. To move them to MySQL lts, 9:"
     echo "  MIGRATING.md#mysql-lts"
 fi
-if [ -n "${SYNC_MYSQL_VOLUME:-}" ]; then
+if [ -n "${SYNC_MYSQL_VOLUME:-}" ] && [ "${SYNC_MYSQL_VOLUME_MAJOR}" -ge 9 ]; then
+    echo "SYNC_MYSQL_IMAGE=mysql:lts: found the Sync databases of an earlier install (${SYNC_MYSQL_VOLUME}), on MySQL"
+    echo "  ${SYNC_MYSQL_VOLUME_MAJOR} already: they stay on lts. A new install: remove the volumes and run this again"
+elif [ -n "${SYNC_MYSQL_VOLUME:-}" ]; then
     echo "SYNC_MYSQL_IMAGE=mysql:8: found the Sync databases of an earlier install (${SYNC_MYSQL_VOLUME}), their data"
-    echo "  stays on MySQL 8. Already on 9: set SYNC_MYSQL_IMAGE=mysql:lts. A new install: remove the volumes and run"
+    echo "  stays on MySQL 8. A new install: remove the volumes and run"
     echo "  this again. Moving them to lts: MIGRATING.md#mysql-lts"
 fi
 

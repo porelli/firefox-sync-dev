@@ -71,9 +71,12 @@ ALLOWED_DIFFERENCES = {
     # the backups
     "mysql:backup/MARIADB_TLS_VERIFY": "bundled MySQL: false (the chart's one value, the init container's) where compose's backup "
     "inherits true; no effect: the backup image is MySQL's, backup.sh reads it with the MariaDB client only",
-    "mysql:db/FFS_MYSQL_IMAGE": "compose-only: SYNC_MYSQL_IMAGE as set in .env (empty: the compose file's default), for "
-    "db/mysql/keep-major.sh; the chart's image is always database.image.mysql, chosen in the values (HELM.md#upgrades)",
-    "mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
+    "mariadb,mysql:db/FFS_MYSQL_IMAGE": "compose-only: SYNC_MARIADB_IMAGE or SYNC_MYSQL_IMAGE as set in .env (empty: the "
+    "compose file's default), for db/mysql/keep-major.sh; the chart's image is always database.image.<backend>, chosen in "
+    "the values, and checkDbMajor refuses another major (HELM.md#upgrades)",
+    "mariadb,mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
+    "postgres:db/FFS_POSTGRES_IMAGE": "compose-only: SYNC_POSTGRES_IMAGE as set in .env (empty: the compose file's default), for "
+    "db/postgres/keep-major.sh; the chart's image is always database.image.postgres, and checkDbMajor refuses another major",
     # the databases
     "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
     "the MySQL image ignores them",
@@ -89,6 +92,12 @@ ALLOWED_COMMANDS = {
                       "compose's entrypoint script only adds SYNC_STATSD_* (env here) before exec /app/bin/syncserver"),
     "*:backup": ([["sh", "/ffs-backup/backup.sh"], ["now"]],
                  "a CronJob runs backup.sh now at backup.schedule; compose's container runs backup.sh loop"),
+    "postgres:db": ([None, None],
+                    "compose starts it through db/postgres/keep-major.sh (what to do on another major's data with "
+                    "SYNC_POSTGRES_IMAGE unset); the chart runs the image's entrypoint and command"),
+    "mariadb:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mariadbd", "--explicit_defaults_for_timestamp"]],
+                   "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
+                   "SYNC_MARIADB_IMAGE unset in .env); the chart has no unset: database.image.mariadb"),
     "mysql:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mysqld", "--disable-log-bin"]],
                  "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
                  "SYNC_MYSQL_IMAGE unset in .env); the chart has no unset: database.image.mysql"),

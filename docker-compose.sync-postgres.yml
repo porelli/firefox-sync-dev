@@ -150,8 +150,10 @@ services:
     # SYNC_POSTGRES_IMAGE pins the major of the install (prepare_environment.sh writes
     # postgres:<the major of postgres:latest> for new installs, postgres:18 for those from
     # before it); unset: postgres:latest, which a new major cannot start on (it refuses another
-    # major's data: DATABASES.md#another-postgresql-major)
+    # major's data, db/postgres/keep-major.sh says what to do: DATABASES.md#another-postgresql-major)
     image: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-postgres:latest}}
+    entrypoint: [sh, /ffs-db/keep-major.sh, docker-entrypoint.sh]
+    command: [postgres]
     # 0: your own server (DATABASES.md); compose then skips the dependency on it
     deploy:
       replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
@@ -159,6 +161,7 @@ services:
       POSTGRES_DB: ${SYNC_POSTGRES_NAME:-${POSTGRES_DATABASE:-}}
       POSTGRES_USER: ${SYNC_POSTGRES_USER:-${POSTGRES_USER:-}}
       POSTGRES_PASSWORD: ${SYNC_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD:-}}
+      FFS_POSTGRES_IMAGE: ${SYNC_POSTGRES_IMAGE:-${POSTGRES_IMAGE:-}}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${SYNC_POSTGRES_USER:-${POSTGRES_USER:-}} -d ${SYNC_POSTGRES_NAME:-${POSTGRES_DATABASE:-}}"]
       start_period: 10s
@@ -167,6 +170,7 @@ services:
       retries: 3
     volumes:
       - postgres-db:/var/lib/postgresql
+      - ./db/postgres/keep-major.sh:/ffs-db/keep-major.sh:ro
     restart: unless-stopped
 
   tokenserver_db_init:

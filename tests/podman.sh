@@ -174,6 +174,11 @@ compose_test() {
     check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:${pg_major}" "prepare_environment.sh pins PostgreSQL to the major of postgres:latest (postgres, compose)"
     sed -i 's|^SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=postgres:18|' .env
   fi
+  # MariaDB: a new install is on mariadb:lts; one from before ran it without SYNC_MARIADB_IMAGE
+  if [ "${backend}" = mariadb ]; then
+    check "$(env_of SYNC_MARIADB_IMAGE)" mariadb:lts "prepare_environment.sh writes SYNC_MARIADB_IMAGE=mariadb:lts (mariadb, compose)"
+    sed -i '/^SYNC_MARIADB_IMAGE=/d' .env
+  fi
   # MySQL: a new install is on mysql:lts; one from before ran mysql:8 without SYNC_MYSQL_IMAGE
   # (--upgrade pins it below)
   if [ "${backend}" = mysql ]; then
@@ -222,6 +227,12 @@ compose_test() {
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
   [ "${backend}" != postgres ] || check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:18" "--upgrade writes SYNC_POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"
   [ "${backend}" != mysql ] || check "$(env_of FXA_DB | grep -c mariadb)" "0" "no FXA_MARIADB_IMAGE for MariaDB backend without accounts (${backend})"
+  # MariaDB: an install from before SYNC_MARIADB_IMAGE, pinned to the major of its data
+  if [ "${backend}" = mariadb ]; then
+    mariadb_major=$(podman exec "$(ctr tokenserver_db)" mariadbd --version 2> /dev/null | sed -n 's/.* Ver \([0-9]*\)\..*/\1/p')
+    check "$(env_of SYNC_MARIADB_IMAGE) $(grep -c "Sync databases stay on MariaDB ${mariadb_major}," "upgrade-${backend}.log")" "mariadb:${mariadb_major} 1" \
+      "--upgrade pins the Sync MariaDB of an install from before to the major of its data (mariadb)"
+  fi
   [ "${backend}" != mysql ] || check "$(env_of SYNC_MYSQL_IMAGE) $(grep -c 'Sync databases stay on MySQL 8' "upgrade-${backend}.log") $(env_of FXA_MYSQL_IMAGE)" "mysql:8 1 " \
     "--upgrade pins the Sync databases of an install from before on MySQL 8, nothing for the accounts it has not (mysql)"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
@@ -520,6 +531,8 @@ printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare
 check "$?" 0 "prepare_environment.sh (quadlets, no admin UI)"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-admin.* 2> /dev/null | wc -l)" 0 "no admin UI quadlet"
 check "$(grep -hcxF 'Environment=MAX_USERS=1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "plain SYNC_MAX_USERS=1 in the init quadlet"
+check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | paste -sd' ') $(env_of SYNC_MARIADB_IMAGE)" \
+  "docker.io/library/mariadb:lts docker.io/library/mariadb:lts docker.io/library/mariadb:lts mariadb:lts" "the Sync MariaDB units on lts for a new install (SYNC_MARIADB_IMAGE)"
 "${QUADLET}" -dryrun -user > quadlet-no-admin-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the files without the admin UI"
 QUADLET_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
