@@ -12,7 +12,7 @@ Each way is on when it is configured, and any combination works. With none of th
 | OpenID Connect | `ADMIN_OIDC_*` | a "Sign in with ..." button: your identity provider, or the self-hosted accounts, says who you are |
 | trusted header | `ADMIN_AUTH_HEADER`, `ADMIN_TRUSTED_PROXIES` | the reverse proxy in front signs you in and passes your email in a header |
 
-With the Helm chart these are `admin.password` (or the Secret's `ADMIN_PASSWORD`), `admin.oidc.*`, `admin.trustedHeader.*` and `admin.allowed.*`, see [Settings](../reference/settings.md).
+With the Helm chart these are `admin.password` (or the Secret's `ADMIN_PASSWORD`), `admin.oidc.*`, `admin.trustedHeader.*` and `admin.allowed.*`, see [Settings](../reference/settings.md#admin-ui-sign-in).
 
 Whatever the way, you get the same [session](README.md#sessions). The [event log](monitoring.md#event-log) and the alerts record who signed in and how:
 

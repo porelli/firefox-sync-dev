@@ -49,39 +49,9 @@ The patches are [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) f
 
 ### Default tags and pins
 
-The defaults follow each database's long-term tag: `mariadb:lts` and `mysql:lts`. PostgreSQL has no such tag, so each install is pinned to the major `postgres:latest` had when it was set up.
+The defaults follow each database's long-term tag: `mariadb:lts` and `mysql:lts`. PostgreSQL has no such tag, so each install is pinned to the major `postgres:latest` had when it was set up. When `lts` moves, the server upgrades the data at its first start on it, and there is no way back but a backup.
 
-`lts` moves to the next long-term major when MariaDB or MySQL release one. The server then upgrades the data at its first start on it, and there is no way back but a backup. To choose when that happens, pin a major (for example `mysql:9`). How to move to a newer major: [Database majors](upgrading.md#database-majors).
-
-With docker compose, the settings are in `.env`:
-
-| Containers | Setting | Not set | New install (`prepare_environment.sh` writes) | Install from before (`--upgrade` writes) |
-|---|---|---|---|---|
-| Sync on MariaDB: `syncstorage_db`, `tokenserver_db`, `backup` | none | `mariadb:lts` | nothing | nothing: they follow `mariadb:lts` |
-| Sync on MySQL: the same three | `SYNC_MYSQL_IMAGE` | `mysql:lts` | `mysql:lts` | `mysql:8` |
-| Sync on PostgreSQL: `postgres_db`, `backup` | `SYNC_POSTGRES_IMAGE` | `postgres:latest` | `postgres:<major>`, the major of `postgres:latest` at setup | `postgres:18` |
-| Accounts on MySQL: `fxa-db`, `backup-fxa` | `FXA_MYSQL_IMAGE`, `FXA_MYSQL_ARGS` | `mysql:lts`, no options | `mysql:lts` for an accounts image with mozilla/fxa#21554; otherwise `mysql:8` with the options below | `mysql:8` with the options below |
-| Accounts on MariaDB: `fxa-db`, `backup-fxa` | `FXA_MARIADB_IMAGE` | `mariadb:lts` | `mariadb:lts` | `mariadb:11` |
-| Accounts' cache: `fxa-redis` | none | `redis:alpine` | nothing | nothing |
-
-The options for MySQL 8 with `mysql_native_password` are:
-
-```ini
-FXA_MYSQL_ARGS=--mysql-native-password=ON --authentication-policy=mysql_native_password
-```
-
-Notes on this table:
-
-- "Install from before" means one set up by a release that did not write these settings. Running `prepare_environment.sh` again on it, or a new setup that finds its database volumes, writes the same pins.
-- `prepare_environment.sh` reads the label of the accounts image to choose between `mysql:lts` and `mysql:8`. When it cannot read the label, it writes `mysql:8` and says so.
-- With `SYNC_MYSQL_IMAGE` or `FXA_MYSQL_IMAGE` not set, a MySQL container refuses to start on data of another major than its image's ([db/mysql/keep-major.sh](/db/mysql/keep-major.sh)). Set the setting to choose. MariaDB has no such guard: `MARIADB_AUTO_UPGRADE` upgrades the data.
-- The official PostgreSQL image refuses to start on an older major's data by itself.
-
-With Quadlets, `prepare_environment.sh` writes the same images into the units when it installs them, from the same settings. Quadlets have no PostgreSQL.
-
-With the Helm chart, the images are `database.image.mariadb`, `database.image.mysql` and `database.image.postgres`: `docker.io/library/mariadb:lts`, `docker.io/library/mysql:lts` and `docker.io/library/postgres:latest` by default. The chart cannot read the major at install time. Pin PostgreSQL's in your values from the first install, see [Helm upgrades](upgrading.md#helm).
-
-The images that the stack builds on top of these (the init containers) are in [Images](reference/images.md#sync-server).
+Each setting, its default, the pins `prepare_environment.sh` writes, and how to move to a newer major: [Database majors](upgrading.md#database-majors). The images the stack builds on top of these (the init containers): [Images](reference/images.md#sync-server).
 
 ## MySQL instead of MariaDB
 
@@ -108,7 +78,7 @@ What differs from MariaDB:
 - No binary logging (`--disable-log-bin`), as in the MariaDB containers. No replica reads it, and MySQL would keep 30 days of every change.
 - The users use MySQL's default `caching_sha2_password`.
 - The init container's client connects over TLS without checking MySQL's self-signed certificate (`SYNC_DB_TLS_VERIFY=false`). Without it the init fails with `ERROR 2026`.
-- The image is `SYNC_MYSQL_IMAGE`, see [Default tags and pins](#default-tags-and-pins).
+- The image is `SYNC_MYSQL_IMAGE`, see [Database majors](upgrading.md#database-majors).
 
 To keep binary logs (a replica, point-in-time recovery), replace `--disable-log-bin` with `--log-bin-trust-function-creators=ON` in the `command` (Quadlets: `Exec=`). Without that flag the init container cannot create the max users procedure and trigger (`ERROR 1419`).
 
@@ -118,7 +88,7 @@ On kind or k3s on an Ubuntu host with `mysql-server` installed, see [Troubleshoo
 
 The Sync server can run on PostgreSQL, with the `syncstorage-rs-postgres` images and [docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml). `prepare_environment.sh` sets both when you answer `postgres` to the database backend question. The self-hosted accounts cannot use PostgreSQL, and Quadlets don't support it: with Podman, `prepare_environment.sh` falls back to docker compose on the Podman socket.
 
-`SYNC_POSTGRES_IMAGE` pins the PostgreSQL major of each install, for `postgres_db` and the backups. The official image keeps its data at `/var/lib/postgresql/<major>/docker` and refuses to start on an older major's data. Moving to a newer major: [PostgreSQL](upgrading.md#postgresql).
+`SYNC_POSTGRES_IMAGE` pins the PostgreSQL major of each install, for `postgres_db` and the backups: see [PostgreSQL](upgrading.md#postgresql).
 
 With your own server, `SYNC_POSTGRES_IMAGE` is only the client of the backups. `pg_dump` must be at least the server's major: set it to your server's major or a newer one. With Helm, the same goes for `database.image.postgres`.
 
@@ -221,7 +191,7 @@ There is no `prepare_environment.sh` here: you fill in the SQL by hand.
     - `@ADMIN_PASSWORD@` is `ADMIN_DB_PASSWORD`, not the admin UI's sign-in password.
 
    Check the [server requirements](#server-requirements).
-1. Create a Secret with those passwords and the stack's secrets, see [existingSecret](install/helm.md#existingsecret). It needs `SYNC_MASTER_SECRET`, `METRICS_HASH_SECRET`, `ADMIN_DB_PASSWORD`, and either `TOKENSERVER_DB_PASSWORD` and `STORAGE_DB_PASSWORD` (MariaDB, MySQL) or `POSTGRES_PASSWORD` (PostgreSQL, the owner's). The chart refuses to render without it: it cannot generate passwords your server knows.
+1. Create a Secret with those passwords and the stack's secrets: see [existingSecret](install/helm.md#existingsecret) for its keys per backend. The chart refuses to render without it.
 1. Set the values:
 
     ```yaml

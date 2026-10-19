@@ -4,7 +4,7 @@ Every setting of the stack, once: its name in `.env`, its Helm value, its defaul
 
 How to read the tables:
 
-- **`.env`**: the setting in the `.env` of docker compose and the Quadlets. `prepare_environment.sh` writes it; [.env-example](/.env-example) has every line with its default. With the Quadlets, run `prepare_environment.sh` again after a change: it renders the units from `.env`.
+- **`.env`**: the setting in the `.env` of docker compose and the Quadlets. `prepare_environment.sh` writes it; [.env-example](/.env-example) has every line with its default. The Quadlets hold their own copy of the values: see [Change a setting](../install/podman.md#change-a-setting).
 - **Helm**: the value in the chart's [values.yaml](/charts/firefox-sync/values.yaml). "Secret: `KEY`" is a key of the chart's Secret or of your [existingSecret](../install/helm.md#existingsecret). "–" means the chart has no such value.
 - **Default**: the value of `.env-example` (Helm: of `values.yaml`). "generated" means `prepare_environment.sh` (Helm: the chart) generates a random one. "unset" is what compose uses when the line is missing.
 - **Old name**: the name before the `SYNC_` prefix. Compose still reads it: see [Renamed settings](../upgrading.md#renamed-settings).
@@ -82,7 +82,7 @@ How to set it up: [Your own database server](../databases.md#your-own-server). T
 | `SYNC_POSTGRES_NAME` | `database.external.postgresDatabase` | `syncserver` | the one Sync database | `POSTGRES_DATABASE` |
 | `SYNC_POSTGRES_USER` | `database.external.postgresUser` | `syncserver` | in the stack's container its superuser; on your own server the owner of that database, no superuser | `POSTGRES_USER` |
 
-The passwords are under [Databases](#databases). With your own server and the Helm chart, `existingSecret` is required: the chart cannot generate passwords your server knows.
+The passwords are under [Databases](#databases). With your own server and the Helm chart, `existingSecret` is required: see [existingSecret](../install/helm.md#existingsecret).
 
 ## Backups
 
@@ -154,14 +154,14 @@ The alerts and the emails of the admin UI: [Alerts](../admin/alerts.md). The sam
 |---|---|---|---|---|
 | `ADMIN_ALERT_EMAIL` | `admin.alertEmail` | empty: nobody | where the alerts go by email | |
 | `ADMIN_NOTIFY` | `admin.notify` (a list; Secret: `ADMIN_NOTIFY`) | empty: nowhere | the other destinations of the alerts, their URLs comma-separated, in single quotes: [Destinations](../admin/alerts.md#destinations). The URLs hold tokens: keep `.env` private | |
-| `FXA_SMTP_HOST` | `smtp.host` | a placeholder (Helm empty: no emails) | the SMTP server | |
-| `FXA_SMTP_PORT` | `smtp.port` | `587` | its port | |
-| `FXA_SMTP_USER` | `smtp.user` | empty: none | its user | |
-| `FXA_SMTP_PASS` | `smtp.password` (Secret: `FXA_SMTP_PASS`) | empty | its password | |
-| `FXA_SMTP_SECURE` | `smtp.secure` | `false` | `true`: TLS from the start (port 465); `false`: STARTTLS | |
-| `FXA_SMTP_SENDER` | `smtp.sender` | `"Mozilla accounts <no-reply@<your domain>>"` | the From of the emails. Empty, the admin UI uses `ADMIN_ALERT_EMAIL` | |
+| `FXA_SMTP_HOST` | `admin.smtp.host` | a placeholder (Helm empty: no emails) | the SMTP server | |
+| `FXA_SMTP_PORT` | `admin.smtp.port` | `587` | its port | |
+| `FXA_SMTP_USER` | `admin.smtp.user` | empty: none | its user | |
+| `FXA_SMTP_PASS` | `admin.smtp.password` (Secret: `FXA_SMTP_PASS`) | empty | its password | |
+| `FXA_SMTP_SECURE` | `admin.smtp.secure` | `false` | `true`: TLS from the start (port 465); `false`: STARTTLS | |
+| `FXA_SMTP_SENDER` | `admin.smtp.sender` | `"Mozilla accounts <no-reply@<your domain>>"` | the From of the emails. Empty, the admin UI uses `ADMIN_ALERT_EMAIL` | |
 
-With `existingSecret`, the values `admin.password`, `smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` are not read: the Secret's keys are. Without it, those values are written into the chart's Secret on every install and upgrade: [The Secret](../install/helm.md#the-secret).
+`admin.password`, `admin.smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` end up in a Secret: how, with and without `existingSecret`, is in [The Secret](../install/helm.md#the-secret).
 
 ## Accounts
 
@@ -231,7 +231,7 @@ The admin UI and the backup script also read these variables, from their contain
 | Variable | Default | Meaning |
 |---|---|---|
 | `ADMIN_UNCONFIRMED_HOURS` | `72` | self-hosted accounts: an account that has not confirmed its email after this many hours is shown as unconfirmed |
-| `ADMIN_INSECURE_COOKIE` | empty | `1`: the session cookie also goes over plain HTTP. Not recommended; the admin UI names it in Needs attention |
+| `ADMIN_INSECURE_COOKIE` | empty | `1`: the session cookie also goes over plain HTTP. Not recommended; the Configuration page lists it as a setting that disagrees |
 | `SMTP_INSECURE_AUTH` | empty | allow the SMTP password without TLS, for a test server only |
 | `HEALTH_CHECK_SECONDS` | `60` | how often the admin UI checks the components |
 | `METRICS_FLUSH_SECONDS` | `60` | how often it writes its metrics |

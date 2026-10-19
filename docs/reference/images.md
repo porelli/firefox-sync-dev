@@ -25,7 +25,7 @@ The images here are built as close to Mozilla's as possible. They add arm64, Mar
 - `<release>` is syncstorage-rs' release tag. `<build date>` is the build's time, `YYYYMMDDTHHMMSS`: a weekly rebuild of the same release gets a new one.
 - Source: [mozilla-services/syncstorage-rs](https://github.com/mozilla-services/syncstorage-rs). Code changes: only the [upstream patches](#upstream-patches), in the two Sync server images. The init images change no upstream code.
 - Built by [syncstorage-rs.yml](/.github/workflows/syncstorage-rs.yml) ([runs](https://github.com/porelli/firefox-sync/actions/workflows/syncstorage-rs.yml)).
-- Settings: `IMAGE_REPOSITORY`, `SYNC_IMAGE`, `SYNC_IMAGE_TAG`, `SYNC_INIT_IMAGE` and `SYNC_INIT_IMAGE_TAG`, see [Settings](settings.md).
+- Settings: `IMAGE_REPOSITORY`, `SYNC_IMAGE`, `SYNC_IMAGE_TAG`, `SYNC_INIT_IMAGE` and `SYNC_INIT_IMAGE_TAG`, see [Settings](settings.md#images).
 
 ## Accounts
 
@@ -62,7 +62,7 @@ It has none of the upstream patches, so it needs an older database major: see [S
 
 ## Database images
 
-The stack runs the official images of Docker Hub, unchanged: `mariadb`, `mysql`, `postgres` and, for the accounts' cache, `redis`. Their tags and pins: [Default tags and pins](../databases.md#default-tags-and-pins).
+The stack runs the official images of Docker Hub, unchanged: `mariadb`, `mysql`, `postgres` and, for the accounts' cache, `redis`. Their tags and pins: [Database majors](../upgrading.md#database-majors).
 
 ## Upstream patches
 

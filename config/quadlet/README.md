@@ -33,4 +33,4 @@ With your own database server (`SYNC_DB_CONTAINERS=0`, or `FXA_DB_CONTAINERS=0` 
 - replaces their `%VARIABLE%` placeholders with the values of your `.env`;
 - reloads systemd.
 
-Edit `.env` and run the script again rather than editing the installed units: the next run writes them again.
+It is meant for the first install: run again, it writes a new `.env` with new secrets. To change a setting later, see [Change a setting](../../docs/install/podman.md#change-a-setting).

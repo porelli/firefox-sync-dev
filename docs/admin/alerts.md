@@ -7,7 +7,7 @@ The [admin UI](README.md) can tell you when something happens on your server, by
 - **Health**: a component goes down or comes back, a new release is out, a database schema changes, a certificate of a public URL is about to expire. See [Monitoring](monitoring.md).
 - **The admin UI itself**: someone signs in, or fails to, or changes something there (kind `admin`).
 - **Backups**: one fails, or the last good one gets older than 36 hours, and when they work again. See [Backups](../backups.md).
-- **Thresholds**, once when they start and once when they end: 90% of max users or of max accounts taken, and all of them; Sync data changing without metrics from the Sync server; a spike of Sync errors; a database growing fast; alerts failing. See [Needs attention](monitoring.md#needs-attention).
+- **Thresholds**, once when they start and once when they end: max users or max accounts near or at the limit ([Near and full](../limits.md#near-and-full)); Sync data changing without metrics from the Sync server; a spike of Sync errors; a database growing fast; alerts failing. See [Needs attention](monitoring.md#needs-attention).
 - **Sign-ups**: a refused sign-up, and with self-hosted accounts a new account, a new device, a burst of sign-ups (see [Maintenance and retention](storage.md#maintenance-and-retention)).
 - **Security**, with self-hosted accounts: an account blocked by the rate limits and, with the security history on, a changed password, primary email, or way to sign in or recover the account (kind `security`). See [Security history](accounts.md#security-history).
 
@@ -16,7 +16,7 @@ Alerts are collected and sent at most every 10 minutes (`ALERT_INTERVAL_SECONDS`
 - At most 20 alerts of each kind go in one message, the rest are counted. Sign-ins and changes in the admin UI are one kind, `admin`.
 - The emails of refused sign-ups are shortened and stripped of line breaks. Those that do not look like an email are recorded as "invalid email".
 
-The alerts go by email (`ADMIN_ALERT_EMAIL`), to the destinations of `ADMIN_NOTIFY`, or both: each gets every alert. Their times follow the admin UI's [time zone](README.md#time-zone). The settings are in [Settings](../reference/settings.md).
+The alerts go by email (`ADMIN_ALERT_EMAIL`), to the destinations of `ADMIN_NOTIFY`, or both: each gets every alert. Their times follow the admin UI's [time zone](README.md#time-zone). The settings are in [Settings](../reference/settings.md#notifications).
 
 ## Do you need an SMTP server?
 
@@ -56,7 +56,7 @@ ADMIN_NOTIFY='ntfy://ntfy.sh/my-secret-topic,slack://hooks.slack.com/services/T0
 | Install | How to set it |
 |---|---|
 | docker compose | edit `.env`, then `docker compose up -d` |
-| Quadlets | `./prepare_environment.sh` again. It asks for destinations, separated by commas or spaces, and turns a pasted `https://` webhook URL of Slack or Discord into `slack://` or `discord://` |
+| Quadlets | at install, `prepare_environment.sh` asks for them, separated by commas or spaces, and turns a pasted `https://` webhook URL of Slack or Discord into `slack://` or `discord://`. Later: `ADMIN_NOTIFY=` in `firefox-sync-admin.container`, see [Change a setting](../install/podman.md#change-a-setting) |
 | Helm | `admin.notify`, a list of these URLs, then `helm upgrade` |
 
 The scheme says the kind. For the services that give you a webhook URL, it is that URL with `https://` replaced by the scheme:

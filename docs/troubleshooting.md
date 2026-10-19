@@ -7,7 +7,7 @@ Symptoms and their fixes, by area. Each entry starts with what you see: an error
 - **`docker compose up -d` fails, the Sync server stays down, with `ERROR: SYNC_X and X are both set ...`.** A setting has both its old and its new name, in `.env` or in the environment docker compose runs in. Run `./prepare_environment.sh --upgrade` for `.env`, or `unset` the old name in your shell. See [When both names are set](upgrading.md#when-both-names-are-set).
 - **The init container refuses to start on an empty value, or on a `<REPLACE_WITH_...>` placeholder.** The public URL or a database password was never filled in. Set it in `.env` ([Settings](reference/settings.md#sync)).
 - **The init container logs a warning listing old setting names, and the setup check "Old setting names (.env, environment)" fails.** Run `./prepare_environment.sh --upgrade`: see [Renamed settings](upgrading.md#renamed-settings).
-- **`413 Request Entity Too Large` in `about:sync-log`.** The reverse proxy refuses requests over its body size; a Sync request can be up to 2.5 MB. With nginx, `client_max_body_size 10m;` in the `server` block of your Sync host: see [Reverse proxy](reverse-proxy.md). With the Helm chart, the Ingress annotation: see [Ingress](install/helm.md#ingress).
+- **`413 Request Entity Too Large` in `about:sync-log`.** The reverse proxy's limit of the request body is lower than the Sync server's: raise it, see [Request size](reverse-proxy.md#request-size). With the Helm chart, the Ingress annotation: see [Ingress](install/helm.md#ingress).
 - **Anything else in `SYNC_MAX_USERS`** (empty, not a number) stops the init container, and with it the Sync server. The forms it takes: [Limits](limits.md#sync_max_users).
 - **The account limit does not change after editing `.env`.** With `initial:N` the value is set only once; after that the admin UI manages it. See [Limits](limits.md#sync_max_users).
 
@@ -40,7 +40,8 @@ Symptoms and their fixes, by area. Each entry starts with what you see: an error
 
 ## Podman
 
-- **The units still have `%VARIABLE%` placeholders, or a setting changed in `.env` has no effect.** `prepare_environment.sh` replaces the placeholders with the values of `.env` when it installs the units. Make sure `.env` is in the project's directory and has the setting, then run `./prepare_environment.sh` again and choose the Quadlets.
+- **A setting changed in `.env` has no effect.** The installed units hold their own copy of the values: change it there, see [Change a setting](install/podman.md#change-a-setting).
+- **`prepare_environment.sh` stops with `ERROR: <unit> needs <NAME>, which is not set in .env`.** A unit has a `%NAME%` placeholder the script has no value for: the units of `config/quadlet/` and the script come from different releases. Use the files of one release.
 - **A one-shot unit does not run again** (the migrations, the init container, the sign-up policy). They stay "active" after their first run. Stop them along with the units that need them, as in [Quadlets](upgrading.md#quadlets).
 - **A unit points at `config/database/admin-user.sh`, which is gone.** Units rendered before the release that added `db/`: run `./prepare_environment.sh` again ([Files that moved](upgrading.md#files-that-moved)).
 - **The Sync server's state, logs and health checks.** See [Check the units](install/podman.md#check-the-units).

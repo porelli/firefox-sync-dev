@@ -41,7 +41,7 @@ The overview shows the accounts against their limits: in the Using Sync and Acco
 
 A change applies at once, without a restart. What each form of the two settings means, and what counts, is in [Limits](../limits.md): [`SYNC_MAX_USERS`](../limits.md#sync_max_users) and [`FXA_MAX_ACCOUNTS`](../limits.md#fxa_max_accounts).
 
-The rows turn amber from 90% ("near the limit") and when every place is taken ("full"), see [Needs attention](monitoring.md#needs-attention). Below that, a row shows the count and is not counted by the health light.
+The rows turn amber when the limit is near or reached: when that is, and how it alerts, is in [Near and full](../limits.md#near-and-full). Below that, a row shows the count and is not counted by the health light.
 
 ## Sign-ups
 
@@ -208,7 +208,7 @@ Every round of checks the admin UI reads the new events of every account, oldest
 
 Mozilla's table has no index on the time of the events, so each round scans all of `fxa.securityEvents` (on your server with `EXTERNAL_DB`), as the daily pruning does. Kept for 30 days on a server of a few people, that is a few thousand rows: nothing. With thousands of accounts or a long `ADMIN_RETENTION_DAYS`, keep an eye on it. The stack does not change Mozilla's tables.
 
-The admin UI reads the history through the view `ffs.security_events`: the name, time, IP address and confirmation of each event, not the rest. Its JSON can hold the recovery phone's number. The daily [pruning](storage.md#maintenance-and-retention) deletes events older than `ADMIN_RETENTION_DAYS`, and deleting an account deletes its history.
+The admin UI reads the history through the view `ffs.security_events`. What it reads of each entry, and how long the entries are kept: [Security history](../accounts.md#security-history).
 </details>
 
 ## Sync data

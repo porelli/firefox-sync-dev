@@ -135,7 +135,7 @@ The release that added `db/` moved some files. The image names and the names of 
 - `config/database/` is gone. `sync-mariadb.sql` is now [db/mysql/sync.sql](/db/mysql/sync.sql), `sync-postgres.sql` is [db/postgres/sync.sql](/db/postgres/sync.sql), and `fxa-mysql.sql`, `fxa-mariadb.sql` and `admin-user.sh` are in [db/mysql/](/db/mysql). With your own database server, `prepare_environment.sh` reads them from there. If you fill in the SQL by hand, take it from the new paths ([Create the databases and users](databases.md#create-the-databases-and-users)).
 - `syncstorage-rs-init/` and `syncstorage-rs-init-postgres/` are now `db/mysql/init/` and `db/postgres/init/`. This only matters if you build the init images yourself (`docker build db/mysql/init`).
 - `config/quadlet/mysql/` is now `config/quadlet/sync-mysql/` (`SYNC_DB=mysql`), where `prepare_environment.sh` looks for it. The units keep their names, but the database units now mount `db/mysql/admin-user.sh`. Render them again before the next start (the Quadlet steps below do): the old units point at `config/database/admin-user.sh`, which `git pull` removes.
-- nginx: [config/nginx/syncstorage-rs-example.conf](/config/nginx/syncstorage-rs-example.conf) now has `client_max_body_size 10m;`. Your `config/nginx/syncstorage-rs.conf` (written once by `prepare_environment.sh`) and your own proxy keep their setting. Without the line nginx refuses requests over 1 MB with 413, and a Sync request can be up to 2.5 MB: add it to the `server` block of your Sync host.
+- nginx: [config/nginx/syncstorage-rs-example.conf](/config/nginx/syncstorage-rs-example.conf) now has `client_max_body_size 10m;`. Your `config/nginx/syncstorage-rs.conf` (written once by `prepare_environment.sh`) and your own proxy keep their setting. Add it to the `server` block of your Sync host, see [Request size](reverse-proxy.md#request-size).
 - Not a git clone: after copying the new files, delete the old `config/database/`, `config/quadlet/mysql/`, `syncstorage-rs-init/` and `syncstorage-rs-init-postgres/`.
 
 ### The database majors of an install from before
@@ -272,17 +272,21 @@ Each database image moves to a new major in its own way. Which majors are suppor
 
 | Database | Setting (Helm value) | Not set | New installs (`prepare_environment.sh`) | Installs from before (`--upgrade`) | On a new major |
 |---|---|---|---|---|---|
-| Sync on MariaDB | none in compose (`database.image.mariadb`) | `mariadb:lts` | `mariadb:lts` | `mariadb:lts` | the data is upgraded at the first start, silently, with no way back but a backup |
-| Sync on MySQL (`SYNC_DB=mysql`) | `SYNC_MYSQL_IMAGE` (`database.image.mysql`) | `mysql:lts` | `mysql:lts` | `mysql:8` | not set: the container refuses to start on data of another major; set: the data is upgraded at the first start |
-| Sync on PostgreSQL | `SYNC_POSTGRES_IMAGE` (`database.image.postgres`) | `postgres:latest` | the major `postgres:latest` is at, for example `postgres:18` | `postgres:18` | the image refuses to start on an older major's data |
-| accounts on MySQL (`FXA_DB=mysql`) | `FXA_MYSQL_IMAGE`, `FXA_MYSQL_ARGS` | `mysql:lts` | `mysql:lts` with our accounts images; `mysql:8` and `FXA_MYSQL_ARGS` with others | `mysql:8` and `FXA_MYSQL_ARGS` | not set: `fxa-db` refuses to start on data of another major; set: the data is upgraded at the first start |
-| accounts on MariaDB (`FXA_DB=mariadb`) | `FXA_MARIADB_IMAGE` | `mariadb:lts` | `mariadb:lts` | `mariadb:11` | the data is upgraded at the first start (`MARIADB_AUTO_UPGRADE`), silently |
+| Sync on MariaDB: `syncstorage_db`, `tokenserver_db`, `backup` | none in compose (`database.image.mariadb`) | `mariadb:lts` | nothing: `mariadb:lts` | nothing: `mariadb:lts` | the data is upgraded at the first start, silently, with no way back but a backup |
+| Sync on MySQL (`SYNC_DB=mysql`): the same three | `SYNC_MYSQL_IMAGE` (`database.image.mysql`) | `mysql:lts` | `mysql:lts` | `mysql:8` | not set: the container refuses to start on data of another major; set: the data is upgraded at the first start |
+| Sync on PostgreSQL: `postgres_db`, `backup` | `SYNC_POSTGRES_IMAGE` (`database.image.postgres`) | `postgres:latest` | the major `postgres:latest` is at, for example `postgres:18` | `postgres:18` | the image refuses to start on an older major's data |
+| accounts on MySQL (`FXA_DB=mysql`): `fxa-db`, `backup-fxa` | `FXA_MYSQL_IMAGE`, `FXA_MYSQL_ARGS` | `mysql:lts` | `mysql:lts` with our accounts images; `mysql:8` and `FXA_MYSQL_ARGS` with others | `mysql:8` and `FXA_MYSQL_ARGS` | not set: `fxa-db` refuses to start on data of another major; set: the data is upgraded at the first start |
+| accounts on MariaDB (`FXA_DB=mariadb`): `fxa-db`, `backup-fxa` | `FXA_MARIADB_IMAGE` | `mariadb:lts` | `mariadb:lts` | `mariadb:11` | the data is upgraded at the first start (`MARIADB_AUTO_UPGRADE`), silently |
+| the accounts' cache: `fxa-redis` | none | `redis:alpine` | nothing | nothing | no data to upgrade |
 
 - The setting is also the image of the backups of that database, so the dump's client matches the server.
+- "Installs from before" are those set up by a release that did not write these settings. Running `prepare_environment.sh` again on one, or a new setup that finds its database volumes, writes the same pins.
+- `prepare_environment.sh` reads the label of the accounts image to choose between `mysql:lts` and `mysql:8` ([Upstream patches](reference/images.md#upstream-patches)). When it cannot read the label, it writes `mysql:8` and says so.
+- With Quadlets, `prepare_environment.sh` writes the same images into the units when it installs them. Quadlets have no PostgreSQL.
 - `lts` moves to the next long-term major when MariaDB or MySQL releases it. To choose when the data moves, pin a major: `mariadb:12`, `mysql:9`, `postgres:18` (Helm: fully qualified, `docker.io/library/mysql:9`).
 - The refusal on another MySQL major comes from [db/mysql/keep-major.sh](/db/mysql/keep-major.sh): `keep-major.sh: this database is MySQL 8, the image is MySQL 9`. Set the setting to the major the data has, or move it as in [MySQL 8 to 9](#mysql-8-to-9).
 - `FXA_MYSQL_ARGS` is `--mysql-native-password=ON --authentication-policy=mysql_native_password` for accounts images without [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) (Mozilla's, and ours from before). MySQL 9 refuses those options. Which images have it: [MySQL or MariaDB](accounts.md#mysql-or-mariadb).
-- With your own database server, the setting is only the backups' client: `pg_dump` must be at least the server's major.
+- With your own database server, the setting is only the backups' client: see [PostgreSQL](databases.md#postgresql).
 - A chart cannot read the image's major at install, as `prepare_environment.sh` does: pin `database.image.postgres` in your values (`kubectl exec sts/ffs-firefox-sync-postgres -- postgres --version` shows the major the release runs). The install's NOTES say so too.
 
 ### MariaDB

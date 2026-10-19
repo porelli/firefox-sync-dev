@@ -10,7 +10,7 @@ The examples are nginx configs. `prepare_environment.sh` writes them with your v
 |---|---|---|
 | `sync.example.com` | `SYNC_PUBLIC_URL` | `SYNC_EXPORT_PORT` (`5000`) |
 
-The admin UI is better reached through an SSH tunnel than published: see [The admin UI](#the-admin-ui).
+The admin UI is better reached through an SSH tunnel than published: see [Reach it](admin/README.md#reach-it).
 
 With [self-hosted accounts](accounts.md), three more, and two optional:
 
@@ -22,7 +22,7 @@ With [self-hosted accounts](accounts.md), three more, and two optional:
 | `admin.example.com` (optional) | `ADMIN_OIDC_REDIRECT_URL` | `127.0.0.1:8090`, to [sign in to the admin UI with these accounts](admin/signing-in.md#self-hosted-accounts) |
 | `pairing.example.com` (optional) | `FXA_PAIRING_URL` | `127.0.0.1:8058`, a websocket: see [Pairing](#pairing) |
 
-The ports of the accounts are those of `FXA_*_EXPORT_PORT` and `ADMIN_GATE_EXPORT_PORT` in `.env`: see [Settings](reference/settings.md).
+The ports of the accounts are those of `FXA_*_EXPORT_PORT` and `ADMIN_GATE_EXPORT_PORT` in `.env`: see [Settings](reference/settings.md#accounts).
 
 `SYNC_EXPORT_PORT` takes the form of a compose port. A bare port, such as `5000`, listens on every address of the host. `127.0.0.1:5000` keeps it to a proxy on the same host. The others listen on `127.0.0.1` only by default.
 
@@ -49,7 +49,7 @@ location = /v1/account/create {
 }
 ```
 
-The gate answers refused sign-ups with an error the sign-up page shows, "The request was blocked for security reasons", instead of "Unexpected error". Without it, the accounts database refuses them all the same. `prepare_environment.sh` removes this block when you don't enable the admin UI. How sign-ups are refused: see [Who can sign up](accounts.md#who-can-sign-up).
+`prepare_environment.sh` removes this block when you don't enable the admin UI. Without the gate the accounts database still refuses the sign-ups the policy does not allow. What the gate adds: see [Who can sign up](accounts.md#who-can-sign-up).
 
 ## Pairing
 
@@ -89,13 +89,7 @@ Mozilla's default depth is 3, for their load balancers. Behind a single proxy, i
 
 ## The admin UI
 
-The admin UI listens on `ADMIN_EXPORT_PORT`, `127.0.0.1:8090` by default: the server itself only. The simplest and safest way to reach it is an SSH tunnel, without publishing it at all:
-
-```bash
-ssh -L 8090:127.0.0.1:8090 your-server
-```
-
-Then open `http://localhost:8090`.
+The admin UI listens on `ADMIN_EXPORT_PORT` (`127.0.0.1:8090`), and is best reached without publishing it: see [Reach it](admin/README.md#reach-it).
 
 To publish it behind nginx instead, on a host name of its own:
 

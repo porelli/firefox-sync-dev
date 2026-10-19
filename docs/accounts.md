@@ -30,7 +30,7 @@ Mozilla does not support self-hosting its accounts service, and changes it every
    docker compose up -d
    ```
 
-   With Quadlets, start the accounts' units as in [Podman](install/podman.md#quadlets).
+   With Quadlets, start the accounts' units as in [Podman](install/podman.md#self-hosted-accounts).
 
    The first start takes a few minutes: the databases are created, then the keys are generated.
 1. [Set up Firefox](firefox.md#self-hosted-accounts).
@@ -60,7 +60,7 @@ The keys are kept in the `fxa-keys` volume. Don't lose it: without it every sess
    docker compose -f docker-compose.yml -f docker-compose.fxa.yml up -d
    ```
 
-Every setting: [Settings](reference/settings.md).
+Every setting: [Settings](reference/settings.md#accounts).
 
 ## MySQL or MariaDB
 
@@ -81,7 +81,7 @@ Choose before the first start. MariaDB gets its own volume, `fxa-db-mariadb` (Qu
 
 Mozilla could release a migration that works on MySQL only. A release is published here once it passes on MySQL: a failure on MariaDB does not hold it back. With MariaDB, pin `FXA_VERSION`, and upgrade once a release passed the `test-mariadb` jobs of [fxa.yml](/.github/workflows/fxa.yml).
 
-The image of `fxa-db` is `FXA_MYSQL_IMAGE` or `FXA_MARIADB_IMAGE`. Their defaults, and the pins for installs from before: [Default tags and pins](databases.md#default-tags-and-pins). Moving to a newer major: [MariaDB](upgrading.md#mariadb), or [MySQL 8 to 9](upgrading.md#mysql-8-to-9).
+The image of `fxa-db` is `FXA_MYSQL_IMAGE` or `FXA_MARIADB_IMAGE`. Their defaults, the pins for installs from before, and moving to a newer major: [Database majors](upgrading.md#database-majors).
 
 ### MySQL 9
 
@@ -180,7 +180,7 @@ Privacy, plainly:
 
 - Tested on every release: sign-up, email confirmation, sign-in, OAuth for Sync, syncing, and a second device. A real Firefox signs up on one profile through the accounts pages, and a second profile signs in and receives its bookmark.
 - Send tab to device uses Mozilla's public push service, as Firefox does with Mozilla accounts.
-- Pairing a phone with a QR code ([Pair a phone](firefox.md#pair-a-phone)) uses Mozilla's channel server, unless you run your own. To run it, uncomment `COMPOSE_PROFILES=pairing` and `FXA_PAIRING_URL=wss://pairing.example.com` in `.env`, and proxy that host name (a websocket) to `FXA_PAIRING_EXPORT_PORT`. `config/nginx/fxa-example.conf` has an example.
+- Pairing a phone with a QR code ([Pair a phone](firefox.md#pair-a-phone)) uses Mozilla's channel server, unless you run your own: see [Pairing](reverse-proxy.md#pairing).
 - The accounts service rate-limits sign-in attempts itself, in Redis, with upstream's `rate-limit-rules.txt`. For example: 5 failed sign-ins per IP address and email in 15 minutes. It reads the client's address from `X-Forwarded-For`, see [Client IP address](reverse-proxy.md#client-ip-address).
 - Not available: payments and subscriptions, the recovery phone (SMS), sign-in with Google or Apple, and the deferred clean-up tasks and event notifications to other services. They need Google Cloud. The [security history](#security-history) does not.
 

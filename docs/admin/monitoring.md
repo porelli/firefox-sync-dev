@@ -27,8 +27,8 @@ The top of the overview lists what to look at now, one line each, with a link to
 | a certificate of a public URL expiring in less than 14 days | Health |
 | sign-ups that bypass the sign-up gate, see [Public checks](#public-checks) | Health |
 | the SMTP server does not work, or the last alert email failed | Health, the alert status |
-| 90% of max users or more taken, or all of them (max users 0 is on purpose, and `unlimited` has no limit: not listed) | the max users form |
-| self-hosted accounts: 90% of `FXA_MAX_ACCOUNTS` or more created, or all of them | the max accounts form |
+| max users near or at the limit, see [Near and full](../limits.md#near-and-full) | the max users form |
+| self-hosted accounts: max accounts near or at the limit | the max accounts form |
 | a backup failed, or the last good one is older than 36 hours | [Backups](../backups.md) |
 | orphaned Sync data, see [Storage](storage.md) | the purge |
 | Sync data changed without metrics from the Sync server: it needs a restart, see [Sync metrics](#sync-metrics) | Activity |
@@ -40,7 +40,7 @@ The top of the overview lists what to look at now, one line each, with a link to
 
 The links to a part of the list show only those accounts: `/?show=blocked`, `unconfirmed`, `unconfirmed-sign-in`, `inactive`, `inactive-devices`.
 
-Some lines also alert, as events of kind `attention`: the limits (at 90%, when full, and under 90% again), Sync data changed without metrics, alert emails failing, a spike of errors, a database growing fast. Each alerts once when its state changes, not every minute, and at the start of the admin UI when it is already the case. The other lines have alerts of their own already (components, releases, certificates, blocks, backups).
+Some lines also alert, as events of kind `attention`: the limits (see [Near and full](../limits.md#near-and-full)), Sync data changed without metrics, alert emails failing, a spike of errors, a database growing fast. Each alerts once when its state changes, not every minute, and at the start of the admin UI when it is already the case. The other lines have alerts of their own already (components, releases, certificates, blocks, backups).
 
 The limits, the error rate and the growth are also rows of the health table. The health light counts them as "to check" only when they are near or over.
 

@@ -192,7 +192,7 @@ admin:
   alertEmail: you@example.com
 ```
 
-The values are the settings of `.env` under other names: `admin.alertEmail` is `ADMIN_ALERT_EMAIL`, `admin.oidc.*` is `ADMIN_OIDC_*`, `admin.notify` is `ADMIN_NOTIFY` (a list of URLs), and so on. Email alerts also need the SMTP server's values. Each one is in [values.yaml](/charts/firefox-sync/values.yaml) and in the Helm column of [Settings](../reference/settings.md).
+The values are the settings of `.env` under other names: `admin.alertEmail` is `ADMIN_ALERT_EMAIL`, `admin.oidc.*` is `ADMIN_OIDC_*`, `admin.notify` is `ADMIN_NOTIFY` (a list of URLs), and so on. Email alerts also need the SMTP server's values, `admin.smtp.*`. Each one is in [values.yaml](/charts/firefox-sync/values.yaml) and in the Helm column of [Settings](../reference/settings.md#admin-ui).
 
 The chart tells the admin UI that it runs on Kubernetes (`ADMIN_DEPLOYMENT=kubernetes`). Its pages then give `kubectl` and `helm upgrade` commands and the names of the values, instead of `.env` and docker compose.
 

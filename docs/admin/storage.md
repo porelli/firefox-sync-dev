@@ -48,13 +48,13 @@ The event says what it left.
 
 What runs by itself, once a day, kept across restarts (`ffs_jobs` in the admin UI's database). The Activity page shows each job's last run and what it did, and the event log has it (kind `maintenance`). A job that failed runs again an hour later.
 
-- **Pruning the accounts database**, with self-hosted accounts. See [below](#pruning-the-accounts-database).
+- **Pruning the accounts database**, with self-hosted accounts. See [below](#prune-the-accounts-database).
 - **The purge of the Sync storage**, with `ADMIN_PURGE=1`, see [Purge](#purge).
-- **Deleting old unconfirmed accounts**, with `ADMIN_DELETE_UNCONFIRMED_DAYS=N`, see [below](#deleting-old-unconfirmed-accounts).
+- **Deleting old unconfirmed accounts**, with `ADMIN_DELETE_UNCONFIRMED_DAYS=N`, see [below](#delete-old-unconfirmed-accounts).
 
 Every minute the admin UI also counts the accounts created in the last hour. More than `ADMIN_SIGNUP_BURST` (10; 0: never) is an event and an alert (kind `sign-up burst`), at most once an hour. It means someone is creating accounts in bulk: close sign-ups or switch to an allowlist if they are not yours, see [Sign-ups](accounts.md#sign-ups).
 
-### Pruning the accounts database
+### Prune the accounts database
 
 The daily pruning deletes:
 
@@ -67,7 +67,7 @@ The daily pruning deletes:
 
 To run it at once, click **Prune the accounts database now…** on the Activity page. Its confirm page says what goes (`GET /maintenance/prune`, whose form posts there). The overview says when it last ran, next to the schema levels.
 
-### Deleting old unconfirmed accounts
+### Delete old unconfirmed accounts
 
 With `ADMIN_DELETE_UNCONFIRMED_DAYS=N` (at least 1), the admin UI deletes the accounts created more than N days ago that never confirmed an email:
 

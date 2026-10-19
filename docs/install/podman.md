@@ -97,7 +97,7 @@ systemctl --user restart firefox-sync-syncstorage.service
 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-syncstorage-db.service firefox-sync-tokenserver-db.service
 ```
 
-When the admin UI's container is replaced, it restarts the Sync server, which looks up the admin UI's address only when it starts.
+A new admin UI container restarts the Sync server: see [Sync metrics](../admin/monitoring.md#sync-metrics).
 
 <details><summary>Podman before 5: the units start before their database is healthy</summary>
 
@@ -107,11 +107,19 @@ Podman 4.9 (Ubuntu 24.04) orders the units on the start of their container, not 
 
 ### Change a setting
 
-1. Edit `.env`.
-1. Run the setup script again, with the same answers: it writes the units again from `.env`.
+The installed units hold their own copy of the values: a change of `.env` alone does nothing. Don't run `prepare_environment.sh` again on a running install either: it writes a new `.env` from `.env-example`, with new passwords and secrets that the databases don't have.
+
+1. Find the units that have the setting. Inside the units some settings have the containers' names, for example `MAX_USERS` for `SYNC_MAX_USERS`:
 
    ```bash
-   ./prepare_environment.sh
+   grep -l 'MAX_USERS=' ~/.config/containers/systemd/firefox-sync-*.container
+   ```
+
+1. Change the value in their `Environment=` lines (a `%` is written `%%`), and in `.env` too, so that both agree.
+1. Reload systemd:
+
+   ```bash
+   systemctl --user daemon-reload
    ```
 
 1. Restart the init container and the Sync server. The migrations run again before the Sync server starts.
