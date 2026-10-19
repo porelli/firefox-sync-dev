@@ -402,23 +402,29 @@ fxa_objects_lint() {
     || fail "fxa.volumeOwnerInit=false: profile's init containers: $(fxa_inits "$(fxa_pod profile --set fxa.volumeOwnerInit=false)")"
   jq -e --arg a "${heartbeat}" '(.spec.initContainers | map({(.name): .}) | add) as $i
     | ($i["images-owner"] | .args == ["chown", "10001:10001", "/images"] and .securityContext.runAsUser == 0 and .securityContext.capabilities == {drop: ["ALL"], add: ["CHOWN"]})
-    and ($i["images-seed"] | .args == ["cp", "-an", "/fxa/packages/fxa-profile-server/var/public/.", "/images/"] and .securityContext.runAsUser == 10001 and (has("env") | not))
+    and ($i["images-seed"] | .args == ["find", "/fxa/packages/fxa-profile-server/var/public", "-mindepth", "1", "-maxdepth", "1", "-exec", "cp", "-an", "{}", "/images/", ";"] and .securityContext.runAsUser == 10001 and (has("env") | not))
     and ([$i["images-owner"], $i["images-seed"]] | map(.volumeMounts) == [[{name: "images", mountPath: "/images"}], [{name: "images", mountPath: "/images"}]])
     and ($i["wait-auth"] | .args[0:2] == ["node", "-e"] and .args[3:] == [$a] and (has("env") | not))' <<< "${profile}" > /dev/null \
     || fail "profile's init containers: $(jq -c '.spec.initContainers' <<< "${profile}")"
   # name, workingDir, args, ports, probes, mounts
-  [[ "$(jq -c '[.spec.containers[] | [.name, .workingDir, .args, [.ports[] | "\(.name)/\(.containerPort)"],
-      ([.startupProbe, .readinessProbe, .livenessProbe] | map("\(.httpGet.port)\(.httpGet.path) \(.periodSeconds),\(.timeoutSeconds),\(.failureThreshold)")),
+  [[ "$(jq -c '[.spec.containers[] | [.name, .workingDir, .args, [.ports[]? | "\(.name)/\(.containerPort)"],
+      ([.startupProbe, .readinessProbe, .livenessProbe] | map((if .httpGet then "\(.httpGet.port)\(.httpGet.path)" elif .tcpSocket then "tcp/\(.tcpSocket.port)" else "exec" end)
+        + " \(.periodSeconds),\(.timeoutSeconds),\(.failureThreshold)")),
       [.volumeMounts[] | "\(.name):\(.mountPath)\(if .readOnly then ":ro" else "" end)"]]]' <<< "${profile}")" == \
-    '[["profile","/fxa/packages/fxa-profile-server",["node","bin/server.js"],["http/1111"],["http/__heartbeat__ 15,10,40","http/__heartbeat__ 15,10,5","http/__heartbeat__ 15,10,5"],["images:/fxa/packages/fxa-profile-server/var/public"]],["profile-worker","/fxa/packages/fxa-profile-server",["node","bin/worker.js"],["worker/1113"],["worker/__heartbeat__ 15,10,40","worker/__heartbeat__ 15,10,5","worker/__heartbeat__ 15,10,5"],["images:/fxa/packages/fxa-profile-server/var/public"]],["profile-static","/fxa/packages/fxa-profile-server",["node","bin/_static.js"],["static/1112"],["static/a/00000000000000000000000000000000 15,10,40","static/a/00000000000000000000000000000000 15,10,5","static/a/00000000000000000000000000000000 15,10,5"],["images:/fxa/packages/fxa-profile-server/var/public:ro"]],["img-proxy",null,["node","/fxa-config/img-proxy.js"],["img/1114"],["img/img/a/00000000000000000000000000000000 15,10,40","img/img/a/00000000000000000000000000000000 15,10,5","img/img/a/00000000000000000000000000000000 15,10,5"],["fxa-config:/fxa-config:ro"]]]' ]] \
+    '[["profile","/fxa/packages/fxa-profile-server",["node","bin/server.js"],["http/1111"],["http/__heartbeat__ 15,10,40","http/__heartbeat__ 15,10,5","http/__heartbeat__ 15,10,5"],["images:/fxa/packages/fxa-profile-server/var/public"]],["profile-worker","/fxa/packages/fxa-profile-server",["node","bin/worker.js"],[],["exec 15,10,40","exec 15,10,5","exec 15,10,5"],["images:/fxa/packages/fxa-profile-server/var/public"]],["profile-static","/fxa/packages/fxa-profile-server",["node","bin/_static.js"],["static/1112"],["static/a/00000000000000000000000000000000 15,10,40","static/a/00000000000000000000000000000000 15,10,5","static/a/00000000000000000000000000000000 15,10,5"],["images:/fxa/packages/fxa-profile-server/var/public:ro"]],["img-proxy",null,["node","/fxa-config/img-proxy.js"],["img/1114"],["img/img/a/00000000000000000000000000000000 15,10,40","img/img/a/00000000000000000000000000000000 15,10,5","tcp/img 15,10,5"],["fxa-config:/fxa-config:ro"]]]' ]] \
     || fail "profile's containers: $(jq -c '[.spec.containers[] | del(.env)]' <<< "${profile}")"
+  # the worker on the pod's loopback alone (chart-only: compose's has a network of its own),
+  # its probes compose's healthcheck on 127.0.0.1 (an httpGet goes to the pod's IP)
+  jq -e --arg c "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))" '.spec.containers[] | select(.name == "profile-worker")
+    | [.startupProbe, .readinessProbe, .livenessProbe] | map(.exec.command) == [["node", "-e", $c], ["node", "-e", $c], ["node", "-e", $c]]' <<< "${profile}" > /dev/null \
+    || fail "profile-worker's probes: $(jq -c '.spec.containers[] | select(.name == "profile-worker") | [.startupProbe, .readinessProbe, .livenessProbe]' <<< "${profile}")"
   # shellcheck disable=SC2016 # (the regex, literally)
   want='NODE_ENV=production HOST=0.0.0.0 DB=mysql MYSQL_HOST=test-release-firefox-sync-fxa-db MYSQL_PORT=3306 MYSQL_USERNAME=root MYSQL_PASSWORD=secret:FXA_MYSQL_PASSWORD'
   want+=' PUBLIC_URL=https://profile.example.test AUTH_SERVER_URL=http://test-release-firefox-sync-fxa-auth:9000/v1 OAUTH_SERVER_URL=http://test-release-firefox-sync-fxa-auth:9000/v1'
-  want+=' AUTH_SECRET_BEARER_TOKEN=secret:FXA_PROFILE_SECRET REDIS_HOST=test-release-firefox-sync-fxa-redis REDIS_PASSWORD=secret:FXA_REDIS_PASSWORD WORKER_URL=http://localhost:1113'
+  want+=' AUTH_SECRET_BEARER_TOKEN=secret:FXA_PROFILE_SECRET REDIS_HOST=test-release-firefox-sync-fxa-redis REDIS_PASSWORD=secret:FXA_REDIS_PASSWORD WORKER_URL=http://127.0.0.1:1113'
   want+=' IMG=local IMG_URL=https://profile.example.test/img/a/{id} IMG_PROVIDERS_FXA=^https://profile.example.test/img/a/[0-9a-f]{32}$ EVENTS_ENABLED=false'
   [[ "$(fxa_env "${profile}" profile | paste -sd' ' -)" == "${want}" ]] || fail "profile's env: $(fxa_env "${profile}" profile | paste -sd' ' -)"
-  [[ "$(fxa_env "${profile}" profile-worker | paste -sd' ' -)" == "NODE_ENV=production WORKER_HOST=0.0.0.0 IMG=local" ]] || fail "profile-worker's env: $(fxa_env "${profile}" profile-worker | paste -sd' ' -)"
+  [[ "$(fxa_env "${profile}" profile-worker | paste -sd' ' -)" == "NODE_ENV=production WORKER_HOST=127.0.0.1 IMG=local" ]] || fail "profile-worker's env: $(fxa_env "${profile}" profile-worker | paste -sd' ' -)"
   [[ "$(fxa_env "${profile}" profile-static | paste -sd' ' -)" == "NODE_ENV=production HOST=0.0.0.0 IMG=local" ]] || fail "profile-static's env: $(fxa_env "${profile}" profile-static | paste -sd' ' -)"
   [[ -z "$(fxa_env "${profile}" img-proxy)" ]] || fail "img-proxy has an env"
   jq -e '(.spec.containers[] | select(.name == "img-proxy") | .securityContext.readOnlyRootFilesystem == true)
@@ -432,7 +438,7 @@ fxa_objects_lint() {
     || fail "the profile's PVC (keep, RWO, 1Gi), Service (http 1111, static 1112, img 1114) or Recreate"
   [[ "$(fxa_pod content --set existingSecret=mine | jq -r '.metadata.annotations | has("checksum/secrets")')$(fxa_pod profile --set existingSecret=mine | jq -r '.metadata.annotations | has("checksum/secrets")')" == falsefalse ]] \
     || fail "existingSecret: checksum/secrets on content or profile"
-  check "profile: images-owner (not with volumeOwnerInit=false), images-seed, wait-auth; profile, -worker, -static with compose's commands, env (REDIS_PASSWORD too), workingDir and healthchecks, the avatars' PVC (kept, read-only for static); img-proxy without env, read-only; Service http 1111, static 1112, img 1114"
+  check "profile: images-owner (not with volumeOwnerInit=false), images-seed, wait-auth; profile, -worker, -static with compose's commands, env (REDIS_PASSWORD too), workingDir and healthchecks, the avatars' PVC (kept, read-only for static); img-proxy without env, read-only, liveness its own port; the worker on 127.0.0.1 alone (exec probes); Service http 1111, static 1112, img 1114"
 
   # img-proxy.js in the ConfigMap; the memory requests of the values; extraCaCerts
   jq -j '.[] | select(.kind == "ConfigMap" and .metadata.name == "test-release-firefox-sync-fxa-config") | .data["img-proxy.js"]' <<< "${objs}" \
@@ -581,12 +587,24 @@ fxa_e2e() {
   docker rm -f "${cid}" > /dev/null 2>&1 || true
   [[ "${got}" == *WRONGPASS* ]] || fail "fxa-redis took the password's first word alone: ${got}"
   check "fxa-redis: a password with spaces, quotes, a backslash, a \$ and a newline is its password as it is"
+  # images-seed with fxa.volumeOwnerInit=false, on the image: a new volume as fsGroup leaves it
+  # (root's, group 10001, 2775), the seed as 10001 copies into it and leaves it as it is
+  local vol="ffs-e2e-images-$$" seed=()
+  mapfile -t seed < <(helm template "${REL}" "${CHART_DIR}" -f "${SCRIPT_DIR}/helm/fxa-values.yaml" --set fxa.enabled=true --set fxa.volumeOwnerInit=false | manifests \
+    | jq -r --arg n "${FULL}-fxa-profile" '.[] | select(.kind == "Deployment" and .metadata.name == $n) | .spec.template.spec.initContainers[] | select(.name == "images-seed") | .args[]')
+  docker volume create "${vol}" > /dev/null
+  docker run --rm --user 0 --entrypoint sh -v "${vol}:/images" "${fxa_image}" -c 'chown 0:10001 /images && chmod 2775 /images' > /dev/null
+  got=$(docker run --rm --user 10001:10001 -v "${vol}:/images" --entrypoint "${seed[0]}" "${fxa_image}" "${seed[@]:1}" 2>&1 \
+    && docker run --rm --user 10001:10001 -v "${vol}:/images" --entrypoint sh "${fxa_image}" -c 'touch /images/w && rm /images/w && stat -c "%u:%g %a" /images && ls -A /images' 2>&1 | paste -sd' ' -) || true
+  docker volume rm "${vol}" > /dev/null 2>&1 || true
+  [[ "${got}" == "0:10001 2775 .keep" ]] || fail "images-seed (${seed[*]}) on a volume of root's, group 10001: ${got}"
+  check "images-seed with fxa.volumeOwnerInit=false: the image's var/public copied into a volume of root's (group 10001, 2775), left as it was, 10001 writes there"
 
-  helm install "${REL}" "${CHART_DIR}" -f "${SCRIPT_DIR}/helm/fxa-values.yaml" --set fxa.enabled=true \
-    --set database.backend="${backend}" --set fxa.database.backend="${backend}" \
-    --set image.repository="${repository}" --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}" \
-    --set image.adminTag="${ADMIN_TAG}" --set fxa.image.repository="${fxa_image%:*}" --set fxa.image.tag="${fxa_image##*:}" "${db_args[@]}" \
-    --wait --timeout 20m || fail "helm install with the accounts did not get Ready"
+  local install=("${REL}" "${CHART_DIR}" -f "${SCRIPT_DIR}/helm/fxa-values.yaml" --set fxa.enabled=true
+    --set database.backend="${backend}" --set fxa.database.backend="${backend}"
+    --set image.repository="${repository}" --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}"
+    --set image.adminTag="${ADMIN_TAG}" --set fxa.image.repository="${fxa_image%:*}" --set fxa.image.tag="${fxa_image##*:}" "${db_args[@]}")
+  helm install "${install[@]}" --wait --timeout 20m || fail "helm install with the accounts did not get Ready"
   check "helm install with the accounts (${backend}) Ready, in a namespace enforcing PodSecurity baseline"
 
   # the auth server only after its init containers, in compose's order, all succeeded
@@ -718,13 +736,19 @@ fxa_e2e() {
 
   # from a pod of the cluster, with curl (the Sync server's image): Firefox's configuration
   # on the chart's URLs, the avatars under /img/ (img-proxy) and without it (profile-static)
+  # (and the worker, on the pod's loopback alone: not from another pod)
+  local profile_ip
+  profile_ip=$(kubectl get pods -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-profile" -o jsonpath='{.items[0].status.podIP}')
+  kubectl exec "${profile}" -c profile -- node -e "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))" \
+    || fail "the profile container does not reach its worker at 127.0.0.1:1113"
   kubectl delete pod curl-probe --ignore-not-found --wait=true > /dev/null
   kubectl run curl-probe --image="${SYNC_IMAGE}" --image-pull-policy=Never --restart=Never --command -- sh -c "
     c=http://${FULL}-fxa-content:3030 p=http://${FULL}-fxa-profile a=/a/00000000000000000000000000000000
     echo \"config \$(curl -fsS --max-time 20 \$c/.well-known/fxa-client-configuration | tr -d '\n')\"
     for u in :1114/img\$a :1114\$a :1112\$a :1114/img/a/0123456789abcdef0123456789abcdef; do echo \"GET\$u \$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' \$p\$u)\"; done
     echo \"HEAD:1114/img\$a \$(curl -s --max-time 20 -I -o /dev/null -w '%{http_code}' \$p:1114/img\$a)\"
-    echo \"POST:1114/img\$a \$(curl -s --max-time 20 -X POST -o /dev/null -w '%{http_code}' \$p:1114/img\$a)\"" > /dev/null
+    echo \"POST:1114/img\$a \$(curl -s --max-time 20 -X POST -o /dev/null -w '%{http_code}' \$p:1114/img\$a)\"
+    echo \"worker \$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://${profile_ip}:1113/__heartbeat__)\"" > /dev/null
   kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/curl-probe --timeout=3m > /dev/null || fail "curl-probe did not complete: $(kubectl logs curl-probe 2>&1 | tail -5)"
   out=$(kubectl logs curl-probe)
   kubectl delete pod curl-probe --wait=true > /dev/null
@@ -732,9 +756,29 @@ fxa_e2e() {
     || fail "content's /.well-known/fxa-client-configuration: $(sed -n 's/^config //p' <<< "${out}")"
   got=$(grep -v '^config ' <<< "${out}" | paste -sd' ' -)
   want="GET:1114/img/a/00000000000000000000000000000000 200 GET:1114/a/00000000000000000000000000000000 404 GET:1112/a/00000000000000000000000000000000 200"
-  want+=" GET:1114/img/a/0123456789abcdef0123456789abcdef 404 HEAD:1114/img/a/00000000000000000000000000000000 200 POST:1114/img/a/00000000000000000000000000000000 405"
+  want+=" GET:1114/img/a/0123456789abcdef0123456789abcdef 404 HEAD:1114/img/a/00000000000000000000000000000000 200 POST:1114/img/a/00000000000000000000000000000000 405 worker 000"
   [[ "${got}" == "${want}" ]] || fail "the avatars: ${got}, expected ${want}"
-  check "content's fxa-client-configuration: auth_server_base_url https://api.fxa.test; the default avatar at :1114/img/a/0… (GET, HEAD) and :1112/a/0… 200, :1114/a/0… and a missing one 404, POST 405"
+  check "content's fxa-client-configuration: auth_server_base_url https://api.fxa.test; the default avatar at :1114/img/a/0… (GET, HEAD) and :1112/a/0… 200, :1114/a/0… and a missing one 404, POST 405; the worker reached at 127.0.0.1:1113 in its pod, not from another one"
+
+  # fxa.volumeOwnerInit=false on new volumes: no root init container; auth writes its keys
+  # and profile its avatars. (kind's local-path volumes are hostPath ones, a directory of
+  # root's, 0777, where the kubelet applies no fsGroup: the fsGroup case itself is the docker
+  # check before the install)
+  helm uninstall "${REL}" --wait --timeout 5m > /dev/null || fail "helm uninstall failed"
+  kubectl delete pvc --all --wait=true > /dev/null
+  helm install "${install[@]}" --set fxa.volumeOwnerInit=false --wait --timeout 20m > /dev/null \
+    || fail "helm install with fxa.volumeOwnerInit=false did not get Ready"
+  for name in "auth:wait-db=0 migrations=0 policy=0 wait-redis=0" "profile:images-seed=0 wait-auth=0"; do
+    got=$(kubectl get pods -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=fxa-${name%%:*}" -o json | jq -r '.items[0].status.initContainerStatuses[]
+      | "\(.name)=\(.state.terminated.exitCode // "none")"' | paste -sd' ' -) || true
+    [[ "${got}" == "${name#*:}" ]] || fail "fxa.volumeOwnerInit=false: the ${name%%:*} pod's init containers: ${got}"
+  done
+  [[ "$(kubectl exec "${auth}" -c auth -- ls /fxa-keys | paste -sd' ' -)" == "oauth-clients.json openid-key.json openid-oldKey.json public-key.json secret-key.json vapid-keys.json" ]] \
+    || fail "fxa.volumeOwnerInit=false: /fxa-keys has $(kubectl exec "${auth}" -c auth -- ls -l /fxa-keys)"
+  got=$(kubectl exec "${profile}" -c profile -- sh -c "touch ${public}/w && rm ${public}/w && stat -c '%u:%g %a' ${public} && ls -A ${public}" | paste -sd' ' -) \
+    || fail "fxa.volumeOwnerInit=false: profile cannot write the avatars' volume: ${got}"
+  [[ "${got}" == *" .keep" ]] || fail "fxa.volumeOwnerInit=false: the avatars' volume: ${got}"
+  check "fxa.volumeOwnerInit=false, new volumes: auth's init containers without keys-owner, its keys written; profile's without images-owner, the avatars' volume (${got% .keep}) seeded and written by 10001"
 
   echo ""
   echo "=== e2e of the accounts (${backend}) passed ==="

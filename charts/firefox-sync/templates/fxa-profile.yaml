@@ -100,14 +100,16 @@ spec:
               mountPath: /images
         {{- end }}
         # Docker copies the image's directory into a new volume, Kubernetes does not: the
-        # same here, what is there kept (cp -n)
+        # same here, what is there kept (cp -n). Its entries only: the volume's own directory
+        # is left as it is (root's with fxa.volumeOwnerInit false, where 10001 cannot set its
+        # mode or times)
         - name: images-seed
           image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
           {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
-          args: [cp, -an, {{ $public }}/., /images/]
+          args: [find, {{ $public }}, -mindepth, "1", -maxdepth, "1", -exec, cp, -an, "{}", /images/, ";"]
           volumeMounts:
             - name: images
               mountPath: /images
@@ -142,9 +144,9 @@ spec:
             {{- include "firefox-sync.secretEnv" (dict "root" . "name" "AUTH_SECRET_BEARER_TOKEN" "key" "FXA_PROFILE_SECRET") | nindent 12 }}
             # (and REDIS_PASSWORD, FXA_REDIS_PASSWORD: chart-only)
             {{- include "firefox-sync.fxaRedisEnv" (dict "root" . "names" (list "REDIS_HOST")) | trim | nindent 12 }}
-            # the worker is in this pod
+            # the worker is in this pod, on its loopback alone
             - name: WORKER_URL
-              value: http://localhost:1113
+              value: http://127.0.0.1:1113
             - name: IMG
               value: local
             - name: IMG_URL
@@ -186,7 +188,9 @@ spec:
               mountPath: {{ $public }}
             {{- with include "firefox-sync.fxaCaVolumeMount" . }}{{ . | nindent 12 }}{{ end }}
         # compose's fxa-profile-worker: its own HTTP server, where the profile server sends
-        # the uploaded avatars
+        # the uploaded avatars. Chart-only: on the pod's loopback alone (127.0.0.1, compose's
+        # 0.0.0.0 is on a network of its own), no other pod's client; its probes compose's
+        # healthcheck on 127.0.0.1 (an httpGet would go to the pod's IP)
         - name: profile-worker
           image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -202,30 +206,24 @@ spec:
             - name: NODE_ENV
               value: production
             - name: WORKER_HOST
-              value: 0.0.0.0
+              value: 127.0.0.1
             - name: IMG
               value: local
-          ports:
-            - name: worker
-              containerPort: 1113
           startupProbe:
-            httpGet:
-              path: /__heartbeat__
-              port: worker
+            exec:
+              command: [node, -e, "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 40
           readinessProbe:
-            httpGet:
-              path: /__heartbeat__
-              port: worker
+            exec:
+              command: [node, -e, "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 5
           livenessProbe:
-            httpGet:
-              path: /__heartbeat__
-              port: worker
+            exec:
+              command: [node, -e, "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 5
@@ -309,9 +307,10 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 5
+          # (alive: its own port; ready: through to profile-static, whose own liveness
+          # restarts it)
           livenessProbe:
-            httpGet:
-              path: /img/a/00000000000000000000000000000000
+            tcpSocket:
               port: img
             periodSeconds: 15
             timeoutSeconds: 10
