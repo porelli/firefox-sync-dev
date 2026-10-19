@@ -2,8 +2,9 @@
 """The chart against compose: per pair (compose service -> chart container) the same env
 variable names, the same values (but the hosts, compose's service names against the chart's
 <fullname>-..., and the secrets, which must come from the Secret where compose has a secret
-of .env), the same command, and probes that check what compose's healthcheck checks with its
-timings. The scripts the chart copies are byte-identical to compose's.
+of .env), the same command and working directory, and probes that check what compose's
+healthcheck checks with its timings. The scripts the chart copies are byte-identical to
+compose's. The self-hosted accounts (docker-compose.fxa.yml) too: the fxa-* cases.
 
   helm_parity.py [case...]   cases: see CASES (default: all), each with the admin UI and
                              the backups on and off
@@ -29,8 +30,16 @@ FULLNAME = f"{RELEASE}-firefox-sync"
 DOMAIN = "example.test"
 EXTDB = "extdb.example.test"
 
-MYSQL_SERVERS = "mariadb,mysql,external-mariadb,external-mysql"
-BUNDLED = "mariadb,mysql,postgres"
+# the accounts' cases (CASES): all, those with the bundled accounts database, those with the pairing
+# server; the Sync server is bundled MariaDB in all but fxa-postgres
+FXA = "fxa-mysql,fxa-mysql8,fxa-mariadb,fxa-external,fxa-postgres"
+FXA_BUNDLED = "fxa-mysql,fxa-mysql8,fxa-mariadb,fxa-postgres"
+FXA_PAIRING = FXA_BUNDLED
+SYNC_MARIADB = "mariadb,fxa-mysql,fxa-mysql8,fxa-mariadb,fxa-external"
+SYNC_POSTGRES = "postgres,fxa-postgres"
+
+MYSQL_SERVERS = f"{SYNC_MARIADB},mysql,external-mariadb,external-mysql"
+BUNDLED = f"{SYNC_MARIADB},mysql,{SYNC_POSTGRES}"
 
 # chart-only, compose-only or different, by design: "<cases>:<chart container>/<VAR>" -> why.
 # <cases>: * or the cases (comma-separated) the reason holds for; every case of an entry must
@@ -53,7 +62,7 @@ ALLOWED_DIFFERENCES = {
     "*:migrate/FFS_BOTH_ENV_NAMES": "compose-only: the old .env names set with their new ones; the chart has no .env",
     "*:syncstorage/FFS_BOTH_ENV_NAMES": "as migrate's",
     "*:db-init/FFS_BOTH_ENV_NAMES": "as migrate's",
-    "postgres,external-postgres:sync-role/FFS_BOTH_ENV_NAMES": "as migrate's",
+    f"{SYNC_POSTGRES},external-postgres:sync-role/FFS_BOTH_ENV_NAMES": "as migrate's",
     "*:db-init/FFS_OLD_ENV_NAMES": "compose-only: the old .env names still set, for the init container's warning; no .env here",
     "*:admin/FFS_OLD_ENV_NAMES": "compose-only: the old .env names still set, for the admin UI's setup check; no .env here",
     # the Sync server
@@ -64,21 +73,21 @@ ALLOWED_DIFFERENCES = {
     # database URLs with $(VAR): compose interpolates them into the URLs (and a $(VAR) must use them)
     f"{MYSQL_SERVERS}:migrate/STORAGE_DB_PASSWORD": "chart-only: the password of SYNC_SYNCSTORAGE__DATABASE_URL, $(STORAGE_DB_PASSWORD) there",
     f"{MYSQL_SERVERS}:migrate/TOKENSERVER_DB_PASSWORD": "chart-only: the password of SYNC_TOKENSERVER__DATABASE_URL, $(TOKENSERVER_DB_PASSWORD) there",
-    "postgres:migrate/POSTGRES_SYNC_PASSWORD": "chart-only: the password of the database URLs (the Sync role), $(POSTGRES_SYNC_PASSWORD) there",
+    f"{SYNC_POSTGRES}:migrate/POSTGRES_SYNC_PASSWORD": "chart-only: the password of the database URLs (the Sync role), $(POSTGRES_SYNC_PASSWORD) there",
     "external-postgres:migrate/POSTGRES_PASSWORD": "chart-only: the password of the database URLs with your own server (no Sync role), "
     "$(POSTGRES_PASSWORD) there",
     f"{MYSQL_SERVERS}:syncstorage/STORAGE_DB_PASSWORD": "as migrate's",
     f"{MYSQL_SERVERS}:syncstorage/TOKENSERVER_DB_PASSWORD": "as migrate's",
-    "postgres:syncstorage/POSTGRES_SYNC_PASSWORD": "as migrate's",
+    f"{SYNC_POSTGRES}:syncstorage/POSTGRES_SYNC_PASSWORD": "as migrate's",
     "external-postgres:syncstorage/POSTGRES_PASSWORD": "as migrate's",
     # the backups
     "mysql:backup/MARIADB_TLS_VERIFY": "bundled MySQL: false (the chart's one value, the init container's) where compose's backup "
     "inherits true; no effect: the backup image is MySQL's, backup.sh reads it with the MariaDB client only",
-    "mariadb,mysql:db/FFS_MYSQL_IMAGE": "compose-only: SYNC_MARIADB_IMAGE or SYNC_MYSQL_IMAGE as set in .env (empty: the "
+    f"{SYNC_MARIADB},mysql:db/FFS_MYSQL_IMAGE": "compose-only: SYNC_MARIADB_IMAGE or SYNC_MYSQL_IMAGE as set in .env (empty: the "
     "compose file's default), for db/mysql/keep-major.sh; the chart's image is always database.image.<backend>, chosen in "
     "the values, and checkDbMajor refuses another major (docs/upgrading.md#database-majors)",
-    "mariadb,mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
-    "postgres:db/FFS_POSTGRES_IMAGE": "compose-only in the server's container: SYNC_POSTGRES_IMAGE for the message of "
+    f"{SYNC_MARIADB},mysql:db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
+    f"{SYNC_POSTGRES}:db/FFS_POSTGRES_IMAGE": "compose-only in the server's container: SYNC_POSTGRES_IMAGE for the message of "
     "db/postgres/keep-major.sh, which the chart runs as its db-major init container (with database.image.postgres)",
     # the databases
     "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
@@ -87,6 +96,53 @@ ALLOWED_DIFFERENCES = {
     "mysql:db/MARIADB_USER": "as MARIADB_RANDOM_ROOT_PASSWORD",
     "mysql:db/MARIADB_PASSWORD": "as MARIADB_RANDOM_ROOT_PASSWORD",
     "mysql:db/MARIADB_AUTO_UPGRADE": "as MARIADB_RANDOM_ROOT_PASSWORD",
+    # the self-hosted accounts (docker-compose.fxa.yml)
+    f"{FXA_BUNDLED}:fxa-db/FFS_MYSQL_IMAGE": "compose-only: FXA_MYSQL_IMAGE or FXA_MARIADB_IMAGE as set in .env, for "
+    "db/mysql/keep-major.sh; the chart's image is always fxa.database.image.<backend>, and checkFxaDbBackend refuses "
+    "another major at render time (fxa.database.allowMajorUpgrade, docs/upgrading.md#database-majors)",
+    f"{FXA_BUNDLED}:fxa-db/FFS_MYSQL_SETTING": "as FFS_MYSQL_IMAGE",
+    f"{FXA}:profile-worker/WORKER_HOST": "chart-only 127.0.0.1 (compose 0.0.0.0): compose's worker is on a network of "
+    "compose's own, a pod's IP is reachable from every pod; profile, its one client, is in the same pod",
+    f"{FXA}:profile/WORKER_URL": "http://127.0.0.1:1113, not compose's fxa-profile-worker: the worker is in profile's pod, "
+    "on its loopback alone (WORKER_HOST)",
+    f"{FXA}:admin/ADMIN_GATE_EXPORT_PORT": "what the configuration page shows for the sign-up gate: the Service "
+    "<fullname>-admin:8081 (the Ingress of the accounts' API routes to it), compose's host port",
+    f"{FXA}:admin/FXA_REDIS": "chart-only: compose's admin UI finds Redis by its default, fxa-redis:6379; the chart's "
+    "Service is <fullname>-fxa-redis",
+    f"{FXA}:admin/FXA_CONTENT_INTERNAL_URL": "chart-only: compose's admin UI reaches the accounts' servers by its "
+    "defaults, their compose service names; the chart's Services are <fullname>-fxa-*",
+    f"{FXA}:admin/FXA_PROFILE_INTERNAL_URL": "as FXA_CONTENT_INTERNAL_URL",
+    f"{FXA_PAIRING}:admin/FXA_PAIRING_INTERNAL_URL": "as FXA_CONTENT_INTERNAL_URL, with fxa.pairing.enabled",
+    "fxa-external:admin/FXA_PAIRING_URL": "with fxa.pairing.url but fxa.pairing.enabled false (a pairing server of "
+    "your own elsewhere: Firefox still gets the URL, content's PAIRING_SERVER_BASE_URI) the chart's is empty: the admin "
+    "UI's health check of the pairing server goes to FXA_PAIRING_INTERNAL_URL, else http://fxa-pairing:8000, which no "
+    "Service answers; compose with FXA_PAIRING_URL and no pairing profile checks a server that is not there",
+    f"{FXA}:admin/ADMIN_UNCONFIRMED_HOURS": "compose-only: empty there by default (the admin UI's 72); the chart has no "
+    "value for it (docs/reference/settings.md: no Helm column), so the admin UI's default",
+    # fxa.extraCaCerts (the fxa-mariadb case sets it): a CA of your own for the accounts' public URLs
+    "fxa-mariadb:auth/NODE_EXTRA_CA_CERTS": "chart-only: fxa.extraCaCerts, a CA of your own the accounts' servers trust "
+    "for their public URLs; compose has no such setting (tests/docker-compose.fxa-test.yml mounts its test CA itself)",
+    "fxa-mariadb:content/NODE_EXTRA_CA_CERTS": "as auth's",
+    "fxa-mariadb:profile/NODE_EXTRA_CA_CERTS": "as auth's",
+    "fxa-mariadb:admin/SSL_CERT_DIR": "chart-only: fxa.extraCaCerts for the admin UI's public checks and sign-in (Go reads "
+    "every PEM of the directory, next to the system's); compose has no such setting (the tests' SSL_CERT_FILE)",
+}
+
+# chart-only variables from the Secret that the program reads itself (no $(VAR) of another
+# variable): "<cases>:<container>/<VAR>" -> why; each must be a secretKeyRef
+ALLOWED_CHART_SECRETS = {
+    f"{FXA}:redis/REDISCLI_AUTH": "chart-only: the password of the accounts' Redis (FXA_REDIS_PASSWORD), its requirepass "
+    "read from stdin by the command (ALLOWED_COMMANDS) and redis-cli's for the probes; compose's Redis has none, on a "
+    "network of compose's own, a pod's IP is reachable from every pod (and fxa-networkpolicy.yaml)",
+    f"{FXA}:wait-redis/REDISCLI_AUTH": "chart-only: as redis', for the init container's redis-cli ping (compose's "
+    "depends_on fxa-redis service_healthy)",
+    **{f"{FXA}:auth/{prefix}REDIS_PASSWORD": f"chart-only: the password of Redis (as redis' REDISCLI_AUTH), with {prefix}REDIS_HOST"
+       for prefix in ("", "ACCESS_TOKEN_", "REFRESH_TOKEN_", "CUSTOMS_", "RATELIMIT_", "METRICS_", "AUTH_CACHE_",
+                      "RECOVERY_PHONE_", "PASSKEY_")},
+    f"{FXA}:content/REDIS_PASSWORD": "chart-only: the password of Redis (as redis' REDISCLI_AUTH), of REDIS_HOST and "
+    "FEATURE_FLAGS_REDIS_HOST",
+    f"{FXA}:profile/REDIS_PASSWORD": "chart-only: the password of Redis (as redis' REDISCLI_AUTH), with REDIS_HOST",
+    f"{FXA}:admin/FXA_REDIS_PASSWORD": "chart-only: the password of Redis (as redis' REDISCLI_AUTH), with FXA_REDIS",
 }
 
 # commands other than compose's, the chart's exactly: "<cases>:<container>" -> ([command, args], why)
@@ -95,15 +151,34 @@ ALLOWED_COMMANDS = {
                       "compose's entrypoint script only adds SYNC_STATSD_* (env here) before exec /app/bin/syncserver"),
     "*:backup": ([["sh", "/ffs-backup/backup.sh"], ["now"]],
                  "a CronJob runs backup.sh now at backup.schedule; compose's container runs backup.sh loop"),
-    "postgres:db": ([None, None],
+    f"{SYNC_POSTGRES}:db": ([None, None],
                     "compose starts it through db/postgres/keep-major.sh (refuses another major's data, says what "
                     "to pin); the chart runs that as the db-major init container, then the image's entrypoint and command"),
-    "mariadb:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mariadbd", "--explicit_defaults_for_timestamp"]],
+    f"{SYNC_MARIADB}:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mariadbd", "--explicit_defaults_for_timestamp"]],
                    "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
                    "SYNC_MARIADB_IMAGE unset in .env); the chart has no unset: database.image.mariadb"),
     "mysql:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mysqld", "--disable-log-bin"]],
                  "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
                  "SYNC_MYSQL_IMAGE unset in .env); the chart has no unset: database.image.mysql"),
+    # the accounts' database: compose's command without db/mysql/keep-major.sh (the chart refuses
+    # another major at render time, checkFxaDbBackend) and the image's entrypoint (its default)
+    "fxa-mysql,fxa-postgres:fxa-db": ([None, ["mysqld", "--event-scheduler=ON"]],
+                                      "compose's command without db/mysql/keep-major.sh docker-entrypoint.sh (the "
+                                      "render-time major guard instead); on mysql:lts no FXA_MYSQL_ARGS, as compose's"),
+    "fxa-mysql8:fxa-db": ([None, ["mysqld", "--event-scheduler=ON", "--mysql-native-password=ON",
+                                  "--authentication-policy=mysql_native_password"]],
+                          "as fxa-mysql's; on a MySQL 8 pin the chart adds compose's FXA_MYSQL_ARGS of that pin "
+                          "(prepare_environment.sh writes both), from the image's major (fxaDbArgs)"),
+    "fxa-mariadb:fxa-db": ([None, ["mariadbd", "--event-scheduler=ON"]],
+                           "as fxa-mysql's (docker-compose.fxa-mariadb.yml's command)"),
+    f"{FXA}:redis": ([["/bin/sh", "-c"], ['pass=$(printf %s "$REDISCLI_AUTH" | od -An -v -tx1 | tr -d \' \\n\' | '
+                                         "sed 's/../\\\\x&/g')\nexec redis-server - <<EOF\nrequirepass \"$pass\"\nEOF\n"]],
+                     "the image's redis-server with a password (REDISCLI_AUTH, chart-only: compose's Redis has none) "
+                     "in its configuration from stdin, not in the pod spec or the process' arguments"),
+    f"{FXA_BUNDLED}:backup-accounts": ([["sh", "-c", 'sh /ffs-backup/backup.sh now || echo "the accounts backup failed: recorded"'], None],
+                                       "backup.sh now at backup.schedule (compose's loop), before the Sync scope in the same "
+                                       "Job: a failed dump is left in /backups/.status for it to record, and Sync is dumped "
+                                       "all the same"),
 }
 
 # probes with other timings than compose's healthcheck, the chart's exactly:
@@ -118,18 +193,70 @@ ALLOWED_PROBE_TIMINGS = {
     f"{BUNDLED}:db/livenessProbe": ((30, 10, 10), "restarted only after 5 minutes without an answer: compose never restarts an "
                                     "unhealthy database, and a restart in the middle of a recovery starts it over; readiness "
                                     "is compose's healthcheck"),
+    # the accounts
+    **{f"{FXA}:{c}/startupProbe": ((15, 10, 40), "compose's start_period 300 s plus the first start's key generation: "
+                                   "up to 10 minutes, compose's interval and timeout")
+       for c in ("auth", "content", "profile", "profile-worker", "profile-static")},
+    f"{FXA_PAIRING}:pairing/startupProbe": ((10, 5, 30), "compose's start_period 30 s: up to 5 minutes, every 10 s"),
+    f"{FXA_BUNDLED}:fxa-db/startupProbe": ((10, 5, 180), "as the Sync server's databases (db/startupProbe)"),
+    f"{FXA_BUNDLED}:fxa-db/livenessProbe": ((30, 10, 10), "as the Sync server's databases (db/livenessProbe)"),
+}
+
+# the profile worker's probes: compose's check on 127.0.0.1, where it listens (WORKER_HOST)
+WORKER_CHECK = ("exec", "node", "-e", "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))")
+
+# probes that check other than compose's healthcheck, the chart's exactly:
+# "<cases>:<container>/<probe>" -> (check, why)
+ALLOWED_PROBE_CHECKS = {
+    **{f"{FXA}:profile-worker/{p}": (WORKER_CHECK, "compose's command on 127.0.0.1, not an httpGet: the worker listens "
+                                     "on the pod's loopback alone (WORKER_HOST), an httpGet goes to the pod's IP")
+       for p in ("startupProbe", "readinessProbe", "livenessProbe")},
+    f"{FXA}:admin/readinessProbe": (("tcp", "8081"), "with the accounts Ready once the sign-up gate (8081) listens too: "
+                                    "the Ingress of the accounts' API sends the sign-ups there; its livenessProbe is "
+                                    "compose's healthcheck"),
 }
 
 # containers of the chart that compose has no service for, without env (no credentials):
 # "<cases>:<kind>/<workload name, a regex>/<container>" -> why
 CHART_ONLY_CONTAINERS = {
-    f"postgres:StatefulSet/{FULLNAME}-postgres/db-major": "compose runs db/postgres/keep-major.sh in postgres_db's entrypoint: "
+    f"{SYNC_POSTGRES}:StatefulSet/{FULLNAME}-postgres/db-major": "compose runs db/postgres/keep-major.sh in postgres_db's entrypoint: "
     "refuses another major's data before the server starts",
     f"*:Deployment/{FULLNAME}-syncstorage/wait-db": "compose's depends_on service_healthy: waits for the database servers to answer",
     f"*:Deployment/{FULLNAME}-admin/wait-sync": "compose's ffs-admin depends_on tokenserver_db_init: the admin UI starts once the "
     "Sync server serves (its init containers succeeded)",
     f"*:Job/{FULLNAME}-backup-volume-[0-9a-f]{{8}}/bind": "binds the backups PVC at install (WaitForFirstConsumer storage "
     "classes), compose's volume needs nothing",
+    # the accounts: compose's depends_on as init containers, what compose's volumes do by themselves
+    f"{FXA}:Deployment/{FULLNAME}-fxa-auth/wait-db": "compose's depends_on fxa-db service_healthy: the accounts "
+    "database answers (a ping, no credentials), also your own server",
+    f"{FXA}:Deployment/{FULLNAME}-fxa-auth/wait-redis": "compose's depends_on fxa-redis service_healthy (REDISCLI_AUTH: "
+    "ALLOWED_CHART_SECRETS)",
+    f"{FXA}:Deployment/{FULLNAME}-fxa-content/wait-accounts": "compose's depends_on fxa-auth and fxa-profile service_healthy",
+    f"{FXA}:Deployment/{FULLNAME}-fxa-profile/images-owner": "as compose's fxa-keys-owner for the avatars' volume: the "
+    "image runs as 10001, new volumes are root's (compose's volume takes the image directory's owner)",
+    f"{FXA}:Deployment/{FULLNAME}-fxa-profile/images-seed": "Docker copies the image's var/public into a new volume, "
+    "Kubernetes does not: the same here",
+    f"{FXA}:Deployment/{FULLNAME}-fxa-profile/wait-auth": "compose's depends_on fxa-migrations: the auth server answers "
+    "once its pod migrated",
+    f"{FXA}:Deployment/{FULLNAME}-fxa-profile/img-proxy": "the avatars under /img/ for the Ingress (files/fxa/img-proxy.js): "
+    "compose's reverse proxy sends /img/ to fxa-profile-static, the prefix stripped",
+    f"{FXA}:Deployment/{FULLNAME}-admin/wait-fxa": "compose's ffs-admin depends_on fxa-policy: the auth server answers "
+    "once its init containers (the policy) succeeded",
+}
+
+# compose services the chart has none for, by design: "<cases>:<service>" -> why
+COMPOSE_ONLY_SERVICES = {
+    "fxa-external:backup-fxa": "with your own accounts server compose's backup-fxa is not used "
+    "(docs/backups.md#your-own-database-server; e2e-fxa.sh runs no backup profile there): the stack's accounts user "
+    "cannot read ffs; the chart renders no backup-accounts then",
+}
+
+# objects of the chart compose has nothing for, checked by kind: "<cases>:<kind>/<name, a regex>" -> why
+CHART_ONLY_KINDS = ("NetworkPolicy",)
+CHART_ONLY_OBJECTS = {
+    f"{FXA}:NetworkPolicy/{FULLNAME}-fxa-redis": "fxa.networkPolicy: Redis only for the accounts' servers and the admin "
+    "UI; compose's Redis is on a network of compose's own",
+    f"{FXA_BUNDLED}:NetworkPolicy/{FULLNAME}-fxa-db": "as fxa-redis', the bundled accounts database (also the backups)",
 }
 
 
@@ -155,12 +282,21 @@ EQUIVALENT_CHECKS = {
         "admin/main.go: /ffs-admin healthcheck GETs http://127.0.0.1:<ADMIN_LISTEN, :8080>/healthz",
     ),
 }
+# compose's checks of the accounts' images (node, no curl): node -e "fetch('http://localhost:<port><path>')
+# exits 0 on a 2xx", an httpGet of <port><path> -> ("http", port, path)
+EQUIVALENT_CHECK_PATTERNS = [
+    (re.compile(r"^fetch\('http://localhost:(\d+)(/[^']*)'\)\.then\(r => process\.exit\(r\.ok \? 0 : 1\), "
+                r"\(\) => process\.exit\(1\)\)$"),
+     "node's fetch() of the accounts' images: a 2xx answer, as an httpGet's 200-399 (their heartbeats answer 200 or 5xx)"),
+]
 
 # compose's scripts the chart carries a copy of
 IDENTICAL_FILES = {
     "charts/firefox-sync/files/backup.sh": "config/backup/backup.sh",
     "charts/firefox-sync/files/admin-user.sh": "db/mysql/admin-user.sh",
     "charts/firefox-sync/files/postgres-keep-major.sh": "db/postgres/keep-major.sh",
+    "charts/firefox-sync/files/fxa/content-server.js": "config/fxa/content-server.js",
+    "charts/firefox-sync/files/fxa/oauth-clients.js": "config/fxa/oauth-clients.js",
 }
 
 # compose service -> chart (workload kind, workload name, container, key prefix, init or one-shot);
@@ -176,6 +312,21 @@ PAIRS = [
     ("tokenserver_db", "StatefulSet", f"{FULLNAME}-tokenserver-db", "db", "db", False),
     ("syncstorage_db", "StatefulSet", f"{FULLNAME}-storage-db", "db", "db", False),
     ("postgres_db", "StatefulSet", f"{FULLNAME}-postgres", "db", "db", False),
+    # the accounts (docker-compose.fxa.yml): auth's one-shot services are its init containers
+    ("fxa-db", "StatefulSet", f"{FULLNAME}-fxa-db", "db", "fxa-db", False),
+    ("fxa-redis", "Deployment", f"{FULLNAME}-fxa-redis", "redis", "redis", False),
+    ("fxa-keys-owner", "Deployment", f"{FULLNAME}-fxa-auth", "keys-owner", "keys-owner", True),
+    ("fxa-migrations", "Deployment", f"{FULLNAME}-fxa-auth", "migrations", "migrations", True),
+    ("fxa-policy", "Deployment", f"{FULLNAME}-fxa-auth", "policy", "policy", True),
+    ("fxa-auth", "Deployment", f"{FULLNAME}-fxa-auth", "auth", "auth", False),
+    ("fxa-content", "Deployment", f"{FULLNAME}-fxa-content", "content", "content", False),
+    # one pod: the three mount the avatars' volume (RWO)
+    ("fxa-profile", "Deployment", f"{FULLNAME}-fxa-profile", "profile", "profile", False),
+    ("fxa-profile-worker", "Deployment", f"{FULLNAME}-fxa-profile", "profile-worker", "profile-worker", False),
+    ("fxa-profile-static", "Deployment", f"{FULLNAME}-fxa-profile", "profile-static", "profile-static", False),
+    ("fxa-pairing", "Deployment", f"{FULLNAME}-fxa-pairing", "pairing", "pairing", False),
+    # compose's loop, an init container of the backup CronJob here (before the Sync scope)
+    ("backup-fxa", "CronJob", f"{FULLNAME}-backup", "backup-accounts", "backup-accounts", True),
 ]
 
 # the hosts: compose's service names, the chart's Services
@@ -185,6 +336,11 @@ HOSTS = {
     "postgres_db": f"{FULLNAME}-postgres",
     "syncstorage": f"{FULLNAME}-syncstorage",
     "ffs-admin": f"{FULLNAME}-admin",
+    "fxa-db": f"{FULLNAME}-fxa-db",
+    "fxa-redis": f"{FULLNAME}-fxa-redis",
+    "fxa-auth": f"{FULLNAME}-fxa-auth",
+    "fxa-profile": f"{FULLNAME}-fxa-profile",
+    # (fxa-profile-worker: profile's WORKER_URL is 127.0.0.1, ALLOWED_DIFFERENCES)
     EXTDB: EXTDB,
 }
 
@@ -209,6 +365,52 @@ CASES = {
 }
 EXTERNAL_HELM = ["--set", "database.bundled=false", "--set", f"database.external.host={EXTDB}", "--set", "existingSecret=mine"]
 
+# the self-hosted accounts: docker-compose.fxa.yml on top, .env as prepare_environment.sh writes it
+# for them, the matching values. The bundled accounts database without a policy user (its root
+# installs the policy); the pairing server on (COMPOSE_PROFILES=pairing) but with your own server
+FXA_ENV = {
+    "FXA_CONTENT_URL": "https://accounts.example.test", "FXA_AUTH_URL": "https://api.example.test",
+    "FXA_PROFILE_URL": "https://profile.example.test", "FXA_PAIRING_URL": "wss://pairing.example.test",
+    "FXA_OAUTH_SERVER_URL": "http://fxa-auth:9000/v1", "FXA_EMAIL_DOMAIN": "api.example.test",
+}
+FXA_HELM = ["--set", "fxa.enabled=true", "--set", "fxa.contentUrl=https://accounts.example.test",
+            "--set", "fxa.authUrl=https://api.example.test", "--set", "fxa.profileUrl=https://profile.example.test",
+            "--set", "fxa.pairing.url=wss://pairing.example.test"]
+FXA_BUNDLED_ENV = {**FXA_ENV, "FXA_MYSQL_POLICY_PASSWORD": ""}
+FXA_PAIRING_HELM = FXA_HELM + ["--set", "fxa.pairing.enabled=true"]
+# with the admin UI: signing in to it with the accounts (prepare_environment.sh's .env: the
+# client id, the redirect URL, the trust in the accounts' emails, no other OpenID secret)
+FXA_ADMIN_ENV = {
+    "ADMIN_FXA_CLIENT_ID": "0123456789abcdef", "ADMIN_OIDC_REDIRECT_URL": "https://admin.example.test/auth/callback",
+    "ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL": "true", "ADMIN_OIDC_CLIENT_SECRET": "", "ADMIN_ALLOWED_USERS": "you@example.test",
+}
+FXA_ADMIN_HELM = ["--set", "admin.fxaSignIn=true", "--set", "fxa.adminClientId=0123456789abcdef",
+                  "--set", "admin.oidc.redirectUrl=https://admin.example.test/auth/callback",
+                  "--set", "admin.allowed.users=you@example.test"]
+FXA_FILES = ["docker-compose.yml", "docker-compose.fxa.yml"]
+CASES.update({
+    "fxa-mysql": (FXA_FILES, FXA_BUNDLED_ENV, ["--set", "database.backend=mariadb"] + FXA_PAIRING_HELM),
+    # a MySQL 8 pin: compose's FXA_MYSQL_ARGS as prepare_environment.sh writes them for it
+    "fxa-mysql8": (FXA_FILES, {**FXA_BUNDLED_ENV, "FXA_MYSQL_IMAGE": "mysql:8",
+                               "FXA_MYSQL_ARGS": "--mysql-native-password=ON --authentication-policy=mysql_native_password"},
+                   ["--set", "database.backend=mariadb", "--set", "fxa.database.image.mysql=docker.io/library/mysql:8"]
+                   + FXA_PAIRING_HELM),
+    # (also fxa.extraCaCerts: chart-only)
+    "fxa-mariadb": (FXA_FILES + ["docker-compose.fxa-mariadb.yml"], {**FXA_BUNDLED_ENV, "FXA_DB": "mariadb"},
+                    ["--set", "database.backend=mariadb", "--set", "fxa.database.backend=mariadb",
+                     "--set", "fxa.extraCaCerts.configMap=ffs-test-ca"] + FXA_PAIRING_HELM),
+    # your own accounts server, its users fxa and ffs_policy; a pairing server of your own elsewhere
+    "fxa-external": (FXA_FILES, {**FXA_ENV, "FXA_DB_CONTAINERS": "0", "FXA_MYSQL_HOST": EXTDB, "FXA_MYSQL_USER": "fxa",
+                                 "FXA_MYSQL_POLICY_USER": "ffs_policy"},
+                     ["--set", "database.backend=mariadb", "--set", "fxa.database.bundled=false",
+                      "--set", f"fxa.database.external.host={EXTDB}", "--set", "existingSecret=mine"] + FXA_HELM),
+    "fxa-postgres": (["docker-compose.sync-postgres.yml", "docker-compose.fxa.yml"],
+                     {**FXA_BUNDLED_ENV, "SYNC_POSTGRES_APP_USER": "syncserver_app"},
+                     ["--set", "database.backend=postgres"] + FXA_PAIRING_HELM),
+})
+# case -> the profiles it adds (to the admin UI's and the backups')
+CASE_PROFILES = {c: ["pairing"] for c in FXA_PAIRING.split(",")}
+
 SECRET = re.compile(r"s3cr3t(\d+)x")
 # a secret in a normalized value: <secret:token number> (compose), <secret:key> (chart)
 PLACEHOLDER = re.compile(r"<secret:([^>]*)>")
@@ -232,6 +434,12 @@ def set_line(lines, name, value):
     """NAME=value of .env-example's names (the SYNC_ ones, docs/upgrading.md#renamed-settings)"""
     pattern = re.compile(rf"^{re.escape(name)}=")
     hits = [i for i, line in enumerate(lines) if pattern.match(line)]
+    if not hits:
+        # an optional one, commented out in .env-example (# FXA_PAIRING_URL=...): set
+        commented = re.compile(rf"^#\s*{re.escape(name)}=")
+        hits = [i for i, line in enumerate(lines) if commented.match(line)]
+        for i in hits:
+            lines[i] = re.sub(r"^#\s*", "", lines[i])
     if not hits:
         # appended, an old name compose reads only as a fallback: the case would test nothing
         sys.exit(f".env-example has no {name}: update helm_parity.py's CASES")
@@ -303,7 +511,8 @@ CHART_HOSTS = {v: k for k, v in HOSTS.items()}
 def compose_env(service):
     env = {}
     for name, value in (service.get("environment") or {}).items():
-        value = "" if value is None else str(value)
+        # (compose's $$ is its escape of $: the container's value)
+        value = "" if value is None else str(value).replace("$$", "$")
         env[name] = SECRET.sub(lambda m: f"<secret:{m.group(1)}>", hosts(name, value, COMPOSE_HOSTS))
     return env
 
@@ -318,8 +527,9 @@ def chart_env(container, where, failures):
             value = hosts(name, str(e.get("value", "")), CHART_HOSTS)
 
             def ref(m):
+                # (Kubernetes' escape of $, as compose's)
                 if m.group(0) == "$$":
-                    return "$$"
+                    return "$"
                 var = m.group(1)
                 if var not in env:
                     failures.add(where, f"{name}: $({var}) before {var} is defined (Kubernetes leaves it as it is)")
@@ -385,6 +595,8 @@ def compose_check(hc, env):
     else:
         args = [a.replace("$$", "$") for a in test[1:]]
         m = re.match(r"^https?://(?:localhost|127\.0\.0\.1):(\d+)(/.*)$", args[-1]) if args and args[0] == "curl" else None
+        if not m and len(args) == 3 and args[:2] == ["node", "-e"]:
+            m = next((p.match(args[2]) for p, _ in EQUIVALENT_CHECK_PATTERNS if p.match(args[2])), None)
         check = ("http", m.group(1), m.group(2)) if m else check_of_exec(args, env)
     if check in EQUIVALENT_CHECKS:
         check = EQUIVALENT_CHECKS[check][0]
@@ -393,13 +605,20 @@ def compose_check(hc, env):
 
 def chart_check(probe, container, env):
     if "exec" in probe:
-        return check_of_exec(probe["exec"]["command"], env)
+        # the kubelet expands an exec probe's command as a container's: $$ is $
+        return check_of_exec([a.replace("$$", "$") for a in probe["exec"]["command"]], env)
     if "httpGet" in probe:
         port = probe["httpGet"]["port"]
         for p in container.get("ports") or []:
             if p.get("name") == port:
                 port = p["containerPort"]
         return ("http", str(port), probe["httpGet"].get("path", "/"))
+    if "tcpSocket" in probe:
+        port = probe["tcpSocket"]["port"]
+        for p in container.get("ports") or []:
+            if p.get("name") == port:
+                port = p["containerPort"]
+        return ("tcp", str(port))
     return ("other", json.dumps(probe, sort_keys=True))
 
 
@@ -442,6 +661,8 @@ def compare(case, label, services, docs, used, failures):
             continue
         if service is not None:
             paired_services.add(service_name)
+        if found is None and allowed(service_name, None, COMPOSE_ONLY_SERVICES):
+            continue
         if service is None or found is None:
             failures.add(where, "in compose only" if found is None else "in the chart only")
             continue
@@ -469,6 +690,10 @@ def compare(case, label, services, docs, used, failures):
                     failures.add(where, f"{name} in compose only")
                 continue
             if name not in cenv:
+                if allowed(prefix, name, ALLOWED_CHART_SECRETS):
+                    if not PLACEHOLDER.fullmatch(henv[name]):
+                        failures.add(where, f"{name}: {henv[name]!r}, not from the Secret (ALLOWED_CHART_SECRETS)")
+                    continue
                 if name in exports:
                     if not secrets.same(exports[name], henv[name], where, failures):
                         failures.add(where, f"{name}: compose's entrypoint exports {exports[name]!r}, the chart has {henv[name]!r}")
@@ -483,6 +708,8 @@ def compare(case, label, services, docs, used, failures):
                 failures.add(where, f"{name}: compose {cenv[name]!r}, chart {henv[name]!r}")
         # the chart-only variables allowed as passwords for $(VAR) must be used so
         for name in set(henv) - set(cenv) - set(exports):
+            if entry(ALLOWED_CHART_SECRETS, case, f"{prefix}/{name}"):
+                continue
             if name.endswith("PASSWORD") and not any(f"$({name})" in str(e.get("value", "")) for e in container.get("env") or []):
                 failures.add(where, f"{name} in the chart only, and no $({name}) uses it")
 
@@ -495,6 +722,10 @@ def compare(case, label, services, docs, used, failures):
                 failures.add(where, f"command: compose {json.dumps(want)}, chart {json.dumps(got)}")
             elif got != ALLOWED_COMMANDS[key][0]:
                 failures.add(where, f"command: {json.dumps(got)}, not {json.dumps(ALLOWED_COMMANDS[key][0])} ({key})")
+
+        # the working directory
+        if service.get("working_dir") != container.get("workingDir"):
+            failures.add(where, f"working directory: compose {service.get('working_dir')!r}, chart {container.get('workingDir')!r}")
 
         # the probes: compose's check in every one of them; its timings in each, but those
         # allowed to differ (and in one at least)
@@ -516,7 +747,11 @@ def compare(case, label, services, docs, used, failures):
             got_check = chart_check(probe, container, henv)
             want_s, got_s = json.dumps(want_check), json.dumps(got_check)
             if not secrets.same(want_s, got_s, where, failures):
-                failures.add(where, f"{kind_} checks {got_check}, compose's healthcheck {want_check}")
+                key = allowed(prefix, kind_, ALLOWED_PROBE_CHECKS)
+                if not key:
+                    failures.add(where, f"{kind_} checks {got_check}, compose's healthcheck {want_check}")
+                elif tuple(got_check) != ALLOWED_PROBE_CHECKS[key][0]:
+                    failures.add(where, f"{kind_} checks {got_check}, not {ALLOWED_PROBE_CHECKS[key][0]} ({key})")
             got_t = (probe.get("periodSeconds", 10), probe.get("timeoutSeconds", 1), probe.get("failureThreshold", 3))
             key = allowed(prefix, kind_, ALLOWED_PROBE_TIMINGS)
             if key:
@@ -554,12 +789,36 @@ def compare(case, label, services, docs, used, failures):
             failures.add(where, "no compose service for this container")
             continue
         used.add((match, case))
-        if container.get("env") or container.get("envFrom"):
-            failures.add(where, f"env in a chart-only container ({match}): {[e['name'] for e in container.get('env') or []]}")
+        # no env, but the chart-only secrets of ALLOWED_CHART_SECRETS
+        if container.get("envFrom"):
+            failures.add(where, f"envFrom in a chart-only container ({match})")
+        for e in container.get("env") or []:
+            secret = allowed(key[2], e["name"], ALLOWED_CHART_SECRETS)
+            if not secret:
+                failures.add(where, f"env in a chart-only container ({match}): {e['name']}")
+            elif "secretKeyRef" not in (e.get("valueFrom") or {}):
+                failures.add(where, f"{e['name']}: not from the Secret ({secret})")
+
+    # the chart's objects compose has nothing for, of CHART_ONLY_KINDS
+    for d in docs:
+        if d.get("kind") not in CHART_ONLY_KINDS:
+            continue
+        name = f"{d['kind']}/{d['metadata']['name']}"
+        match = None
+        for k in CHART_ONLY_OBJECTS:
+            ok, rest = in_scope(k, case)
+            kind, pattern = rest.split("/", 1)
+            if ok and kind == d["kind"] and re.fullmatch(pattern, d["metadata"]["name"]):
+                match = k
+        if match:
+            used.add((match, case))
+        else:
+            failures.add(f"{label}: {name}", "chart-only, not in CHART_ONLY_OBJECTS")
 
     # every compose service is a chart container (but the database containers of your own server)
     for name, service in services.items():
-        if name not in paired_services and (service.get("deploy") or {}).get("replicas") != 0:
+        if name not in paired_services and (service.get("deploy") or {}).get("replicas") != 0 \
+                and not entry(COMPOSE_ONLY_SERVICES, case, name):
             failures.add(f"{label}: {name}", "a compose service the chart has no container for")
 
 
@@ -577,17 +836,29 @@ def main(argv):
         files, overrides, helm_args = CASES[case]
         if case.startswith("external-"):
             helm_args = helm_args + EXTERNAL_HELM
+        fxa = case.startswith("fxa-")
         for admin in (True, False):
             for backup in (True, False):
                 profiles = [p for p, on in (("admin", admin), ("backup", backup)) if on]
                 name = f"{case} ({'+'.join(profiles) or 'no admin, no backup'})"
-                services = compose_config(files, overrides, profiles)
-                docs = helm_template(helm_args + ["--set", f"admin.enabled={str(admin).lower()}", "--set", f"backup.enabled={str(backup).lower()}"])
+                env, args = dict(overrides), list(helm_args)
+                if fxa and admin:
+                    env.update(FXA_ADMIN_ENV)
+                    args += FXA_ADMIN_HELM
+                services = compose_config(files, env, profiles + CASE_PROFILES.get(case, []))
+                docs = helm_template(args + ["--set", f"admin.enabled={str(admin).lower()}", "--set", f"backup.enabled={str(backup).lower()}"])
                 before = len(failures)
                 compare(case, name, services, docs, used, failures)
                 print(("✓ " if len(failures) == before else "✗ ") + name)
-    # each entry used by every case it is for
-    for table in ("ALLOWED_DIFFERENCES", "ALLOWED_COMMANDS", "ALLOWED_PROBE_TIMINGS", "CHART_ONLY_CONTAINERS"):
+    # each entry with its reason, used by every case it is for
+    for table in ("ALLOWED_DIFFERENCES", "ALLOWED_CHART_SECRETS", "COMPOSE_ONLY_SERVICES", "CHART_ONLY_OBJECTS",
+                  "CHART_ONLY_CONTAINERS", "ALLOWED_COMMANDS", "ALLOWED_PROBE_TIMINGS", "ALLOWED_PROBE_CHECKS"):
+        for key, value in globals()[table].items():
+            why = value if isinstance(value, str) else value[1]
+            if not (isinstance(why, str) and why.strip()):
+                failures.add(table, f"{key}: no reason")
+    for table in ("ALLOWED_DIFFERENCES", "ALLOWED_CHART_SECRETS", "ALLOWED_COMMANDS", "ALLOWED_PROBE_TIMINGS",
+                  "ALLOWED_PROBE_CHECKS", "CHART_ONLY_CONTAINERS", "COMPOSE_ONLY_SERVICES", "CHART_ONLY_OBJECTS"):
         for key in globals()[table]:
             unused = [c for c in cases if in_scope(key, c)[0] and (key, c) not in used]
             if unused:
@@ -596,7 +867,8 @@ def main(argv):
         print("✗ " + f)
     if failures:
         return 1
-    print(f"✓ the chart's env, commands and probes match compose's ({', '.join(cases)}; admin UI and backups on and off); "
+    print(f"✓ the chart's env, commands, working directories and probes match compose's ({', '.join(cases)}; admin UI and "
+          "backups on and off); "
           f"{', '.join(IDENTICAL_FILES)} identical to compose's")
     return 0
 

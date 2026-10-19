@@ -1618,7 +1618,7 @@ case "${1:-}" in
   *)
     echo "Usage: $0 {lint|parity [case...]|e2e <mariadb|mysql|postgres>}"
     echo "  lint                              - helm lint and template checks (parity too)"
-    echo "  parity [case...]                  - the chart's env, commands and probes against compose's (tests/helm_parity.py)"
+    echo "  parity [case...]                  - the chart's env, commands and probes against compose's, the accounts' too (tests/helm_parity.py, its CASES)"
     echo "  e2e <mariadb|mysql|postgres>      - install on a kind cluster and run the client flow"
     exit 1
     ;;
