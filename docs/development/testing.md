@@ -57,7 +57,9 @@ Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mys
 - the Quadlets and docker compose on the Podman socket, both set up with `prepare_environment.sh`;
 - the MySQL Quadlets as rendered; with `SYNC_DB=mysql`, the compose phase as an install from before on `mysql:8` (pinned by `--upgrade`) and the Quadlets on `mysql:lts`;
 - `--upgrade` renaming the old setting names and `docker-compose.postgres.yml`;
-- with `UPGRADE_FROM=<checkout>`, the Quadlet upgrade steps of [Upgrading](../upgrading.md#with-quadlets) (the `systemctl --user stop` line is read from that page).
+- with `UPGRADE_FROM=<checkout>`, the Quadlet upgrade steps of [Upgrading](../upgrading.md#quadlets) (the `systemctl --user stop` line is read from that page): the old release where this tree is, the files swapped as `git pull` does, `--upgrade` keeping every secret, no `SET PASSWORD`;
+- `--render-units` on the running Quadlets (a setting, an `ADMIN_IMAGE` pin, `ADMIN_INSECURE_COOKIE`), and with the accounts on MariaDB (`FXA_LOG_LEVEL`): only the changed units written, the secrets kept, a second run changing nothing, the stack started again;
+- where the Sync server listens: `SYNC_EXPORT_PORT` of a new install on `127.0.0.1` (the answers, nginx, `PublishPort`, `ss`), an upgraded one keeping its value.
 
 ## Accounts
 

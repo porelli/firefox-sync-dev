@@ -11,7 +11,7 @@ The [admin UI](README.md) can tell you when something happens on your server, by
 - **Sign-ups**: a refused sign-up, and with self-hosted accounts a new account, a new device, a burst of sign-ups (see [Maintenance and retention](storage.md#maintenance-and-retention)).
 - **Security**, with self-hosted accounts: an account blocked by the rate limits and, with the security history on, a changed password, primary email, or way to sign in or recover the account (kind `security`). See [Security history](accounts.md#security-history).
 
-Alerts are collected and sent at most every 10 minutes (`ALERT_INTERVAL_SECONDS`, 600), as one message:
+Alerts are collected and sent at most every 10 minutes, as one message:
 
 - At most 20 alerts of each kind go in one message, the rest are counted. Sign-ins and changes in the admin UI are one kind, `admin`.
 - The emails of refused sign-ups are shortened and stripped of line breaks. Those that do not look like an email are recorded as "invalid email".

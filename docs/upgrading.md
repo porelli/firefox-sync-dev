@@ -58,32 +58,40 @@ Don't stay too far behind: Firefox refuses to sign in to accounts servers that a
 
 ## Quadlets
 
-`prepare_environment.sh` writes the images into the unit files when it installs them. Podman does not pull a tag it already has, and the one-shot units (the migrations, the init container, the sign-up policy) ran at the first start and stay active: a new image alone does not migrate.
+`prepare_environment.sh` writes the images and the values of `.env` into the unit files. Podman does not pull a tag it already has, and the one-shot units (the migrations, the init container, the sign-up policy) ran at the first start and stay active: a new image alone does not migrate.
 
-The Sync server and the admin UI (not tested as a plain upgrade; these are the steps of [Older firefox-sync releases](#with-quadlets), which are tested):
+`./prepare_environment.sh --upgrade` renders the units again from your `.env`, with every password and secret it has: nothing to set by hand in the databases. A new firefox-sync release, the Sync server and the admin UI:
 
+1. Make a backup: `systemctl --user start firefox-sync-backup.service` (with self-hosted accounts it backs them up first), or back up the volumes.
+1. Stop the units, the one-shot ones too (they stay active and would not run again): `systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`. Without the database containers, the last two are not there.
+1. Get the new files (`git pull` in the clone), and keep your `.env`. Don't run `./prepare_environment.sh` without `--upgrade`: that is a new install, with new passwords that the databases don't have (it keeps the old file as `.env.before-setup`).
+1. Run `./prepare_environment.sh --upgrade`. It asks nothing:
+    - in `.env` it does what it does for compose ([With docker compose](#with-docker-compose)): it renames the old setting names, sets `ADMIN_DB_PASSWORD` (the database containers create the admin UI's users with it at their next start) and writes the database majors the install runs;
+    - it adds every line of [.env-example](/.env-example) that your `.env` lacks, with its default. A secret gets a new random value only when it is not there at all;
+    - the old file stays as `.env.before-upgrade`;
+    - then it renders the units from that `.env` into `~/.config/containers/systemd/` (the backup timer into `~/.config/systemd/user/`), writes only those that change, keeps all the units of before in `quadlets.before-<UTC time>/` of the checkout, and runs `systemctl --user daemon-reload`.
+
+    Run twice, the second run changes nothing. With your own database server (`SYNC_DB_CONTAINERS=0`) it also writes `database-setup.sql`: run it there as its administrator before the next start (`mariadb -h <host> -u root -p < database-setup.sql`, `mysql` for MySQL; its statements can run again). It creates the admin UI's database and users with `ADMIN_DB_PASSWORD`. The admin UI's unit has no Sync password to fall back to as compose has, so without those users it does not start.
 1. Pull the new images: `grep -h '^Image=' ~/.config/containers/systemd/firefox-sync-*.container | cut -d= -f2 | sort -u | xargs -n1 podman pull`.
-1. Stop the units, the one-shot ones too:
-
-    ```bash
-    systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service \
-      firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service
-    ```
-
 1. Start them again. The migrations and the init container run first:
 
     ```bash
     systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service
     ```
 
+    With self-hosted accounts, start their units too, as in [Self-hosted accounts](install/podman.md#self-hosted-accounts).
+
+To go back: the old files and images, `.env.before-upgrade` as `.env`, the files of `quadlets.before-<time>/` back into `~/.config/containers/systemd/` (`firefox-sync-backup.timer` into `~/.config/systemd/user/`), `systemctl --user daemon-reload`, and the backup of step 1: see [Rollback](#rollback).
+
+New images of the same release, without new files: steps 5 and 6, with the units stopped as in step 2.
+
 The self-hosted accounts:
 
 1. Make a backup: `systemctl --user start firefox-sync-backup.service` (it backs up the accounts first).
-1. Get the new image. With `fxa-mono-latest`: `podman pull ghcr.io/porelli/firefox-sync:fxa-mono-latest` (with `--arch` as `FXA_ARCH`). Pinned: change the release in the `Image=` lines and pull it, and change `FXA_VERSION` in `.env` too, for the next `prepare_environment.sh`:
+1. Get the new image. With `fxa-mono-latest`: `podman pull ghcr.io/porelli/firefox-sync:fxa-mono-latest` (with `--arch` as `FXA_ARCH`). Pinned: change `FXA_VERSION` in `.env`, render the accounts' units again from it ([Change a setting](install/podman.md#change-a-setting)), and pull the release:
 
     ```bash
-    sed -i 's|:fxa-mono-v1.347.1$|:fxa-mono-v1.347.3|' ~/.config/containers/systemd/firefox-sync-fxa-*.container
-    systemctl --user daemon-reload
+    ./prepare_environment.sh --render-units
     podman pull ghcr.io/porelli/firefox-sync:fxa-mono-v1.347.3
     ```
 
@@ -134,15 +142,15 @@ The release that added `db/` moved some files. The image names and the names of 
 - `docker-compose.postgres.yml` is now `docker-compose.sync-postgres.yml`. `./prepare_environment.sh --upgrade` (below) changes it in `COMPOSE_FILE` of your `.env` and says so. By hand, replace `docker-compose.postgres.yml` with `docker-compose.sync-postgres.yml` there and in `-f` of your own scripts and units.
 - `config/database/` is gone. `sync-mariadb.sql` is now [db/mysql/sync.sql](/db/mysql/sync.sql), `sync-postgres.sql` is [db/postgres/sync.sql](/db/postgres/sync.sql), and `fxa-mysql.sql`, `fxa-mariadb.sql` and `admin-user.sh` are in [db/mysql/](/db/mysql). With your own database server, `prepare_environment.sh` reads them from there. If you fill in the SQL by hand, take it from the new paths ([Create the databases and users](databases.md#create-the-databases-and-users)).
 - `syncstorage-rs-init/` and `syncstorage-rs-init-postgres/` are now `db/mysql/init/` and `db/postgres/init/`. This only matters if you build the init images yourself (`docker build db/mysql/init`).
-- `config/quadlet/mysql/` is now `config/quadlet/sync-mysql/` (`SYNC_DB=mysql`), where `prepare_environment.sh` looks for it. The units keep their names, but the database units now mount `db/mysql/admin-user.sh`. Render them again before the next start (the Quadlet steps below do): the old units point at `config/database/admin-user.sh`, which `git pull` removes.
+- `config/quadlet/mysql/` is now `config/quadlet/sync-mysql/` (`SYNC_DB=mysql`), where `prepare_environment.sh` looks for it. The units keep their names, but the database units now mount `db/mysql/admin-user.sh`. Render them again before the next start (`--upgrade` does, [Quadlets](#quadlets)): the old units point at `config/database/admin-user.sh`, which `git pull` removes.
 - nginx: [config/nginx/syncstorage-rs-example.conf](/config/nginx/syncstorage-rs-example.conf) now has `client_max_body_size 10m;`. Your `config/nginx/syncstorage-rs.conf` (written once by `prepare_environment.sh`) and your own proxy keep their setting. Add it to the `server` block of your Sync host, see [Request size](reverse-proxy.md#request-size).
 - Not a git clone: after copying the new files, delete the old `config/database/`, `config/quadlet/mysql/`, `syncstorage-rs-init/` and `syncstorage-rs-init-postgres/`.
 
 ### The database majors of an install from before
 
-The database images now follow each database's long-term tag, and an install from before runs an older major. `./prepare_environment.sh --upgrade` (compose), or running `prepare_environment.sh` again (Quadlets), writes the pins that keep it where it is, and says so. The pins are in [Database majors](#database-majors).
+The database images now follow each database's long-term tag, and an install from before runs an older major. `./prepare_environment.sh --upgrade` (compose and Quadlets) writes the pins that keep it where it is, and says so. The pins are in [Database majors](#database-majors).
 
-**If you update the files without either**:
+**If you update the files without it**:
 
 - the MariaDB and MySQL containers (the Sync databases, and the accounts' `fxa-db`) do not start rather than upgrade the data: `docker compose logs` shows [db/mysql/keep-major.sh](/db/mysql/keep-major.sh)'s `this database is MySQL 8, the image is MySQL 9` (or `MariaDB 11`, `MariaDB 12`). Run `--upgrade` then.
 - The Sync databases on the MariaDB containers ran `mariadb:lts` before, which upgraded their data whenever a pull brought a new major. `--upgrade` now writes `SYNC_MARIADB_IMAGE` with the major their data holds (for example `mariadb:12`, read from their volume or the running server), and they stay there.
@@ -170,19 +178,11 @@ Firefox needs nothing.
 
 ### With Quadlets
 
-For installs since November 2025. `prepare_environment.sh --upgrade` is for compose only: it does not write the units, which get every password from `prepare_environment.sh` itself.
-
-1. Stop the units, the one-shot ones too (they stay active and would not run again): `systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`. Without the database containers, the last two are not there.
-1. Get the new files and run `./prepare_environment.sh` again with the same answers. Keep a copy of the old `.env`: it writes new passwords into `.env` and the units, `ADMIN_DB_PASSWORD` too.
-1. Pull the new images, as in [Quadlets](#quadlets).
-1. Give the database users their new passwords:
-    - with the database containers: `systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`, then `podman exec firefox-sync-tokenserver-db mariadb -u<SYNC_TOKENSERVER_DB_USER> -p'<old password>' -e "SET PASSWORD = PASSWORD('<new SYNC_TOKENSERVER_DB_PASSWORD>')"`, and the same for `firefox-sync-syncstorage-db`. With `SYNC_DB=mysql`: `mysql` and `SET PASSWORD = '<new password>'`. The admin UI's users need nothing by hand: the database containers create or update both with the new `ADMIN_DB_PASSWORD` at their start.
-    - with your own database server (`SYNC_DB_CONTAINERS=0`): run the new `database-setup.sql` there as its administrator (`mariadb -h <host> -u root -p < database-setup.sql`, `mysql` for MySQL; its statements can run again). It gives the Sync users their new passwords and creates the admin UI's database and users. Do it before starting the admin UI: its unit has only `ADMIN_DB_PASSWORD`, with no Sync password to fall back to as compose has, so without those users it does not start.
-1. Run `systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service`. The migrations and the init container run again, and at its first start the admin UI moves its event log into `ffs_admin`, as with compose.
+For installs since November 2025: the steps of [Quadlets](#quadlets). `--upgrade` renames the old setting names in `.env`, adds what this release needs and the lines of `.env-example` your `.env` lacks (the step 4 of compose, done for you), and renders the units from that `.env`, with the passwords they had.
 
 ### Rollback
 
-Put back the old files and images, with `.env.before-upgrade` as `.env` and the backup of the volumes of step 1. An older release reads only the old setting names: pin `SYNCSTORAGE_IMAGE_TAG` and `SYNCSTORAGE_INIT_IMAGE_TAG` there to the old tags, and `ADMIN_IMAGE` to the admin UI of then. The migrations of the newer syncstorage-rs cannot be undone, nor the move of the event log, so roll back everything together, never one image alone:
+Put back the old files and images, with `.env.before-upgrade` as `.env` (Quadlets: and the units of `quadlets.before-<time>/`, see [Quadlets](#quadlets)) and the backup of the volumes of step 1. An older release reads only the old setting names: pin `SYNCSTORAGE_IMAGE_TAG` and `SYNCSTORAGE_INIT_IMAGE_TAG` there to the old tags, and `ADMIN_IMAGE` to the admin UI of then. The migrations of the newer syncstorage-rs cannot be undone, nor the move of the event log, so roll back everything together, never one image alone:
 
 - An older admin UI (from before `ADMIN_DB_PASSWORD`) creates its tables again, empty, in the tokenserver database, and records there, within the Sync server's reach. The event log and the audit trail since the upgrade stay in `ffs_admin`, which it does not read. Going forward again later, the newer admin UI does not copy those tables a second time: its setup check names them. Drop them as the tokenserver user once you have looked at them.
 - An older init image with the newer admin UI: on MariaDB and MySQL the admin UI's reader `ffs_admin_sync` changes the tokenserver database only through the init container's procedures (`ffs_set_max_users`, `ffs_delete_user_row`, `ffs_drop_admin_tables`), which an older init image does not create. On the databases of before (the backup), the max users edits, the resets that free a slot and the deleted accounts then fail with a missing procedure. Pin the init image back only together with the admin UI (`ADMIN_IMAGE`), or keep the init image of this release as long as its admin UI runs.
@@ -212,7 +212,7 @@ Your own backup jobs that record their runs now write into `ffs_admin` as `ffs_a
 ### Tested
 
 - docker compose: `tests/migrate.sh firefox-sync-2024-12` (4705bda, images 0.18.2) and `firefox-sync-2024-07` (the first release, 7f52fa0, image 0.17.1). The old release's files and `.env`, an account syncs, then the new files over them, `./prepare_environment.sh --upgrade`, the missing lines of `.env-example` added as above, `docker compose pull && docker compose up -d`: the same volumes, the same accounts on the same node with their data, and `SYNC_MAX_USERS` and the admin UI count them.
-- The Quadlets: `UPGRADE_FROM=<checkout of the release before> tests/podman.sh` (cb8e519, MariaDB containers) runs the steps above except the pull. The admin UI's audit event of before moves into `ffs_admin`.
+- The Quadlets: `UPGRADE_FROM=<checkout of the release before> tests/podman.sh` (cb8e519, MariaDB containers) runs the steps of [Quadlets](#quadlets) except the pull: every password and secret of the old `.env` stays (under its new name), the units of before are kept, a second `--upgrade` changes nothing, and the stack starts with the passwords of before, with no `SET PASSWORD`. The admin UI's audit event of before moves into `ffs_admin`. `tests/podman.sh` also renders a running install again with a setting and an image changed (`--render-units`), and stops and starts it.
 - The files moved for `db/`: `tests/podman.sh` has `--upgrade` rename `docker-compose.postgres.yml` in `COMPOSE_FILE`, and `UPGRADE_FROM=<checkout of cb8e519> tests/e2e.sh postgres` runs the upgraded stack through the `docker-compose.postgres.yml` symlink.
 - The admin UI's own database: `tests/e2e.sh` with `UPGRADE_FROM` (MariaDB, MySQL and PostgreSQL), and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
 - The old setting names: `tests/podman.sh` starts its compose phase from an `.env` with only the old names and has `--upgrade` rename them; `tests/e2e.sh` starts its install from before with only the old names; `tests/migrate.sh firefox-sync-2024-12` upgrades a real `.env` of then.
@@ -244,7 +244,7 @@ Unchanged: `SYNC_MASTER_SECRET`, `SYNC_DB`, `COMPOSE_FILE`, `COMPOSE_PROFILES` a
 ### How to rename them
 
 - **docker compose:** `./prepare_environment.sh --upgrade` renames them in your `.env`, in place and with their values as they are, and prints what it renamed. It handles indented lines, `export NAME=...`, quotes and CRLF line ends. The old file stays as `.env.before-upgrade`.
-- **Quadlets:** they have no fallback of their own. `prepare_environment.sh` renders them from the `.env` it writes, always with the new names, so running it again ([With Quadlets](#with-quadlets)) is all they need.
+- **Quadlets:** they have no fallback of their own. `--upgrade` renames them in `.env` and renders the units from it, always with the new names ([Quadlets](#quadlets)).
 
 With both names in `.env`, `--upgrade` keeps the new one and removes the old, unless the new one has no value of its own: empty, a `<REPLACE_WITH_...>` placeholder, or the default of `.env-example` (as when added from it). Then it takes the old one's value, with a WARNING whenever that changes what compose ran with: `SYNC_X: effective value <a> -> <b>`. Check it against `.env.before-upgrade`.
 
@@ -280,7 +280,7 @@ Each database image moves to a new major in its own way. Which majors are suppor
 | the accounts' cache: `fxa-redis` | none | `redis:alpine` | nothing | nothing | no data to upgrade |
 
 - The setting is also the image of the backups of that database, so the dump's client matches the server.
-- "Installs from before" are those set up by a release that did not write these settings. Running `prepare_environment.sh` again on one, or a new setup that finds its database volumes, writes the same pins.
+- "Installs from before" are those set up by a release that did not write these settings. `./prepare_environment.sh --upgrade` on one (compose and Quadlets), the setup run again, or a new setup that finds its database volumes, writes the same pins.
 - `prepare_environment.sh` reads the label of the accounts image to choose between `mysql:lts` and `mysql:8` ([Upstream patches](reference/images.md#upstream-patches)). When it cannot read the label, it writes `mysql:8` and says so. It reads the local image when there is one, so pull a newer accounts image before running it.
 - A new setup over the PostgreSQL volume of an earlier install is pinned to the major in its `PG_VERSION`. One where the major of `postgres:latest` cannot be read (no runtime, no registry) stops with an error.
 - With Quadlets, `prepare_environment.sh` writes the same images into the units when it installs them. Quadlets have no PostgreSQL.

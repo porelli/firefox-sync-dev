@@ -12,7 +12,7 @@ The Health part of the overview shows, for each component, whether it answers it
 - the public URLs with their certificates, see [Public checks](#public-checks);
 - rows that appear only when they have something to say: `Sync metrics`, `Sync error rate`, `Database growth`.
 
-A health light on every page ("All up", "1 part to check", "2 parts down") links to the Health part of the overview. The checks run every `HEALTH_CHECK_SECONDS` (60), a "round of checks".
+A health light on every page ("All up", "1 part to check", "2 parts down") links to the Health part of the overview. The checks run every minute, a "round of checks".
 
 ![Health](../images/admin/health.png)
 
@@ -83,7 +83,7 @@ The Configuration page (`/config`, in the menu) shows the settings the admin UI 
 Each setting shows its value, the variable it comes from (or `(default)` when it is not set), and what it does:
 
 - **Database servers**: with the version the health checks read from them. On your own server, only MySQL or MariaDB until the first check.
-- **Switches** are read as the admin UI reads them: `ADMIN_INSECURE_COOKIE` with any value, `ADMIN_UPDATE_CHECK=false` and `FXA_SMTP_SECURE=true` exactly.
+- **Switches** are read as the admin UI reads them: `ADMIN_INSECURE_COOKIE` and `ADMIN_SMTP_INSECURE_AUTH` with any value, `ADMIN_UPDATE_CHECK=false` and `FXA_SMTP_SECURE=true` exactly.
 - **The Sync databases**: with the user the admin UI connects as, `ADMIN_DB_SYNC_USER`, next to its own database (`ADMIN_DB_USER`, `ADMIN_DB_NAME`). An install from before `ADMIN_DB_PASSWORD` shows the Sync server's users, and the event log in the tokenserver database.
 - **Thresholds** of [Errors and growth](#errors-and-growth) and the [security history](accounts.md#security-history), as in force.
 - **The limits and the sign-up policy**: what is in force in the database, and where it comes from. `SYNC_MAX_USERS=initial:5` says the overview manages it (and what it is now), `SYNC_MAX_USERS=5` that the init container sets it on every start.

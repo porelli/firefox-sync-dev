@@ -129,7 +129,7 @@ How the policy is enforced:
 1. On the first start, or when you changed either of them in `.env`, the values of `.env` replace the policy, including what was set on the page.
 1. Otherwise the policy stays as it is in the database. What you set on the page survives restarts and upgrades.
 
-So to take the policy back from the page, change `.env` and run `docker compose up -d`. With Quadlets the values are written in `firefox-sync-fxa-policy.container` instead: change them there, then `systemctl --user daemon-reload` and restart `firefox-sync-fxa-policy.service`. `FXA_SIGNUPS=allowlist` with an empty `FXA_SIGNUP_ALLOWLIST` lets nobody sign up, and `fxa-policy` logs a warning. `FXA_MAX_ACCOUNTS` follows its own rules, see [Limits](limits.md#fxa_max_accounts).
+So to take the policy back from the page, change `.env` and run `docker compose up -d`. With Quadlets, change `.env`, render the units again ([Change a setting](install/podman.md#change-a-setting)) and restart `firefox-sync-fxa-policy.service`. `FXA_SIGNUPS=allowlist` with an empty `FXA_SIGNUP_ALLOWLIST` lets nobody sign up, and `fxa-policy` logs a warning. `FXA_MAX_ACCOUNTS` follows its own rules, see [Limits](limits.md#fxa_max_accounts).
 
 The page itself (the allowlist, removing entries): [Sign-ups](admin/accounts.md#sign-ups).
 

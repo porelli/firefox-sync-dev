@@ -75,7 +75,7 @@ You sign in with `ADMIN_PASSWORD`, single sign-on or a header of your reverse pr
 - The forms check that they are posted from the same site, so a reverse proxy must keep the `Host` header.
 - After 5 wrong passwords in a minute, sign-ins wait a minute.
 - A session lasts 12 hours, and ends when the container restarts.
-- Over plain HTTP on another host than `localhost`, the cookie needs `ADMIN_INSECURE_COOKIE=1` in the admin UI's container. Compose, the Quadlets and the chart don't pass it from `.env` ([Not in .env](../reference/settings.md#not-in-env)). Not recommended: the Configuration page lists it as a setting that disagrees.
+- Over plain HTTP on another host than `localhost`, the cookie needs `ADMIN_INSECURE_COOKIE=1` in `.env` (Helm: `admin.insecureCookie`, [Settings](../reference/settings.md#admin-ui-sign-in)). Not recommended: the Configuration page lists it as a setting that disagrees.
 
 ## Time zone
 

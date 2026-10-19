@@ -17,7 +17,7 @@ How to read the tables:
 | `SYNC_MAX_USERS` | `maxUsers` | `1` (Helm `"1"`) | how many accounts can use the server: `N`, `fixed:N`, `initial:N` or `unlimited`. The forms: [Limits](../limits.md#sync_max_users) | `MAX_USERS` |
 | `SYNC_MASTER_SECRET` | Secret: `SYNC_MASTER_SECRET` | generated | signs the Sync tokens. A new one signs every Firefox out | |
 | `SYNC_METRICS_HASH_SECRET` | Secret: `METRICS_HASH_SECRET` | generated | the key of the hash of the account ids in the metrics | `METRICS_HASH_SECRET` |
-| `SYNC_EXPORT_PORT` | – (the Service, port `syncstorage.service.port`, `8000`) | `5000`; unset: `127.0.0.1:5000` | where the host publishes the Sync server for your reverse proxy: `[address:]port`. A port alone publishes it on every interface | `CONTAINER_EXPORT_PORT` |
+| `SYNC_EXPORT_PORT` | – (the Service, port `syncstorage.service.port`, `8000`) | `127.0.0.1:5000` | where the host publishes the Sync server for your reverse proxy: `[address:]port`. A port alone in `.env` publishes it on every interface: [Host names and ports](../reverse-proxy.md#host-names-and-ports) | `CONTAINER_EXPORT_PORT` |
 | `FXA_OAUTH_SERVER_URL` | `fxa.oauthServerUrl` | `https://oauth.accounts.firefox.com/v1` | where the tokenserver checks the sign-in tokens. Self-hosted accounts: `http://fxa-auth:9000/v1` | |
 | `FXA_EMAIL_DOMAIN` | `fxa.emailDomain` | `api.accounts.firefox.com` | the tokenserver keeps each account as `<uid>@FXA_EMAIL_DOMAIN`. Self-hosted accounts: the host of `FXA_AUTH_URL`. A new value makes every account a new one | |
 | `COMPOSE_FILE` | – | unset: `docker-compose.yml` | the compose files, separated by `:`: add `docker-compose.sync-postgres.yml`, `docker-compose.sync-mysql.yml`, `docker-compose.fxa.yml`, `docker-compose.fxa-mariadb.yml` as needed | |
@@ -34,7 +34,7 @@ Which tags exist, and what each image is: [Images](images.md). When to pin them:
 | `SYNC_IMAGE_TAG` | `image.syncstorageTag` | `latest` | its tag | `SYNCSTORAGE_IMAGE_TAG` |
 | `SYNC_INIT_IMAGE` | – (follows `database.backend`) | `syncstorage-rs-mysql-init` | the init container's image: `syncstorage-rs-mysql-init` or `syncstorage-rs-postgres-init` | `SYNCSTORAGE_INIT_IMAGE` |
 | `SYNC_INIT_IMAGE_TAG` | `image.initTag` | `latest` | its tag | `SYNCSTORAGE_INIT_IMAGE_TAG` |
-| `ADMIN_IMAGE` | `image.adminTag` (the tag only) | unset: `<IMAGE_REPOSITORY>:admin-latest` | the admin UI's whole image name. Not in `.env-example` | |
+| `ADMIN_IMAGE` | `image.adminTag` (the tag only) | unset: `<IMAGE_REPOSITORY>:admin-latest` | the admin UI's whole image name, also that of `fxa-policy` (compose and the Quadlets) | |
 | – | `image.pullPolicy` | `IfNotPresent` | with `IfNotPresent` a node that has `latest` does not pull a newer one: [Helm](../upgrading.md#helm) | |
 
 The accounts' images are under [Accounts](#accounts), the database images under [Databases](#databases).
@@ -115,6 +115,7 @@ What it does: [Admin UI](../admin/README.md).
 | `ADMIN_AUDIT_RETENTION_DAYS` | `admin.auditRetentionDays` | `365` | days the events of the admins (who did what) and the backup runs are kept | |
 | `ADMIN_PURGE` | `admin.purge` | empty: only with "Purge now" | `1`: every day, delete the Sync data nobody reads any more: [Storage](../admin/storage.md) | |
 | `ADMIN_DELETE_UNCONFIRMED_DAYS` | `admin.deleteUnconfirmedDays` | empty: never | self-hosted accounts: every day, delete the accounts that never confirmed their email after this many days (at least 1) | |
+| `ADMIN_UNCONFIRMED_HOURS` | – | empty: `72` | self-hosted accounts: an account that has not confirmed its email this many hours after its sign-up is marked unconfirmed in the accounts list | |
 | `ADMIN_SIGNUP_BURST` | `admin.signupBurst` | `10` | self-hosted accounts: an alert when more accounts than this are created in an hour (`0`: never) | |
 | `ADMIN_ERROR_RATE_PERCENT` | `admin.errorRatePercent` | `10` | an alert on a spike of Sync errors: this share (%) of the requests in 15 minutes, and 3 times the share of the day before (`0`: never) | |
 | `ADMIN_ERROR_RATE_MIN_ERRORS` | `admin.errorRateMinErrors` | `20` | the fewest errors for that alert | |
@@ -143,6 +144,7 @@ How each way works: [Signing in](../admin/signing-in.md).
 | `ADMIN_TRUSTED_PROXIES` | `admin.trustedHeader.trustedProxies` | empty | the CIDRs of the proxy as the admin UI sees it. Required with the header: from other addresses it is ignored | |
 | `ADMIN_ALLOWED_USERS` | `admin.allowed.users` | empty: nobody by email | with OpenID Connect or the header, who is an admin: emails and `@domains`, comma-separated | |
 | `ADMIN_ALLOWED_GROUPS` | `admin.allowed.groups` | empty: none | the same, by group | |
+| `ADMIN_INSECURE_COOKIE` | `admin.insecureCookie` | empty: `Secure` only | any value: the session cookie also goes over plain HTTP other than `http://localhost`, where anybody on the way can take it. Needed for an `http://` `ADMIN_OIDC_REDIRECT_URL`; the Configuration page lists it as a setting that disagrees | |
 | `ADMIN_FXA_CLIENT_ID` | – | empty | sign in with the self-hosted accounts: an OAuth client id (16 hex characters), registered at every start with `ADMIN_OIDC_REDIRECT_URL`: [Self-hosted accounts](../admin/signing-in.md#self-hosted-accounts) | |
 | `ADMIN_FXA_CLIENT_SECRET` | – | empty | keep it empty: the accounts service refuses PKCE from clients with a secret, and the admin UI always uses PKCE | |
 
@@ -160,6 +162,7 @@ The alerts and the emails of the admin UI: [Alerts](../admin/alerts.md). The sam
 | `FXA_SMTP_PASS` | `admin.smtp.password` (Secret: `FXA_SMTP_PASS`) | empty | its password | |
 | `FXA_SMTP_SECURE` | `admin.smtp.secure` | `false` | `true`: TLS from the start (port 465); `false`: STARTTLS | |
 | `FXA_SMTP_SENDER` | `admin.smtp.sender` | `"Mozilla accounts <no-reply@<your domain>>"` | the From of the emails. Empty, the admin UI uses `ADMIN_ALERT_EMAIL` | |
+| `ADMIN_SMTP_INSECURE_AUTH` | `admin.smtp.insecureAuth` | empty: refused | any value: the admin UI sends `FXA_SMTP_PASS` also to an SMTP server that offers no TLS, in clear (a relay on the host or a network you trust only) | |
 
 `admin.password`, `admin.smtp.password`, `admin.oidc.clientSecret`, `admin.metricsToken` and `admin.notify` end up in a Secret: how, with and without `existingSecret`, is in [The Secret](../install/helm.md#the-secret).
 
@@ -198,8 +201,8 @@ The self-hosted Mozilla accounts, with `docker-compose.fxa.yml` in `COMPOSE_FILE
 | `FXA_ACCOUNT_EVENTS` | – | `false` | `true`: record the security history of every account, with IP addresses: [Security history](../accounts.md#security-history) | |
 | `FXA_PAIRING_URL` | – | unset: Mozilla's channel server | your own pairing server for the QR code, for example `wss://pairing.example.com`, with `pairing` in `COMPOSE_PROFILES` | |
 | `FXA_PAIRING_IMAGE` | – | `ghcr.io/porelli/firefox-sync:fxa-channelserver-latest` | the pairing server's image (Mozilla's own: `docker.io/mozilla/channelserver`, amd64 only) | |
-| `FXA_PAIRING_TRUSTED_PROXIES` | – | unset: `127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16` | the proxies the pairing server trusts for the client address. Not in `.env-example` | |
-| `FXA_LOG_LEVEL` | – | unset: `INFO` | the log level of the auth server. Not in `.env-example` | |
+| `FXA_PAIRING_TRUSTED_PROXIES` | – | unset: `127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16` | the proxies the pairing server trusts for the client address (compose only: the Quadlets have no pairing server) | |
+| `FXA_LOG_LEVEL` | – | unset: `INFO` | the log level of the auth server: `ERROR`, `WARN`, `INFO`, `DEBUG` or `TRACE` | |
 | `FXA_CONTENT_EXPORT_PORT` | – | `127.0.0.1:3030` | where the host publishes the accounts pages | |
 | `FXA_AUTH_EXPORT_PORT` | – | `127.0.0.1:9000` | the accounts API | |
 | `FXA_PROFILE_EXPORT_PORT` | – | `127.0.0.1:1111` | the profile server | |
@@ -227,13 +230,10 @@ Values of the chart with no `.env` counterpart, besides those in the tables abov
 
 ## Not in .env
 
-The admin UI and the backup script also read these variables, from their container's environment only. Neither compose nor the Quadlets pass them from `.env`, and the chart does not set them: they are for tests and special cases.
+The admin UI and the backup script also read these variables, from their container's environment only. Neither compose nor the Quadlets pass them from `.env`, and the chart does not set them: they are for the tests.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ADMIN_UNCONFIRMED_HOURS` | `72` | self-hosted accounts: an account that has not confirmed its email after this many hours is shown as unconfirmed |
-| `ADMIN_INSECURE_COOKIE` | empty | `1`: the session cookie also goes over plain HTTP. Not recommended; the Configuration page lists it as a setting that disagrees |
-| `SMTP_INSECURE_AUTH` | empty | allow the SMTP password without TLS, for a test server only |
 | `HEALTH_CHECK_SECONDS` | `60` | how often the admin UI checks the components |
 | `METRICS_FLUSH_SECONDS` | `60` | how often it writes its metrics |
 | `ALERT_INTERVAL_SECONDS` | `600` | the alerts are collected and sent at most this often |

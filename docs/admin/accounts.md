@@ -150,7 +150,7 @@ Their current sign-in stays unconfirmed: signing in again sends a new code to th
 
 After too many wrong passwords or codes, the accounts service blocks them. The list marks them `blocked`, and the account page says until when, with a **Lift** button. The Security page, in the menu, lists every block and who is getting close, with the same button.
 
-Every round of checks (`HEALTH_CHECK_SECONDS`, 60) the admin UI reads the blocks:
+Every round of checks (every minute) the admin UI reads the blocks:
 
 - A new block of an existing account is recorded and alerted once per account and action: on its email (alone or with an IP address) or its uid.
 - Blocks of emails that have no account, and of IP addresses alone, are left to the Security page: anybody can cause those.

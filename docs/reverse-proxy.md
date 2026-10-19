@@ -8,7 +8,7 @@ The examples are nginx configs. `prepare_environment.sh` writes them with your v
 
 | Host name | Setting | Proxy to |
 |---|---|---|
-| `sync.example.com` | `SYNC_PUBLIC_URL` | `SYNC_EXPORT_PORT` (`5000`) |
+| `sync.example.com` | `SYNC_PUBLIC_URL` | `SYNC_EXPORT_PORT` (`127.0.0.1:5000`) |
 
 The admin UI is better reached through an SSH tunnel than published: see [Reach it](admin/README.md#reach-it).
 
@@ -24,7 +24,9 @@ With [self-hosted accounts](accounts.md), three more, and two optional:
 
 The ports of the accounts are those of `FXA_*_EXPORT_PORT` and `ADMIN_GATE_EXPORT_PORT` in `.env`: see [Settings](reference/settings.md#accounts).
 
-`SYNC_EXPORT_PORT` takes the form of a compose port. A bare port, such as `5000`, listens on every address of the host. `127.0.0.1:5000` keeps it to a proxy on the same host. The others listen on `127.0.0.1` only by default.
+`SYNC_EXPORT_PORT` takes the form of a compose port, `[address:]port`. `127.0.0.1:5000`, the default, keeps it to a proxy on the same host, as the other ports. For a proxy on another host, `0.0.0.0:5000` (or a bare port, such as `5000`) listens on every address of the host. The setup script asks for it and takes a port alone as `127.0.0.1:<port>`; `config/nginx/syncstorage-rs.conf` then proxies to `127.0.0.1:<port>`, not `localhost`, which nginx would try on `::1` first.
+
+An install set up before this default has `SYNC_EXPORT_PORT=5000`, on every address, and keeps it (`--upgrade` changes nothing there). To keep it to the proxy on the same host, set `SYNC_EXPORT_PORT=127.0.0.1:5000` in `.env`, then `docker compose up -d`, or with Quadlets `./prepare_environment.sh --render-units` and `systemctl --user restart firefox-sync-syncstorage.service`.
 
 ## Request size
 

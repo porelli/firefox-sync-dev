@@ -49,7 +49,7 @@ This page installs the Sync server with docker compose. Read [What you need](../
 | Question | What it changes | More |
 |---|---|---|
 | the host name of the Sync server | `SYNC_PUBLIC_URL` | [Reverse proxy](../reverse-proxy.md#host-names-and-ports) |
-| the listening port | `SYNC_EXPORT_PORT` | [Reverse proxy](../reverse-proxy.md#host-names-and-ports) |
+| where the Sync server listens, `127.0.0.1:5000` | `SYNC_EXPORT_PORT` | [Reverse proxy](../reverse-proxy.md#host-names-and-ports) |
 | max users | `SYNC_MAX_USERS` | [Limits](../limits.md) |
 | the database backend: `mariadb`, `mysql` or `postgres` | `SYNC_DB`, and `COMPOSE_FILE` for MySQL and PostgreSQL | [Databases](../databases.md) |
 | an existing database server instead of the containers | `SYNC_DB_CONTAINERS=0`, and a `database-setup.sql` to run there | [Your own server](../databases.md#with-docker-compose) |

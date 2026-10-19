@@ -43,7 +43,7 @@ Symptoms and their fixes, by area. Each entry starts with what you see: an error
 - **A setting changed in `.env` has no effect.** The installed units hold their own copy of the values: change it there, see [Change a setting](install/podman.md#change-a-setting).
 - **`prepare_environment.sh` stops with `ERROR: <unit> needs <NAME>, which is not set in .env`.** A unit has a `%NAME%` placeholder the script has no value for: the units of `config/quadlet/` and the script come from different releases. Use the files of one release.
 - **A one-shot unit does not run again** (the migrations, the init container, the sign-up policy). They stay "active" after their first run. Stop them along with the units that need them, as in [Quadlets](upgrading.md#quadlets).
-- **A unit points at `config/database/admin-user.sh`, which is gone.** Units rendered before the release that added `db/`: run `./prepare_environment.sh` again ([Files that moved](upgrading.md#files-that-moved)).
+- **A unit points at `config/database/admin-user.sh`, which is gone.** Units rendered before the release that added `db/`: run `./prepare_environment.sh --upgrade` ([Files that moved](upgrading.md#files-that-moved)).
 - **The Sync server's state, logs and health checks.** See [Check the units](install/podman.md#check-the-units).
 
 ## Kubernetes

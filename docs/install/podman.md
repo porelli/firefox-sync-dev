@@ -107,28 +107,25 @@ Podman 4.9 (Ubuntu 24.04) orders the units on the start of their container, not 
 
 ### Change a setting
 
-The installed units hold their own copy of the values: a change of `.env` alone does nothing. Don't run `prepare_environment.sh` again on a running install either: it writes a new `.env` from `.env-example`, with new passwords and secrets that the databases don't have.
+The installed units hold their own copy of the values of `.env`: a change of `.env` alone does nothing. To change a setting, or to pin an image (`SYNC_IMAGE_TAG`, `ADMIN_IMAGE`, `SYNC_MARIADB_IMAGE`...):
 
-1. Find the units that have the setting. Inside the units some settings have the containers' names, for example `MAX_USERS` for `SYNC_MAX_USERS`:
-
-   ```bash
-   grep -l 'MAX_USERS=' ~/.config/containers/systemd/firefox-sync-*.container
-   ```
-
-1. Change the value in their `Environment=` lines (a `%` is written `%%`), and in `.env` too, so that both agree.
-1. Reload systemd:
+1. Change it in `.env`.
+1. Render the units again from `.env`:
 
    ```bash
-   systemctl --user daemon-reload
+   ./prepare_environment.sh --render-units
    ```
 
-1. Restart the init container and the Sync server. The migrations run again before the Sync server starts.
+   It asks nothing and keeps every password and secret. It reads `.env` as compose does (quotes, a comment after the value, `export`), writes only the units that change and lists them, keeps all the units of before in `quadlets.before-<UTC time>/` of the checkout, and reloads systemd. Run again, it changes nothing. Before that it does to `.env` what `--upgrade` does ([Quadlets](../upgrading.md#quadlets)): on an `.env` of this release, nothing.
+1. Restart the units it listed. A new image: pull it first (`podman pull`, the name of its `Image=` line). For example `SYNC_MAX_USERS` is in the init container and, with the admin UI, in its unit; the migrations run again before the Sync server starts:
 
    ```bash
    systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-syncstorage.service
    ```
 
    With the admin UI, also restart `firefox-sync-admin.service` when `SYNC_MAX_USERS` changes between a plain number and `initial:N` ([Limits](../limits.md#switch-between-the-forms)).
+
+Don't run `./prepare_environment.sh` without `--render-units` (or `--upgrade`) on a running install: it writes a new `.env` from `.env-example`, with new passwords and secrets that the databases don't have. It keeps the old file as `.env.before-setup`.
 
 Upgrading the images: see [Upgrading](../upgrading.md#quadlets).
 

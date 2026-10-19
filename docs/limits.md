@@ -45,7 +45,7 @@ A change of form applies on the next start, like any other change:
 - From `initial:5` to `5`: 5 is set again on the next start.
 - From `5` to `initial:5`: the value in the database stays, and the admin UI can change it.
 
-The next start is `docker compose up -d`. With Quadlets, after changing the value in the units ([Change a setting](install/podman.md#change-a-setting)):
+The next start is `docker compose up -d`. With Quadlets, after rendering the units again ([Change a setting](install/podman.md#change-a-setting)):
 
 ```bash
 systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-admin.service
