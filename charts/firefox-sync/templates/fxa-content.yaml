@@ -1,0 +1,137 @@
+{{- /*
+The accounts' web pages, compose's fxa-content: Firefox reads its /.well-known here. Up after
+the auth and profile servers answer (compose's depends_on service_healthy: wait-accounts).
+It rewrites files of the image at its start (the CDN URLs), so no readOnlyRootFilesystem
+*/ -}}
+{{- if .Values.fxa.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $f := .Values.fxa }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-fxa-content
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-content") | nindent 4 }}
+spec:
+  selector:
+    {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-content") | nindent 4 }}
+  ports:
+    - name: http
+      port: 3030
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-fxa-content
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-content") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-content") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-content") | nindent 8 }}
+      {{- /* a new pod when its script or the chart's Secret change (its env reads the
+      Secret at the start; existingSecret: restart it yourself) */}}
+      {{- $annotations := dict "checksum/fxa-config" (include "firefox-sync.fxaConfigData" . | sha256sum) }}
+      {{- if not .Values.existingSecret }}
+      {{- $_ := set $annotations "checksum/secrets" (include "firefox-sync.secretData" . | sha256sum) }}
+      {{- end }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" . "annotations" $annotations) }}{{ . | trim | nindent 6 }}{{ end }}
+    spec:
+      {{- include "firefox-sync.podSpec" . | nindent 6 }}
+      securityContext:
+        {{- include "firefox-sync.fxaPodSecurityContext" . | nindent 8 }}
+      initContainers:
+        # compose's depends_on fxa-auth and fxa-profile (service_healthy): its pages read
+        # the names and avatars from the profile server
+        {{- include "firefox-sync.fxaWaitHttp" (dict "root" . "name" "wait-accounts" "urls" (list (printf "http://%s-fxa-auth:9000/__heartbeat__" $fullname) (printf "http://%s-fxa-profile:1111/__heartbeat__" $fullname))) | nindent 8 }}
+      containers:
+        - name: content
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /fxa/packages/fxa-content-server
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with $f.resources.content }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            - sh
+            - -c
+            - >-
+              node /fxa-config/content-server.js /tmp/content-server.json &&
+              exec node server/bin/fxa-content-server.js
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: CONFIG_FILES
+              value: /tmp/content-server.json
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "CONTENT_SESSION_SECRET" "key" "FXA_CONTENT_SESSION_SECRET") | nindent 12 }}
+            - name: PUBLIC_URL
+              value: {{ $f.contentUrl | quote }}
+            - name: FXA_URL
+              value: {{ $f.authUrl | quote }}
+            - name: FXA_OAUTH_URL
+              value: {{ $f.authUrl | quote }}
+            - name: FXA_PROFILE_URL
+              value: {{ $f.profileUrl | quote }}
+            - name: FXA_PROFILE_IMAGES_URL
+              value: {{ printf "%s/img" $f.profileUrl | quote }}
+            - name: SYNC_TOKENSERVER_URL
+              value: {{ .Values.syncDomain | quote }}
+            # QR code pairing with phones: Mozilla's server unless fxa.pairing.url is set
+            - name: PAIRING_SERVER_BASE_URI
+              value: {{ $f.pairing.url | default "wss://channelserver.services.mozilla.com" | quote }}
+            # as in auth: the admin UI never skips the sign-in code (Mozilla's default + the admin UI)
+            - name: SERVICES_WITH_EMAIL_VERIFICATION
+              value: {{ printf "32aaeb6f1c21316a,%s" $f.adminClientId | quote }}
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "FLOW_ID_KEY" "key" "FXA_FLOW_ID_KEY") | nindent 12 }}
+            - name: FEATURE_FLAGS_REDIS_HOST
+              value: {{ $fullname }}-fxa-redis
+            # (and REDIS_PASSWORD, FXA_REDIS_PASSWORD: chart-only, the password of both)
+            {{- include "firefox-sync.fxaRedisEnv" (dict "root" . "names" (list "REDIS_HOST")) | trim | nindent 12 }}
+            - name: GEODB_ENABLED
+              value: "false"
+            {{- with include "firefox-sync.fxaCaEnv" . }}{{ . | nindent 12 }}{{ end }}
+          ports:
+            - name: http
+              containerPort: 3030
+          # compose's healthcheck; its start_period of 300 s, up to 10 minutes
+          startupProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: fxa-config
+              mountPath: /fxa-config
+              readOnly: true
+            {{- with include "firefox-sync.fxaCaVolumeMount" . }}{{ . | nindent 12 }}{{ end }}
+      volumes:
+        - name: fxa-config
+          configMap:
+            name: {{ $fullname }}-fxa-config
+        {{- with include "firefox-sync.fxaCaVolume" . }}{{ . | nindent 8 }}{{ end }}
+{{- end }}

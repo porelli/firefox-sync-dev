@@ -1,0 +1,331 @@
+{{- /*
+The accounts' profiles, compose's fxa-profile, fxa-profile-worker and fxa-profile-static: one
+pod, because all three mount the avatars' volume (RWO), plus img-proxy (chart-only,
+files/fxa/img-proxy.js), the static server under /img/ for the Ingress. Up after the auth
+server answers (its pod ran the migrations: compose's depends_on fxa-migrations)
+*/ -}}
+{{- if .Values.fxa.enabled }}
+{{- $fullname := include "firefox-sync.fullname" . }}
+{{- $f := .Values.fxa }}
+{{- $public := "/fxa/packages/fxa-profile-server/var/public" }}
+# the avatars (compose's fxa-profile-images)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-fxa-profile-images
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-profile-images") | nindent 4 }}
+  annotations:
+    # kept on helm uninstall: the avatars of everyone
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $f.profileImages.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $f.profileImages.persistence.size }}
+---
+# http: the profile server (fxa.profileUrl); img: the avatars under /img/ (the chart's
+# Ingress); static: the same without the prefix, for your own reverse proxy (compose's
+# /img/ -> fxa-profile-static:1112, the prefix stripped)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-fxa-profile
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-profile") | nindent 4 }}
+spec:
+  selector:
+    {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-profile") | nindent 4 }}
+  ports:
+    - name: http
+      port: 1111
+      targetPort: http
+    - name: static
+      port: 1112
+      targetPort: static
+    - name: img
+      port: 1114
+      targetPort: img
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-fxa-profile
+  labels:
+    {{- include "firefox-sync.labels" (dict "root" . "component" "fxa-profile") | nindent 4 }}
+spec:
+  replicas: 1
+  # stop, then start: the avatars' volume is RWO
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-profile") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firefox-sync.selectorLabels" (dict "root" . "component" "fxa-profile") | nindent 8 }}
+      {{- /* a new pod when img-proxy.js or the chart's Secret change (its env reads the
+      Secret at the start; existingSecret: restart it yourself) */}}
+      {{- $annotations := dict "checksum/fxa-config" (include "firefox-sync.fxaConfigData" . | sha256sum) }}
+      {{- if not .Values.existingSecret }}
+      {{- $_ := set $annotations "checksum/secrets" (include "firefox-sync.secretData" . | sha256sum) }}
+      {{- end }}
+      {{- with include "firefox-sync.podAnnotations" (dict "root" . "annotations" $annotations) }}{{ . | trim | nindent 6 }}{{ end }}
+    spec:
+      {{- include "firefox-sync.podSpec" . | nindent 6 }}
+      securityContext:
+        {{- include "firefox-sync.fxaPodSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- if $f.volumeOwnerInit }}
+        # as keys-owner: the image runs as app (10001), new volumes are root's. Root with
+        # CHOWN alone (fxa.volumeOwnerInit false: none, fsGroup instead)
+        - name: images-owner
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          args: [chown, "10001:10001", /images]
+          volumeMounts:
+            - name: images
+              mountPath: /images
+        {{- end }}
+        # Docker copies the image's directory into a new volume, Kubernetes does not: the
+        # same here, what is there kept (cp -n)
+        - name: images-seed
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with include "firefox-sync.fxaInitResources" . }}{{ . | trim | nindent 10 }}{{ end }}
+          args: [cp, -an, {{ $public }}/., /images/]
+          volumeMounts:
+            - name: images
+              mountPath: /images
+        # compose's depends_on fxa-migrations: the auth server answers once its pod migrated
+        {{- include "firefox-sync.fxaWaitHttp" (dict "root" . "name" "wait-auth" "urls" (list (printf "http://%s-fxa-auth:9000/__heartbeat__" $fullname))) | nindent 8 }}
+      containers:
+        - name: profile
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /fxa/packages/fxa-profile-server
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with $f.resources.profile }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args: [node, bin/server.js]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: DB
+              value: mysql
+            {{- include "firefox-sync.fxaMysqlEnv" (dict "root" . "prefix" "") | nindent 12 }}
+            - name: PUBLIC_URL
+              value: {{ $f.profileUrl | quote }}
+            - name: AUTH_SERVER_URL
+              value: http://{{ $fullname }}-fxa-auth:9000/v1
+            - name: OAUTH_SERVER_URL
+              value: http://{{ $fullname }}-fxa-auth:9000/v1
+            {{- include "firefox-sync.secretEnv" (dict "root" . "name" "AUTH_SECRET_BEARER_TOKEN" "key" "FXA_PROFILE_SECRET") | nindent 12 }}
+            # (and REDIS_PASSWORD, FXA_REDIS_PASSWORD: chart-only)
+            {{- include "firefox-sync.fxaRedisEnv" (dict "root" . "names" (list "REDIS_HOST")) | trim | nindent 12 }}
+            # the worker is in this pod
+            - name: WORKER_URL
+              value: http://localhost:1113
+            - name: IMG
+              value: local
+            - name: IMG_URL
+              value: {{ printf "%s/img/a/{id}" $f.profileUrl | quote }}
+            # (compose's $$ is its escape of $)
+            - name: IMG_PROVIDERS_FXA
+              value: {{ printf "^%s/img/a/[0-9a-f]{32}$" $f.profileUrl | quote }}
+            - name: EVENTS_ENABLED
+              value: "false"
+            {{- with include "firefox-sync.fxaCaEnv" . }}{{ . | nindent 12 }}{{ end }}
+          ports:
+            - name: http
+              containerPort: 1111
+          # compose's healthcheck (also asks the accounts database); its start_period of
+          # 300 s, up to 10 minutes
+          startupProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: images
+              mountPath: {{ $public }}
+            {{- with include "firefox-sync.fxaCaVolumeMount" . }}{{ . | nindent 12 }}{{ end }}
+        # compose's fxa-profile-worker: its own HTTP server, where the profile server sends
+        # the uploaded avatars
+        - name: profile-worker
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /fxa/packages/fxa-profile-server
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with $f.resources.profileWorker }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args: [node, bin/worker.js]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: WORKER_HOST
+              value: 0.0.0.0
+            - name: IMG
+              value: local
+          ports:
+            - name: worker
+              containerPort: 1113
+          startupProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: worker
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: worker
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /__heartbeat__
+              port: worker
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: images
+              mountPath: {{ $public }}
+        # compose's fxa-profile-static: the avatars, read-only
+        - name: profile-static
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /fxa/packages/fxa-profile-server
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+          {{- with $f.resources.profileStatic }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args: [node, bin/_static.js]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: IMG
+              value: local
+          ports:
+            - name: static
+              containerPort: 1112
+          # compose's healthcheck: the default avatar, a file it serves like the uploaded ones
+          startupProbe:
+            httpGet:
+              path: /a/00000000000000000000000000000000
+              port: static
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /a/00000000000000000000000000000000
+              port: static
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /a/00000000000000000000000000000000
+              port: static
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: images
+              mountPath: {{ $public }}
+              readOnly: true
+        # chart-only: GET and HEAD of /img/<path> to profile-static's /<path> (no env)
+        - name: img-proxy
+          image: {{ include "firefox-sync.fxaImage" (dict "root" . "name" "fxa") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "firefox-sync.fxaSecurityContext" . | nindent 12 }}
+            readOnlyRootFilesystem: true
+          {{- with $f.resources.imgProxy }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args: [node, /fxa-config/img-proxy.js]
+          ports:
+            - name: img
+              containerPort: 1114
+          startupProbe:
+            httpGet:
+              path: /img/a/00000000000000000000000000000000
+              port: img
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /img/a/00000000000000000000000000000000
+              port: img
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /img/a/00000000000000000000000000000000
+              port: img
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: fxa-config
+              mountPath: /fxa-config
+              readOnly: true
+      volumes:
+        - name: images
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-fxa-profile-images
+        - name: fxa-config
+          configMap:
+            name: {{ $fullname }}-fxa-config
+        {{- with include "firefox-sync.fxaCaVolume" . }}{{ . | nindent 8 }}{{ end }}
+{{- end }}

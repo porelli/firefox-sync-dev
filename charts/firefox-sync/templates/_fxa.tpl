@@ -356,3 +356,38 @@ trim | nindent
 {{ include "firefox-sync.secretEnv" (dict "root" $.root "name" (printf "%sPASSWORD" (trimSuffix "HOST" .)) "key" "FXA_REDIS_PASSWORD") }}
 {{- end }}
 {{- end }}
+
+{{/*
+An init container of the accounts' image waiting for their servers, compose's depends_on
+service_healthy (chart-only, no env): each URL in turn answers 2xx (their /__heartbeat__), up
+to 30 minutes (auth's first start: the database's, the migrations), then exit 1 and the
+kubelet tries again. Accepts a dict with "root", "name" and "urls"; a list item, for nindent
+under initContainers:
+*/}}
+{{- define "firefox-sync.fxaWaitHttp" -}}
+- name: {{ .name }}
+  image: {{ include "firefox-sync.fxaImage" (dict "root" .root "name" "fxa") }}
+  imagePullPolicy: {{ .root.Values.image.pullPolicy }}
+  securityContext:
+    {{- include "firefox-sync.fxaSecurityContext" .root | nindent 4 }}
+  {{- with include "firefox-sync.fxaInitResources" .root }}{{ . | trim | nindent 2 }}{{ end }}
+  args:
+    - node
+    - -e
+    - |
+      const deadline = Date.now() + 30 * 60 * 1000;
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      (async () => {
+        for (const url of process.argv.slice(1)) {
+          let last = '';
+          while (!(await fetch(url, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok || ((last = `HTTP ${r.status}`), false), (e) => ((last = e.message), false)))) {
+            if (Date.now() > deadline) { console.error(`Timeout waiting for ${url}: ${last}`); process.exit(1); }
+            await sleep(2000);
+          }
+          console.log(`${url} answers`);
+        }
+      })();
+    {{- range .urls }}
+    - {{ . | quote }}
+    {{- end }}
+{{- end }}

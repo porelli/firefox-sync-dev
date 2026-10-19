@@ -486,11 +486,11 @@ pods_lint() {
   # capability added only to the volume owners' init containers, CHOWN alone; their pods (but
   # their database server's, root at the start as the Sync server's) root only there, and
   # nowhere with fxa.volumeOwnerInit=false
-  local fxa_backend owner_init caps roots want_roots
+  local fxa_backend owner_init caps roots want_roots r
   for fxa_backend in mysql mariadb; do
     for owner_init in true false; do
       pods=$(pod_specs -f "${CHART_DIR}/ci/fxa-values.yaml" --set fxa.database.backend="${fxa_backend}" --set fxa.volumeOwnerInit="${owner_init}")
-      [[ "$(jq '[.[] | select(.w | test("-fxa-"))] | length' <<< "${pods}")" -ge 3 ]] || fail "fxa ${fxa_backend}: not every workload of the accounts rendered"
+      [[ "$(jq '[.[] | select(.w | test("-fxa-"))] | length' <<< "${pods}")" -ge 5 ]] || fail "fxa ${fxa_backend}: not every workload of the accounts rendered"
       bad=$(jq -r '.[] | .w as $w | .s.spec | select(.automountServiceAccountToken != false or .securityContext.seccompProfile.type != "RuntimeDefault"
         or ([(.initContainers // [])[], .containers[] | .securityContext.allowPrivilegeEscalation] | any(. != false))
         or .hostNetwork or .hostPID or .hostIPC or ([.volumes[]? | .hostPath] | any(. != null))
@@ -502,19 +502,19 @@ pods_lint() {
         | (.initContainers // [])[], .containers[] | select((.securityContext.runAsUser // $p.runAsUser // 0) == 0 or (.securityContext.runAsNonRoot // $p.runAsNonRoot) != true)
         | "\($w | sub("^[A-Za-z]+/test-release-firefox-sync-"; ""))/\(.name)"' <<< "${pods}" | sort | paste -sd' ' -)
       if [[ ${owner_init} == true ]]; then
-        want_roots="fxa-auth/keys-owner"
-        jq -e '[.[] | select(.w | test("-fxa-auth$")) | .s.spec.securityContext.fsGroup] == [null]' <<< "${pods}" > /dev/null \
-          || fail "fxa ${fxa_backend}: fsGroup on the auth pod with fxa.volumeOwnerInit"
+        want_roots="fxa-auth/keys-owner fxa-profile/images-owner"
+        jq -e '[.[] | select(.w | test("-fxa-(auth|profile)$")) | .s.spec.securityContext.fsGroup] == [null, null]' <<< "${pods}" > /dev/null \
+          || fail "fxa ${fxa_backend}: fsGroup on the auth or profile pod with fxa.volumeOwnerInit"
       else
         want_roots=""
-        jq -e '[.[] | select(.w | test("-fxa-auth$")) | .s.spec.securityContext.fsGroup] == [10001]' <<< "${pods}" > /dev/null \
-          || fail "fxa ${fxa_backend}: no fsGroup 10001 on the auth pod with fxa.volumeOwnerInit=false"
+        jq -e '[.[] | select(.w | test("-fxa-(auth|profile)$")) | .s.spec.securityContext.fsGroup] == [10001, 10001]' <<< "${pods}" > /dev/null \
+          || fail "fxa ${fxa_backend}: no fsGroup 10001 on the auth and profile pods with fxa.volumeOwnerInit=false"
       fi
-      [[ "${caps}" == "${want_roots:+${want_roots}=CHOWN}" ]] || fail "fxa ${fxa_backend}, volumeOwnerInit=${owner_init}: capabilities added: ${caps:-none}"
+      [[ "${caps}" == "$(for r in ${want_roots}; do printf '%s=CHOWN\n' "${r}"; done | paste -sd' ' -)" ]] || fail "fxa ${fxa_backend}, volumeOwnerInit=${owner_init}: capabilities added: ${caps:-none}"
       [[ "${roots}" == "${want_roots}" ]] || fail "fxa ${fxa_backend}, volumeOwnerInit=${owner_init}: the accounts' root containers: ${roots:-none}, expected ${want_roots:-none}"
     done
   done
-  check "the accounts' pods: nothing baseline refuses; root only in keys-owner, with CHOWN alone, none with fxa.volumeOwnerInit=false (fsGroup 10001 then)"
+  check "the accounts' pods: nothing baseline refuses; root only in keys-owner and images-owner, with CHOWN alone, none with fxa.volumeOwnerInit=false (fsGroup 10001 then)"
 }
 
 # values.schema.json: no key the chart does not know (a typo fails), where the chart owns
