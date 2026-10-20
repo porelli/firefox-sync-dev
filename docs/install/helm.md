@@ -369,7 +369,7 @@ Without more, any pod of the cluster reaches the accounts' public servers direct
 | profile, `ffs-firefox-sync-fxa-profile` | 1111, 1112 (`static`), 1114 (`img`) | the auth and content servers, the admin UI |
 | pairing, `ffs-firefox-sync-fxa-pairing` (with `fxa.pairing.enabled`) | 8000 | the admin UI |
 
-The backups need none of them. It is off by default because the chart cannot know your Ingress controller. Name its pods in `fxa.networkPolicy.servers.ingressController`, as one NetworkPolicy peer: `namespaceSelector` and `podSelector` together select the pods of those labels in the namespaces of those labels, and `podSelector` alone selects them in the release's namespace. One of them is required: the render refuses an empty one, which would admit every pod. It also needs `fxa.networkPolicy.enabled`. For ingress-nginx, installed with its Helm chart in the namespace `ingress-nginx`:
+The backups need none of them. It is off by default because the chart cannot know your Ingress controller. Name its pods in `fxa.networkPolicy.servers.ingressController`, as one NetworkPolicy peer: `namespaceSelector` and `podSelector` together select the pods of those labels in the namespaces of those labels, and `podSelector` alone selects them in the release's namespace. `namespaceSelector` alone admits every pod of those namespaces: with the controller in the release's own namespace, set its `podSelector` too. One of them is required: the render refuses an empty one, which would admit every pod. It also needs `fxa.networkPolicy.enabled`. For ingress-nginx, installed with its Helm chart in the namespace `ingress-nginx`:
 
 ```yaml
 fxa:

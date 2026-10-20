@@ -215,7 +215,14 @@
                         "matchExpressions": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["key", "operator"],
+                            "properties": {
+                              "key": {"type": "string", "minLength": 1},
+                              "operator": {"enum": ["In", "NotIn", "Exists", "DoesNotExist"]},
+                              "values": {"type": "array", "items": {"type": "string"}}
+                            }
                           }
                         }
                       }
@@ -233,7 +240,14 @@
                         "matchExpressions": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["key", "operator"],
+                            "properties": {
+                              "key": {"type": "string", "minLength": 1},
+                              "operator": {"enum": ["In", "NotIn", "Exists", "DoesNotExist"]},
+                              "values": {"type": "array", "items": {"type": "string"}}
+                            }
                           }
                         }
                       }
@@ -317,7 +331,7 @@
               "properties": {
                 "size": {
                   "type": "string",
-                  "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
+                  "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -357,7 +371,7 @@
               "properties": {
                 "size": {
                   "type": "string",
-                  "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
+                  "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -376,7 +390,7 @@
               "properties": {
                 "size": {
                   "type": "string",
-                  "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
+                  "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -628,7 +642,7 @@
           "properties": {
             "size": {
               "type": "string",
-              "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
+              "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
             },
             "storageClass": {
               "type": "string"
@@ -812,8 +826,8 @@
         },
         "unconfirmedHours": {
           "anyOf": [
-            {"type": "integer", "minimum": 0},
-            {"type": "string", "pattern": "^[0-9]*$"}
+            {"type": "integer", "minimum": 0, "maximum": 999999},
+            {"type": "string", "pattern": "^([0-9]{1,6})?$"}
           ]
         },
         "signupBurst": {
@@ -886,7 +900,7 @@
           "properties": {
             "size": {
               "type": "string",
-              "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
+              "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
             },
             "storageClass": {
               "type": "string"

@@ -386,6 +386,25 @@ func TestBackupsCardAccountsScope(t *testing.T) {
 			t.Errorf("%s, the accounts on %s: accountsBackedUp %v", c.d.kind, c.host, got)
 		}
 	}
+	// the card's data as the overview builds it: FXA_DB_HOST read there, the accounts on
+	for _, c := range []struct {
+		d    deployment
+		fxa  bool
+		host string
+		want bool
+	}{
+		{k8s, true, "t-firefox-sync-fxa-db", true}, {k8s, true, "fxadb.example.com", false}, {k8s, false, "t-firefox-sync-fxa-db", false},
+		{deployment{kind: "compose"}, true, "", true}, {deployment{kind: "compose"}, true, "fxadb.example.com", false},
+	} {
+		t.Setenv("FXA_DB_HOST", c.host)
+		a := &App{deployment: c.d, backupTime: "03:00", backupKeep: 7}
+		if c.fxa {
+			a.fxa = &FxaDB{}
+		}
+		if got := a.backupHelp(time.Now())["Accounts"]; got != c.want {
+			t.Errorf("%s, accounts %v on %q: backupHelp Accounts %v", c.d.kind, c.fxa, c.host, got)
+		}
+	}
 	card := func(d deployment, accounts bool) string {
 		t.Helper()
 		var b strings.Builder

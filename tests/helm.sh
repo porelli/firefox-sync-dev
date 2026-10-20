@@ -226,6 +226,7 @@ TPL
     "1Gi - ReadWriteOnce standard 1Gi false false|-" "1Gi standard ReadWriteOnce standard 1Gi false false|-" \
     "2Gi - ReadWriteOnce standard 1Gi false false|its StorageClass \"standard\" does not allow expansion (allowVolumeExpansion): keep 1Gi" \
     "2Gi - ReadWriteOnce standard 1Gi false true|-" "1.5G - ReadWriteOnce standard 1Gi false true|-" \
+    "2Gi - ReadWriteOnce standard 1395864371200m false true|-" "1331Mi - ReadWriteOnce - 1395864371200m true false|was created with 1395864371200m" \
     "512Mi - ReadWriteOnce standard 1Gi false true|x.persistence.size is 512Mi but the volume v is 1Gi: Kubernetes never shrinks a volume; set at least 1Gi" \
     "1Gi - ReadWriteOnce standard 2Gi false true|set at least 2Gi" \
     "1Gi fast ReadWriteOnce standard 1Gi false true|x.persistence.storageClass is \"fast\" but the volume v is on \"standard\": Kubernetes never changes a PVC's class" \
@@ -239,12 +240,18 @@ TPL
       [[ ${want} != - ]] && grep -qF "firefox-sync: " <<< "${out}" && grep -qF "${want}" <<< "${out}" || fail "checkClaim ${c%|*}: ${out}"
     fi
   done
-  [[ "$(claim_check "$(claim 1.5Gi "" ReadWriteOnce "" 1Gi false true)" | grep -o 'bytes: "[0-9]*"')" == 'bytes: "1610612736"' ]] || fail "bytes of 1.5Gi: $(claim_check "$(claim 1.5Gi "" ReadWriteOnce "" 1Gi false true)")"
-  for bad in database.persistence.size=8GB database.persistence.size=lots backup.persistence.size=-1Gi fxa.keys.persistence.size=1e9; do
+  # (bytes: rounded up as Kubernetes does; the milli-units it stores a size of no whole bytes in,
+  # 1.3Gi of an older chart: 1395864371200m, exactly divided)
+  for c in 1.5Gi:1610612736 1395864371200m:1395864372 8589934592000m:8589934592 1.0000000001k:1001 8Gi:8589934592; do
+    [[ "$(claim_check "$(claim "${c%%:*}" "" ReadWriteOnce "" 1 false true)" | grep -o 'bytes: "[0-9]*"')" == "bytes: \"${c#*:}\"" ]] \
+      || fail "bytes of ${c%%:*}: $(claim_check "$(claim "${c%%:*}" "" ReadWriteOnce "" 1 false true)"), not ${c#*:}"
+  done
+  for bad in database.persistence.size=8GB database.persistence.size=lots backup.persistence.size=-1Gi fxa.keys.persistence.size=1e9 \
+    database.persistence.size=1.5Gi fxa.database.persistence.size=0.1Gi fxa.profileImages.persistence.size=1.3G; do
     out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set "${bad}" 2>&1) && fail "${bad}: not refused by the schema"
     grep -qi schema <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
   done
-  check "the volumes: checkStatefulSetClaim on the Sync and accounts databases' StatefulSets, pvcStorageClass on the backups', keys' and avatars' PVCs (lookups); checkClaim: a StatefulSet's size (8192Mi = 8Gi), class as created, a PVC's class kept, never smaller, larger with allowVolumeExpansion only, the access modes; sizes as quantities (schema)"
+  check "the volumes: checkStatefulSetClaim on the Sync and accounts databases' StatefulSets, pvcStorageClass on the backups', keys' and avatars' PVCs (lookups); checkClaim: a StatefulSet's size (8192Mi = 8Gi), class as created, a PVC's class kept, never smaller, larger with allowVolumeExpansion only, the access modes; bytes rounded up, milli-units of a live size read; sizes whole bytes (schema: 1.5Gi refused)"
   # the bundled PostgreSQL: the db-major init container (db/postgres/keep-major.sh) with the
   # server's image and its data, before the server
   pg=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=postgres --show-only templates/databases.yaml | manifests)

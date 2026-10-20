@@ -115,7 +115,8 @@ fxa:
       enabled: false
       # the controller's pods, one NetworkPolicy peer (both selectors: the pods of those
       # labels in the namespaces of those labels; podSelector alone: in the release's
-      # namespace; at least one required), e.g. ingress-nginx:
+      # namespace; namespaceSelector alone: every pod there, so with the controller in the
+      # release's namespace set podSelector too; at least one required), e.g. ingress-nginx:
       #   namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
       #   podSelector: {matchLabels: {app.kubernetes.io/name: ingress-nginx}}
       ingressController:

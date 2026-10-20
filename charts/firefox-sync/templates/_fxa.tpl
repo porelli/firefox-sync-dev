@@ -300,7 +300,12 @@ peer would let every pod in
 {{- $peer := dict }}
 {{- range $k := list "namespaceSelector" "podSelector" }}
 {{- $sel := get $ic $k | default dict }}
-{{- if or $sel.matchLabels $sel.matchExpressions }}
+{{- /* (an expression selects only with its key) */}}
+{{- $exprs := list }}
+{{- range ($sel.matchExpressions | default list) }}
+{{- if and (kindIs "map" .) .key }}{{ $exprs = append $exprs . }}{{ end }}
+{{- end }}
+{{- if or $sel.matchLabels $exprs }}
 {{- $_ := set $peer $k $sel }}
 {{- end }}
 {{- end }}

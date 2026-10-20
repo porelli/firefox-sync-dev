@@ -785,18 +785,25 @@ resources:
 {{- end }}
 
 {{/*
-A Kubernetes quantity (8Gi, 500M, 1073741824) in bytes, for comparing the sizes of volumes
+A Kubernetes quantity (8Gi, 500M, 1073741824) in bytes, for comparing the sizes of volumes,
+rounded up as Kubernetes does; also milli-units (1395864371200m), how Kubernetes stores a size
+that is no whole number of bytes (1.3Gi, which the schema now refuses, an older chart did not)
 */}}
 {{- define "firefox-sync.bytes" -}}
 {{- $q := toString . | trim }}
 {{- $n := regexFind "^[0-9]+(\\.[0-9]+)?" $q }}
 {{- $units := dict "" 1.0 "Ki" 1024.0 "Mi" 1048576.0 "Gi" 1073741824.0 "Ti" 1099511627776.0 "Pi" 1125899906842624.0 "Ei" 1152921504606846976.0
-  "k" 1000.0 "M" 1000000.0 "G" 1000000000.0 "T" 1000000000000.0 "P" 1000000000000000.0 "E" 1000000000000000000.0 }}
+  "k" 1000.0 "M" 1000000.0 "G" 1000000000.0 "T" 1000000000000.0 "P" 1000000000000000.0 "E" 1000000000000000000.0 "m" 1.0 }}
 {{- $unit := trimPrefix $n $q }}
 {{- if or (not $n) (not (hasKey $units $unit)) }}
 {{- fail (printf "firefox-sync: %q is no size of a volume (e.g. 8Gi, 500Mi)" $q) }}
 {{- end }}
-{{- printf "%.0f" (mulf (float64 $n) (get $units $unit)) }}
+{{- if eq $unit "m" }}
+{{- /* (divided: an exact quotient stays exact) */}}
+{{- printf "%.0f" (ceil (divf (float64 $n) 1000.0)) }}
+{{- else }}
+{{- printf "%.0f" (ceil (mulf (float64 $n) (get $units $unit))) }}
+{{- end }}
 {{- end }}
 
 {{/*

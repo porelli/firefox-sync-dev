@@ -526,11 +526,11 @@ fxa_admin_lint() {
     | .spec.template.spec.containers[0].env[] | select(.name == "ADMIN_UNCONFIRMED_HOURS") | .value] | join(",")'; }
   [[ "$(unconfirmed -f "${fxa}"):$(unconfirmed -f "${fxa}" --set admin.unconfirmedHours=0):$(unconfirmed -f "${fxa}" --set-string admin.unconfirmedHours=48):$(unconfirmed -f "${CHART_DIR}/ci/admin-values.yaml" --set admin.unconfirmedHours=48)" \
     == ":0:48:" ]] || fail "admin.unconfirmedHours: $(unconfirmed -f "${fxa}"):$(unconfirmed -f "${fxa}" --set admin.unconfirmedHours=0):$(unconfirmed -f "${fxa}" --set-string admin.unconfirmedHours=48)"
-  for bad in admin.unconfirmedHours=-1 admin.unconfirmedHours=soon; do
+  for bad in admin.unconfirmedHours=-1 admin.unconfirmedHours=soon admin.unconfirmedHours=1000000; do
     out=$(fxa_render -f "${fxa}" --set "${bad}") && fail "${bad}: not refused by the schema"
     grep -qi 'schema' <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
   done
-  check "admin.unconfirmedHours: ADMIN_UNCONFIRMED_HOURS with the accounts only when set (0, 48; none by default or without the accounts), -1 and soon refused"
+  check "admin.unconfirmedHours: ADMIN_UNCONFIRMED_HOURS with the accounts only when set (0, 48; none by default or without the accounts), -1, soon and 1000000 refused (the admin UI's hours fit a time.Duration)"
 }
 
 # the accounts' objects: the database, Redis, the keys, the auth pod and its init containers,
@@ -711,6 +711,15 @@ fxa_objects_lint() {
     grep -qi 'schema' <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
   done
   out=$(fxa_render -f "${fxa}" "${ic[@]}" --set-json 'fxa.networkPolicy.servers.extraFrom=[{}]') && fail "extraFrom [{}] (every pod): not refused by the schema"
+  # (matchExpressions as Kubernetes has them: [{}] or another operator refused; one with its key selects)
+  for bad in '[{}]' '[{"key":"app","operator":"Is","values":["x"]}]' '[{"operator":"Exists"}]'; do
+    out=$(fxa_render -f "${fxa}" --set fxa.networkPolicy.servers.enabled=true --set-json "fxa.networkPolicy.servers.ingressController.podSelector.matchExpressions=${bad}") \
+      && fail "ingressController.podSelector.matchExpressions=${bad}: renders"
+    grep -qi 'schema' <<< "${out}" || fail "matchExpressions=${bad}: refused, but not by the schema: ${out}"
+  done
+  [[ "$(server_policies --set fxa.networkPolicy.servers.enabled=true --set-json 'fxa.networkPolicy.servers.ingressController.podSelector.matchExpressions=[{"key":"app","operator":"In","values":["traefik"]}]' \
+    | jq -c '.[0].from[1]')" == '{"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["traefik"]}]}}' ]] \
+    || fail "ingressController.podSelector.matchExpressions with a key: not the controller's peer"
   # (the e2e's values: Traefik in ffs-test-ingress, the tests' pods by their label)
   [[ "$(helm template test-release "${CHART_DIR}" -f "${REPO_ROOT}/tests/helm/fxa-values.yaml" --set fxa.enabled=true | manifests \
     | jq -c '[.[] | select(.kind == "NetworkPolicy") | .metadata.name | sub("test-release-firefox-sync-"; "")]')" == '["fxa-redis","fxa-db","fxa-auth","fxa-content","fxa-profile","fxa-pairing"]' ]] \
