@@ -519,6 +519,17 @@ fxa_admin_lint() {
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "${signin[@]}" 2>&1) && fail "admin.fxaSignIn without the accounts: renders"
   grep -qF "admin.fxaSignIn needs fxa.enabled" <<< "${out}" || fail "admin.fxaSignIn without the accounts: ${out}"
   check "admin.fxaSignIn: ADMIN_FXA_CLIENT_ID derived (sha256 of <namespace>/<release>/admin-oidc, 16 hex, the same on every render, another per release) or fxa.adminClientId; the redirect URL of admin.ingress.host; auth's, content's and the admin UI's env as compose's; refused without admin.allowed, a redirect URL (https://), the accounts; fxa.adminClientId refused without it"
+
+  # admin.unconfirmedHours: ADMIN_UNCONFIRMED_HOURS with the accounts, only when set (0 too)
+  unconfirmed() { helm template test-release "${CHART_DIR}" "$@" | manifests | jq -r '[.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
+    | .spec.template.spec.containers[0].env[] | select(.name == "ADMIN_UNCONFIRMED_HOURS") | .value] | join(",")'; }
+  [[ "$(unconfirmed -f "${fxa}"):$(unconfirmed -f "${fxa}" --set admin.unconfirmedHours=0):$(unconfirmed -f "${fxa}" --set-string admin.unconfirmedHours=48):$(unconfirmed -f "${CHART_DIR}/ci/admin-values.yaml" --set admin.unconfirmedHours=48)" \
+    == ":0:48:" ]] || fail "admin.unconfirmedHours: $(unconfirmed -f "${fxa}"):$(unconfirmed -f "${fxa}" --set admin.unconfirmedHours=0):$(unconfirmed -f "${fxa}" --set-string admin.unconfirmedHours=48)"
+  for bad in admin.unconfirmedHours=-1 admin.unconfirmedHours=soon; do
+    out=$(fxa_render -f "${fxa}" --set "${bad}") && fail "${bad}: not refused by the schema"
+    grep -qi 'schema' <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
+  done
+  check "admin.unconfirmedHours: ADMIN_UNCONFIRMED_HOURS with the accounts only when set (0, 48; none by default or without the accounts), -1 and soon refused"
 }
 
 # the accounts' objects: the database, Redis, the keys, the auth pod and its init containers,

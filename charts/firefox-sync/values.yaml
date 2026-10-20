@@ -450,6 +450,9 @@ admin:
   # ADMIN_DELETE_UNCONFIRMED_DAYS, ADMIN_SIGNUP_BURST
   deleteUnconfirmedDays: ""
   signupBurst: 10
+  # ADMIN_UNCONFIRMED_HOURS (fxa.enabled): an account that has not confirmed its email this
+  # many hours after its sign-up is marked unconfirmed in the accounts list (empty: 72)
+  unconfirmedHours: ""
   # with fxa.enabled: sign in to the admin UI with the self-hosted accounts (OpenID Connect,
   # ADMIN_FXA_CLIENT_ID), who may in admin.allowed (required then). It comes back to
   # oidc.redirectUrl, empty: https://<ingress.host>/auth/callback (one of them required); the

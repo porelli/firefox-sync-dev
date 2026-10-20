@@ -115,7 +115,7 @@ What it does: [Admin UI](../admin/README.md).
 | `ADMIN_AUDIT_RETENTION_DAYS` | `admin.auditRetentionDays` | `365` | days the events of the admins (who did what) and the backup runs are kept | |
 | `ADMIN_PURGE` | `admin.purge` | empty: only with "Purge now" | `1`: every day, delete the Sync data nobody reads any more: [Storage](../admin/storage.md) | |
 | `ADMIN_DELETE_UNCONFIRMED_DAYS` | `admin.deleteUnconfirmedDays` | empty: never | self-hosted accounts: every day, delete the accounts that never confirmed their email after this many days (at least 1) | |
-| `ADMIN_UNCONFIRMED_HOURS` | – | empty: `72` | self-hosted accounts: an account that has not confirmed its email this many hours after its sign-up is marked unconfirmed in the accounts list | |
+| `ADMIN_UNCONFIRMED_HOURS` | `admin.unconfirmedHours` | empty: `72` | self-hosted accounts: an account that has not confirmed its email this many hours after its sign-up is marked unconfirmed in the accounts list | |
 | `ADMIN_SIGNUP_BURST` | `admin.signupBurst` | `10` | self-hosted accounts: an alert when more accounts than this are created in an hour (`0`: never) | |
 | `ADMIN_ERROR_RATE_PERCENT` | `admin.errorRatePercent` | `10` | an alert on a spike of Sync errors: this share (%) of the requests in 15 minutes, and 3 times the share of the day before (`0`: never) | |
 | `ADMIN_ERROR_RATE_MIN_ERRORS` | `admin.errorRateMinErrors` | `20` | the fewest errors for that alert | |
