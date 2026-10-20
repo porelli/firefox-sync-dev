@@ -249,7 +249,7 @@ func serve(ctx context.Context) error {
 		}
 		servers = append(servers, &http.Server{
 			Addr:              env("GATE_LISTEN", ":8081"),
-			Handler:           newGate(upstream, env("FXA_CONTENT_URL", ""), fxaDB, app.event, app.gateProbe),
+			Handler:           newGate(upstream, env("FXA_CONTENT_URL", ""), fxaDB, func(kind, detail string) { app.event(kind, detail) }, app.gateProbe),
 			ReadHeaderTimeout: 10 * time.Second,
 		})
 	}
@@ -437,14 +437,16 @@ func (a *App) render(w http.ResponseWriter, name string, data any) {
 }
 
 // event records in the activity log, when there is one (not in the unit tests), and
-// sends an alert for what is worth one
-func (a *App) event(kind, detail string) {
+// sends an alert for what is worth one; the error: not recorded (the alert is sent)
+func (a *App) event(kind, detail string) error {
+	var err error
 	if a.rec != nil {
-		a.rec.Event(kind, detail)
+		err = a.rec.Event(kind, detail)
 	}
 	if alertKinds[kind] {
 		a.alert(kind, detail)
 	}
+	return err
 }
 
 type accountRow struct {
@@ -818,26 +820,37 @@ func ago(d time.Duration) string {
 }
 
 // doneTo shows the result of a change on the next page, and records it with who made
-// it (and the reason given on a confirm page, if any)
+// it (and the reason given on a confirm page, if any). The record is written before the
+// redirect: the audit trail has it when the admin sees the result (a page read right after
+// lists it, a restart cannot lose it), and the admin is told when it could not be written.
 func (a *App) doneTo(w http.ResponseWriter, r *http.Request, s *session, to, message string, err error) {
-	a.mu.Lock()
 	var partial *partialError
-	if errors.As(err, &partial) {
-		detail := auditText(s, message+" ("+err.Error()+")", r.PostFormValue("reason"))
-		log.Printf("%s: %s", r.URL.Path, detail)
-		s.message, s.failed = message, a.deployment.translate(err.Error())
-		go a.event("admin", detail)
-	} else if err != nil {
+	detail, failed := "", ""
+	switch {
+	case errors.As(err, &partial):
+		detail = auditText(s, message+" ("+err.Error()+")", r.PostFormValue("reason"))
+		failed = a.deployment.translate(err.Error())
+	case err != nil:
 		log.Printf("%s: %v", r.URL.Path, err)
-		s.message, s.failed = "", a.deployment.translate(err.Error())
-	} else {
-		detail := auditText(s, message, r.PostFormValue("reason"))
-		log.Printf("%s: %s", r.URL.Path, detail)
-		s.message, s.failed = message, ""
-		go a.event("admin", detail)
+		message, failed = "", a.deployment.translate(err.Error())
+	default:
+		detail = auditText(s, message, r.PostFormValue("reason"))
 	}
+	if detail != "" {
+		log.Printf("%s: %s", r.URL.Path, detail)
+		if err := a.event("admin", detail); err != nil {
+			failed = strings.TrimSpace(failed + " " + notRecorded(err))
+		}
+	}
+	a.mu.Lock()
+	s.message, s.failed = message, failed
 	a.mu.Unlock()
 	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// notRecorded: what the admin is told when the record of a change is not in the event log
+func notRecorded(err error) string {
+	return "Done, but not recorded in the event log (the audit trail): " + err.Error() + ". The admin UI's log has it."
 }
 
 // auditText: "Disabled alice@example.com (uid 3f2a1b2c) by bob@example.com (oidc): lost laptop"

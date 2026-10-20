@@ -171,7 +171,7 @@ Max users set to 5 by admin (password)
 
 `admin (password)` is whoever has `ADMIN_PASSWORD`. With single sign-on or the header it is their email. The text after the colon is the reason typed on the confirm page, if any.
 
-The metrics are kept per minute and the events as they are, in the admin UI's own database (`ffs_metrics`, `ffs_events`), see [The admin UI's own database](../reference/database-users.md#the-admin-uis-own-database). How long is in [Maintenance and retention](storage.md#maintenance-and-retention). At most 30 entries a minute are recorded for each kind of event, except `admin`: every change is kept.
+The metrics are kept per minute and the events as they are, in the admin UI's own database (`ffs_metrics`, `ffs_events`), see [The admin UI's own database](../reference/database-users.md#the-admin-uis-own-database). How long is in [Maintenance and retention](storage.md#maintenance-and-retention). At most 30 entries a minute are recorded for each kind of event, except `admin`: every change is kept. A change is recorded before its result is shown: when that fails (the database out of reach), the result says it is not in the event log, and the admin UI's log has the entry.
 
 ### Remove personal data from the log
 

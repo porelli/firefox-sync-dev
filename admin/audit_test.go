@@ -3,9 +3,11 @@ package main
 import (
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -214,5 +216,60 @@ func TestUnknownAccountChangesNothing(t *testing.T) {
 	}
 	if lines := alerts(t, app.alerter, 1); len(lines) != 0 {
 		t.Errorf("alerts: %q", lines)
+	}
+}
+
+// the record of a change is in the event log when the admin sees the result: a page read
+// right after lists it (the activity page of tests/test_admin_sync.py read before a record
+// written in the background), and when it cannot be written the admin is told
+func TestChangeRecordedBeforeTheResult(t *testing.T) {
+	for _, failing := range []bool{false, true} {
+		// a Sync account of Mozilla's accounts
+		fake := &fakeFxa{answer: func(query string, _ []driver.Value) *fakeRows {
+			if strings.HasPrefix(query, "SELECT email, MIN(created_at)") {
+				return &fakeRows{cols: []string{"email", "created", "uid"}, rows: [][]driver.Value{{fakeUID + "@api.accounts.firefox.com", int64(1700000000000), int64(7)}}}
+			}
+			return nil
+		}}
+		// a slow database: the record of the note is written 100 ms after it is sent
+		var mu sync.Mutex
+		written := false
+		fake.execErr = func(query string, args []driver.Value) error {
+			if !strings.HasPrefix(query, "INSERT INTO ffs_events") || !strings.HasPrefix(args[2].(string), "Note of") {
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+			if failing {
+				return errors.New("database gone")
+			}
+			mu.Lock()
+			written = true
+			mu.Unlock()
+			return nil
+		}
+		app := testApp()
+		app.sync, app.alerter = &SyncDB{db: sql.OpenDB(fake)}, &Alerter{}
+		app.rec = fakeRecorder(fake)
+		h := app.routes()
+		c, s := passwordSession(t, app, h)
+		app.alerter.take()
+		w := post(h, "/users/"+fakeUID+"/note", url.Values{"csrf": {s.csrf}, "note": {"Alice's laptop"}}, c, nil)
+		mu.Lock()
+		done := written
+		mu.Unlock()
+		if w.Code != 303 || !strings.HasPrefix(s.message, "Note of ") {
+			t.Fatalf("failing %v: %d %q %q", failing, w.Code, s.message, s.failed)
+		}
+		if done == failing {
+			t.Errorf("failing %v: written before the result: %v", failing, done)
+		}
+		notice := "Done, but not recorded in the event log (the audit trail): database gone."
+		if failing != strings.Contains(s.failed, notice) {
+			t.Errorf("failing %v: shown %q / %q", failing, s.message, s.failed)
+		}
+		// the alert goes out either way
+		if lines := alerts(t, app.alerter, 1); len(lines) != 1 || !strings.Contains(lines[0], "admin: Note of ") {
+			t.Errorf("failing %v: alerts %q", failing, lines)
+		}
 	}
 }

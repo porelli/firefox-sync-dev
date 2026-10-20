@@ -213,6 +213,12 @@ metrics_show() {
 }
 # admin UI errors in the background (written to the logs only)
 admin_errors() { dc logs ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|rendering [^:]*): '; }
+# after a failed admin UI test: the errors in its log (those of the event log among them), its
+# last lines
+admin_log() {
+  echo "---- ffs-admin: errors in its log"; admin_errors | tail -20
+  echo "---- ffs-admin: its last lines"; dc logs --no-log-prefix --tail 40 ffs-admin 2>&1
+}
 admin_healthy() {
   for _ in $(seq 1 60); do [ "$(state ffs-admin Health.Status)" = healthy ] && break; sleep 1; done
   state ffs-admin Health.Status
@@ -323,7 +329,14 @@ in_app() {
     -e PYTHONDONTWRITEBYTECODE=1 \
     --entrypoint /bin/sh syncstorage -c "cd /app && $1" < /dev/null
 }
-pytest_in_app() { in_app "python3 -m pytest -q -p no:cacheprovider $1 > /tmp/pytest.log 2>&1; rc=\$?; tail -25 /tmp/pytest.log; exit \$rc"; }
+pytest_in_app() { in_app "$(pytest_sh "$1")"; }
+# the admin UI's tests, with its log when they fail
+admin_pytest() {
+  pytest_in_app "$1" && return
+  local rc=$?
+  admin_log
+  return "${rc}"
+}
 
 # EXTERNAL_DB=1: SQL as the administrator of the external server, on stdin
 extdb_admin() {
@@ -824,7 +837,7 @@ sql "UPDATE config SET config_value = '3' WHERE config_key = 'max_users';" > /de
 check "$(rerun_init)" 0 "init container exit code (rerun)"
 check "$(max_users)" 1 "SYNC_MAX_USERS=1 set again over a value changed in the database"
 check "$(sql "SELECT COUNT(*) FROM config WHERE config_key = 'max_users_env';")" 0 "no max_users_env bookkeeping"
-pytest_in_app "/tests/test_admin_sync.py -k read_only"
+admin_pytest "/tests/test_admin_sync.py -k read_only"
 check "$?" 0 "admin UI: max users read-only with SYNC_MAX_USERS=1"
 check "$(max_users)" 1 "max users unchanged by the refused form"
 
@@ -1177,11 +1190,11 @@ else
 fi
 
 echo "== admin UI, Sync only (Mozilla's accounts)"
-pytest_in_app /tests/test_admin_sync.py
+admin_pytest /tests/test_admin_sync.py
 check "$?" 0 "admin UI tests"
 
 echo "== admin UI single sign-on: OpenID Connect (Dex) and a trusted proxy's header"
-pytest_in_app /tests/test_admin_auth.py
+admin_pytest /tests/test_admin_auth.py
 check "$?" 0 "admin UI sign-in tests"
 # from the host (the gateway, not a trusted proxy) the header is ignored
 check "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'X-Test-Email: admin@ffs-e2e.invalid' \

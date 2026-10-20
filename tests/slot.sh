@@ -52,3 +52,11 @@ one_at_a_time() {
 src_hash() {
   (cd -- "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
 }
+
+# pytest_sh <pytest arguments> [command on failure]: the sh command that runs pytest in a
+# container (from /app), its output in /tmp/pytest.log: the end of it when it passes, all of
+# it when it fails, each traceback short (the end alone lost the assertion of the first
+# failure), then the command on failure; its exit status that of pytest
+pytest_sh() {
+  echo "python3 -m pytest -q -p no:cacheprovider --tb=short $1 > /tmp/pytest.log 2>&1; rc=\$?; if [ \$rc = 0 ]; then tail -25 /tmp/pytest.log; else cat /tmp/pytest.log; ${2:-:}; fi; exit \$rc"
+}

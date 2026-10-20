@@ -225,7 +225,7 @@ upgrade_tests() {
     -e FXA_NEW_DB_SERVER="${new_db_server:-}" \
     -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
     --entrypoint /bin/sh syncstorage \
-    -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_upgrade.py > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
+    -c "cd /app && $(pytest_sh /tests/test_fxa_upgrade.py)" < /dev/null
   check "$?" 0 "${2:-$1 the upgrade}: tests/test_fxa_upgrade.py"
 }
 

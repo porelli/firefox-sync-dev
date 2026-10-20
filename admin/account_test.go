@@ -214,8 +214,7 @@ func TestRefusedSignInMethodChangesNothing(t *testing.T) {
 		if st := fake.statements(); len(st) != 1 || st[0] != c.call {
 			t.Errorf("%s: statements %q", c.action, st)
 		}
-		// the event goes out in a goroutine: give it the time it would take
-		time.Sleep(200 * time.Millisecond)
+		// doneTo recorded the event before the redirect: no alert for a refusal
 		if lines := app.alerter.take(); len(lines) != 0 {
 			t.Errorf("%s: alerts %q", c.action, lines)
 		}

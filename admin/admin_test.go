@@ -559,7 +559,7 @@ func getPage(h http.Handler, path string, cookie *http.Cookie) *httptest.Respons
 	return w
 }
 
-// alerts waits for the alerts of the events doneTo records in the background
+// alerts: the alerts of the events, waiting for those recorded in the background (a purge)
 func alerts(t *testing.T, al *Alerter, n int) []string {
 	t.Helper()
 	var lines []string

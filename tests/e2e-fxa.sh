@@ -692,11 +692,18 @@ dc run --rm -T --no-deps --user root \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD \
   -e PYTHONPATH=/app:/app/tools -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint /bin/sh syncstorage \
-  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_flow.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
+  -c "cd /app && $(pytest_sh "/tests/test_fxa_flow.py ${PYTEST_ARGS}")" < /dev/null
 check "$?" 0 "self-hosted FxA flow tests"
 fi
 
-# test_fxa_admin.py, with the arguments of pytest
+admin_errors() { dc logs ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|rendering [^:]*): '; }
+# after a failed admin UI test: the errors in its log (those of the event log among them), its
+# last lines
+admin_log() {
+  echo "---- ffs-admin: errors in its log"; admin_errors | tail -20
+  echo "---- ffs-admin: its last lines"; dc logs --no-log-prefix --tail 40 ffs-admin 2>&1
+}
+# test_fxa_admin.py, with the arguments of pytest; the admin UI's log when it fails
 admin_tests() {
 dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
@@ -707,7 +714,10 @@ dc run --rm -T --no-deps --user root \
   -e FXA_TEST_DB_URL="mysql://${FXA_MYSQL_USER}:${FXA_MYSQL_PASSWORD}@${FXA_MYSQL_HOST}:${FXA_MYSQL_PORT}/fxa" \
   -e ADMIN_DB_URL="mysql://${ADMIN_DB_USER}:${ADMIN_DB_PASSWORD}@${SYNC_TOKENSERVER_DB_HOST}:${SYNC_TOKENSERVER_DB_PORT}/${ADMIN_DB_NAME}" \
   --entrypoint /bin/sh syncstorage \
-  -c "cd /app && python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_admin.py $1 > /tmp/pytest.log 2>&1; rc=\$?; tail -40 /tmp/pytest.log; exit \$rc" < /dev/null
+  -c "cd /app && $(pytest_sh "/tests/test_fxa_admin.py $1")" < /dev/null && return
+local rc=$?
+admin_log
+return "${rc}"
 }
 if runs admin; then
 echo "== sign-up policy, admin UI, rate limits"
@@ -891,13 +901,12 @@ if [ -z "${SKIP_BROWSER:-}" ] && runs browser; then
     -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
     -e FXA_CONTENT_URL -e MAILPIT_URL=http://mailpit:8025 -e PYTHONDONTWRITEBYTECODE=1 \
     -e FXA_PAIRING_URL -e ADMIN_PASSWORD -e ADMIN_URL=https://admin.fxa.test -e ADMIN_FXA_CLIENT_ID \
-    "${BROWSER_IMAGE}" sh -c "python3 -m pytest -q -p no:cacheprovider /tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS} > /tmp/pytest.log 2>&1; rc=\$?; tail -30 /tmp/pytest.log; [ \$rc = 0 ] || grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10; exit \$rc" < /dev/null
+    "${BROWSER_IMAGE}" sh -c "$(pytest_sh "/tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS}" "grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10")" < /dev/null
   check "$?" 0 "real Firefox sign-up and sync, pairing server"
 fi
 echo "== admin UI"
 for _ in $(seq 1 60); do [ "$(state ffs-admin Health.Status)" = healthy ] && break; sleep 1; done
 check "$(state ffs-admin Health.Status)" healthy "admin UI container healthcheck"
-admin_errors() { dc logs ffs-admin 2>&1 | grep -E '(pruning|metrics|event log|database size|rendering [^:]*): '; }
 check "$(admin_errors | wc -l)" 0 "no background errors in the admin UI logs"
 admin_errors | tail -5
 echo "== every container that keeps running healthy, the one-shot ones exited 0"

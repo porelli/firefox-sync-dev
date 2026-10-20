@@ -603,7 +603,9 @@ def test_label_on_a_sync_account(admin):
     assert 'value="Alice &lt;laptop&gt;"' in page
     row = re.search(r'<tr><td><a href="/users/alice"><code>alice</code></a>(.*?)</td>', admin.get("/"))
     assert row and row.group(1) == ' <span class="note">Alice &lt;laptop&gt;</span>', row and row.group(1)
-    assert "<td>admin</td><td>Note of account alice set to &#34;Alice &lt;laptop&gt;&#34; by admin (password)</td>" in admin.get("/activity?kind=admin&q=alice")
+    # in the event log when the result is shown (recorded before the redirect)
+    page = admin.get("/activity?kind=admin&q=alice")
+    assert "<td>admin</td><td>Note of account alice set to &#34;Alice &lt;laptop&gt;&#34; by admin (password)</td>" in page, (failed(page), events_of(page)[:5])
     # only accounts the server knows, at most 500 characters
     csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', admin.get("/")).group(1)
     assert admin.http.post(f"{ADMIN}/users/nobody/note", data={"csrf": csrf, "note": "x"}, timeout=30).status_code == 404

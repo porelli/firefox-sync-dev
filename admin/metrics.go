@@ -121,8 +121,9 @@ func newRecorder(ctx context.Context, db *SyncDB) (*Recorder, error) {
 	return &Recorder{db: db, keepDays: envInt("ADMIN_RETENTION_DAYS", 30), auditDays: envInt("ADMIN_AUDIT_RETENTION_DAYS", 365), current: map[string]*metric{}, cumulative: map[string]*metric{}}, nil
 }
 
-// Event records something worth showing in the activity log
-func (r *Recorder) Event(kind, detail string) {
+// Event records something worth showing in the activity log; the error: not recorded (also
+// logged as "event log: ...")
+func (r *Recorder) Event(kind, detail string) error {
 	// rune-safe: a cut inside a character is invalid UTF-8 and the INSERT fails
 	detail = oneLine(detail, 509)
 	r.mu.Lock()
@@ -134,14 +135,16 @@ func (r *Recorder) Event(kind, detail string) {
 	over := kind != "admin" && r.eventsCount[kind] > maxEventsPerMinute
 	r.mu.Unlock()
 	if over {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := r.db.mine().ExecContext(ctx, r.db.q("INSERT INTO ffs_events (at, kind, detail) VALUES (?, ?, ?)"),
-		time.Now().UnixMilli(), kind, detail); err != nil {
+	_, err := r.db.mine().ExecContext(ctx, r.db.q("INSERT INTO ffs_events (at, kind, detail) VALUES (?, ?, ?)"),
+		time.Now().UnixMilli(), kind, detail)
+	if err != nil {
 		log.Printf("event log: %v", err)
 	}
+	return err
 }
 
 func (r *Recorder) now() time.Time {
