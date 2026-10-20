@@ -248,7 +248,9 @@ new_release=$(release_of "${NEW}" "${NEW_ARCH}") old_release=$(release_of "${FXA
 MYSQL_TO=""
 if [ "${FXA_DB}" = mysql ]; then
   MYSQL_TO=${FXA_MYSQL_TO:-}
-  if [ -z "${MYSQL_TO}" ] && [[ " $(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${NEW}" 2> /dev/null) " == *" mozilla/fxa#21554@"* ]]; then
+  # shellcheck source=tests/fxa_fix.sh
+  source "${TESTS}/fxa_fix.sh"
+  if [ -z "${MYSQL_TO}" ] && fxa_image_fixed mozilla/fxa#21554 "${NEW}"; then
     MYSQL_TO=mysql:lts
   fi
   [ "${MYSQL_TO}" != keep ] || MYSQL_TO=""
@@ -286,7 +288,7 @@ if [ "${FXA_DB}" = mysql ]; then
   # (said at each of its restarts)
   check "$(image_of fxa-db) $(dc logs fxa-db 2>&1 | grep -q 'keep-major.sh: this database is MySQL 8, the image is MySQL' && echo said)" "mysql:lts said" \
     "without FXA_MYSQL_IMAGE fxa-db on mysql:lts refuses the MySQL 8 data, and says why"
-  UP=${WORK}/prepare && mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
+  UP=${WORK}/prepare && mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && mkdir -p "${UP}/config/fxa" && cp "${CODE}/config/fxa/fixed-in" "${UP}/config/fxa/" && cp "${ENV_FILE}" "${UP}/.env"
   (cd "${UP}" && ./prepare_environment.sh --upgrade) > "${WORK}/prepare-upgrade.log" 2>&1
   check "$? $(grep '^FXA_MYSQL_IMAGE=' "${UP}/.env") [$(sed -n 's/^FXA_MYSQL_ARGS=//p' "${UP}/.env")] $(grep -c 'stays on MySQL 8 with mysql_native_password' "${WORK}/prepare-upgrade.log")" \
     "0 FXA_MYSQL_IMAGE=mysql:8 [${NATIVE_ARGS}] 1" "prepare_environment.sh --upgrade pins the accounts on MySQL 8 with mysql_native_password"

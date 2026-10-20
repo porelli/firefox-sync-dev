@@ -88,6 +88,12 @@ Don't stay too far behind: Firefox refuses to sign in to accounts servers that a
 
     With self-hosted accounts, start their units too, as in [Self-hosted accounts](install/podman.md#self-hosted-accounts). With the nightly backups on, start their timer again: `systemctl --user start firefox-sync-backup.timer`.
 
+Which units `--upgrade` renders: the units installed in `~/.config/containers/systemd/` when they are this install's, without asking.
+
+- Units rendered from this checkout (they mount its `config/backup/`): rendered again.
+- Units of an earlier release, which name no checkout (the releases before the backups, firefox-sync's `main` branch): rendered again when they have the `SYNC_MASTER_SECRET` of your `.env`, so were rendered from it. It says so.
+- Units of another checkout, or of an earlier release with another `SYNC_MASTER_SECRET`: left as they are. It says what it found. If they are this install's, `./prepare_environment.sh --render-units` renders them from this `.env` (the units of before kept as above).
+
 To go back: the old files and images, the newest `.env.before-upgrade-<time>` as `.env`, the files of `quadlets.before-<time>/` back into `~/.config/containers/systemd/` (`firefox-sync-backup.timer` into `~/.config/systemd/user/`), `systemctl --user daemon-reload`, and the backup of step 1: see [Rollback](#rollback).
 
 New images of the same release, without new files: steps 5 and 6, with the units stopped as in step 2.

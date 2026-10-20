@@ -23,13 +23,13 @@
 #   FXA_DB           mysql (default, FXA_MYSQL_IMAGE) or mariadb (FXA_MARIADB_IMAGE, docker-compose.fxa-mariadb.yml)
 #                    for the accounts database
 #   FXA_MYSQL_IMAGE  with FXA_DB=mysql (default: mysql:lts, MySQL 9 today, when the accounts image has
-#                    mozilla/fxa#21554 in its label org.firefox-sync.upstream-patches; else mysql:8 with
+#                    mozilla/fxa#21554, tests/fxa_fix.sh; else mysql:8 with
 #                    FXA_MYSQL_ARGS, as for the installs from before, e.g. with Mozilla's images)
 #   FXA_MYSQL_ARGS   with FXA_DB=mysql: fxa-db's extra options (default: none on lts; on mysql:8
 #                    --mysql-native-password=ON --authentication-policy=mysql_native_password, the
 #                    installs from before)
 #   FXA_MARIADB_IMAGE with FXA_DB=mariadb (default: mariadb:lts, MariaDB 12 today, when the accounts image
-#                    has mozilla/fxa#21494 in its label org.firefox-sync.upstream-patches (upstream-patches.yml);
+#                    has mozilla/fxa#21494 (upstream-patches.yml, tests/fxa_fix.sh);
 #                    else mariadb:11, as for the installs from before, e.g. with Mozilla's images)
 #   EXTERNAL_DB      set to 1 for one server outside the stack for Sync and the accounts, FXA_MYSQL_IMAGE
 #                    (FXA_MARIADB_IMAGE with FXA_DB=mariadb) (SYNC_DB_CONTAINERS=0, FXA_DB_CONTAINERS=0,
@@ -111,27 +111,30 @@ case "${FXA_DB:-mysql}" in mysql|mariadb) sed -i "s|^FXA_DB=.*|FXA_DB=${FXA_DB:-
 # label our builds set; not in Mozilla's images nor in ours built before): MariaDB 11 without
 # it, what prepare_environment.sh warns about. MySQL lts (9) needs mozilla/fxa#21554 (mysql2):
 # MySQL 8 with mysql_native_password without it, what prepare_environment.sh writes then
+# (once Mozilla released it: an image of that release or later, config/fxa/fixed-in; tests/fxa_fix.sh)
 fxa_tested=$(sed -n 's/^FXA_IMAGE=//p' "${ENV_FILE}"):$(sed -n 's/^FXA_VERSION=//p' "${ENV_FILE}")
-fxa_label() {
+# shellcheck source=tests/fxa_fix.sh
+source "${TESTS}/fxa_fix.sh"
+fxa_has() {
   docker image inspect "${fxa_tested}" > /dev/null 2>&1 || [ -n "${SKIP_PULL:-}" ] ||
     docker pull -q --platform "linux/$(sed -n 's/^FXA_ARCH=//p' "${ENV_FILE}")" "${fxa_tested}" > /dev/null
-  docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${fxa_tested}" 2> /dev/null
+  fxa_image_fixed "$1" "${fxa_tested}"
 }
 NATIVE_ARGS="--mysql-native-password=ON --authentication-policy=mysql_native_password"
 if [ "${FXA_DB:-mysql}" = mariadb ] && [ -z "${FXA_MARIADB_IMAGE:-}" ] && [ -z "${RERUN:-}" ]; then
-  if [[ " $(fxa_label) " == *" mozilla/fxa#21494@"* ]]; then
+  if fxa_has mozilla/fxa#21494; then
     FXA_MARIADB_IMAGE=mariadb:lts
   else
     FXA_MARIADB_IMAGE=mariadb:11
-    echo "== ${fxa_tested} without mozilla/fxa#21494 (label org.firefox-sync.upstream-patches): the accounts on ${FXA_MARIADB_IMAGE}"
+    echo "== ${fxa_tested} without mozilla/fxa#21494 (its labels, config/fxa/fixed-in): the accounts on ${FXA_MARIADB_IMAGE}"
   fi
 fi
 if [ "${FXA_DB:-mysql}" = mysql ] && [ -z "${FXA_MYSQL_IMAGE:-}" ] && [ -z "${RERUN:-}" ]; then
-  if [[ " $(fxa_label) " == *" mozilla/fxa#21554@"* ]]; then
+  if fxa_has mozilla/fxa#21554; then
     FXA_MYSQL_IMAGE=mysql:lts
   else
     FXA_MYSQL_IMAGE=mysql:8 FXA_MYSQL_ARGS=${FXA_MYSQL_ARGS-${NATIVE_ARGS}}
-    echo "== ${fxa_tested} without mozilla/fxa#21554 (label org.firefox-sync.upstream-patches): the accounts on ${FXA_MYSQL_IMAGE} with mysql_native_password"
+    echo "== ${fxa_tested} without mozilla/fxa#21554 (its labels, config/fxa/fixed-in): the accounts on ${FXA_MYSQL_IMAGE} with mysql_native_password"
   fi
 fi
 # a pinned mysql:8 runs as the installs from before, with mysql_native_password
@@ -261,9 +264,7 @@ check "$(sed -n 's/^SYNC_MARIADB_IMAGE=//p' "${SETUP}/.env")" mariadb:lts "the S
 # with mysql_native_password, as prepare_environment.sh reads its label (here, else the registry)
 setup_image=$(sed -n 's/^FXA_IMAGE=//p' "${SETUP}/.env"):$(sed -n 's/^FXA_VERSION=//p' "${SETUP}/.env")
 # (a local copy without it, the registry's with it: lts too, after a pull)
-setup_label="$(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${setup_image}" 2> /dev/null) $(
-  docker buildx imagetools inspect "${setup_image}" --format '{{json .Image}}' 2> /dev/null | grep -o '"org\.firefox-sync\.upstream-patches": *"[^"]*"' | head -n 1 | sed 's/.*: *"//; s/"$//')"
-if [[ " ${setup_label} " == *" mozilla/fxa#21554@"* ]]; then
+if fxa_image_fixed mozilla/fxa#21554 "${setup_image}" || fxa_registry_fixed mozilla/fxa#21554 "${setup_image}"; then
   SETUP_MYSQL_IMAGE=mysql:lts SETUP_MYSQL_ARGS="" SETUP_MYSQL2=yes
 else
   SETUP_MYSQL_IMAGE=mysql:8 SETUP_MYSQL_ARGS=${NATIVE_ARGS} SETUP_MYSQL2=""
@@ -500,6 +501,17 @@ check "$? $(grep -c 'mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-11.log")"
 sed -i 's|^FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=mariadb:lts|' "${SETUP}/.env"
 (cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-mozilla-lts.log" 2>&1
 check "$? $(grep -c 'WARNING: the accounts on MariaDB lts (FXA_MARIADB_IMAGE=mariadb:lts) need an image with mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-lts.log")" "0 1" "Mozilla's images on MariaDB lts: a warning"
+# once Mozilla released it (config/fxa/fixed-in, the entry gone from upstream-patches.yml and
+# the label): an image of that release or later has it, Mozilla's too; an older one not
+fixed_in() { cp "${CODE}/config/fxa/fixed-in" "${SETUP}/config/fxa/fixed-in" && [ -z "${1:-}" ] || echo "$1" >> "${SETUP}/config/fxa/fixed-in"; }
+fixed_in 'mozilla/fxa#21494 v1.347.3'
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-mozilla-released.log" 2>&1
+check "$? $(grep -c 'mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-released.log")" "0 0" "released in v1.347.3 (config/fxa/fixed-in): Mozilla's v1.347.3 on MariaDB lts, no warning"
+fixed_in 'mozilla/fxa#21494 v1.348.0'
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-mariadb-mozilla-later.log" 2>&1
+check "$? $(grep -c 'WARNING: the accounts on MariaDB lts (FXA_MARIADB_IMAGE=mariadb:lts) need an image with mozilla/fxa#21494' "${WORK}/setup-mariadb-mozilla-later.log")" "0 1" \
+  "released in v1.348.0 (config/fxa/fixed-in): Mozilla's v1.347.3 on MariaDB lts, a warning"
+fixed_in
 rm -f "${SETUP}/.env" "${SETUP}"/.env.before-upgrade-* "${SETUP}"/.env.before-setup-*
 # the accounts on MySQL, an install from before FXA_MYSQL_IMAGE (mysql:8 with mysql_native_password):
 # run again, or --upgrade, it stays there, whatever the accounts image
@@ -523,6 +535,10 @@ check "$(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ 
 sed -i -e 's|^FXA_IMAGE=.*|FXA_IMAGE=docker.io/mozilla/fxa-mono|' -e 's|^FXA_VERSION=.*|FXA_VERSION=v1.347.3|' -e 's|^FXA_MYSQL_IMAGE=.*|FXA_MYSQL_IMAGE=mysql:lts|' -e '/^FXA_MYSQL_ARGS=/d' "${SETUP}/.env"
 (cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-mozilla.log" 2>&1
 check "$? $(grep -c 'WARNING: the accounts on MySQL lts (FXA_MYSQL_IMAGE=mysql:lts) need an image' "${WORK}/setup-fxa-mysql-mozilla.log")" "0 1" "Mozilla's images on MySQL lts: a warning"
+fixed_in 'mozilla/fxa#21554 v1.347.0'
+(cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-mozilla-released.log" 2>&1
+check "$? $(grep -c 'mozilla/fxa#21554' "${WORK}/setup-fxa-mysql-mozilla-released.log")" "0 0" "released in v1.347.0 (config/fxa/fixed-in): Mozilla's v1.347.3 on MySQL lts, no warning"
+fixed_in
 printf 'FXA_MYSQL_ARGS=%s\n' "${NATIVE_ARGS}" >> "${SETUP}/.env"
 (cd "${SETUP}" && ./prepare_environment.sh --upgrade) > "${WORK}/setup-fxa-mysql-lts-args.log" 2>&1
 check "$? $(grep -c 'WARNING: FXA_MYSQL_ARGS has --mysql-native-password=ON, which MySQL lts' "${WORK}/setup-fxa-mysql-lts-args.log")" "0 1" "mysql_native_password options on MySQL lts: a warning"

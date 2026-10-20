@@ -85,9 +85,9 @@ docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patch
 
 The label lists one entry per pull request, separated by spaces, as `<repository>#<number>@<base>..<commit>`. A ported change ends with `+<release>`, for example `mozilla/fxa#21554@3e2cb67..84d71e2+v1.347.3`. The label is `none` when nothing was applied. Images built before the patches, and Mozilla's own images, have no label.
 
-The label decides what works:
+The label decides what works. Once Mozilla releases a pull request, its entry leaves upstream-patches.yml and the label: [config/fxa/fixed-in](/config/fxa/fixed-in) then names the first accounts release with it, and every accounts image of that release or later has it (Mozilla's too), read from its label `org.opencontainers.image.version`, else its tag.
 
-- `prepare_environment.sh` reads it to choose the accounts' database image, and warns when the image does not fit the database. It reads the local image, which is what starts, or the registry's one (with `docker buildx imagetools` or `skopeo`) when there is no local copy or to tell you to pull a newer one.
+- `prepare_environment.sh` reads them to choose the accounts' database image, and warns when the image does not fit the database. It reads the local image, which is what starts, or the registry's one (with `docker buildx imagetools` or `skopeo`) when there is no local copy or to tell you to pull a newer one.
 - `tests/e2e.sh` skips, or retries, the upstream tests that a patch fixes when the image under test does not have it.
 
 How the patches are added, checked and removed: [Upstream patches](../development/upstream-patches.md).

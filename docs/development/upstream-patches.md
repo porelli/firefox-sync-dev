@@ -55,9 +55,11 @@ The mysql2 change ([mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554
 
 In one commit: the entry, what its `when_released` says, and its `ports` directory if it has one. A red `upstream-patches` job is the reminder.
 
+An accounts pull request that `prepare_environment.sh` and the tests look for in the label (mozilla/fxa#21494, mozilla/fxa#21554) also gets a line in [config/fxa/fixed-in](/config/fxa/fixed-in): the pull request and the first release with it. Without it, the images built after the removal, which no longer list it, would count as images without it.
+
 ## In the tests
 
-Tests that work around an upstream bug read the label. `tests/e2e.sh` skips upstream's `test_node_assignment.py::test_user_creation` on MariaDB only for images without [mozilla-services/syncstorage-rs#2638](https://github.com/mozilla-services/syncstorage-rs/pull/2638).
+Tests that work around an upstream bug read the label. The accounts' tests ([tests/e2e-fxa.sh](/tests/e2e-fxa.sh), [tests/podman.sh](/tests/podman.sh), [tests/helm-fxa.sh](/tests/helm-fxa.sh), [tests/fxa-upgrade.sh](/tests/fxa-upgrade.sh)) decide with [tests/fxa_fix.sh](/tests/fxa_fix.sh), as `prepare_environment.sh` does: the label, or [config/fxa/fixed-in](/config/fxa/fixed-in). [tests/prepare_functions.sh](/tests/prepare_functions.sh) checks both. `tests/e2e.sh` skips upstream's `test_node_assignment.py::test_user_creation` on MariaDB only for images without [mozilla-services/syncstorage-rs#2638](https://github.com/mozilla-services/syncstorage-rs/pull/2638).
 
 ## Run it locally
 

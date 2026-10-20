@@ -45,6 +45,9 @@ FAILED=0
 # compose_healthy, quadlets_healthy, health_parity: the healthchecks of the stack
 # shellcheck source=tests/healthy.sh
 source "${TESTS}/healthy.sh"
+# fxa_image_fixed: whether the accounts image has a fix of upstream-patches.yml
+# shellcheck source=tests/fxa_fix.sh
+source "${TESTS}/fxa_fix.sh"
 
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
 hb() {
@@ -75,6 +78,13 @@ systemctl --user enable --now podman.socket > /dev/null 2>&1
 export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
 docker compose version
 podman info --format 'rootless={{.Host.Security.Rootless}} selinux={{.Host.Security.SELinuxEnabled}} cgroups={{.Host.CgroupsVersion}}'
+
+# the functions of prepare_environment.sh on their tables first, .env as docker compose reads it
+"${TESTS}/prepare_functions.sh" > "${WORK}/prepare-functions.log" 2>&1
+rc=$? env_rows=$(grep -c '^PASS: env_plain: ' "${WORK}/prepare-functions.log")
+check "${rc} $(grep -c '^FAIL' "${WORK}/prepare-functions.log") $([ "${env_rows}" -gt 30 ] && echo rows) $(grep -c '^PASS: docker compose reads' "${WORK}/prepare-functions.log")" "0 0 rows ${env_rows}" \
+  "tests/prepare_functions.sh, docker compose reads each value of its .env table as env_plain"
+[ "${rc}" = 0 ] || grep -v '^PASS' "${WORK}/prepare-functions.log"
 
 # a copy of the repository, configured by prepare_environment.sh
 cp -r "${CODE}" "${WORK}/ffs" && cd "${WORK}/ffs" || exit 1
@@ -324,6 +334,18 @@ check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://\[::1\]:5
 sed -i 's|^SYNC_EXPORT_PORT=.*|SYNC_EXPORT_PORT=localhost:5006|' .env
 port_setup ""
 check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c "^WARNING: SYNC_EXPORT_PORT='localhost:5006' of .env is not" setup-port.log)" "0 localhost:5006 1" "an unknown SYNC_EXPORT_PORT of .env: kept, with a warning"
+port_setup '[:]:5000'
+check "$? $(grep -c "^ERROR: not a port or an address and port: '\[:\]:5000'" setup-port.log)" "1 1" "not an IPv6 address ([:]): refused"
+# .env a symlink (e.g. to a directory of secrets): it stays one, the file it names is written, 0600
+mkdir -p "${WORK}/secrets" && mv .env "${WORK}/secrets/ffs.env" && ln -s "${WORK}/secrets/ffs.env" .env
+port_setup 5007
+check "$? $([ -L .env ] && echo link) $(grep -c '^SYNC_EXPORT_PORT=127.0.0.1:5007$' "${WORK}/secrets/ffs.env") $(stat -c %a "${WORK}/secrets/ffs.env") $(ls -A "${WORK}/secrets" | wc -l)" \
+  "0 link 1 600 1" "setup on an .env that is a symlink: the symlink kept, its file written, 0600"
+sed -i --follow-symlinks '/^ADMIN_DB_NAME=/d' .env
+./prepare_environment.sh --upgrade < /dev/null > upgrade-symlink.log 2>&1
+check "$? $([ -L .env ] && echo link) $(grep -c '^ADMIN_DB_NAME=' "${WORK}/secrets/ffs.env") $(stat -c %a "${WORK}/secrets/ffs.env")" "0 link 1 600" \
+  "--upgrade on an .env that is a symlink: the symlink kept, its file written, 0600"
+rm .env && mv "${WORK}/secrets/ffs.env" .env
 # --render-units on a compose install: refused, nothing written; --fresh asks for it
 port_setup ""
 cp -p .env "${WORK}/port.env"
@@ -332,7 +354,24 @@ check "$? $(grep -c '^ERROR: no Quadlet units in' render-compose.log) $(ls "${QU
   "--render-units without installed units (a compose install): refused, no unit written"
 QUADLET_DIR=${WORK}/fresh SYSTEMD_USER_DIR=${WORK}/fresh-timers ./prepare_environment.sh --render-units --fresh < /dev/null > render-fresh.log 2>&1
 check "$? $(ls "${WORK}/fresh"/firefox-sync-syncstorage.container "${WORK}/fresh-timers"/firefox-sync-backup.timer 2> /dev/null | wc -l)" "0 2" "--render-units --fresh renders the units of a compose .env"
-rm -rf .env .env.before-setup-* .env.before-upgrade-* "${WORK}/fresh" "${WORK}/fresh-timers"
+# the units of an earlier release, which name no checkout (before the backups: firefox-sync's
+# main branch): --upgrade renders them when they have the SYNC_MASTER_SECRET of .env, says so
+older_units() {
+  rm -f "${WORK}/fresh/firefox-sync-backup.container"
+  sed -i '/^Volume=\//d' "${WORK}/fresh"/*.container
+}
+older_units
+QUADLET_DIR=${WORK}/fresh SYSTEMD_USER_DIR=${WORK}/fresh-timers ./prepare_environment.sh --upgrade < /dev/null > upgrade-older-units.log 2>&1
+check "$? $(grep -c '^NOTE: the Quadlet units in .* are of an earlier release of firefox-sync' upgrade-older-units.log) $(grep -c '^Rendering the Quadlet units from' upgrade-older-units.log) $(ls "${WORK}/fresh"/firefox-sync-backup.container 2> /dev/null | wc -l)" \
+  "0 1 1 1" "--upgrade renders the units of an earlier release (no checkout in them) with the SYNC_MASTER_SECRET of .env, and says so"
+# with another SYNC_MASTER_SECRET: said, not rendered (--render-units does)
+older_units
+sed -i 's/^Environment=SYNC_MASTER_SECRET=.*/Environment=SYNC_MASTER_SECRET=another/' "${WORK}/fresh/firefox-sync-syncstorage.container"
+QUADLET_DIR=${WORK}/fresh SYSTEMD_USER_DIR=${WORK}/fresh-timers ./prepare_environment.sh --upgrade < /dev/null > upgrade-other-units.log 2>&1
+check "$? $(grep -c 'with another SYNC_MASTER_SECRET than' upgrade-other-units.log) $(grep -c '^Rendering the Quadlet units from' upgrade-other-units.log) $(ls "${WORK}/fresh"/firefox-sync-backup.container 2> /dev/null | wc -l) $(grep -c '^Environment=SYNC_MASTER_SECRET=another$' "${WORK}/fresh/firefox-sync-syncstorage.container")" \
+  "0 1 0 0 1" "--upgrade leaves the units of an earlier release with another SYNC_MASTER_SECRET as they are, and says so"
+[ "${FAILED}" = 0 ] || cat upgrade-older-units.log upgrade-other-units.log
+rm -rf .env .env.before-setup-* .env.before-upgrade-* quadlets.before-* "${WORK}/fresh" "${WORK}/fresh-timers"
 
 # the admin UI quadlet gets every setting of the compose ffs-admin service: the keys
 # only in compose (allowed: $2, a regex), then those only in the quadlet
@@ -667,8 +706,8 @@ check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tok
   "docker.io/library/mysql:lts docker.io/library/mysql:lts docker.io/library/mysql:lts mysql:lts" "MySQL lts database and backup units for a new install"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db*.volume 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
   "firefox-sync-syncstorage-db-mysql.volume firefox-sync-tokenserver-db-mysql.volume" "MySQL's own volumes, not MariaDB's"
-check "$(grep -hcxE 'Exec=sh /ffs-db/admin-user\.sh mysqld --disable-log-bin|HealthCmd=mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) -p[A-Za-z0-9]+ --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
-  "2 2" "MySQL without binary logging, healthcheck over TCP"
+check "$(grep -hcxE 'Exec=sh /ffs-db/admin-user\.sh mysqld --disable-log-bin|HealthCmd=MYSQL_PWD=\$\$\{MYSQL_PASSWORD\} mysqladmin ping -h 127\.0\.0\.1 --protocol=tcp -u(syncstorage|tokenserver) --silent' "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver}-db.container | paste -sd' ')" \
+  "2 2" "MySQL without binary logging, healthcheck over TCP (the password in its environment, not on its command line)"
 check "$(grep -cxF 'Environment=MARIADB_TLS_VERIFY=false' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "init container does not check MySQL's self-signed certificate"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in the MySQL quadlets"
 "${QUADLET}" -dryrun -user > quadlet-mysql-dryrun.log 2>&1
@@ -858,13 +897,12 @@ if [ -z "${SKIP_FXA:-}" ]; then
   # mozilla/fxa#21554 in it, and the units did not pull another one over it (podman 4 does with
   # --arch, which the units have only for another architecture)
   run_id=$(podman image inspect -f '{{.Id}}' "${fxa_image}" 2> /dev/null)
-  run_label=$(podman image inspect -f '{{index .Labels "org.firefox-sync.upstream-patches"}}' "${fxa_image}" 2> /dev/null)
   check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u) [$(grep -h '^PodmanArgs=--arch' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u)] $(grep -hc '^PodmanArgs=--network-alias=fxa-' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | awk '{ s += $1 } END { print s }') ${run_id}" \
     "${fxa_image} [$([ "${fxa_arch}" = "$(case "$(uname -m)" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac)" ] || echo "PodmanArgs=--arch=${fxa_arch}")] 2 ${fxa_image_id}" \
     "the accounts' units run ${fxa_image}, the image prepare_environment.sh read (not pulled over: no --arch on this host's architecture)"
   if [ "${FXA_DB}" != mariadb ]; then
-    [[ " ${run_label} " == *" mozilla/fxa#21554@"* ]] && want_db=docker.io/library/mysql:lts || want_db=docker.io/library/mysql:8
-    check "$(fxa_db_image)" "${want_db}" "fxa-db's MySQL agrees with the label of the image the units run ($([ "${want_db##*:}" = lts ] && echo with || echo without) mozilla/fxa#21554)"
+    fxa_image_fixed mozilla/fxa#21554 "${fxa_image}" podman && want_db=docker.io/library/mysql:lts || want_db=docker.io/library/mysql:8
+    check "$(fxa_db_image)" "${want_db}" "fxa-db's MySQL agrees with the image the units run ($([ "${want_db##*:}" = lts ] && echo with || echo without) mozilla/fxa#21554)"
   fi
   ok=""
   for _ in $(seq 1 225); do

@@ -116,7 +116,7 @@ The installed units hold their own copy of the values of `.env`: a change of `.e
    ./prepare_environment.sh --render-units
    ```
 
-   It asks nothing and keeps every password and secret. It reads `.env` as compose does (quotes, a comment after the value, `export`), writes only the units that change and lists them, keeps all the units of before in `quadlets.before-<UTC time>/` of the checkout, and reloads systemd. Run again, it changes nothing. Without installed units (a compose install) it refuses; `./prepare_environment.sh --render-units --fresh` installs the units of `.env`. Before that it does to `.env` what `--upgrade` does ([Quadlets](../upgrading.md#quadlets)): on an `.env` of this release, nothing.
+   It asks nothing and keeps every password and secret. It reads `.env` as compose does (single and double quotes with their escapes, a comment after the value, `export`, `$$`; not the `${NAME}` of other values), writes only the units that change and lists them, keeps all the units of before in `quadlets.before-<UTC time>/` of the checkout, and reloads systemd. Run again, it changes nothing. Without installed units (a compose install) it refuses; `./prepare_environment.sh --render-units --fresh` installs the units of `.env`. Before that it does to `.env` what `--upgrade` does ([Quadlets](../upgrading.md#quadlets)): on an `.env` of this release, nothing.
 1. Restart the units it listed. A new image: pull it first (`podman pull`, the name of its `Image=` line). For example `SYNC_MAX_USERS` is in the init container and, with the admin UI, in its unit; the migrations run again before the Sync server starts:
 
    ```bash

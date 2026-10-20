@@ -73,9 +73,10 @@
     MariaDB 12 then works with every accounts image from that release on, Mozilla's too: say
     so (the release) instead of "our images" in docs/accounts.md (MariaDB 12, MySQL or MariaDB),
     docs/databases.md#supported-versions, docs/reference/images.md#upstream-patches,
-    docs/troubleshooting.md, .env-example and prepare_environment.sh, and make
-    fxa_mariadb_image_check in prepare_environment.sh compare FXA_VERSION with that release
-    instead of reading the label.
+    docs/troubleshooting.md, .env-example and prepare_environment.sh, and add the line
+    "mozilla/fxa#21494 <that release>" to config/fxa/fixed-in: our images lose the label, and
+    prepare_environment.sh and the tests then take every image of that release or later as
+    having it (tests/prepare_functions.sh shows how).
 
 - id: tokenserver-node-ties
   repo: mozilla-services/syncstorage-rs
@@ -129,7 +130,7 @@
     Every accounts image from that release on, Mozilla's too, works on MySQL 9 and on 8.4
     without mysql_native_password: say so (the release) instead of "our images" in docs/accounts.md,
     docs/databases.md#supported-versions, docs/reference/images.md#upstream-patches,
-    docs/upgrading.md#database-majors, .env-example and prepare_environment.sh, make
-    fxa_mysql_image_check in prepare_environment.sh (and the image checks of tests/e2e-fxa.sh
-    and tests/fxa-upgrade.sh) compare FXA_VERSION with that release instead of reading the
-    label, and remove upstream-patches/fxa-mysql2.
+    docs/upgrading.md#database-majors, .env-example and prepare_environment.sh, add the line
+    "mozilla/fxa#21554 <that release>" to config/fxa/fixed-in (our images lose the label;
+    prepare_environment.sh and the tests then take every image of that release or later as
+    having it), and remove upstream-patches/fxa-mysql2.
