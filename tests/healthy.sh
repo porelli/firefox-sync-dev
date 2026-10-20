@@ -108,8 +108,17 @@ health_parity() {
     fi
     qtest=$(sed -n 's/^HealthCmd=//p' "${q}" | tail -1)
     case "${qtest}" in \[*) qtest=$(echo "${qtest}" | jq -r 'join(" ")') ;; esac
-    # systemd's escapes of the rendered values
-    qtest=$(echo "${qtest}" | sed 's/%%/%/g; s/\$\$/$/g' | words)
+    # systemd's escapes of the rendered values; then, as compose's, the $NAME of the
+    # container's shell with the unit's Environment=
+    qtest=$(echo "${qtest}" | sed 's/%%/%/g; s/\$\$/$/g')
+    qtest=$(Q=${qtest} awk '
+      /^Environment=/ { l = substr($0, 13); if (l ~ /^".*"$/) l = substr(l, 2, length(l) - 2)
+        k = l; sub(/=.*/, "", k); v = substr(l, length(k) + 2); gsub(/%%/, "%", v); env[k] = v }
+      END { c = ENVIRON["Q"]; out = ""
+        while (match(c, /[$]([{][A-Za-z_][A-Za-z0-9_]*[}]|[A-Za-z_][A-Za-z0-9_]*)/)) {
+          n = substr(c, RSTART + 1, RLENGTH - 1); gsub(/[{}]/, "", n)
+          out = out substr(c, 1, RSTART - 1) env[n]; c = substr(c, RSTART + RLENGTH) }
+        print out c }' "${q}" | words)
     test=$(echo "${test}" | words)
     [ "${test}" = "${qtest}" ] || out="${out}; ${s}: command [${test}] in compose, [${qtest}] in ${unit}"
     local key c v

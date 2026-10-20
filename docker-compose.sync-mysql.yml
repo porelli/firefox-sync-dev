@@ -19,7 +19,8 @@ x-sync-mysql: &sync-mysql
   healthcheck:
     # over TCP: during the first start the image runs a temporary server on the socket only;
     # as the stack's user (the root password is random), mysqladmin ping only asks if it answers
-    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --protocol=tcp -u\"$${MYSQL_USER}\" -p\"$${MYSQL_PASSWORD}\" --silent"]
+    # (the password in mysqladmin's environment, not in its arguments, which ps shows on the host)
+    test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -u\"$${MYSQL_USER}\" --silent"]
     start_period: 30s
     interval: 10s
     timeout: 5s

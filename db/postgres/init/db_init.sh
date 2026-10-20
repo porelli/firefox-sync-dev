@@ -102,7 +102,9 @@ sync_role() {
   fi
   role_exists "${POSTGRES_SYNC_USER}" || admin_psql -v ON_ERROR_STOP=1 -q -c "CREATE ROLE ${POSTGRES_SYNC_USER} LOGIN;" || exit 1
   # (again with a new password: SYNC_POSTGRES_APP_PASSWORD changed in .env)
-  admin_psql -v ON_ERROR_STOP=1 -q -c "ALTER ROLE ${POSTGRES_SYNC_USER} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '${POSTGRES_SYNC_PASSWORD}';" || exit 1
+  # (the statements with a password on psql's input, not in its arguments, which ps shows on the host)
+  printf '%s\n' "ALTER ROLE ${POSTGRES_SYNC_USER} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '${POSTGRES_SYNC_PASSWORD}';" \
+    | admin_psql -v ON_ERROR_STOP=1 -q || exit 1
   sed -e "s|@SYNC_USER@|${POSTGRES_SYNC_USER}|g" -e "s|@POSTGRES_DATABASE@|${POSTGRES_DATABASE}|g" \
       /scripts/sync_owner.sql > /tmp/sync_owner.sql
   if admin_psql -v ON_ERROR_STOP=1 -q --single-transaction -f /tmp/sync_owner.sql; then
@@ -264,7 +266,7 @@ if [ -n "${ADMIN_DB_PASSWORD:-}" ]; then
     for role in "${ADMIN_USER}" "${ADMIN_SYNC_USER}"; do
       role_exists "${role}" || admin_psql -v ON_ERROR_STOP=1 -q -c "CREATE ROLE ${role} LOGIN;" || exit 1
       # (again with a new password: ADMIN_DB_PASSWORD changed in .env)
-      admin_psql -v ON_ERROR_STOP=1 -q -c "ALTER ROLE ${role} LOGIN PASSWORD '${ADMIN_DB_PASSWORD}';" || exit 1
+      printf '%s\n' "ALTER ROLE ${role} LOGIN PASSWORD '${ADMIN_DB_PASSWORD}';" | admin_psql -v ON_ERROR_STOP=1 -q || exit 1
     done
     # nobody else connects there, the Sync server's role neither (POSTGRES_USER, a
     # superuser, still could: hence POSTGRES_SYNC_USER). A new one is a copy of template0,

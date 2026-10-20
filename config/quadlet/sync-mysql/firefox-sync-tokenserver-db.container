@@ -30,8 +30,9 @@ Environment=ADMIN_DB_NAME=%ADMIN_DB_NAME%
 # change, and the init container's max users trigger would need log_bin_trust_function_creators
 Exec=sh /ffs-db/admin-user.sh mysqld --disable-log-bin
 
-# over TCP: during the first start the image runs a temporary server on the socket only
-HealthCmd=mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%SYNC_TOKENSERVER_DB_USER% -p%SYNC_TOKENSERVER_DB_PASSWORD% --silent
+# over TCP: during the first start the image runs a temporary server on the socket only;
+# the password in mysqladmin's environment, not in its arguments, which ps shows
+HealthCmd=MYSQL_PWD=$${MYSQL_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%SYNC_TOKENSERVER_DB_USER% --silent
 HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=10

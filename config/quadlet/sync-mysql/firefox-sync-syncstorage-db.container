@@ -28,7 +28,7 @@ Environment=ADMIN_DB_PASSWORD=%ADMIN_DB_PASSWORD%
 Exec=sh /ffs-db/admin-user.sh mysqld --disable-log-bin
 
 # over TCP: during the first start the image runs a temporary server on the socket only
-HealthCmd=mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%SYNC_STORAGE_DB_USER% -p%SYNC_STORAGE_DB_PASSWORD% --silent
+HealthCmd=MYSQL_PWD=$${MYSQL_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -u%SYNC_STORAGE_DB_USER% --silent
 HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=10
