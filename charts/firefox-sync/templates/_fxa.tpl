@@ -308,6 +308,8 @@ render)
 {{- if and $old (ne $old $new) }}
 {{- fail (printf "firefox-sync: fxa.database.backend is %s but the accounts database was created with %s (its volume %s); switching needs a dump and restore, see docs/backups.md#restore-on-kubernetes" .Values.fxa.database.backend (ternary "mariadb" "mysql" (eq $old "data-mariadb")) $old) }}
 {{- end }}
+{{- /* its volume as it was created (fxa.database.persistence), checkClaim */}}
+{{- include "firefox-sync.checkStatefulSetClaim" (dict "root" . "name" (include "firefox-sync.fxaDbHost" .) "claim" $new "setting" "fxa.database.persistence" "persistence" .Values.fxa.database.persistence) }}
 {{- /* the same server, another image: refused when it moves the data to another major
 (firefox-sync.dbMajorChange, as checkDbMajor for the Sync databases), unless
 fxa.database.allowMajorUpgrade */}}

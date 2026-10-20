@@ -58,7 +58,7 @@ The stack's own database containers. For a server you run yourself, see also [Yo
 | `ADMIN_DB_USER` | `database.admin.user` | `ffs_admin_ui` | the admin UI's user of that database, and only of it | |
 | `ADMIN_DB_SYNC_USER` | `database.admin.syncUser` | `ffs_admin_sync` | the admin UI's reader of the Sync data, with nothing on `ffs_admin` | |
 | `ADMIN_DB_PASSWORD` | Secret: `ADMIN_DB_PASSWORD` | generated | the password of both admin UI users. Empty: an install from before it, see [The admin UI's own database](../upgrading.md#the-admin-uis-own-database) | |
-| – | `database.persistence.size`, `.storageClass` | `8Gi`, the cluster's default | the volumes of the database servers. Set them before the first install: [Database volumes](../install/helm.md#database-volumes) | |
+| – | `database.persistence.size`, `.storageClass` | `8Gi`, the cluster's default | the volumes of the database servers. Set them before the first install: [Volumes](../install/helm.md#volumes) | |
 | – | `database.resources` | none | requests and limits of each database server: [Resources](../install/helm.md#resources) | |
 
 ## Your own database server
@@ -94,7 +94,7 @@ How they work: [Backups](../backups.md).
 | `BACKUP_TIME` | `backup.schedule` (cron, UTC) | `03:00` (Helm `"0 3 * * *"`) | when they run, UTC | |
 | `BACKUP_KEEP` | `backup.keep` | `7` | the newest runs kept; older ones are deleted | |
 | – | `backup.activeDeadlineSeconds` | `82800` | a run still going after this many seconds is stopped and fails | |
-| – | `backup.persistence.size`, `.storageClass` | `10Gi`, the cluster's default | the backups' PVC | |
+| – | `backup.persistence.size`, `.storageClass` | `10Gi`, the cluster's default | the backups' PVC; it grows with a StorageClass of `allowVolumeExpansion`: [Volumes](../install/helm.md#volumes) | |
 | – | `backup.resources` | none | the backup container and the Job that binds its PVC | |
 
 ## Admin UI
@@ -221,12 +221,12 @@ Values of the chart with no `.env` counterpart, besides those in the tables abov
 | `fxa.database.allowMajorUpgrade` | `false` | the same for the bundled accounts database (`fxa.enabled`) |
 | `fxa.enabled` | `false` | the self-hosted accounts: [Self-hosted accounts](../install/helm.md#self-hosted-accounts) |
 | `fxa.database.external.*` | | your own accounts database server, with `fxa.database.bundled: false`: in the [Accounts](#accounts) table |
-| `fxa.database.persistence.size`, `.storageClass` | `8Gi`, the default class | the bundled accounts database's volume, set before the first install |
+| `fxa.database.persistence.size`, `.storageClass` | `8Gi`, the default class | the bundled accounts database's volume, set before the first install: [Volumes](../install/helm.md#volumes) |
 | `fxa.database.resources`, `fxa.redis.resources`, `fxa.resources.*`, `fxa.pairing.resources` | memory requests (pairing: none) | the accounts' containers: [Resources and PodSecurity](../install/helm.md#resources-and-podsecurity) |
 | `fxa.redis.image` | `docker.io/library/redis:alpine` | the accounts' Redis: [Database majors](../upgrading.md#database-majors) |
 | `fxa.keys.existingSecret` | empty: the PVC `<release>-firefox-sync-fxa-keys` | a Secret with the accounts' signing keys: [The signing keys](../install/helm.md#the-signing-keys) |
-| `fxa.keys.persistence.size`, `.storageClass` | `1Gi`, the default class | the keys' PVC |
-| `fxa.profileImages.persistence.size`, `.storageClass` | `1Gi`, the default class | the avatars' PVC, `<release>-firefox-sync-fxa-profile-images` |
+| `fxa.keys.persistence.size`, `.storageClass` | `1Gi`, the default class | the keys' PVC; it grows with a StorageClass of `allowVolumeExpansion`: [Volumes](../install/helm.md#volumes) |
+| `fxa.profileImages.persistence.size`, `.storageClass` | `1Gi`, the default class | the avatars' PVC, `<release>-firefox-sync-fxa-profile-images`, as the keys' |
 | `fxa.pairing.enabled` | `false` | the chart's own pairing server, at `fxa.pairing.url`: [Pairing](../install/helm.md#pairing) |
 | `fxa.ingress.enabled`, `.className`, `.annotations`, `.tls.enabled`, `.tls.secretNames.content`, `.auth`, `.profile`, `.pairing` | off | the accounts' Ingresses, one per host: [Kubernetes](../reverse-proxy.md#kubernetes) |
 | `fxa.extraCaCerts.configMap`, `.key` | empty, `ca.crt` | a ConfigMap with a CA the accounts and the admin UI trust, for your SMTP server or your own HTTPS hosts |

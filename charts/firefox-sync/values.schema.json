@@ -258,7 +258,8 @@
               "type": "object",
               "properties": {
                 "size": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -297,7 +298,8 @@
               "type": "object",
               "properties": {
                 "size": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -315,7 +317,8 @@
               "type": "object",
               "properties": {
                 "size": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -566,7 +569,8 @@
           "type": "object",
           "properties": {
             "size": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
             },
             "storageClass": {
               "type": "string"
@@ -823,7 +827,8 @@
           "type": "object",
           "properties": {
             "size": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
             },
             "storageClass": {
               "type": "string"

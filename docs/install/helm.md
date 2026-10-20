@@ -104,19 +104,21 @@ database:
 
 `imagePullSecrets` (`[{name: my-registry}]`) applies to every pod too, for a registry that needs a login. That is a mirror of `ghcr.io/porelli/firefox-sync`, and of Docker Hub, whose official images the database servers and the backups run. The `database.image.*` values are fully qualified (`docker.io/library/...`) for the nodes whose runtime has another default registry.
 
-### Database volumes
+### Volumes
 
-`database.persistence.size` and `.storageClass` are those of the database servers' StatefulSets (`volumeClaimTemplates`), which Kubernetes never changes: choose them before the first install. A `helm upgrade` with another value fails with `StatefulSet.apps ... is invalid: spec: Forbidden: updates to statefulset spec for fields other than ...`.
+`helm upgrade` refuses a change of a volume that Kubernetes would refuse, before anything is applied, with a `firefox-sync: ...` message that says what to set. Kubernetes itself would refuse it only after the objects before it were changed. The chart reads the volumes of the cluster for that, so `helm template` and a GitOps render check nothing.
 
-To grow a volume, keep the values as they were and resize its PVC, with a StorageClass that has `allowVolumeExpansion: true` ([volume expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)):
+The database servers' volumes, `database.persistence.*` and `fxa.database.persistence.*`, are those of their StatefulSets (`volumeClaimTemplates`), which Kubernetes never changes: choose their size and storage class before the first install, and keep them as they were. To grow such a volume, keep the values and resize its PVC, with a StorageClass that has `allowVolumeExpansion: true` ([volume expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)):
 
 ```bash
 kubectl patch pvc data-ffs-firefox-sync-tokenserver-db-0 -p '{"spec": {"resources": {"requests": {"storage": "20Gi"}}}}'
 ```
 
-The other PVCs are `data-ffs-firefox-sync-storage-db-0` (the storage) and `data-ffs-firefox-sync-postgres-0`. Some storage drivers grow a volume only when its pod restarts: `kubectl delete pod ffs-firefox-sync-storage-db-0`.
+The other PVCs are `data-ffs-firefox-sync-storage-db-0` (the storage), `data-ffs-firefox-sync-postgres-0`, and `data-ffs-firefox-sync-fxa-db-0` for the accounts (`data-mariadb-...` on MariaDB). Some storage drivers grow a volume only when its pod restarts: `kubectl delete pod ffs-firefox-sync-storage-db-0`.
 
-The backups' PVC (`backup.persistence.*`) is a plain one: the same `kubectl patch` grows it, and its storage class never changes either. Another StorageClass needs a backup and a restore into a new install: see [Restore on Kubernetes](../backups.md#restore-on-kubernetes).
+The plain PVCs, the backups' (`backup.persistence.*`), the keys' (`fxa.keys.persistence.*`) and the avatars' (`fxa.profileImages.persistence.*`), grow with the values: a larger `size` and `helm upgrade`, when their StorageClass has `allowVolumeExpansion: true`. Without it, or with a smaller size than the PVC has, the upgrade is refused: Kubernetes never shrinks a volume. A PVC grown by hand needs a `size` of at least its own. Checking the StorageClass reads it from the cluster, which a namespace-only Helm user may not do: grow the PVC with `kubectl patch` then, and set its size in the values.
+
+A volume's storage class never changes. An empty `storageClass` is the cluster's default when the volume is made: a plain PVC keeps its class after that, also when the default changes. Another class, or a database server's on another one, needs a new volume, so a backup and a restore into it: see [Restore on Kubernetes](../backups.md#restore-on-kubernetes).
 
 ## The Secret
 

@@ -1152,6 +1152,53 @@ fxa_e2e() {
       || fail "helm upgrade --dry-run=server with fxa.database.allowMajorUpgrade=true refused: ${out}"
     [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the dry run changed fxa-db's StatefulSet"
     check "helm upgrade to fxa.database.image.${backend}=${major_image} (running ${running_image}): refused at render time naming both, revision ${revision} still deployed, fxa-db unchanged; with fxa.database.allowMajorUpgrade=true it renders (server dry run)"
+
+    # the volumes as they are (checkClaim, lookups): what Kubernetes would refuse partway is
+    # refused at render time, nothing applied. fxa-db's volumeClaimTemplate never changes; the
+    # PVCs' class never changes, their size never shrinks and grows only with a StorageClass
+    # of allowVolumeExpansion (kind's standard: set off, then on, then as it was)
+    local sc_before keys_pvc="${FULL}-fxa-keys" images_pvc="${FULL}-fxa-profile-images" sts_claim
+    sc_before=$(kubectl get storageclass standard -o jsonpath='{.allowVolumeExpansion}')
+    kubectl patch storageclass standard --type merge -p '{"allowVolumeExpansion": false}' > /dev/null || fail "kind's StorageClass standard not patched"
+    sts_claim=$(kubectl get sts "${FULL}-fxa-db" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}')
+    storage_refused() {
+      local want=$1 out
+      shift
+      sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
+      if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values "$@" --timeout 2m 2>&1); then
+        fail "helm upgrade $* accepted"
+      fi
+      grep -qF "${want}" <<< "${out}" || fail "helm upgrade $*: refused, but not by the chart's check: ${out}"
+      [[ "$(helm history "${REL}" -o json | jq -r 'last | "\(.revision) \(.status)"')" == "${revision} deployed" ]] || fail "the refused upgrade ($*) left: $(helm history "${REL}" | tail -2)"
+      [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade ($*) changed fxa-db's StatefulSet"
+      [[ "$(kubectl get pvc "${keys_pvc}" "${images_pvc}" -o jsonpath='{range .items[*]}{.spec.storageClassName} {.spec.resources.requests.storage} {end}')" == "standard 1Gi standard 1Gi " ]] \
+        || fail "the refused upgrade ($*) changed the PVCs: $(kubectl get pvc "${keys_pvc}" "${images_pvc}")"
+    }
+    storage_refused "firefox-sync: fxa.database.persistence.size is 9Gi but the StatefulSet ${FULL}-fxa-db (its volume ${old_claim}) was created with ${sts_claim}: Kubernetes never changes a StatefulSet's volumeClaimTemplates; set it back to ${sts_claim}" \
+      --set fxa.database.persistence.size=9Gi
+    storage_refused "firefox-sync: fxa.database.persistence.storageClass is \"fast\" but the StatefulSet ${FULL}-fxa-db (its volume ${old_claim}) was created with \"\"" \
+      --set fxa.database.persistence.storageClass=fast
+    storage_refused "firefox-sync: fxa.keys.persistence.size is 2Gi but the PVC ${keys_pvc} is 1Gi, and its StorageClass \"standard\" does not allow expansion (allowVolumeExpansion): keep 1Gi" \
+      --set fxa.keys.persistence.size=2Gi
+    storage_refused "firefox-sync: fxa.profileImages.persistence.size is 512Mi but the PVC ${images_pvc} is 1Gi: Kubernetes never shrinks a volume; set at least 1Gi" \
+      --set fxa.profileImages.persistence.size=512Mi
+    storage_refused "firefox-sync: fxa.profileImages.persistence.storageClass is \"fast\" but the PVC ${images_pvc} is on \"standard\": Kubernetes never changes a PVC's class" \
+      --set fxa.profileImages.persistence.storageClass=fast
+    # (with allowVolumeExpansion the growth renders, a server dry run: lookup reads the cluster,
+    # nothing changed; an empty storageClass renders the PVC's own)
+    kubectl patch storageclass standard --type merge -p '{"allowVolumeExpansion": true}' > /dev/null || fail "kind's StorageClass standard not patched"
+    out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.keys.persistence.size=2Gi --dry-run=server 2>&1) \
+      || fail "helm upgrade --dry-run=server with fxa.keys.persistence.size=2Gi on a StorageClass of allowVolumeExpansion refused: ${out}"
+    got=$(sed -n '/^MANIFEST:/,/^NOTES:/{/^\(MANIFEST\|NOTES\):/d;p}' <<< "${out}" | manifests | jq -c --arg n "${keys_pvc}" '.[] | select(.kind == "PersistentVolumeClaim" and .metadata.name == $n) | [.spec.storageClassName, .spec.resources.requests.storage]')
+    [[ "${got}" == '["standard","2Gi"]' ]] || fail "the keys' PVC of the dry run: ${got} (expected its class standard, 2Gi)"
+    [[ "$(kubectl get pvc "${keys_pvc}" -o jsonpath='{.spec.resources.requests.storage}')" == 1Gi ]] || fail "the dry run resized ${keys_pvc}"
+    if [[ -n "${sc_before}" ]]; then
+      kubectl patch storageclass standard --type merge -p "{\"allowVolumeExpansion\": ${sc_before}}" > /dev/null
+    else
+      kubectl patch storageclass standard --type json -p '[{"op": "remove", "path": "/allowVolumeExpansion"}]' > /dev/null
+    fi
+    [[ "$(kubectl get storageclass standard -o jsonpath='{.allowVolumeExpansion}')" == "${sc_before}" ]] || fail "kind's StorageClass standard not put back"
+    check "the volumes: fxa.database.persistence.size and .storageClass (fxa-db's volumeClaimTemplate), fxa.keys.persistence.size up on a StorageClass without allowVolumeExpansion, fxa.profileImages.persistence.size down and .storageClass: refused at render time saying what to set, revision ${revision} still deployed, nothing changed; with allowVolumeExpansion the keys' 2Gi renders (server dry run, the PVC's class standard kept)"
   fi
 
   # the accounts' pages and profiles: Ready (helm's --wait), after their init containers; the

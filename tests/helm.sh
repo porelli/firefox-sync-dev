@@ -187,6 +187,64 @@ TPL
     && grep -q 'firefox-sync: database.backend is %s but the bundled Sync database %s runs %s; switching needs a dump and restore.*docs/migrating.md#moving-the-database' "${CHART_DIR}/templates/_helpers.tpl" \
     || fail "checkDbBackend does not read the three StatefulSets or say where the switch is documented"
   check "checkDbBackend: run by the databases before checkDbMajor, reads the tokenserver-db, storage-db and postgres StatefulSets"
+  # the volumes as they are (lookups at install and upgrade, the e2e: the refusals): each
+  # StatefulSet's volumeClaimTemplate, each PVC (pvcStorageClass), checkClaim's rules on its
+  # own with the data a lookup would return, in a copy of the chart
+  grep -qF 'include "firefox-sync.checkStatefulSetClaim" (dict "root" $root "name" (include "firefox-sync.dbHost" (dict "root" $root "db" .db)) "claim" "data"' "${CHART_DIR}/templates/databases.yaml" \
+    && grep -qF 'include "firefox-sync.checkStatefulSetClaim" (dict "root" . "name" (include "firefox-sync.fxaDbHost" .) "claim" $new "setting" "fxa.database.persistence"' "${CHART_DIR}/templates/_fxa.tpl" \
+    && grep -qF '{{- with lookup "apps/v1" "StatefulSet" .root.Release.Namespace .name }}' "${CHART_DIR}/templates/_helpers.tpl" \
+    && grep -qF '{{- $existing := lookup "v1" "PersistentVolumeClaim" .root.Release.Namespace .name }}' "${CHART_DIR}/templates/_helpers.tpl" \
+    && grep -qF '{{- $class = lookup "storage.k8s.io/v1" "StorageClass" "" $existing.spec.storageClassName }}' "${CHART_DIR}/templates/_helpers.tpl" \
+    || fail "the volumes' checks: not run by the StatefulSets, or no lookup of the StatefulSet, the PVC, the StorageClass"
+  local pvc
+  for pvc in 'templates/backup.yaml:"%s-backups" $fullname) "setting" "backup.persistence"' 'templates/fxa-auth.yaml:"%s-fxa-keys" $fullname) "setting" "fxa.keys.persistence"' \
+    'templates/fxa-profile.yaml:"%s-fxa-profile-images" $fullname) "setting" "fxa.profileImages.persistence"'; do
+    grep -qF "{{- with include \"firefox-sync.pvcStorageClass\" (dict \"root\" . \"name\" (printf ${pvc#*:}" "${CHART_DIR}/${pvc%%:*}" || fail "${pvc%%:*}: its PVC without pvcStorageClass"
+  done
+  [[ "$(grep -c 'storageClassName:' "${CHART_DIR}"/templates/{backup,fxa-auth,fxa-profile}.yaml | awk -F: '{n += $2} END {print n}')" == 3 ]] \
+    || fail "a PVC's storageClassName not of pvcStorageClass"
+  claim_check() {
+    local d out
+    d=$(mktemp -d)
+    cp -r "${CHART_DIR}" "${d}/chart"
+    printf '%s' "$1" > "${d}/chart/files/claim.json"
+    printf '%s\n' '{{- $c := fromJson (.Files.Get "files/claim.json") }}' \
+      '{{- include "firefox-sync.checkClaim" (dict "setting" "x.persistence" "what" "the volume v" "persistence" $c.persistence "accessModes" (list "ReadWriteOnce") "live" $c.live "template" $c.template "class" $c.class) }}' \
+      'apiVersion: v1' 'kind: ConfigMap' 'metadata: {name: claim}' 'data: {bytes: "{{ include "firefox-sync.bytes" $c.persistence.size }}"}' > "${d}/chart/templates/zz-claim.yaml"
+    out=$(helm template test-release "${d}/chart" -f "${CHART_DIR}/ci/default-values.yaml" --show-only templates/zz-claim.yaml 2>&1)
+    local rc=$?
+    rm -rf "${d}"
+    echo "${out}"
+    return "${rc}"
+  }
+  claim() { printf '{"persistence":{"size":"%s","storageClass":"%s"},"live":{"accessModes":["%s"],"storageClassName":"%s","resources":{"requests":{"storage":"%s"}}},"template":%s,"class":{"allowVolumeExpansion":%s}}' "$@"; }
+  local c want
+  # <size> <class> <live access mode> <live class> <live size> <template> <expansion> -> refused with (- passes)
+  for c in "8Gi - ReadWriteOnce - 8Gi true false|-" "8192Mi - ReadWriteOnce - 8Gi true false|-" "9Gi - ReadWriteOnce - 8Gi true true|was created with 8Gi: Kubernetes never changes a StatefulSet's volumeClaimTemplates; set it back to 8Gi" \
+    "8Gi fast ReadWriteOnce - 8Gi true false|x.persistence.storageClass is \"fast\" but the volume v was created with \"\"" \
+    "8Gi - ReadWriteOnce fast 8Gi true false|x.persistence.storageClass is \"\" but the volume v was created with \"fast\"" \
+    "1Gi - ReadWriteOnce standard 1Gi false false|-" "1Gi standard ReadWriteOnce standard 1Gi false false|-" \
+    "2Gi - ReadWriteOnce standard 1Gi false false|its StorageClass \"standard\" does not allow expansion (allowVolumeExpansion): keep 1Gi" \
+    "2Gi - ReadWriteOnce standard 1Gi false true|-" "1.5G - ReadWriteOnce standard 1Gi false true|-" \
+    "512Mi - ReadWriteOnce standard 1Gi false true|x.persistence.size is 512Mi but the volume v is 1Gi: Kubernetes never shrinks a volume; set at least 1Gi" \
+    "1Gi - ReadWriteOnce standard 2Gi false true|set at least 2Gi" \
+    "1Gi fast ReadWriteOnce standard 1Gi false true|x.persistence.storageClass is \"fast\" but the volume v is on \"standard\": Kubernetes never changes a PVC's class" \
+    "1Gi - ReadWriteMany standard 1Gi false true|the volume v has the access modes [\"ReadWriteMany\"], the chart's are [\"ReadWriteOnce\"]"; do
+    want=${c#*|}
+    read -r -a args <<< "${c%|*}"
+    args=("${args[@]/#-/}")
+    if out=$(claim_check "$(claim "${args[@]}")"); then
+      [[ ${want} == - ]] || fail "checkClaim ${c%|*}: passes, expected refused with '${want}'"
+    else
+      [[ ${want} != - ]] && grep -qF "firefox-sync: " <<< "${out}" && grep -qF "${want}" <<< "${out}" || fail "checkClaim ${c%|*}: ${out}"
+    fi
+  done
+  [[ "$(claim_check "$(claim 1.5Gi "" ReadWriteOnce "" 1Gi false true)" | grep -o 'bytes: "[0-9]*"')" == 'bytes: "1610612736"' ]] || fail "bytes of 1.5Gi: $(claim_check "$(claim 1.5Gi "" ReadWriteOnce "" 1Gi false true)")"
+  for bad in database.persistence.size=8GB database.persistence.size=lots backup.persistence.size=-1Gi fxa.keys.persistence.size=1e9; do
+    out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set "${bad}" 2>&1) && fail "${bad}: not refused by the schema"
+    grep -qi schema <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
+  done
+  check "the volumes: checkStatefulSetClaim on the Sync and accounts databases' StatefulSets, pvcStorageClass on the backups', keys' and avatars' PVCs (lookups); checkClaim: a StatefulSet's size (8192Mi = 8Gi), class as created, a PVC's class kept, never smaller, larger with allowVolumeExpansion only, the access modes; sizes as quantities (schema)"
   # the bundled PostgreSQL: the db-major init container (db/postgres/keep-major.sh) with the
   # server's image and its data, before the server
   pg=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/default-values.yaml" --set database.backend=postgres --show-only templates/databases.yaml | manifests)
@@ -1050,6 +1108,29 @@ e2e() {
     [[ "$(helm history "${REL}" -o json | jq length) $(sts_image "${db_sts}")" == "${revision} ${running}" ]] \
       || fail "the refused backend switch changed the release or the StatefulSet"
     check "helm upgrade from database.backend=${backend} to ${switch} refused at render time, nothing applied"
+    # the volumes as they are (checkClaim, lookups): a StatefulSet's volumeClaimTemplates never
+    # change, the backups' PVC grows only with a StorageClass of allowVolumeExpansion (kind's
+    # standard: off for this, then as it was); refused at render time, nothing applied
+    local sc_before sts_size
+    sc_before=$(kubectl get storageclass standard -o jsonpath='{.allowVolumeExpansion}')
+    kubectl patch storageclass standard --type merge -p '{"allowVolumeExpansion": false}' > /dev/null || fail "kind's StorageClass standard not patched"
+    sts_size=$(kubectl get sts "${db_sts}" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}')
+    for change in "database.persistence.size=9Gi:firefox-sync: database.persistence.size is 9Gi but the StatefulSet ${db_sts} (its volume data) was created with ${sts_size}: Kubernetes never changes a StatefulSet's volumeClaimTemplates; set it back to ${sts_size}" \
+      "database.persistence.storageClass=fast:firefox-sync: database.persistence.storageClass is \"fast\" but the StatefulSet ${db_sts} (its volume data) was created with \"\"" \
+      "backup.persistence.size=20Gi:firefox-sync: backup.persistence.size is 20Gi but the PVC ${FULL}-backups is 10Gi, and its StorageClass \"standard\" does not allow expansion"; do
+      if refused=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set "${change%%:*}" 2>&1); then
+        fail "helm upgrade --set ${change%%:*} not refused"
+      fi
+      grep -qF "${change#*:}" <<< "${refused}" || fail "helm upgrade --set ${change%%:*}: refused, but not by the chart's check: ${refused}"
+    done
+    if [[ -n "${sc_before}" ]]; then
+      kubectl patch storageclass standard --type merge -p "{\"allowVolumeExpansion\": ${sc_before}}" > /dev/null
+    else
+      kubectl patch storageclass standard --type json -p '[{"op": "remove", "path": "/allowVolumeExpansion"}]' > /dev/null
+    fi
+    [[ "$(helm history "${REL}" -o json | jq length) $(sts_image "${db_sts}") $(kubectl get sts "${db_sts}" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}') $(kubectl get pvc "${FULL}-backups" -o jsonpath='{.spec.resources.requests.storage}')" \
+      == "${revision} ${running} ${sts_size} 10Gi" ]] || fail "a refused volume change changed the release, the StatefulSet or the backups' PVC"
+    check "helm upgrade with database.persistence.size or .storageClass (${db_sts}'s volumeClaimTemplate), backup.persistence.size up on a StorageClass without allowVolumeExpansion: refused at render time saying what to set, nothing applied"
     if [[ ${backend} == postgres ]]; then
       # a pin to another major goes through the render (from latest, not comparable), the
       # db-major init container then refuses the data and says what to pin; back on the

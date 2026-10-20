@@ -14,6 +14,12 @@ with docker-compose.sync-mysql.yml) or postgres_db (docker-compose.sync-postgres
 {{- else }}
 {{- $dbs = list (dict "component" "tokenserver-db" "db" "tokenserver") (dict "component" "storage-db" "db" "storage") }}
 {{- end }}
+{{- /* their volumes as they were created: Kubernetes never changes a StatefulSet's
+volumeClaimTemplates, and would refuse that only once the objects before it were changed */}}
+{{- range $dbs }}
+{{- include "firefox-sync.checkStatefulSetClaim" (dict "root" $root "name" (include "firefox-sync.dbHost" (dict "root" $root "db" .db)) "claim" "data"
+  "setting" "database.persistence" "persistence" $persistence) }}
+{{- end }}
 ---
 # db/mysql/admin-user.sh (a copy in files/, kept identical): the admin UI's users, run by the
 # MariaDB and MySQL containers before the image's entrypoint, as in compose; PostgreSQL:

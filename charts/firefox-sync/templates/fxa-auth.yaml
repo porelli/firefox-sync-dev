@@ -26,7 +26,8 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   accessModes: [ReadWriteOnce]
-  {{- with $f.keys.persistence.storageClass }}
+  {{- /* (a class or size Kubernetes would refuse: refused here first, pvcStorageClass) */}}
+  {{- with include "firefox-sync.pvcStorageClass" (dict "root" . "name" (printf "%s-fxa-keys" $fullname) "setting" "fxa.keys.persistence" "persistence" $f.keys.persistence) }}
   storageClassName: {{ . | quote }}
   {{- end }}
   resources:
