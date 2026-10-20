@@ -1224,9 +1224,60 @@ if [ "${START}" != 0 ] || [ "${HB}" != 200 ]; then
   done
 fi
 
+# the upstream pull requests built into the image under test (upstream-patches.yml), none
+# for images from before it
+UPSTREAM_PATCHES=$(docker inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "$(dc ps -q syncstorage)" 2> /dev/null)
+echo "upstream patches of the image: ${UPSTREAM_PATCHES:-none (no label)}"
+# Upstream tests that fail now and then for upstream's reasons, not this stack's: deselected
+# from their suite's run and run on their own after it, once more when they fail. One per
+# line: the upstream pull request that fixes it (- when there is none yet: always handled so)
+# and the test, relative to tools/integration_tests (pytest's rootdir in the image). An entry
+# goes once every image tested has its fix, built in by upstream-patches.yml or released.
+# - tokenserver/test_misc.py::test_user_updates_with_new_client_state creates its old row at
+#   the current millisecond, and the tokenserver replaces only the rows created strictly
+#   before the new one (created_at < its timestamp): when both fall in the same millisecond
+#   (about 1 in 100 here, the request takes about 1 ms) nothing is replaced and the test fails.
+# - test_storage.py::test_if_modified_since_on_info_views writes xxx_col1, reads its time ts1,
+#   then writes xxx_col2 and expects /info/collections to be newer than ts1. Sync times are
+#   in centiseconds and the server refuses (503, which the test retries) only a write that
+#   would not advance its collection's time, not the user's: a first write to xxx_col2 in
+#   the same centisecond as ts1 gets ts1 too, and X-If-Modified-Since ts1 gets a 304 (about
+#   1 in 10 here, when the test runs in a loop).
+UPSTREAM_RACY=(
+  "mozilla-services/syncstorage-rs#2671 tokenserver/test_misc.py::test_user_updates_with_new_client_state"
+  "- test_storage.py::test_if_modified_since_on_info_views"
+)
+# racy <suite>: the entries of UPSTREAM_RACY under <suite> (a test file or directory relative
+# to tools/integration_tests) whose fix the image does not have
+racy() {
+  local e pr t
+  for e in "${UPSTREAM_RACY[@]}"; do
+    pr=${e%% *} t=${e#* }
+    [[ "${t}" == "$1"* ]] || continue
+    [ "${pr}" != - ] && [[ " ${UPSTREAM_PATCHES} " == *" ${pr}@"* ]] && continue
+    echo "${t}"
+  done
+}
+# racy_deselect <suite>: pytest arguments leaving them out of the suite's run (the node ids
+# both relative to the rootdir and to /app)
+racy_deselect() {
+  local t
+  for t in $(racy "$1"); do printf ' --deselect %s --deselect tools/integration_tests/%s' "${t}" "${t}"; done
+}
+# racy_run <suite>: each on its own, once more when it fails
+racy_run() {
+  local t
+  for t in $(racy "$1"); do
+    pytest_in_app "tools/integration_tests/${t}" > /dev/null ||
+      { echo "  ${t} failed, once more"; pytest_in_app "tools/integration_tests/${t}"; }
+    check "$?" 0 "upstream ${t##*::} on its own (once more when it fails: an upstream race)"
+  done
+}
+
 echo "== upstream storage integration tests"
-pytest_in_app tools/integration_tests/test_storage.py
+pytest_in_app "tools/integration_tests/test_storage.py$(racy_deselect test_storage.py)"
 check "$?" 0 "upstream storage tests"
+racy_run test_storage.py
 
 echo "== errors in syncstorage logs"
 check "$(dc logs syncstorage 2>&1 | grep -ciE 'panicked|"status":5[0-9][0-9]')" 0 "no panics or 5xx in syncstorage logs"
@@ -1238,10 +1289,6 @@ check "$(wait_init)" 0 "init container exit code (SYNC_MAX_USERS=1000000)"
 hb > /dev/null
 # test_e2e.py needs real accounts on Mozilla's FxA stage environment
 UPSTREAM_TS="tools/integration_tests/tokenserver --ignore=tools/integration_tests/tokenserver/test_e2e.py"
-# the upstream pull requests built into the image under test (upstream-patches.yml), none
-# for images from before it
-UPSTREAM_PATCHES=$(docker inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "$(dc ps -q syncstorage)" 2> /dev/null)
-echo "upstream patches of the image: ${UPSTREAM_PATCHES:-none (no label)}"
 if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ] && [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2638@"* ]]; then
   # with several empty nodes the tokenserver orders them by LOG(0) (NULL), MySQL 8
   # (upstream CI, EXTERNAL_DB=1 and SYNC_DB=mysql here, where it runs) returns them in id
@@ -1251,23 +1298,9 @@ if [ "${BACKEND}" = mysql ] && [ "${DATABASE_SERVER}" != MySQL ] && [[ " ${UPSTR
   T=test_node_assignment.py::test_user_creation
   UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${T} --deselect tools/integration_tests/tokenserver/${T}"
 fi
-# test_misc.py::test_user_updates_with_new_client_state creates its old row at the current
-# millisecond, and the tokenserver replaces only the rows created strictly before the new
-# one (created_at < its timestamp): when both fall in the same millisecond (about 1 in 100
-# here, the request takes about 1 ms) nothing is replaced and the test fails. Upstream's
-# race, not this stack's, fixed by mozilla-services/syncstorage-rs#2671 (upstream-patches.yml):
-# for the images without it, run on its own, once more when it fails
-RACY=test_misc.py::test_user_updates_with_new_client_state
-if [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2671@"* ]]; then
-  UPSTREAM_TS="${UPSTREAM_TS} --deselect tokenserver/${RACY} --deselect tools/integration_tests/tokenserver/${RACY}"
-fi
-pytest_in_app "${UPSTREAM_TS}"
+pytest_in_app "${UPSTREAM_TS}$(racy_deselect tokenserver/)"
 check "$?" 0 "upstream tokenserver tests"
-if [[ " ${UPSTREAM_PATCHES} " != *" mozilla-services/syncstorage-rs#2671@"* ]]; then
-  pytest_in_app "tools/integration_tests/tokenserver/${RACY}" > /dev/null ||
-    { echo "  ${RACY} failed, once more"; pytest_in_app "tools/integration_tests/tokenserver/${RACY}"; }
-  check "$?" 0 "upstream ${RACY} (once more when it fails: the same millisecond)"
-fi
+racy_run tokenserver/
 
 echo "== admin UI"
 check "$(admin_healthy)" healthy "admin UI container healthcheck"
