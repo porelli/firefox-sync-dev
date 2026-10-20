@@ -383,7 +383,7 @@ def test_account_page(admin):
     assert admin.http.get(f"{ADMIN}/users/nobody", timeout=30).status_code == 404
 
 
-def test_prometheus(admin):
+def test_prometheus(admin, alice):
     assert requests.get(f"{ADMIN}/metrics", timeout=30).status_code == 404
     res = requests.get(f"{ADMIN}/metrics", headers={"Authorization": "Bearer wrong"}, timeout=30)
     assert res.status_code == 404
@@ -398,7 +398,18 @@ def test_prometheus(admin):
     for name in DB_SIZES:
         assert re.search(r'^ffs_database_bytes\{database="' + re.escape(name) + r'"\} [1-9]\d*$', metrics, re.M), name
     assert "ffs_accounts " not in metrics
-    assert re.search(r'^ffs_statsd_total\{name="syncstorage_request_[^"]*"\} [1-9]', metrics, re.M), metrics[-3000:]
+    # ffs_statsd_total counts what the admin UI received since it started, and e2e.sh restarted
+    # it, and the Sync server with it, just before. The Sync server buffers its metrics until a
+    # datagram is full, so alice's sign-in and upload may still sit there: more traffic sends
+    # them (/metrics counts them as they come, not at METRICS_FLUSH_SECONDS)
+    request_counted = re.compile(r'^ffs_statsd_total\{name="syncstorage_request_[^"]*"\} [1-9]', re.M)
+    deadline = time.time() + 30
+    while not request_counted.search(metrics) and time.time() < deadline:
+        for _ in range(10):
+            assert alice.request("GET", "/info/collections").status_code == 200
+        time.sleep(1)
+        metrics = requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
+    assert request_counted.search(metrics), metrics[-3000:]
 
 
 @pytest.mark.skipif(EDITABLE, reason="SYNC_MAX_USERS=initial:N, the page manages max users")
