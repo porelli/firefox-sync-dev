@@ -1205,6 +1205,25 @@ check "$(metrics_show 'ffs_up{component="Sync server"} 1')" yes "ffs_up 1 with t
 check "$([ "$(health_events 'Sync server is down%')" -gt "${DOWN}" ] && [ "$(health_events 'Sync server is back up')" -gt "${UP}" ] && echo yes)" yes \
   "'is down' and 'is back up' in the event log"
 
+echo "== docker compose stop and start of the Sync server (docs/migrating.md's rollback)"
+# start runs its exited one-shot dependencies again first: what failed there, it says
+ONESHOTS="syncstorage_migrate tokenserver_db_init"
+[ "${BACKEND}" = postgres ] && ONESHOTS="sync_role_init ${ONESHOTS}"
+dc stop syncstorage > /dev/null 2>&1
+dc start syncstorage > "${WORK}/start.log" 2>&1
+START=$?
+check "${START}" 0 "docker compose start syncstorage (${ONESHOTS} again first)"
+HB=$(hb)
+check "${HB}" 200 "/__heartbeat__ after docker compose start"
+if [ "${START}" != 0 ] || [ "${HB}" != 200 ]; then
+  cat "${WORK}/start.log"
+  dc ps -a
+  for s in ${ONESHOTS}; do
+    echo "-- ${s}: exit code $(state "${s}" ExitCode)"
+    dc logs --no-log-prefix --tail 50 "${s}" 2>&1
+  done
+fi
+
 echo "== upstream storage integration tests"
 pytest_in_app tools/integration_tests/test_storage.py
 check "$?" 0 "upstream storage tests"
