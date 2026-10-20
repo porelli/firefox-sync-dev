@@ -23,7 +23,7 @@ import (
 //     one per token issued (syncstorage.token_creation): the difference is the tokens
 //     refused (a bad or old token, an old generation or keys, a client state that does
 //     not fit, max users full, a database error). The recorder pairs them in the order
-//     they came (Recorder.tokenLine) and keeps the refused ones (tokensRefusedMetric)
+//     they came (tokens.go) and keeps the refused ones (tokensRefusedMetric)
 
 const (
 	storageService = "Sync storage"
@@ -117,10 +117,6 @@ const (
 	// the tokens refused per minute, counted by the recorder (no statsd metric, no
 	// sender's line of this name is taken)
 	tokensRefusedMetric = "ffs.tokens_refused"
-	// datagrams of the Sync server's buffer after a verification for its token: those
-	// of the requests in between may come first (syncstorage-rs sends a datagram when
-	// 512 bytes are buffered)
-	tokenLag = 2
 )
 
 // ErrorRow: a kind of error over a time span, for the activity page

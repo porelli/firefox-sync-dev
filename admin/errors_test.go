@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
-	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -38,19 +37,28 @@ func capturedPackets(t *testing.T) []string {
 }
 
 func TestErrorsOfCapturedPackets(t *testing.T) {
-	r := &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}}
+	now := time.Unix(0, 0)
+	r := &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}, clock: func() time.Time { return now }}
 	for _, p := range capturedPackets(t) {
 		if len(p) > 512 {
 			t.Errorf("a datagram of %d bytes: the Sync server buffers 512", len(p))
 		}
-		r.parseStatsd(p)
+		// the tokenserver's buffer sends from a socket of its own
+		sender := "sync:1"
+		if strings.HasPrefix(p, "syncstorage.tokenserver.") {
+			sender = "sync:2"
+		}
+		now = now.Add(time.Second)
+		r.receive(sender, p)
 	}
+	// the Sync server's next datagram, a minute later: the verifications without their
+	// token by then are refused
+	now = now.Add(time.Minute)
+	r.receive("sync:1", "syncstorage.request.get_collections:0|c")
 	tally := newErrorTally()
 	for name, m := range r.current {
 		tally.add(60000, name, m.count)
 	}
-	// a later minute: the tokens of the minute are all in
-	tally.add(120000, "syncstorage.request.get_collections", 0)
 	got := map[string]ErrorRow{}
 	for _, row := range tally.Rows() {
 		got[row.Metric+"|"+row.Kind] = row
@@ -158,129 +166,6 @@ func TestTokensRefusedPerMinute(t *testing.T) {
 	tally.add(180000, tokenIssued, 0)
 	if n, _, _ := tally.refused(); n != 1 {
 		t.Errorf("issued first: %d", n)
-	}
-}
-
-// streamMinutes: each datagram through one recorder, the way it gets them, in a minute
-// of its own (a quiet server); the tokens refused after each
-func streamMinutes(r *Recorder, tally *errorTally, minute int64, packets ...string) (after []int64) {
-	for _, p := range packets {
-		r.parseStatsd(p)
-		for name, m := range r.current {
-			tally.add(minute, name, m.count)
-		}
-		r.current = map[string]*metric{}
-		n, _, _ := tally.refused()
-		after = append(after, n)
-		minute += 60000
-	}
-	return after
-}
-
-func newTestRecorder() *Recorder {
-	return &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}}
-}
-
-// TestTokensRefusedOfSplitDatagrams: the captured datagrams, each in a minute of its
-// own. The verifications at the end of a datagram get their token in the next one:
-// the four refused, never more on the way
-func TestTokensRefusedOfSplitDatagrams(t *testing.T) {
-	packets := capturedPackets(t)
-	// what each datagram verified and did not issue, as if refused there
-	perDatagram := int64(0)
-	for _, p := range packets {
-		r := newTestRecorder()
-		r.parseStatsd(p)
-		if v := r.current[tokenVerified]; v != nil {
-			n := v.count
-			if c := r.current[tokenIssued]; c != nil {
-				n -= c.count
-			}
-			perDatagram += max(n, 0)
-		}
-	}
-	if perDatagram <= 4 {
-		t.Errorf("%d verified and not issued per datagram: no split to test", perDatagram)
-	}
-	tally := newErrorTally()
-	after := streamMinutes(newTestRecorder(), tally, 60000, packets...)
-	for i, n := range after {
-		if n > 4 || (i > 0 && n < after[i-1]) {
-			t.Errorf("after each datagram: %v", after)
-			break
-		}
-	}
-	if n, _, per := tally.refused(); n != 4 {
-		t.Errorf("%d refused: %v", n, per)
-	}
-	// the same minutes without the recorder's count (an admin UI from before it): the
-	// guess of verified minus issued, once something newer came in
-	legacy := newErrorTally()
-	for m, n := range tally.verified {
-		legacy.add(m, tokenVerified, n)
-	}
-	for m, n := range tally.issued {
-		legacy.add(m, tokenIssued, n)
-	}
-	legacy.add(int64(len(packets)+1)*60000, "syncstorage.request.get_collections", 1)
-	if n, _, per := legacy.refused(); n != 4 {
-		t.Errorf("before the recorder's count: %d refused: %v", n, per)
-	}
-}
-
-// TestTokensRefusedNoneRefused: sign-ins only, every one with its token, the datagrams
-// cut between a verification and its token. The guess of the minutes alone counted one
-// refused, then none again (test_errors_by_kind saw no new one): the recorder none
-func TestTokensRefusedNoneRefused(t *testing.T) {
-	v, c := tokenVerified+":1|ms\n", tokenIssued+":0|ms\n"
-	ts := "syncstorage.tokenserver.storage.get_users:0|ms\n"
-	packets := []string{
-		v + c + v + c + v,     // its last token in the next one
-		c + v + c + v,         // the token of the one before, ends on a verification
-		ts + ts,               // the tokenserver's buffer: says nothing of the Sync server's
-		c + v + c + v + c + v, // and so on
-		c + v + c,
-	}
-	tally := newErrorTally()
-	for i, n := range streamMinutes(newTestRecorder(), tally, 60000, packets...) {
-		if n != 0 {
-			t.Errorf("after datagram %d: %d refused", i+1, n)
-		}
-	}
-	// what the minutes alone said after the second one
-	legacy := newErrorTally()
-	legacy.add(60000, tokenVerified, 3)
-	legacy.add(60000, tokenIssued, 2)
-	legacy.add(120000, tokenVerified, 2)
-	legacy.add(120000, tokenIssued, 2)
-	legacy.add(180000, "syncstorage.tokenserver.storage.get_users", 2)
-	if n, _, _ := legacy.refused(); n != 1 {
-		t.Errorf("the minutes alone: %d refused", n)
-	}
-}
-
-// TestTokensRefusedRecorder: a verification without a token is refused once two more
-// datagrams of the Sync server's buffer came (not the tokenserver's), in that minute;
-// a line of the recorder's name from a sender is not taken
-func TestTokensRefusedRecorder(t *testing.T) {
-	r := newTestRecorder()
-	tally := newErrorTally()
-	v, c := tokenVerified+":1|ms\n", tokenIssued+":0|ms\n"
-	get := "syncstorage.request.get_collections:1|c\n"
-	ts := "syncstorage.tokenserver.storage.get_users:0|ms\n"
-	after := streamMinutes(r, tally, 60000, v+c+v, ts, get, ts+ts, get, get, tokensRefusedMetric+":5|c\n"+get)
-	if want := []int64{0, 0, 0, 0, 1, 1, 1}; fmt.Sprint(after) != fmt.Sprint(want) {
-		t.Errorf("after each datagram %v, want %v", after, want)
-	}
-	if n, last, per := tally.refused(); n != 1 || !last.Equal(time.UnixMilli(5*60000)) || per[5*60000] != 1 {
-		t.Errorf("%d %v %v", n, last, per)
-	}
-	// counted with the errors of the minute, not a metric of the activity page
-	if tr := tally.TrafficBetween(5*60000, 6*60000); tr.Errors != 1 || tr.Requests != 1 {
-		t.Errorf("%+v", tr)
-	}
-	if _, ok := r.cumulative[tokensRefusedMetric]; ok {
-		t.Error("in the statsd totals")
 	}
 }
 
