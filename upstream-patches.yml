@@ -26,8 +26,10 @@
 #                  same change made by hand for a release base...sha does not apply to (e.g.
 #                  the code moved between that release and the pull request's base). Building
 #                  that release the file is applied instead (label ...@base..sha+<release-tag>);
-#                  for any other release base...sha as always, which fails when it does not
-#                  apply: a new release needs a port of its own or the pull request rebased.
+#                  for any other release base...sha as always. When that does not apply, the
+#                  newest port of an older release is tried (git apply --check): if it
+#                  applies cleanly it is used (label +<its release-tag>) with a ::warning::
+#                  to review it and add a port for the new release; if not, the build fails.
 #                  Review a port like the pull request: the release's code, the same change
 # Values are plain one-line scalars, or folded blocks (>-) for the long texts.
 #

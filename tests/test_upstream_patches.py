@@ -320,6 +320,77 @@ class Decisions(unittest.TestCase):
         self.assertIn(("diff", f"{BASE}...{PINNED}"), gh.calls)
         self.assertEqual(up.outputs(r)["label"], "up/stream#7@ccccccc..aaaaaaa")
 
+    def test_newest_older_port_when_the_pull_request_does_not_apply(self):
+        # a new release without its port, base...sha does not apply: the newest port of an
+        # older release, by version (v1.2.2 > v1.1.9; v1.2.10 is newer than v1.2.3, not used)
+        gh = FakeGitHub({("up/stream", 7): pull()})
+        broken = PORT.replace("zero", "nothing like it")
+        with Ports({"v1.1.9.diff": broken, "v1.2.2.diff": PORT, "v1.2.10.diff": broken}) as p, Checkout(MOVED) as c:
+            r = run([entry(ports="ports/fix")], gh, c, root=p.path)
+            self.assertEqual(c.read(), MOVED.replace("two", "2"))
+            plan = run([entry(ports="ports/fix")], FakeGitHub({("up/stream", 7): pull()}), root=p.path)
+        self.assertIn(("diff", f"{BASE}...{PINNED}"), gh.calls, "base...sha first")
+        out = up.outputs(r)
+        self.assertEqual(out["label"], "up/stream#7@ccccccc..aaaaaaa+v1.2.2", "the port used")
+        self.assertEqual(len(r["warnings"]), 1)
+        self.assertIn("ports/fix/v1.2.2.diff", r["warnings"][0])
+        self.assertIn("add ports/fix/v1.2.3.diff", r["warnings"][0])
+        self.assertIn("ports/fix/v1.2.2.diff", up.summary(r, "fxa-mono", "v1.2.3"))
+        # plan has no sources to try it on: base...sha, as the build would first
+        self.assertEqual(up.outputs(plan)["label"], "up/stream#7@ccccccc..aaaaaaa")
+        self.assertEqual(plan["warnings"], [])
+
+    def test_older_port_unused_when_the_pull_request_applies(self):
+        gh = FakeGitHub({("up/stream", 7): pull()})
+        with Ports({"v1.2.2.diff": PORT}) as p, Checkout() as c:
+            r = run([entry(ports="ports/fix")], gh, c, root=p.path)
+            self.assertEqual(c.read(), PATCHED)
+        self.assertEqual(up.outputs(r)["label"], "up/stream#7@ccccccc..aaaaaaa")
+        self.assertEqual(r["warnings"], [])
+
+    def test_neither_the_pull_request_nor_the_older_port_applies_fails(self):
+        with Ports({"v1.2.2.diff": PORT}) as p, Checkout("one\nTWO, changed by the release\nthree\n") as c:
+            with self.assertRaisesRegex(up.Fail, r"does not apply to the release(.|\n)*nor does the newest port, ports/fix/v1.2.2.diff"):
+                run([entry(ports="ports/fix")], FakeGitHub({("up/stream", 7): pull()}), c, root=p.path)
+            self.assertEqual(c.read(), "one\nTWO, changed by the release\nthree\n")
+
+    def test_older_port_already_in_the_sources_is_obsolete(self):
+        with Ports({"v1.2.2.diff": PORT}) as p, Checkout(MOVED.replace("two", "2")) as c:
+            r = run([entry(ports="ports/fix")], FakeGitHub({("up/stream", 7): pull()}), c, root=p.path)
+            self.assertEqual(c.read(), MOVED.replace("two", "2"))
+        self.assertEqual(r["applied"], [])
+        self.assertEqual([e["id"] for e in r["obsolete"]], ["fix"])
+        self.assertEqual(r["warnings"], [])
+
+    def test_fallback_port_choice(self):
+        with Ports({"v1.2.2.diff": PORT, "v1.3.0.diff": PORT, "notes.txt": "", "latest.diff": PORT}) as p:
+            e = entry(ports="ports/fix")
+            self.assertEqual(up.fallback_port(e, "v1.2.3", p.path)["port_tag"], "v1.2.2")
+            self.assertEqual(up.fallback_port(e, "v1.4.0", p.path)["port_tag"], "v1.3.0")
+            self.assertIsNone(up.fallback_port(e, "v1.2.2", p.path), "only older releases")
+            self.assertIsNone(up.fallback_port(e, "main", p.path), "not a version")
+            self.assertIsNone(up.fallback_port(entry(), "v1.2.3", p.path), "no ports")
+            # the release's own port is not a fallback
+            self.assertIsNone(up.fallback_port(up.with_port(e, "v1.2.2", p.path), "v1.2.2", p.path))
+
+    def test_warning_printed(self):
+        with Ports({"v1.2.2.diff": PORT}) as p, Checkout(MOVED) as c:
+            patches = os.path.join(p.path, "upstream-patches.yml")
+            with open(patches, "w") as f:
+                f.write("- id: fix\n  repo: up/stream\n  pr: 7\n  head_repo: me/stream\n  base: " + BASE + "\n  sha: " + PINNED +
+                        "\n  component: fxa-mono\n  ports: ports/fix\n  why: w\n  when_released: x\n")
+            old_gh, old_env = up.GitHub, os.environ.get("UPSTREAM_PATCHES_FILE")
+            up.GitHub = lambda: FakeGitHub({("up/stream", 7): pull()})
+            os.environ["UPSTREAM_PATCHES_FILE"] = patches
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(up.main(["apply", "fxa-mono", "v1.2.3", c.path]), 0)
+            finally:
+                up.GitHub = old_gh
+                os.environ.pop("UPSTREAM_PATCHES_FILE") if old_env is None else os.environ.__setitem__("UPSTREAM_PATCHES_FILE", old_env)
+        self.assertRegex(out.getvalue(), r"::warning title=upstream-patches.yml::up/stream#7@ccccccc..aaaaaaa\+v1.2.2 .*add ports/fix/v1.2.3.diff")
+        self.assertIn("label=up/stream#7@ccccccc..aaaaaaa+v1.2.2\n", out.getvalue())
+
     def test_key_follows_label(self):
         gh = FakeGitHub({("up/stream", 7): pull()})
         self.assertNotEqual(up.outputs(run([entry()], gh))["key"], up.outputs(run([], gh))["key"])

@@ -28,8 +28,11 @@ apply to (e.g. code moved between the release and the pull request's base). Buil
 release, the file is applied instead of base...sha (the checks of the pull request and the
 merged/closed decisions are the same); the reference gets +<release-tag>
 (owner/repo#pr@base7..sha7+<release-tag>). Without a file for the release, base...sha as
-always: one that does not apply fails, so a new release needs its port (or the pull request
-rebased) and does not go out without the patch.
+always; with apply, when it neither applies nor is in the sources, the newest port of an
+older release (by version) is tried with git apply --check: applied when it applies, the
+reference names the port used (+<its release-tag>) and a ::warning:: asks for a port of this
+release to be reviewed. When neither applies the build fails, so a new release does not go
+out without the patch. plan does not try it (no sources): its reference stays base...sha.
 
 Outputs (GITHUB_OUTPUT, and printed): applied (space-separated owner/repo#pr@base7..sha7),
 label (applied, or "none"), key (12 hex of label's sha256, for cache keys), obsolete
@@ -145,6 +148,29 @@ def with_port(entry, tag, root):
     return dict(entry, port=path, port_tag=tag)
 
 
+def _version(tag):
+    """v1.347.3 -> (1, 347, 3); None for a tag that is not a version."""
+    m = re.fullmatch(r"v?([0-9]+(?:\.[0-9]+)*)", tag)
+    return tuple(int(n) for n in m.group(1).split(".")) if m else None
+
+
+def fallback_port(entry, tag, root):
+    """For an entry without a port for tag: the newest port of an older release, as with_port
+    would have it for that release (port, port_tag, and fallback: the release built), or None."""
+    if entry.get("port") or not entry.get("ports") or _version(tag) is None:
+        return None
+    directory = os.path.join(root, entry["ports"])
+    if not os.path.isdir(directory):
+        return None
+    older = [(_version(n[:-5]), n[:-5]) for n in os.listdir(directory)
+             if n.endswith(".diff") and os.path.isfile(os.path.join(directory, n))]
+    older = [(v, t) for v, t in older if v is not None and v < _version(tag)]
+    if not older:
+        return None
+    port_tag = max(older)[1]
+    return dict(entry, port=os.path.join(directory, f"{port_tag}.diff"), port_tag=port_tag, fallback=tag)
+
+
 # --- GitHub, through gh (replaced by a fake in the tests) ---
 
 class GitHub:
@@ -212,9 +238,11 @@ def git(checkout, *args, stdin=None):
     return subprocess.run(["git", "-C", checkout, *args], input=stdin, capture_output=True, text=True)
 
 
-def apply_patch(entry, pull, gh, checkout, released=False):
-    """Applies the pinned changes; returns "applied" or "present" (already in the sources).
-    released: the release has the pull request, its changes must be there."""
+def apply_patch(entry, pull, gh, checkout, released=False, tag=None, root=None):
+    """Applies the pinned changes; returns "applied" or "present" (already in the sources), and
+    the entry as applied: with the fallback port (see fallback_port) when that is what applied.
+    released: the release has the pull request, its changes must be there. tag and root: the
+    release built and the directory of the ports, for the fallback port."""
     name = f"{ref(entry)} ({entry['id']})"
     if entry.get("port"):
         with open(entry["port"]) as f:
@@ -237,30 +265,51 @@ def apply_patch(entry, pull, gh, checkout, released=False):
         present = git(checkout, "apply", "--reverse", "--check", path).returncode == 0
         if released:
             if present:
-                return "present"
+                return "present", entry
             raise Fail(f"{name} is merged and in the release, but its changes are not in the sources "
                        f"(changed again since?): remove the entry and do what its when_released says")
         result = git(checkout, "apply", "--check", path)
         if result.returncode == 0:
             result = git(checkout, "apply", path)
             if result.returncode == 0:
-                return "applied"
+                return "applied", entry
         elif present:
-            return "present"
+            return "present", entry
+        fallback = fallback_port(entry, tag, root) if tag and root else None
+        if fallback:
+            status = _apply_fallback(fallback, checkout)
+            if status:
+                return status, fallback
         if entry.get("port"):
             raise Fail(f"{name}: the port {entry['ports']}/{entry['port_tag']}.diff does not apply to the release: "
                        f"{(result.stderr or result.stdout).strip()}\nfix the port, or remove it and the entry")
         hint = (f", or add a port for it ({entry['ports']}/<release-tag>.diff)" if entry.get("ports") else "")
-        raise Fail(f"{name} does not apply to the release: {(result.stderr or result.stdout).strip()}\n"
+        tried = (f"\nnor does the newest port, {entry['ports']}/{fallback['port_tag']}.diff" if fallback else "")
+        raise Fail(f"{name} does not apply to the release: {(result.stderr or result.stdout).strip()}{tried}\n"
                    f"rebase the pull request and pin its new head (and base){hint}, or remove the entry")
     finally:
         os.unlink(path)
 
 
+def _apply_fallback(entry, checkout):
+    """The port of an older release on this one: "applied" or "present" when it applies (or
+    is in the sources) cleanly, None otherwise (nothing changed)."""
+    with open(entry["port"]) as f:
+        if not f.read().strip():
+            return None
+    if git(checkout, "apply", "--check", entry["port"]).returncode == 0:
+        if git(checkout, "apply", entry["port"]).returncode == 0:
+            return "applied"
+        return None
+    if git(checkout, "apply", "--reverse", "--check", entry["port"]).returncode == 0:
+        return "present"
+    return None
+
+
 def run(entries, component, tag, gh, checkout=None, log=print, root=None):
     """The decisions for the entries of component, applied to checkout when given. root: the
     directory the ports are in (that of upstream-patches.yml)."""
-    result = {"applied": [], "obsolete": [], "notices": [], "rows": []}
+    result = {"applied": [], "obsolete": [], "notices": [], "warnings": [], "rows": []}
     root = root or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     chosen = [with_port(e, tag, root) for e in entries if e["component"] == component]
     decisions = []
@@ -278,7 +327,16 @@ def run(entries, component, tag, gh, checkout=None, log=print, root=None):
         raise Fail("\n".join(errors))
     for entry, pull, action, state in decisions:
         if checkout:
-            if apply_patch(entry, pull, gh, checkout, released=(action == "obsolete")) == "present" and action == "apply":
+            status, entry = apply_patch(entry, pull, gh, checkout, released=(action == "obsolete"),
+                                        tag=tag, root=root)
+            if entry.get("fallback"):
+                state = f"{state}, base...sha does not apply: the port of {entry['port_tag']}"
+                if status == "applied":
+                    result["warnings"].append(
+                        f"{ref(entry)} ({entry['id']}): base...sha does not apply to {tag}, the port of "
+                        f"{entry['port_tag']} ({entry['ports']}/{entry['port_tag']}.diff) applied cleanly and was "
+                        f"used: review it on {tag} and add {entry['ports']}/{tag}.diff")
+            if status == "present" and action == "apply":
                 action, state = "obsolete", f"{state}, its changes already in {tag}"
         if action == "apply":
             result["applied"].append(entry)
@@ -312,7 +370,7 @@ def summary(result, component, tag):
         lines.append(f"| [{ref(entry)}]({url}) | {entry['id']} | {state} | {action} |")
     lines.append("")
     lines.append(f"Label {LABEL}: `{outputs(result)['label']}`")
-    for n in result["notices"]:
+    for n in result["warnings"] + result["notices"]:
         lines.append(f"- {n}")
     return "\n".join(lines + [""])
 
@@ -336,6 +394,8 @@ def main(argv):
         for line in str(e).splitlines():
             print(f"::error title=upstream-patches.yml::{line}")
         return 1
+    for n in result["warnings"]:
+        print(f"::warning title=upstream-patches.yml::{n}")
     for n in result["notices"]:
         print(f"::notice title=upstream-patches.yml::{n}")
     out = outputs(result)

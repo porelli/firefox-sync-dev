@@ -38,7 +38,7 @@ A pull request that moves, is rebased or retargeted changes nothing until the en
 `ports` names a directory of this repository with `<release-tag>.diff` files: the same change made by hand for a release that `base...sha` does not apply to, for example when the code moved between that release and the pull request's base.
 
 - Building that release, the file is applied instead, and the label says so: `...@base..sha+<release-tag>`.
-- Any other release gets `base...sha` as always, which fails when it does not apply: a new release needs a port of its own, or the pull request rebased.
+- Any other release gets `base...sha` as always. When that does not apply, the build tries the newest port of an older release with `git apply --check`. If it applies cleanly it is used, the label names that port (`+v1.347.3` on a later release), and the run warns: review the change on the new release and add its port. If neither applies, the build fails: add a port, or rebase the pull request.
 - Review a port like the pull request: the release's code, the same change.
 
 The mysql2 change ([mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554)) has its ports in [upstream-patches/fxa-mysql2/](/upstream-patches/fxa-mysql2).
