@@ -319,7 +319,8 @@ func TestStatsd(t *testing.T) {
 	if m := r.current["syncstorage.token_creation"]; m == nil || m.count != 2 || m.total != 20 {
 		t.Errorf("timer %+v", m)
 	}
-	if len(r.current) != 3 {
+	// and the tokens refused of a datagram of the Sync server's buffer: none
+	if m := r.current[tokensRefusedMetric]; len(r.current) != 4 || m == nil || m.count != 0 {
 		t.Errorf("kept %v", r.current)
 	}
 	// a sender cannot make it keep unlimited names

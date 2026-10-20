@@ -37,19 +37,28 @@ func capturedPackets(t *testing.T) []string {
 }
 
 func TestErrorsOfCapturedPackets(t *testing.T) {
-	r := &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}}
+	now := time.Unix(0, 0)
+	r := &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}, clock: func() time.Time { return now }}
 	for _, p := range capturedPackets(t) {
 		if len(p) > 512 {
 			t.Errorf("a datagram of %d bytes: the Sync server buffers 512", len(p))
 		}
-		r.parseStatsd(p)
+		// the tokenserver's buffer sends from a socket of its own
+		sender := "sync:1"
+		if strings.HasPrefix(p, "syncstorage.tokenserver.") {
+			sender = "sync:2"
+		}
+		now = now.Add(time.Second)
+		r.receive(sender, p)
 	}
+	// the Sync server's next datagram, a minute later: the verifications without their
+	// token by then are refused
+	now = now.Add(time.Minute)
+	r.receive("sync:1", "syncstorage.request.get_collections:0|c")
 	tally := newErrorTally()
 	for name, m := range r.current {
 		tally.add(60000, name, m.count)
 	}
-	// a later minute: the tokens of the minute are all in
-	tally.add(120000, "syncstorage.request.get_collections", 0)
 	got := map[string]ErrorRow{}
 	for _, row := range tally.Rows() {
 		got[row.Metric+"|"+row.Kind] = row
@@ -160,36 +169,6 @@ func TestTokensRefusedPerMinute(t *testing.T) {
 	}
 }
 
-// TestTokensRefusedOfSplitDatagrams: each captured datagram stamped with a minute of
-// its own, the way the recorder sees a quiet server. The verifications at the end of
-// a datagram get their token in the next one: still the four refused, not more
-func TestTokensRefusedOfSplitDatagrams(t *testing.T) {
-	tally := newErrorTally()
-	// what each datagram verified and did not issue, as if refused there
-	perDatagram := int64(0)
-	for i, p := range capturedPackets(t) {
-		r := &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}}
-		r.parseStatsd(p)
-		if v := r.current[tokenVerified]; v != nil {
-			n := v.count
-			if c := r.current[tokenIssued]; c != nil {
-				n -= c.count
-			}
-			perDatagram += max(n, 0)
-		}
-		for name, m := range r.current {
-			tally.add(int64(i+1)*60000, name, m.count)
-		}
-	}
-	tally.add(int64(len(capturedPackets(t))+1)*60000, "syncstorage.request.get_collections", 1)
-	if perDatagram <= 4 {
-		t.Errorf("%d verified and not issued per datagram: no split to test", perDatagram)
-	}
-	if n, _, per := tally.refused(); n != 4 {
-		t.Errorf("%d refused: %v", n, per)
-	}
-}
-
 func TestErrorRateSpike(t *testing.T) {
 	c := errorRateConfig{percent: 10, minErrors: 20}
 	for _, tc := range []struct {
@@ -239,7 +218,7 @@ func TestWatchErrorRate(t *testing.T) {
 	now := time.Now()
 	var rows [][]driver.Value
 	fake := &fakeFxa{answer: func(query string, _ []driver.Value) *fakeRows {
-		if strings.Contains(query, "FROM ffs_metrics WHERE minute >= ?") && strings.Contains(query, "IN ('syncstorage.token_verification', 'syncstorage.token_creation')") && !strings.Contains(query, "token_%") {
+		if strings.Contains(query, "FROM ffs_metrics WHERE minute >= ?") && strings.Contains(query, "IN ('syncstorage.token_verification', 'syncstorage.token_creation', 'ffs.tokens_refused')") && !strings.Contains(query, "token_%") {
 			return metricRows(append([][]driver.Value(nil), rows...), false)
 		}
 		return nil

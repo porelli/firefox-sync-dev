@@ -45,6 +45,12 @@ type Recorder struct {
 	mu       sync.Mutex
 	current  map[string]*metric
 	received time.Time // last statsd packet
+	// the verifications without a token yet, per sender (tokens.go), and the tokens
+	// refused of minutes already written
+	tokens    map[string]*tokenStream
+	refusedAt map[int64]int64
+	// the time (the tests set it)
+	clock func() time.Time
 	// since the start, for Prometheus (counters only grow)
 	cumulative map[string]*metric
 }
@@ -138,15 +144,32 @@ func (r *Recorder) Event(kind, detail string) {
 	}
 }
 
+func (r *Recorder) now() time.Time {
+	if r.clock != nil {
+		return r.clock()
+	}
+	return time.Now()
+}
+
 // parseStatsd adds the lines of a statsd packet: name:value|type[|@rate][|#tags]
-func (r *Recorder) parseStatsd(packet string) {
+func (r *Recorder) parseStatsd(packet string) { r.receive("", packet) }
+
+// receive: a packet of a sender (its address)
+func (r *Recorder) receive(sender, packet string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.received = time.Now()
+	now := r.now()
+	r.received = now
+	tokens := r.tokenStream(sender, now)
+	own := false
 	for _, line := range strings.Split(packet, "\n") {
 		name, rest, ok := strings.Cut(strings.TrimSpace(line), ":")
-		if !ok || !metricName.MatchString(name) {
+		// tokensRefusedMetric is the admin UI's own, never a sender's
+		if !ok || !metricName.MatchString(name) || name == tokensRefusedMetric {
 			continue
+		}
+		if service, _, ok := statsdLabel(name); ok && service == storageService {
+			own = true
 		}
 		fields := strings.Split(rest, "|")
 		if len(fields) < 2 {
@@ -156,6 +179,7 @@ func (r *Recorder) parseStatsd(packet string) {
 		if err != nil {
 			continue
 		}
+		r.tokenLine(tokens, name, now)
 		rate := 1.0
 		for _, f := range fields[2:] {
 			if strings.HasPrefix(f, "@") {
@@ -191,6 +215,13 @@ func (r *Recorder) parseStatsd(packet string) {
 			c.total += value
 		}
 	}
+	// a row every minute the Sync server's own buffer (not the tokenserver's,
+	// syncstorage.tokenserver.) sent something, 0 too: the minutes of the tokens refused
+	// counted here (errorTally.refused)
+	if own {
+		r.currentMetric(tokensRefusedMetric)
+	}
+	r.tokenDatagram(tokens, now)
 }
 
 func (r *Recorder) listen(ctx context.Context, addr string) error {
@@ -205,14 +236,14 @@ func (r *Recorder) listen(ctx context.Context, addr string) error {
 	log.Printf("metrics (statsd) on udp %s", addr)
 	buf := make([]byte, 65535)
 	for {
-		n, _, err := conn.ReadFrom(buf)
+		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
-		r.parseStatsd(string(buf[:n]))
+		r.receive(from.String(), string(buf[:n]))
 	}
 }
 
@@ -237,15 +268,37 @@ func (r *Recorder) run(ctx context.Context) {
 	}
 }
 
-func (r *Recorder) flush() {
+// drain: what to write, the counters of this minute and the tokens refused of minutes
+// written before
+func (r *Recorder) drain() (minute int64, current map[string]*metric, refusedAt map[int64]int64) {
 	r.mu.Lock()
-	current := r.current
-	r.current = map[string]*metric{}
-	r.mu.Unlock()
-	if len(current) == 0 {
+	defer r.mu.Unlock()
+	now := r.now()
+	minute = now.Unix() / 60 * 60 * 1000
+	current, refusedAt = r.current, r.refusedAt
+	r.current, r.refusedAt = map[string]*metric{}, nil
+	r.tokensWritten(minute, now)
+	return minute, current, refusedAt
+}
+
+func (r *Recorder) flush() {
+	minute, current, refusedAt := r.drain()
+	type row struct {
+		minute int64
+		name   string
+		m      metric
+	}
+	rows := make([]row, 0, len(current)+len(refusedAt))
+	for name, m := range current {
+		rows = append(rows, row{minute, name, *m})
+	}
+	// the tokens refused of the minutes their verifications were written in
+	for at, n := range refusedAt {
+		rows = append(rows, row{at, tokensRefusedMetric, metric{count: n}})
+	}
+	if len(rows) == 0 {
 		return
 	}
-	minute := time.Now().Unix() / 60 * 60 * 1000
 	upsert := `INSERT INTO ffs_metrics (minute, name, count, total) VALUES (?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE count = count + VALUES(count), total = total + VALUES(total)`
 	if r.db.postgres {
@@ -254,8 +307,8 @@ func (r *Recorder) flush() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for name, m := range current {
-		if _, err := r.db.mine().ExecContext(ctx, upsert, minute, name, m.count, m.total); err != nil {
+	for _, w := range rows {
+		if _, err := r.db.mine().ExecContext(ctx, upsert, w.minute, w.name, w.m.count, w.m.total); err != nil {
 			log.Printf("metrics: %v", err)
 			return
 		}
@@ -389,6 +442,10 @@ func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Du
 			}
 		}
 		tally.add(minute, name, count)
+		// the admin UI's own: in the errors (the tokens refused), not a statsd metric
+		if name == tokensRefusedMetric {
+			continue
+		}
 		t := totals[name]
 		if t == nil {
 			t = &MetricTotal{Name: name}
