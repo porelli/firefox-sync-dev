@@ -723,7 +723,7 @@ func pages(t *testing.T) map[string]string {
 			"Schema": []SchemaLevel{{Database: "fxa", Level: "201"}}, "Setup": []setupCheck{{Name: "Sync node", Text: "x"}},
 			"Alerts": map[string]any{"To": "admin@example.com", "Status": SendStatus{}, "Waiting": 0}, "TestEmail": true, "Mailer": true,
 			"Notify": []NotifyStatus{{Name: "slack://hooks.slack.com"}},
-			"Backup": map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": false}, "AccountLimit": Limit{Count: 1, Max: 10}, "MaxAccountsEditable": true,
+			"Backup": map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": false, "Accounts": true}, "AccountLimit": Limit{Count: 1, Max: 10}, "MaxAccountsEditable": true,
 			"Invited": []allowRow{{Email: "bob@example.net"}}, "Domains": []string{"@example.com"},
 			"Policy": &SignupPolicy{Mode: "open"}, "Accounts": []accountRow{{UID: fakeUID, Email: fakeEmail}, {UID: "ff" + fakeUID[2:], Email: "bob@example.com", Disabled: true}},
 			"UnconfirmedCount": 1, "PruneLastRan": time.Now(), "Pages": pager{Page: 1, Pages: 2, Total: 60, From: 1, To: 50, Next: "/?page=2#accounts"},

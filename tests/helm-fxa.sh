@@ -1389,7 +1389,18 @@ PY
       || fail "the backups with your own accounts server: $(kubectl get cronjob "${FULL}-backup" -o json | jq -c '.spec.jobTemplate.spec.template.spec | [(.initContainers // [])[].name, .containers[].name]')"
     kubectl logs job/backup-now-1 -c backup | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now-1: Sync not dumped: $(kubectl logs job/backup-now-1 -c backup)"
     kubectl delete job backup-now-1 --wait=true > /dev/null
-    check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: the Sync scope alone with your own accounts server (no backup-accounts), complete"
+    # (and the admin UI's Backups card says so: FXA_DB_HOST not the chart's fxa-db)
+    fxa_client_pod backups-card
+    got=$(fxa_py backups-card <<'PY'
+import re
+import test_fxa_admin as t
+card = t.Admin().page().split('id="backups-card"')[1].split("</section>")[0]
+print(" ".join(w for w in ("the Sync scope alone", "both scopes", "accounts/&lt;UTC time&gt;", "Not the accounts databases") if w in card))
+PY
+) || fail "the admin UI's Backups card: ${got}"
+    kubectl delete pod backups-card --wait=true > /dev/null
+    [[ "${got}" == "the Sync scope alone Not the accounts databases" ]] || fail "the admin UI's Backups card with your own accounts server says: ${got}"
+    check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: the Sync scope alone with your own accounts server (no backup-accounts), complete; the admin UI's Backups card says the Sync scope alone"
   else
     got=$(kubectl logs job/backup-now-1 -c backup-accounts)
     [[ "${got}" =~ backup\ accounts:\ ok:\ /backups/accounts/([0-9]{8}T[0-9]{6}Z), ]] || fail "backup-now-1: the accounts not dumped: ${got}"

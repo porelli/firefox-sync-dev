@@ -615,9 +615,11 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, s *session) {
 
 	in := attentionInput{now: now, components: components, certs: certs, status: status, backups: backups, fxa: a.fxa != nil,
 		staleDays: a.staleDays, alerts: alerts, accountLimit: accountLimit, deployment: a.deployment}
-	// what the backup service does, for its help (the admin UI cannot see the volume)
+	// what the backup service does, for its help (the admin UI cannot see the volume); the
+	// accounts' scope only on their database of the stack (accountsBackedUp)
 	data["Backup"] = map[string]any{"Time": a.backupTime, "Local": localClock(a.backupTime, now, adminZone), "Keep": a.backupKeep,
-		"Quadlets": a.deployment.Quadlets(), "Kubernetes": a.deployment.Kubernetes()}
+		"Quadlets": a.deployment.Quadlets(), "Kubernetes": a.deployment.Kubernetes(),
+		"Accounts": a.fxa != nil && a.deployment.accountsBackedUp(env("FXA_DB_HOST", "fxa-db"))}
 	var pages pager
 	if a.fxa != nil {
 		if policy, err := a.fxa.Policy(ctx); err != nil {
