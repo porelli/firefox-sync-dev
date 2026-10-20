@@ -1393,8 +1393,8 @@ count() {
     return
   fi
   case "${BACKEND}" in
-    mariadb) kubectl exec "$1" -c db -- sh -c 'mariadb -N -u"${MARIADB_USER}" -p"${MARIADB_PASSWORD}" "${MARIADB_DATABASE}" -e "SELECT COUNT(*) FROM $1"' sh "$2" ;;
-    mysql) kubectl exec "$1" -c db -- sh -c 'mysql -N -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e "SELECT COUNT(*) FROM $1" 2> /dev/null' sh "$2" ;;
+    mariadb) kubectl exec "$1" -c db -- sh -c 'MYSQL_PWD="${MARIADB_PASSWORD}" mariadb -N -u"${MARIADB_USER}" "${MARIADB_DATABASE}" -e "SELECT COUNT(*) FROM $1"' sh "$2" ;;
+    mysql) kubectl exec "$1" -c db -- sh -c 'MYSQL_PWD="${MYSQL_PASSWORD}" mysql -N -u"${MYSQL_USER}" "${MYSQL_DATABASE}" -e "SELECT COUNT(*) FROM $1" 2> /dev/null' sh "$2" ;;
     postgres) kubectl exec "$1" -c db -- env PGPASSWORD="$(secret POSTGRES_SYNC_PASSWORD)" \
       psql -X -tA -v ON_ERROR_STOP=1 -h 127.0.0.1 -U syncserver_app -d syncserver -c "SELECT COUNT(*) FROM $2" ;;
   esac
@@ -1422,8 +1422,8 @@ sql() {
     return
   fi
   case "${BACKEND}" in
-    mariadb) kubectl exec "${FULL}-tokenserver-db-0" -- sh -c 'mariadb -u"${MARIADB_USER}" -p"${MARIADB_PASSWORD}" "${MARIADB_DATABASE}" -e "$1"' sh "$1" ;;
-    mysql) kubectl exec "${FULL}-tokenserver-db-0" -- sh -c 'mysql -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${MYSQL_DATABASE}" -e "$1"' sh "$1" ;;
+    mariadb) kubectl exec "${FULL}-tokenserver-db-0" -- sh -c 'MYSQL_PWD="${MARIADB_PASSWORD}" mariadb -u"${MARIADB_USER}" "${MARIADB_DATABASE}" -e "$1"' sh "$1" ;;
+    mysql) kubectl exec "${FULL}-tokenserver-db-0" -- sh -c 'MYSQL_PWD="${MYSQL_PASSWORD}" mysql -u"${MYSQL_USER}" "${MYSQL_DATABASE}" -e "$1"' sh "$1" ;;
     # as the Sync server's own role: no superuser session on the tables it owns
     postgres) kubectl exec "${FULL}-postgres-0" -- env PGPASSWORD="$(secret POSTGRES_SYNC_PASSWORD)" \
       psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U syncserver_app -d syncserver -c "$1" "${@:2}" ;;
@@ -1468,11 +1468,12 @@ database_users() {
     local client=mariadb
     [[ "${BACKEND}" == mysql ]] && client=mysql
     for db in tokenserver storage; do
-      kubectl exec "${FULL}-${db}-db-0" -- "${client}" -h 127.0.0.1 -u ffs_admin_sync -p"$(secret ADMIN_DB_PASSWORD)" \
-        -e 'SELECT 1' > /dev/null || fail "ffs_admin_sync cannot log in to ${db}-db"
+      # (the password on the input, not on kubectl's command line)
+      kubectl exec -i "${FULL}-${db}-db-0" -- sh -c 'MYSQL_PWD=$(cat) "$0" -h 127.0.0.1 -u ffs_admin_sync -e "SELECT 1"' "${client}" \
+        <<< "$(secret ADMIN_DB_PASSWORD)" > /dev/null || fail "ffs_admin_sync cannot log in to ${db}-db"
     done
-    kubectl exec "${FULL}-tokenserver-db-0" -- "${client}" -h 127.0.0.1 -u ffs_admin_ui -p"$(secret ADMIN_DB_PASSWORD)" \
-      ffs_admin -e 'SELECT 1' > /dev/null || fail "ffs_admin_ui cannot reach ffs_admin"
+    kubectl exec -i "${FULL}-tokenserver-db-0" -- sh -c 'MYSQL_PWD=$(cat) "$0" -h 127.0.0.1 -u ffs_admin_ui ffs_admin -e "SELECT 1"' "${client}" \
+      <<< "$(secret ADMIN_DB_PASSWORD)" > /dev/null || fail "ffs_admin_ui cannot reach ffs_admin"
     check "admin-user.sh created ffs_admin_ui (ffs_admin) and ffs_admin_sync (both databases)"
   fi
 }
@@ -1567,7 +1568,7 @@ extdb_server() {
   if [[ "${BACKEND}" == mysql ]]; then
     # binary logging on (MySQL's default): the trigger needs log_bin_trust_function_creators
     image=mysql:lts port=3306 data=/var/lib/mysql env=MYSQL_ROOT_PASSWORD args='["--log-bin-trust-function-creators=ON"]'
-    probe='mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent'
+    probe='MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot --silent'
   else
     image=postgres:latest port=5432 data=/var/lib/postgresql env=POSTGRES_PASSWORD args='[]'
     probe='pg_isready -h 127.0.0.1 -U postgres'

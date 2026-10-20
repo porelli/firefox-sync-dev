@@ -579,7 +579,7 @@ fxa_objects_lint() {
     | .spec.volumeClaimTemplates[0].metadata.name as $claim | .spec.template.spec.containers[0]
     | {image, args, env: [.env[] | {(.name): (.value // .valueFrom.secretKeyRef.key)}] | add, probe: .startupProbe.exec.command, mount: .volumeMounts[0], $claim}'; }
   # shellcheck disable=SC2016 # (compose's $$, literally)
-  [[ "$(fxa_db_spec)" == '{"args":["mysqld","--event-scheduler=ON"],"claim":"data","env":{"MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mysql:lts","mount":{"mountPath":"/var/lib/mysql","name":"data","subPath":"data"},"probe":["sh","-c","mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]}' ]] \
+  [[ "$(fxa_db_spec)" == '{"args":["mysqld","--event-scheduler=ON"],"claim":"data","env":{"MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mysql:lts","mount":{"mountPath":"/var/lib/mysql","name":"data","subPath":"data"},"probe":["sh","-c","MYSQL_PWD=${MYSQL_ROOT_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot --silent"]}' ]] \
     || fail "fxa-db (mysql): $(fxa_db_spec)"
   # compose's FXA_MYSQL_ARGS: mysql_native_password on a MySQL 8 pin alone (an accounts image
   # without mozilla/fxa#21554), after --event-scheduler=ON as in compose's command; the
@@ -801,8 +801,11 @@ fxa_base_parity() {
   fi
   [[ "$(sed -n 's/^version: //p' "${base_dir}/Chart.yaml")" == 0.1.0 ]] || fail "${base_dir}: not chart 0.1.0"
   # (the Secret's data masked: its generated values differ on every render, and so does the
-  # admin UI's checksum/admin-secrets, the sha256 of that data; its keys are compared)
-  mask='walk(if type == "object" then
+  # admin UI's checksum/admin-secrets, the sha256 of that data; its keys are compared. The
+  # MySQL probes too: since 0.1.0 their password is in mysqladmin's environment, not its
+  # arguments, as compose's healthchecks)
+  mask='walk(if type == "string" and test("^MYSQL_PWD=[$][{]MYSQL_PASSWORD[}] mysqladmin ping |^mysqladmin ping .* -p\"[$][{]MYSQL_PASSWORD[}]\" ") then "mysqladmin ping (masked)"
+    elif type == "object" then
       (if has("helm.sh/chart") then .["helm.sh/chart"] = "masked" else . end)
       | (if has("checksum/admin-secrets") then .["checksum/admin-secrets"] = "masked" else . end)
       | (if .name? == "ADMIN_K8S_CHART_VERSION" and has("value") then .value = "masked" else . end)
@@ -870,9 +873,11 @@ fxa_e2e() {
     db_image=${given}
   else
     docker image inspect "${fxa_image}" > /dev/null 2>&1 || docker pull -q "${fxa_image}" > /dev/null || fail "${fxa_image} not pulled"
-    if [[ " $(docker image inspect -f '{{index .Config.Labels "org.firefox-sync.upstream-patches"}}' "${fxa_image}") " != *" mozilla/fxa#${pr}@"* ]]; then
+    # shellcheck source=tests/fxa_fix.sh
+    source "${REPO_ROOT}/tests/fxa_fix.sh"
+    if ! fxa_image_fixed "mozilla/fxa#${pr}" "${fxa_image}"; then
       db_image=${fallback}
-      echo "== ${fxa_image} without mozilla/fxa#${pr} (label org.firefox-sync.upstream-patches): the accounts on ${db_image}"
+      echo "== ${fxa_image} without mozilla/fxa#${pr} (its labels, config/fxa/fixed-in): the accounts on ${db_image}"
     fi
   fi
   db_args=(--set fxa.database.image."${backend}"="${db_image}")

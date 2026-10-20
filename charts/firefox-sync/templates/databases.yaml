@@ -141,7 +141,8 @@ spec:
               value: {{ $dbUser | quote }}
             {{- include "firefox-sync.secretEnv" (dict "root" $root "name" "MYSQL_PASSWORD" "key" $passwordKey) | nindent 12 }}
             {{- include "firefox-sync.adminUserEnv" (dict "root" $root "role" $role) | nindent 12 }}
-          {{- $check = list "sh" "-c" "mysqladmin ping -h 127.0.0.1 --protocol=tcp -u\"${MYSQL_USER}\" -p\"${MYSQL_PASSWORD}\" --silent" }}
+          {{- /* the password in mysqladmin's environment, not in its arguments (ps on the node) */}}
+          {{- $check = list "sh" "-c" "MYSQL_PWD=${MYSQL_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -u\"${MYSQL_USER}\" --silent" }}
           {{- else }}
           env:
             - name: POSTGRES_DB

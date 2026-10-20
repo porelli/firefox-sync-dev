@@ -81,11 +81,11 @@ fi
 # by default; syncstorage-rs itself connects without TLS (docs/databases.md#server-requirements)
 TLS_ARGS=()
 [ "${MARIADB_TLS_VERIFY:-true}" = false ] && TLS_ARGS=(--skip-ssl-verify-server-cert)
+# (the password in the client's environment, not in its arguments, which ps shows on the host)
 db() {
-  mariadb --host="${MARIADB_SERVER}" \
+  MYSQL_PWD="${MARIADB_PASSWORD}" mariadb --host="${MARIADB_SERVER}" \
           --port="${MARIADB_SERVER_PORT}" \
           --user="${MARIADB_USER}" \
-          --password="${MARIADB_PASSWORD}" \
           "${TLS_ARGS[@]}" \
           "$@"
 }

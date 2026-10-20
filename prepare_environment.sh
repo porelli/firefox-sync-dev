@@ -20,29 +20,84 @@ detect_runtime() {
 }
 
 CONTAINER_RUNTIME=$(detect_runtime)
+# the checkout of this script (config/fxa/fixed-in), whatever directory the setup writes into
+SELF_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 generate_random_string() {
   local length="${1}"
   tr -dc '[:alnum:]' < /dev/urandom | head -c "${length}"
 }
 
+# The temporary files that hold passwords (sed scripts, the .env being written, the units
+# rendered aside) are removed at the exit, also on Ctrl-C (INT) and TERM: those of a subshell
+# are in FFS_TMP, a directory of this user only (mktemp -d) that the main shell removes, the
+# others listed with ffs_temp. The traps run after those set before (chained, not replaced)
+FFS_TMP="" FFS_TEMPS=()
+ffs_cleanup() {
+    local f
+    for f in ${FFS_TEMPS[@]+"${FFS_TEMPS[@]}"}; do rm -rf -- "${f}"; done
+    FFS_TEMPS=()
+    [ -n "${FFS_TMP}" ] && rm -rf -- "${FFS_TMP}"
+    FFS_TMP=""
+}
+ffs_traps() {
+    local sig before end main=yes
+    # in a subshell the traps of the main shell are not set (trap -p still shows them): not
+    # chained there (bash 3.2 has no BASHPID: the parent of a command of this shell)
+    [ "$(exec sh -c 'echo "${PPID}"')" = "$$" ] || main=""
+    for sig in EXIT INT TERM; do
+        # (trap -p prints the trap as a command, quoted: its third word is the action)
+        before=""
+        [ -n "${main}" ] && { eval "set -- $(trap -p "${sig}")"; before=${3:-}; }
+        case "${sig}" in INT) end="exit 130" ;; TERM) end="exit 143" ;; *) end="" ;; esac
+        # shellcheck disable=SC2064 # (the action of before, as it is now)
+        trap "ffs_cleanup${before:+; ${before}}${end:+; ${end}}" "${sig}"
+    done
+}
+# ffs_temp <path>: removed at the exit
+ffs_temp() { FFS_TEMPS+=("${1}"); }
+# FFS_TMP and the traps, once, in the main shell (run: at the start; sourced: at the first need)
+ffs_temp_init() {
+    [ -n "${FFS_TMP}" ] && [ -d "${FFS_TMP}" ] && return 0
+    FFS_TMP=$(mktemp -d "${TMPDIR:-/tmp}/ffs.XXXXXX") || return 1
+    ffs_traps
+}
+# (run, not sourced: return outside a function fails)
+(return 0 2> /dev/null) || { ffs_temp_init || exit 1; }
+
+# sed_script <script> <sed arguments...>: sed with its script in a file of this user only
+# (in FFS_TMP; mktemp: 0600), never on the command line: the values of .env in it (passwords,
+# secrets) would be in the arguments any user sees with ps while it runs
+sed_script() {
+    local script rc
+    ffs_temp_init || return 1
+    script=$(mktemp "${FFS_TMP}/sed.XXXXXX") || return 1
+    printf '%s\n' "${1}" > "${script}" || { rm -f "${script}"; return 1; }
+    shift
+    sed -f "${script}" "$@"
+    rc=$?
+    rm -f "${script}"
+    return "${rc}"
+}
+
 apply_sed() {
     local file=${1}
     shift
-    local expression=${@}
+    local expression=${*}
 
     if [[ "${OSTYPE}" == "darwin"* ]]; then
         # macOS: BSD sed requires an empty string with -i option
-        sed -i '' "${expression}" "${file}"
+        sed_script "${expression}" -i '' "${file}"
     else
         # Linux and other Unix-like systems: GNU sed does not require anything after -i
-        sed -i "${expression}" "${file}"
+        sed_script "${expression}" -i "${file}"
     fi
 }
 
 # escape a value for the replacement part of `sed s|...|...|`
 sed_escape() {
-    printf '%s' "${1}" | sed -e 's/[\\/&|]/\\&/g'
+    # (a line break: \ at the end of each line but the last)
+    printf '%s' "${1}" | sed -e 's/[\\/&|]/\\&/g' -e '$!s/$/\\/'
 }
 
 # The Sync server's settings, renamed to the SYNC_ prefix (docs/upgrading.md#renamed-settings):
@@ -95,21 +150,55 @@ ENV_LEAD='[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}'
 env_file_read() { printf '%s' "${ENV_READ:-${SCRIPT_DIR}/.env}"; }
 env_line() { grep "^${ENV_LEAD}${1}=" "$(env_file_read)" | sed -e "s/^[^=]*=//" | tr -d '\r'; }
 env_has() { grep -q "^${ENV_LEAD}${1}=" "$(env_file_read)"; }
-# the value as compose reads it: the last line; quoted, what is between the quotes (a
-# comment after them dropped), otherwise without a comment ( # ...) and the spaces around
+# the value as compose reads it (its dotenv parser), from the last line:
+# - in single quotes: what is between them as written, but \' for a quote;
+# - in double quotes: up to the first quote without a backslash, with the escapes \" \\ \n
+#   \r \t (\a \b \f \v), \$ and $$ for a $; another backslash stays as it is;
+# - otherwise: without a comment (" #..."), the spaces around, and $$ for a $.
+# A comment after the quotes is dropped. Not as compose: ${NAME} and $NAME are not replaced
+# with other values, and a quoted value goes on to the end of its line only
 env_plain() {
-    local v q
+    local v q c out="" i=1 esc=""
     v=$(env_line "${1}" | tail -n 1)
     v=${v#"${v%%[![:space:]]*}"}
     case "${v}" in
         \'*|\"*)
-            q=${v:0:1} v=${v:1}
-            case "${v}" in *"${q}"*) v=${v%%"${q}"*} ;; esac ;;
+            q=${v:0:1}
+            while [ "${i}" -lt "${#v}" ]; do
+                c=${v:i:1} i=$((i + 1))
+                if [ -n "${esc}" ]; then
+                    esc=""
+                    if [ "${c}" = "${q}" ]; then
+                        out=${out}${c}
+                    elif [ "${q}" = '"' ]; then
+                        case "${c}" in
+                            n) out=${out}$'\n' ;; r) out=${out}$'\r' ;; t) out=${out}$'\t' ;;
+                            a) out=${out}$'\a' ;; b) out=${out}$'\b' ;; f) out=${out}$'\f' ;; v) out=${out}$'\v' ;;
+                            \\|\$) out=${out}${c} ;;
+                            *) out=${out}\\${c} ;;
+                        esac
+                    else
+                        out=${out}\\${c}
+                    fi
+                elif [ "${c}" = \\ ]; then
+                    esc=yes
+                elif [ "${c}" = "${q}" ]; then
+                    printf '%s' "${out}"
+                    return
+                elif [ "${q}" = '"' ] && [ "${c}" = \$ ] && [ "${v:i:1}" = \$ ]; then
+                    out=${out}\$ i=$((i + 1))
+                else
+                    out=${out}${c}
+                fi
+            done
+            # no closing quote (compose refuses the file): the rest of the line
+            printf '%s' "${out}${esc:+\\}" ;;
         *)
-            v=$(printf '%s' "${v}" | sed -e 's/[[:space:]]#.*$//')
-            v=${v%"${v##*[![:space:]]}"} ;;
+            v=${v%% #*}
+            v=${v%"${v##*[![:space:]]}"}
+            while [[ "${v}" == *'$$'* ]]; do out=${out}${v%%'$$'*}\$ v=${v#*'$$'}; done
+            printf '%s' "${out}${v}" ;;
     esac
-    printf '%s' "${v}"
 }
 # env_plain, with the old name of a renamed setting when the new one has no value
 env_value() {
@@ -119,6 +208,8 @@ env_value() {
     [ -z "${value}" ] && [ -n "${old}" ] && value=$(env_plain "${old}")
     printf '%s\n' "${value}"
 }
+# a value for double quotes in .env, read back as it is (env_plain, compose): \ " and $ escaped
+env_dq() { printf '%s' "${1}" | sed -e 's/[\\"$]/\\&/g'; }
 # a backup name that is not taken: <path>-<UTC time>, -2, -3... after it within a second
 backup_name() {
     local base n=2
@@ -129,15 +220,50 @@ backup_name() {
 }
 # a copy of an .env (passwords): this user only, whatever the mode of the original
 private_copy() { rm -f "${2}" && (umask 077; cp "${1}" "${2}"); }
+# the file a path names, its symlinks followed (readlink without -f: macOS before 12.3 has none)
+resolve_path() {
+    local path=${1} link n=0
+    while [ -L "${path}" ] && [ "${n}" -lt 40 ]; do
+        link=$(readlink "${path}") || break
+        case "${link}" in /*) path=${link} ;; *) path=$(dirname "${path}")/${link} ;; esac
+        n=$((n + 1))
+    done
+    printf '%s' "${path}"
+}
+# private_temp <path> <variable>: a new file of this user only (0600) next to path, named
+# after it (mktemp: a name nobody could have put a symlink at), in the variable; removed at
+# the exit unless moved (in this shell: not in a $(...))
+private_temp() {
+    local ffs_new
+    ffs_new=$(mktemp "$(dirname "${1}")/.$(basename "${1}").XXXXXX") || return 1
+    ffs_temp "${ffs_new}"
+    printf -v "${2}" '%s' "${ffs_new}"
+}
+# replace_env <new> <.env>: the new file (this user only) in place of .env. A symlink stays one:
+# its target is replaced, by a rename in the target's own directory, else (that directory not
+# writable) by writing the content into it; 0600 in both cases
+replace_env() {
+    local new=${1} dest=${2} target tmp
+    target=$(resolve_path "${dest}")
+    [ "${target}" = "${dest}" ] && { mv "${new}" "${dest}"; return; }
+    tmp=""
+    if private_temp "${target}" tmp 2> /dev/null && cat "${new}" > "${tmp}" && chmod 600 "${tmp}" && mv "${tmp}" "${target}"; then
+        rm -f "${new}"
+        return 0
+    fi
+    [ -n "${tmp}" ] && rm -f "${tmp}"
+    (umask 077; cat "${new}" > "${target}") && chmod 600 "${target}" && rm -f "${new}"
+}
 # the SQL for your own database server, with the names and passwords of .env (docs/databases.md#create-the-databases-and-users)
 render_sql() {
-    local template=${1} out=${2} pair expressions=()
+    local template=${1} out=${2} pair script=""
     shift 2
     for pair in "$@"; do
-        expressions+=(-e "s|@${pair%%=*}@|$(sed_escape "${pair#*=}")|g")
+        script="${script}s|@${pair%%=*}@|$(sed_escape "${pair#*=}")|g
+"
     done
     rm -f "${out}"
-    (umask 077; sed "${expressions[@]}" "${template}" > "${out}")
+    (umask 077; sed_script "${script}" "${template}" > "${out}")
 }
 # database-setup.sql of the Sync databases and the admin UI's (postgres, or mariadb and mysql)
 render_sync_sql() {
@@ -159,64 +285,120 @@ render_sync_sql() {
 # Accounts images and the upstream pull requests of upstream-patches.yml they need: MariaDB 12
 # and later (FXA_MARIADB_IMAGE=mariadb:lts, the default) need mozilla/fxa#21494, MySQL 9
 # (FXA_MYSQL_IMAGE=mysql:lts, the default) and MySQL without mysql_native_password need
-# mozilla/fxa#21554 (the mysql2 driver). Ours list what they have in their label
-# org.firefox-sync.upstream-patches, Mozilla's (docker.io/mozilla/fxa-mono) and ours built
-# before don't have them. The local image first (what starts), then the registry (docker buildx
-# imagetools or skopeo). Here and not in the admin UI, which cannot inspect images
-image_label() { grep -o '"org\.firefox-sync\.upstream-patches": *"[^"]*"' | head -n 1 | sed 's/.*: *"//; s/"$//'; }
-fxa_image_patches_local() {
+# mozilla/fxa#21554 (the mysql2 driver). An image has one when its label
+# org.firefox-sync.upstream-patches lists it (ours, while Mozilla has not released it), or when
+# it is of the release that has it or a later one (config/fxa/fixed-in, once Mozilla released
+# it: every image then, Mozilla's too; its release from the label org.opencontainers.image.version,
+# else from the tag). Mozilla's (docker.io/mozilla/fxa-mono) and ours built before have no
+# label. The local image first (what starts), then the registry (docker buildx imagetools or
+# skopeo). Here and not in the admin UI, which cannot inspect images
+# a label of the JSON of an image (docker or podman inspect, buildx imagetools, skopeo)
+json_label() { grep -o "\"${1//./\\.}\": *\"[^\"]*\"" | head -n 1 | sed 's/.*: *"//; s/"$//'; }
+fxa_image_inspect_local() {
     local image=${1} runtime out runtimes="docker podman"
     # the store of what runs the units: Podman's for the Quadlets (also on a host with Docker)
     [ "${DEPLOY_METHOD:-}" = quadlets ] && runtimes=podman
     for runtime in ${runtimes}; do
         command -v "${runtime}" > /dev/null 2>&1 || continue
-        out=$(${runtime} image inspect "${image}" 2> /dev/null) && { printf '%s' "${out}" | image_label; return 0; }
+        out=$(${runtime} image inspect "${image}" 2> /dev/null) && { printf '%s' "${out}"; return 0; }
     done
     return 1
 }
-fxa_image_patches_remote() {
+fxa_image_inspect_remote() {
     local image=${1} out
     out=$(docker buildx imagetools inspect "${image}" --format '{{json .Image}}' 2> /dev/null) \
         || out=$(skopeo inspect "docker://${image}" 2> /dev/null) || return 1
-    printf '%s' "${out}" | image_label
+    printf '%s' "${out}"
 }
 # has_fxa_patch <pull request> <label>: e.g. mozilla/fxa#21494 in "mozilla/fxa#21494@517651a..aa0b178 ..."
 has_fxa_patch() { case " ${2} " in *" ${1}@"*) return 0 ;; esac; return 1; }
+# fxa_fixed_in <pull request>: the first accounts release with it, once Mozilla released it
+# (config/fxa/fixed-in of this checkout), nothing before
+fxa_fixed_in() {
+    local pr release rest file=${SELF_DIR}/config/fxa/fixed-in
+    [ -f "${file}" ] || return 0
+    while read -r pr release rest || [ -n "${pr}" ]; do
+        [ "${pr}" = "${1}" ] && { printf '%s' "${release}"; return 0; }
+    done < "${file}"
+    return 0
+}
+# fxa_release <version or tag>: the release, 1.347.3 of v1.347.3, fxa-mono-v1.347.3 or
+# 1.347.3; nothing for another tag (fxa-mono-latest, a digest...)
+fxa_release() {
+    local v=${1#fxa-mono-}
+    v=${v#v}
+    [[ "${v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s' "${v}"
+    return 0
+}
+# version_at_least <a> <b>: release a is b or later, part by part (1.350.0 after 1.347.10)
+version_at_least() {
+    local a=${1} b=${2} x y
+    while [ -n "${a}${b}" ]; do
+        x=${a%%.*} y=${b%%.*}
+        x=$((10#${x:-0})) y=$((10#${y:-0}))
+        [ "${x}" -gt "${y}" ] && return 0
+        [ "${x}" -lt "${y}" ] && return 1
+        [[ "${a}" == *.* ]] && a=${a#*.} || a=""
+        [[ "${b}" == *.* ]] && b=${b#*.} || b=""
+    done
+    return 0
+}
+# fxa_has_fix <pull request> <patches label> <version label> <tag>: whether an accounts
+# image with these has it: 0 yes, 1 no, 2 not known (released, but the image's release is not)
+fxa_has_fix() {
+    local fixed release
+    has_fxa_patch "${1}" "${2}" && return 0
+    fixed=$(fxa_release "$(fxa_fixed_in "${1}")")
+    [ -n "${fixed}" ] || return 1
+    release=$(fxa_release "${3}")
+    [ -n "${release}" ] || release=$(fxa_release "${4}")
+    [ -n "${release}" ] || return 2
+    version_at_least "${release}" "${fixed}"
+}
+# the same for the JSON of an image <pull request> <json> <tag>
+fxa_inspected_has() {
+    fxa_has_fix "${1}" "$(printf '%s' "${2}" | json_label org.firefox-sync.upstream-patches)" \
+        "$(printf '%s' "${2}" | json_label org.opencontainers.image.version)" "${3}"
+}
 # fxa_image_has <pull request>: whether the accounts image of .env (FXA_IMAGE:FXA_VERSION) has
 # it: 0 yes, 1 no, 2 not known (no local copy and no answer of the registry). An older local
 # copy without it while the registry's has it: yes, and FXA_IMAGE_PULL=yes (pull before starting).
 # Asked once per image and pull request (FXA_IMAGE_ANSWERS)
 FXA_IMAGE_ANSWERS=""
 fxa_image_has() {
-    local pr=${1} image patches remote rc answer
-    image=$(env_value FXA_IMAGE):$(env_value FXA_VERSION)
+    local pr=${1} image tag info remote rc answer
+    tag=$(env_value FXA_VERSION)
+    image=$(env_value FXA_IMAGE):${tag}
     for answer in ${FXA_IMAGE_ANSWERS}; do
         [ "${answer%=*}" = "${image}|${pr}" ] || continue
         rc=${answer##*=}; FXA_IMAGE_PULL=${rc#?}; return "${rc%"${FXA_IMAGE_PULL}"}"
     done
     FXA_IMAGE_PULL=""
     case "${image}" in
-        mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*) rc=1 ;;
-        *)
-            # Quadlets of another architecture (--arch): the units pull the registry's at every
-            # start, so that one is what runs
-            if [ "${DEPLOY_METHOD:-}" = quadlets ] && [ -n "$(env_plain FXA_ARCH)" ] && [ "$(env_plain FXA_ARCH)" != "$(host_arch)" ] \
-                && patches=$(fxa_image_patches_remote "${image}"); then
-                has_fxa_patch "${pr}" "${patches}" && rc=0 || rc=1
-            elif patches=$(fxa_image_patches_local "${image}"); then
-                rc=1
-                if has_fxa_patch "${pr}" "${patches}"; then
-                    rc=0
-                # an older local copy: the registry's may have it, then a pull is enough
-                elif remote=$(fxa_image_patches_remote "${image}") && has_fxa_patch "${pr}" "${remote}"; then
-                    rc=0 FXA_IMAGE_PULL=yes
-                fi
-            elif patches=$(fxa_image_patches_remote "${image}"); then
-                has_fxa_patch "${pr}" "${patches}" && rc=0 || rc=1
-            else
-                rc=2
-            fi ;;
+        # Mozilla's: without the label, until the release that has it
+        mozilla/fxa-mono:*|docker.io/mozilla/fxa-mono:*|index.docker.io/mozilla/fxa-mono:*)
+            [ -n "$(fxa_fixed_in "${pr}")" ] || rc=1 ;;
     esac
+    if [ -n "${rc}" ]; then
+        :
+    # Quadlets of another architecture (--arch): the units pull the registry's at every
+    # start, so that one is what runs
+    elif [ "${DEPLOY_METHOD:-}" = quadlets ] && [ -n "$(env_plain FXA_ARCH)" ] && [ "$(env_plain FXA_ARCH)" != "$(host_arch)" ] \
+        && info=$(fxa_image_inspect_remote "${image}"); then
+        fxa_inspected_has "${pr}" "${info}" "${tag}"; rc=$?
+    elif info=$(fxa_image_inspect_local "${image}"); then
+        fxa_inspected_has "${pr}" "${info}" "${tag}"; rc=$?
+        # an older local copy: the registry's may have it, then a pull is enough
+        if [ "${rc}" != 0 ] && remote=$(fxa_image_inspect_remote "${image}") && fxa_inspected_has "${pr}" "${remote}" "${tag}"; then
+            rc=0 FXA_IMAGE_PULL=yes
+        fi
+    elif info=$(fxa_image_inspect_remote "${image}"); then
+        fxa_inspected_has "${pr}" "${info}" "${tag}"; rc=$?
+    else
+        # nothing to read: once released, the release of its tag says it; else not known
+        fxa_has_fix "${pr}" "" "" "${tag}"; rc=$?
+        [ "${rc}" = 1 ] && { [ -z "$(fxa_fixed_in "${pr}")" ] || [ -z "$(fxa_release "${tag}")" ]; } && rc=2
+    fi
     FXA_IMAGE_ANSWERS="${FXA_IMAGE_ANSWERS} ${image}|${pr}=${rc}${FXA_IMAGE_PULL}"
     return "${rc}"
 }
@@ -425,6 +607,24 @@ units_of_here() {
     dir=$(units_dir)
     [ -n "${dir}" ] && [ "$(canonical_dir "${dir}")" = "$(canonical_dir "${SCRIPT_DIR}")" ]
 }
+# units of this project that name no checkout: those of an earlier release, before the
+# units mounted files of it (the releases before the backups, firefox-sync's main branch).
+# Ours: the Sync server's unit runs the container firefox-sync-syncstorage of a syncstorage-rs image
+units_without_dir() {
+    local unit=${QUADLET_DIR}/firefox-sync-syncstorage.container
+    units_installed && [ -z "$(units_dir)" ] && grep -qx 'ContainerName=firefox-sync-syncstorage' "${unit}" \
+        && grep -q '^Image=.*syncstorage-rs' "${unit}"
+}
+# whether the installed Sync server's unit has the SYNC_MASTER_SECRET of .env, as a unit
+# rendered from it has (compared here, not on a command line; systemd's %% for a %)
+units_have_env_secret() {
+    local unit env
+    env=$(env_value SYNC_MASTER_SECRET)
+    unit=$(sed -n 's/^Environment=\("\{0,1\}\)SYNC_MASTER_SECRET=/\1/p' "${QUADLET_DIR}/firefox-sync-syncstorage.container" | head -n 1)
+    case "${unit}" in \"*\") unit=${unit:1:${#unit}-2} ;; esac
+    [ -n "${env}" ] && [[ "${env}" != *"<REPLACE_WITH_"* ]] || return 1
+    [ "${unit}" = "${env}" ] || [ "${unit}" = "${env//\%/%%}" ]
+}
 
 # the Quadlet units of .env, with the units SELF_HOST_FXA and ADMIN_UI say (the answers of
 # the setup, or what the install has with --upgrade): rendered aside, then only the units
@@ -438,7 +638,8 @@ render_units() {
     # ones set below; never this shell's environment (a name .env lacks: .env-example's
     # default). Not with `source`: unused sections keep placeholders like <REPLACE_WITH_...>
     RENDER_KEYS=" "
-    render_set() { export "${1}=${2}"; RENDER_KEYS="${RENDER_KEYS}${1} "; }
+    # (shell variables, not exported: no other process gets the passwords in its environment)
+    render_set() { printf -v "${1}" '%s' "${2}"; RENDER_KEYS="${RENDER_KEYS}${1} "; }
     render_set SCRIPT_DIR "${SCRIPT_DIR}"
     for key in $(sed -n "s/^${ENV_LEAD}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p" "${SCRIPT_DIR}/.env" | sort -u); do
         render_set "${key}" "$(env_plain "${key}")"
@@ -513,10 +714,11 @@ render_units() {
         sed -E -e "/^(After|Requires)=/{s/(=| )(${DROP_DEPS})/\1/g; s/= +/=/; s/ +$//; s/  +/ /g;}" -e '/^Requires=$/d'
     }
 
-    # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it
+    # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it.
+    # One sed script (a file, sed_script: the values are passwords), its substitutions in the
+    # order of the names
     render_quadlet() {
-        local file=${1} content name value
-        content=$(cat "${file}")
+        local file=${1} content name value script=""
         for name in $(grep -o '%[A-Z][A-Z0-9_]*%' "${file}" | sort -u | tr -d '%'); do
             if [[ "${RENDER_KEYS}" == *" ${name} "* ]]; then
                 value=${!name}
@@ -527,8 +729,10 @@ render_units() {
                 return 1
             fi
             value=$(printf '%s' "${value}" | sed -e 's/%/%%/g')
-            content=$(printf '%s\n' "${content}" | sed -e "s|%${name}%|$(sed_escape "${value}")|g")
+            script="${script}s|%${name}%|$(sed_escape "${value}")|g
+"
         done
+        content=$(sed_script "${script}" "${file}") || return 1
         printf '%s\n' "${content}"
     }
 
@@ -545,6 +749,7 @@ render_units() {
     fi
     echo "Processing quadlet files..."
     stage=$(mktemp -d) || exit 1
+    ffs_temp "${stage}"
     for source in "${QUADLET_SOURCES[@]}"; do
         for file in "${source}"/*.{network,volume,container,timer}; do
             [ -f "${file}" ] || continue
@@ -637,14 +842,30 @@ upgrade_env() {
         fi
         if units_installed && ! units_of_here; then
             here=$(units_dir)
-            echo "WARNING: the units in ${QUADLET_DIR} were rendered from ${here:-another directory}, not ${SCRIPT_DIR}:"
+            if [ -n "${here}" ]; then
+                echo "WARNING: the units in ${QUADLET_DIR} were rendered from ${here}, not ${SCRIPT_DIR}:"
+            else
+                echo "WARNING: the units in ${QUADLET_DIR} name no checkout (an earlier release of firefox-sync, or none of its):"
+            fi
             echo "  rendered again from this .env (the units of before are kept)"
         fi
     elif units_installed; then
+        here=$(units_dir)
         if units_of_here; then
             quadlets=yes
+        # an earlier release's units, without the checkout in them: this install's when they have
+        # its SYNC_MASTER_SECRET, else they are only said (docs/upgrading.md#quadlets)
+        elif units_without_dir && units_have_env_secret; then
+            quadlets=yes
+            echo "NOTE: the Quadlet units in ${QUADLET_DIR} are of an earlier release of firefox-sync (they name no"
+            echo "  checkout), with the SYNC_MASTER_SECRET of ${dot_env}: rendered again from it"
+            echo ""
+        elif units_without_dir; then
+            echo "NOTE: found the Quadlet units of an earlier release of firefox-sync in ${QUADLET_DIR} (they name no"
+            echo "  checkout), with another SYNC_MASTER_SECRET than ${dot_env}: not rendered again. If they are those of"
+            echo "  this install, ./prepare_environment.sh --render-units renders them from this .env (docs/upgrading.md#quadlets)"
+            echo ""
         else
-            here=$(units_dir)
             echo "NOTE: the Quadlet units in ${QUADLET_DIR} are those of ${here:-another directory}, not of ${SCRIPT_DIR}:"
             echo "  not rendered again (./prepare_environment.sh --render-units renders them from this .env)"
             echo ""
@@ -731,8 +952,8 @@ upgrade_env() {
     }
     # every change on a copy (this user only), which replaces .env at the end: a run that stops
     # halfway leaves .env as it was
-    env_file=${dot_env}.upgrading
-    private_copy "${dot_env}" "${env_file}" || exit 1
+    # (mktemp in the directory of .env: the rename at the end stays one)
+    private_temp "${dot_env}.upgrading" env_file && cat "${dot_env}" > "${env_file}" || exit 1
     ENV_READ=${env_file}
     rename_settings
     # the names: those of .env-example
@@ -846,7 +1067,7 @@ upgrade_env() {
     else
         backup=$(backup_name "${dot_env}.before-upgrade")
         private_copy "${dot_env}" "${backup}" || { echo "ERROR: could not keep ${dot_env} as ${backup}: .env not changed"; rm -f "${env_file}"; exit 1; }
-        mv "${env_file}" "${dot_env}" || exit 1
+        replace_env "${env_file}" "${dot_env}" || exit 1
         echo "Updated ${dot_env} (the old one is $(basename "${backup}")): ${changed[*]}"
     fi
     unset ENV_READ
@@ -879,6 +1100,51 @@ upgrade_env() {
     fi
     exit 0
 }
+# an IPv4 address: four numbers up to 255
+valid_ipv4() {
+    local octet
+    [[ "${1}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+    for octet in ${1//./ }; do [ "$((10#${octet}))" -le 255 ] || return 1; done
+}
+# an IPv6 address (without the brackets): eight groups of 1 to 4 hex digits separated by
+# colons, or fewer with one :: for the zeros; the last two groups may be an IPv4 address
+valid_ipv6() {
+    local ip=${1} last group groups=() n=0 max=8
+    [[ "${ip}" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
+    case "${ip}" in *:*:*) ;; *) return 1 ;; esac
+    case "${ip}" in *:::*) return 1 ;; esac
+    # a single colon at either end
+    case "${ip}" in :[!:]*|*[!:]:) return 1 ;; esac
+    if [[ "${ip}" == *::* ]]; then
+        [[ "${ip#*::}" == *::* ]] && return 1
+        max=7
+    fi
+    last=${ip##*:}
+    if [[ "${last}" == *.* ]]; then
+        valid_ipv4 "${last}" || return 1
+        ip=${ip%"${last}"}0:0
+    fi
+    IFS=: read -r -a groups <<< "${ip}"
+    for group in "${groups[@]}"; do
+        [ -n "${group}" ] || continue
+        [[ "${group}" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+        n=$((n + 1))
+    done
+    if [ "${max}" = 8 ]; then [ "${n}" = 8 ]; else [ "${n}" -le 7 ]; fi
+}
+# [address:]port: an IPv4 address or an IPv6 one in brackets ([::]:5000), a port 1 to 65535
+valid_export_port() {
+    local port=${1} addr
+    case "${1}" in
+        \[*\]:*) addr=${1%\]:*} port=${1##*\]:}; valid_ipv6 "${addr#\[}" || return 1 ;;
+        *:*) addr=${1%:*} port=${1##*:}; valid_ipv4 "${addr}" || return 1 ;;
+    esac
+    [[ "${port}" =~ ^[0-9]{1,5}$ ]] && [ "$((10#${port}))" -ge 1 ] && [ "$((10#${port}))" -le 65535 ]
+}
+
+# sourced (tests/prepare_functions.sh, and the tests that ask fxa_has_fix): the functions only
+(return 0 2> /dev/null) && return 0
+
 case "${1:-}" in
     --upgrade) upgrade_env ;;
     --render-units)
@@ -908,17 +1174,6 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
     DEFAULT_SYNC_EXPORT_PORT=${previous:-${DEFAULT_SYNC_EXPORT_PORT}}
 fi
 read -e -p "Listening address and port for syncstorage-rs, a port alone on 127.0.0.1 [${DEFAULT_SYNC_EXPORT_PORT}]: " SYNC_EXPORT_PORT
-# [address:]port: an IPv4 address (octets up to 255) or an IPv6 one in brackets ([::]:5000)
-valid_export_port() {
-    local port ip octet
-    [[ "${1}" =~ ^(([0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9A-Fa-f:.]+\]):)?([0-9]{1,5})$ ]] || return 1
-    port=${BASH_REMATCH[4]} ip=${BASH_REMATCH[2]}
-    [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || return 1
-    if [ -n "${ip}" ] && [ "${ip:0:1}" != "[" ]; then
-        for octet in ${ip//./ }; do [ "$((10#${octet}))" -le 255 ] || return 1; done
-    fi
-    return 0
-}
 case "${SYNC_EXPORT_PORT}" in
     "")
         SYNC_EXPORT_PORT=${DEFAULT_SYNC_EXPORT_PORT}
@@ -1027,9 +1282,14 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     read -r -e -p "SMTP port [587]: " FXA_SMTP_PORT
     FXA_SMTP_PORT=${FXA_SMTP_PORT:-587}
     read -r -e -p "SMTP user: " FXA_SMTP_USER
+    case "${FXA_SMTP_USER}" in *"'"*|*\\) echo "ERROR: the SMTP user cannot contain a single quote nor end with a backslash, set FXA_SMTP_USER in .env by hand"; exit 1 ;; esac
     read -r -e -s -p "SMTP password: " FXA_SMTP_PASS
     echo ""
-    case "${FXA_SMTP_PASS}" in *"'"*) echo "ERROR: the SMTP password cannot contain a single quote, set FXA_SMTP_PASS in .env by hand"; exit 1 ;; esac
+    # (written in single quotes, as typed: compose reads \' there as a quote, so not at the end either)
+    case "${FXA_SMTP_PASS}" in
+        *"'"*) echo "ERROR: the SMTP password cannot contain a single quote, set FXA_SMTP_PASS in .env by hand"; exit 1 ;;
+        *\\) echo "ERROR: the SMTP password cannot end with a backslash, set FXA_SMTP_PASS in .env by hand"; exit 1 ;;
+    esac
     DEFAULT_FXA_SMTP_SENDER="Mozilla accounts <no-reply@${FXA_DOMAIN}>"
     read -r -e -p "Sender of the emails [${DEFAULT_FXA_SMTP_SENDER}]: " FXA_SMTP_SENDER
     FXA_SMTP_SENDER=${FXA_SMTP_SENDER:-${DEFAULT_FXA_SMTP_SENDER}}
@@ -1176,7 +1436,7 @@ if [ "${ADMIN_UI}" = "yes" ]; then
     IFS=$', \t\r' read -r -a notify_entries <<< "${notify_in}"
     for notify_entry in "${notify_entries[@]}"; do
         [ -n "${notify_entry}" ] || continue
-        case "${notify_entry}" in *"'"*) echo "ERROR: a destination URL cannot contain a single quote, set ADMIN_NOTIFY in .env by hand"; exit 1 ;; esac
+        case "${notify_entry}" in *"'"*|*\\) echo "ERROR: a destination URL cannot contain a single quote nor end with a backslash, set ADMIN_NOTIFY in .env by hand"; exit 1 ;; esac
         # the webhook URL of Slack or Discord as they give it: their scheme instead of https://
         notify_kind=""
         case "${notify_entry}" in
@@ -1284,8 +1544,7 @@ fi
 # replaces .env at the end. Run again on an install, its .env of before is kept as
 # .env.before-setup-<UTC time> (the passwords its databases have); ./prepare_environment.sh
 # --upgrade keeps them instead
-NEW_ENV=${SCRIPT_DIR}/.env.setup
-private_copy "${SCRIPT_DIR}/.env-example" "${NEW_ENV}" || exit 1
+private_temp "${SCRIPT_DIR}/.env.setup" NEW_ENV && cat "${SCRIPT_DIR}/.env-example" > "${NEW_ENV}" || exit 1
 ENV_READ=${NEW_ENV}
 apply_sed "${NEW_ENV}" "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${SYNC_TOKENSERVER_DB_PASSWORD}|"
 apply_sed "${NEW_ENV}" "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=${SYNC_STORAGE_DB_PASSWORD}|"
@@ -1364,7 +1623,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     apply_sed "${NEW_ENV}" "s|^FXA_SMTP_USER=.*|FXA_SMTP_USER='$(sed_escape "${FXA_SMTP_USER}")'|"
     apply_sed "${NEW_ENV}" "s|^FXA_SMTP_PASS=.*|FXA_SMTP_PASS='$(sed_escape "${FXA_SMTP_PASS}")'|"
     apply_sed "${NEW_ENV}" "s|^FXA_SMTP_SECURE=.*|FXA_SMTP_SECURE=${FXA_SMTP_SECURE}|"
-    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"$(sed_escape "${FXA_SMTP_SENDER}")\"|"
+    apply_sed "${NEW_ENV}" "s|^FXA_SMTP_SENDER=.*|FXA_SMTP_SENDER=\"$(sed_escape "$(env_dq "${FXA_SMTP_SENDER}")")\"|"
     apply_sed "${NEW_ENV}" "s|^FXA_SIGNUPS=.*|FXA_SIGNUPS=${FXA_SIGNUPS}|"
     apply_sed "${NEW_ENV}" "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
     apply_sed "${NEW_ENV}" "s|^FXA_MAX_ACCOUNTS=.*|FXA_MAX_ACCOUNTS=${FXA_MAX_ACCOUNTS}|"
@@ -1488,7 +1747,7 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
     echo "NOTE: ${SCRIPT_DIR}/.env written again with new passwords, the one of before is $(basename "${ENV_BACKUP}")"
     echo "  (to keep the passwords of an install: ./prepare_environment.sh --upgrade, Quadlets too)"
 fi
-mv "${NEW_ENV}" "${SCRIPT_DIR}/.env" || exit 1
+replace_env "${NEW_ENV}" "${SCRIPT_DIR}/.env" || exit 1
 unset ENV_READ
 
 # the SQL for your own database server, with the names and passwords of .env (docs/databases.md#create-the-databases-and-users)

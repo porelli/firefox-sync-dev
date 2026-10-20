@@ -1358,7 +1358,7 @@ if [ -z "${EXTDB}" ]; then
   if [ "${BACKEND}" = postgres ]; then
     LOAD='PGPASSWORD="$TOKENSERVER_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$TOKENSERVER_DB_USER" -d "$TOKENSERVER_DB_NAME" -v ON_ERROR_STOP=1'
   else
-    LOAD='mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" -p"$TOKENSERVER_DB_PASSWORD" "$TOKENSERVER_DB_NAME"'
+    LOAD='MYSQL_PWD="$TOKENSERVER_DB_PASSWORD" mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" "$TOKENSERVER_DB_NAME"'
   fi
   RESTORE="docker compose run --rm --no-deps --entrypoint sh backup -c '
     f=/backups/sync/20261013T030000Z/\$TOKENSERVER_DB_NAME.sql.gz
@@ -1375,7 +1375,7 @@ if [ -z "${EXTDB}" ]; then
   fi
   restore() { # TOKENSERVER|STORAGE [run]
     local c
-    c=$(as_here "${RESTORE}" "${2:-}" | sed -e "s/TOKENSERVER_DB_/$1_DB_/g" -e "s/^\( *\)mariadb /\1${DB_CLIENT} /")
+    c=$(as_here "${RESTORE}" "${2:-}" | sed -e "s/TOKENSERVER_DB_/$1_DB_/g" -e "s/^\( *\)mariadb /\1${DB_CLIENT} /" -e "s/^\( *MYSQL_PWD=\"[^\"]*\" \)mariadb /\1${DB_CLIENT} /")
     eval "${c}" < /dev/null >> "${WORK}/restore.log" 2>&1
   }
   # a run that is not there (pruned, mistyped) fails, nothing loaded
@@ -1402,14 +1402,14 @@ if [ -z "${EXTDB}" ]; then
     check "$?" 0 "the init container makes the admin UI's database again"
     LOAD='PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'
   else
-    LOAD='mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+    LOAD='MYSQL_PWD="$ADMIN_DB_PASSWORD" mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" "$ADMIN_DB_NAME"'
   fi
   RESTORE="docker compose run --rm --no-deps --entrypoint sh backup -c '
     f=/backups/sync/20261013T030000Z/\$ADMIN_DB_NAME.sql.gz
     gunzip -t \"\$f\" && gunzip -c \"\$f\" |
       ${LOAD}'"
   check "$(documented "${RESTORE}")" yes "docs/backups.md#restore step 5 as run here"
-  eval "$(as_here "${RESTORE}" | sed "s/^\( *\)mariadb /\1${DB_CLIENT} /")" < /dev/null >> "${WORK}/restore.log" 2>&1
+  eval "$(as_here "${RESTORE}" | sed -e "s/^\( *\)mariadb /\1${DB_CLIENT} /" -e "s/^\( *MYSQL_PWD=\"[^\"]*\" \)mariadb /\1${DB_CLIENT} /")" < /dev/null >> "${WORK}/restore.log" 2>&1
   check "$?" 0 "the admin UI's database restored as its user"
   check "$(admin_sql "SELECT COUNT(*) FROM ffs_events;")" "${EVENTS}" "the event log of the dump"
   # 7. the whole stack

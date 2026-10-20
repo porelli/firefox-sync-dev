@@ -6,7 +6,8 @@ FXA_MYSQL_PASSWORD, as compose's
 {{- if and .Values.fxa.enabled .Values.fxa.database.bundled }}
 {{- $name := include "firefox-sync.fxaDbHost" . }}
 {{- $db := .Values.fxa.database }}
-{{- $check := list "sh" "-c" "mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot -p$${MYSQL_ROOT_PASSWORD} --silent" }}
+{{- /* the password in mysqladmin's environment, not in its arguments (ps on the node) */ -}}
+{{- $check := list "sh" "-c" "MYSQL_PWD=${MYSQL_ROOT_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot --silent" }}
 {{- if eq $db.backend "mariadb" }}
 {{- $check = list "healthcheck.sh" "--connect" "--innodb_initialized" }}
 {{- end }}
