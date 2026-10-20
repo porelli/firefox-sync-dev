@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -160,15 +161,35 @@ func TestTokensRefusedPerMinute(t *testing.T) {
 	}
 }
 
-// TestTokensRefusedOfSplitDatagrams: each captured datagram stamped with a minute of
-// its own, the way the recorder sees a quiet server. The verifications at the end of
-// a datagram get their token in the next one: still the four refused, not more
+// streamMinutes: each datagram through one recorder, the way it gets them, in a minute
+// of its own (a quiet server); the tokens refused after each
+func streamMinutes(r *Recorder, tally *errorTally, minute int64, packets ...string) (after []int64) {
+	for _, p := range packets {
+		r.parseStatsd(p)
+		for name, m := range r.current {
+			tally.add(minute, name, m.count)
+		}
+		r.current = map[string]*metric{}
+		n, _, _ := tally.refused()
+		after = append(after, n)
+		minute += 60000
+	}
+	return after
+}
+
+func newTestRecorder() *Recorder {
+	return &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}}
+}
+
+// TestTokensRefusedOfSplitDatagrams: the captured datagrams, each in a minute of its
+// own. The verifications at the end of a datagram get their token in the next one:
+// the four refused, never more on the way
 func TestTokensRefusedOfSplitDatagrams(t *testing.T) {
-	tally := newErrorTally()
+	packets := capturedPackets(t)
 	// what each datagram verified and did not issue, as if refused there
 	perDatagram := int64(0)
-	for i, p := range capturedPackets(t) {
-		r := &Recorder{current: map[string]*metric{}, cumulative: map[string]*metric{}}
+	for _, p := range packets {
+		r := newTestRecorder()
 		r.parseStatsd(p)
 		if v := r.current[tokenVerified]; v != nil {
 			n := v.count
@@ -177,16 +198,89 @@ func TestTokensRefusedOfSplitDatagrams(t *testing.T) {
 			}
 			perDatagram += max(n, 0)
 		}
-		for name, m := range r.current {
-			tally.add(int64(i+1)*60000, name, m.count)
-		}
 	}
-	tally.add(int64(len(capturedPackets(t))+1)*60000, "syncstorage.request.get_collections", 1)
 	if perDatagram <= 4 {
 		t.Errorf("%d verified and not issued per datagram: no split to test", perDatagram)
 	}
+	tally := newErrorTally()
+	after := streamMinutes(newTestRecorder(), tally, 60000, packets...)
+	for i, n := range after {
+		if n > 4 || (i > 0 && n < after[i-1]) {
+			t.Errorf("after each datagram: %v", after)
+			break
+		}
+	}
 	if n, _, per := tally.refused(); n != 4 {
 		t.Errorf("%d refused: %v", n, per)
+	}
+	// the same minutes without the recorder's count (an admin UI from before it): the
+	// guess of verified minus issued, once something newer came in
+	legacy := newErrorTally()
+	for m, n := range tally.verified {
+		legacy.add(m, tokenVerified, n)
+	}
+	for m, n := range tally.issued {
+		legacy.add(m, tokenIssued, n)
+	}
+	legacy.add(int64(len(packets)+1)*60000, "syncstorage.request.get_collections", 1)
+	if n, _, per := legacy.refused(); n != 4 {
+		t.Errorf("before the recorder's count: %d refused: %v", n, per)
+	}
+}
+
+// TestTokensRefusedNoneRefused: sign-ins only, every one with its token, the datagrams
+// cut between a verification and its token. The guess of the minutes alone counted one
+// refused, then none again (test_errors_by_kind saw no new one): the recorder none
+func TestTokensRefusedNoneRefused(t *testing.T) {
+	v, c := tokenVerified+":1|ms\n", tokenIssued+":0|ms\n"
+	ts := "syncstorage.tokenserver.storage.get_users:0|ms\n"
+	packets := []string{
+		v + c + v + c + v,     // its last token in the next one
+		c + v + c + v,         // the token of the one before, ends on a verification
+		ts + ts,               // the tokenserver's buffer: says nothing of the Sync server's
+		c + v + c + v + c + v, // and so on
+		c + v + c,
+	}
+	tally := newErrorTally()
+	for i, n := range streamMinutes(newTestRecorder(), tally, 60000, packets...) {
+		if n != 0 {
+			t.Errorf("after datagram %d: %d refused", i+1, n)
+		}
+	}
+	// what the minutes alone said after the second one
+	legacy := newErrorTally()
+	legacy.add(60000, tokenVerified, 3)
+	legacy.add(60000, tokenIssued, 2)
+	legacy.add(120000, tokenVerified, 2)
+	legacy.add(120000, tokenIssued, 2)
+	legacy.add(180000, "syncstorage.tokenserver.storage.get_users", 2)
+	if n, _, _ := legacy.refused(); n != 1 {
+		t.Errorf("the minutes alone: %d refused", n)
+	}
+}
+
+// TestTokensRefusedRecorder: a verification without a token is refused once two more
+// datagrams of the Sync server's buffer came (not the tokenserver's), in that minute;
+// a line of the recorder's name from a sender is not taken
+func TestTokensRefusedRecorder(t *testing.T) {
+	r := newTestRecorder()
+	tally := newErrorTally()
+	v, c := tokenVerified+":1|ms\n", tokenIssued+":0|ms\n"
+	get := "syncstorage.request.get_collections:1|c\n"
+	ts := "syncstorage.tokenserver.storage.get_users:0|ms\n"
+	after := streamMinutes(r, tally, 60000, v+c+v, ts, get, ts+ts, get, get, tokensRefusedMetric+":5|c\n"+get)
+	if want := []int64{0, 0, 0, 0, 1, 1, 1}; fmt.Sprint(after) != fmt.Sprint(want) {
+		t.Errorf("after each datagram %v, want %v", after, want)
+	}
+	if n, last, per := tally.refused(); n != 1 || !last.Equal(time.UnixMilli(5*60000)) || per[5*60000] != 1 {
+		t.Errorf("%d %v %v", n, last, per)
+	}
+	// counted with the errors of the minute, not a metric of the activity page
+	if tr := tally.TrafficBetween(5*60000, 6*60000); tr.Errors != 1 || tr.Requests != 1 {
+		t.Errorf("%+v", tr)
+	}
+	if _, ok := r.cumulative[tokensRefusedMetric]; ok {
+		t.Error("in the statsd totals")
 	}
 }
 
@@ -239,7 +333,7 @@ func TestWatchErrorRate(t *testing.T) {
 	now := time.Now()
 	var rows [][]driver.Value
 	fake := &fakeFxa{answer: func(query string, _ []driver.Value) *fakeRows {
-		if strings.Contains(query, "FROM ffs_metrics WHERE minute >= ?") && strings.Contains(query, "IN ('syncstorage.token_verification', 'syncstorage.token_creation')") && !strings.Contains(query, "token_%") {
+		if strings.Contains(query, "FROM ffs_metrics WHERE minute >= ?") && strings.Contains(query, "IN ('syncstorage.token_verification', 'syncstorage.token_creation', 'ffs.tokens_refused')") && !strings.Contains(query, "token_%") {
 			return metricRows(append([][]driver.Value(nil), rows...), false)
 		}
 		return nil

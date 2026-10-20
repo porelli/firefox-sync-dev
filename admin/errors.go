@@ -22,7 +22,8 @@ import (
 //   - a timer per token request with an OAuth token (syncstorage.token_verification) and
 //     one per token issued (syncstorage.token_creation): the difference is the tokens
 //     refused (a bad or old token, an old generation or keys, a client state that does
-//     not fit, max users full, a database error)
+//     not fit, max users full, a database error). The recorder pairs them in the order
+//     they came (Recorder.tokenLine) and keeps the refused ones (tokensRefusedMetric)
 
 const (
 	storageService = "Sync storage"
@@ -113,6 +114,13 @@ func isRequest(name string) bool {
 const (
 	tokenVerified = "syncstorage.token_verification"
 	tokenIssued   = "syncstorage.token_creation"
+	// the tokens refused per minute, counted by the recorder (no statsd metric, no
+	// sender's line of this name is taken)
+	tokensRefusedMetric = "ffs.tokens_refused"
+	// datagrams of the Sync server's buffer after a verification for its token: those
+	// of the requests in between may come first (syncstorage-rs sends a datagram when
+	// 512 bytes are buffered)
+	tokenLag = 2
 )
 
 // ErrorRow: a kind of error over a time span, for the activity page
@@ -129,6 +137,8 @@ type errorTally struct {
 	rows map[string]*ErrorRow
 	// per minute (ms): the token requests verified and the tokens issued
 	verified, issued map[int64]int64
+	// per minute: the tokens refused the recorder counted (tokensRefusedMetric)
+	counted map[int64]int64
 	// per minute: the requests and the errors, without the tokens refused
 	minutes map[int64]traffic
 	// the newest minute of a metric, of any
@@ -136,7 +146,7 @@ type errorTally struct {
 }
 
 func newErrorTally() *errorTally {
-	return &errorTally{rows: map[string]*ErrorRow{}, verified: map[int64]int64{}, issued: map[int64]int64{}, minutes: map[int64]traffic{}}
+	return &errorTally{rows: map[string]*ErrorRow{}, verified: map[int64]int64{}, issued: map[int64]int64{}, counted: map[int64]int64{}, minutes: map[int64]traffic{}}
 }
 
 // add counts a metric of a minute (milliseconds), whatever it is
@@ -151,6 +161,9 @@ func (t *errorTally) add(minute int64, name string, count int64) {
 		tr.Requests += count
 	case name == tokenIssued:
 		t.issued[minute] += count
+	case name == tokensRefusedMetric:
+		// their verifications are in the requests
+		t.counted[minute] += count
 	case isRequest(name):
 		tr.Requests += count
 	default:
@@ -174,19 +187,42 @@ func (t *errorTally) add(minute int64, name string, count int64) {
 	t.minutes[minute] = tr
 }
 
-// refused: the tokens refused, per minute. syncstorage-rs sends its metrics when 512
-// bytes are buffered, so a verification often comes in a datagram (a minute) before
-// the token it issued: the tokens issued of a minute first pay off the verifications
-// left over of the minutes before, the latest first (the split ones are next to each
-// other). Those of the newest minute are not counted yet: their tokens may still be
-// in the buffer of the Sync server
+// refused: the tokens refused, per minute: those the recorder counted
+// (tokensRefusedMetric), from its first minute on. Before it (the metrics of an admin UI
+// from before it) verified minus issued of each minute: syncstorage-rs sends its metrics
+// when 512 bytes are buffered, so a verification often comes in a datagram (a minute)
+// before the token it issued: the tokens issued of a minute first pay off the
+// verifications left over of the minutes before, the latest first (the split ones are
+// next to each other). Those of the newest minute are not counted yet: their tokens may
+// still be in the buffer of the Sync server. A guess, which the minutes alone cannot
+// settle: a minute that brings the token of the one before and ends on a verification
+// of its own pays off nothing, the one before looks refused until the next datagram
 func (t *errorTally) refused() (total int64, last time.Time, perMinute map[int64]int64) {
+	from := int64(math.MaxInt64)
+	for m := range t.counted {
+		from = min(from, m)
+	}
+	perMinute = map[int64]int64{}
+	count := func(minute, n int64) {
+		perMinute[minute] += n
+		total += n
+		if at := time.UnixMilli(minute); at.After(last) {
+			last = at
+		}
+	}
+	for m, n := range t.counted {
+		if n > 0 {
+			count(m, n)
+		}
+	}
 	minutes := make([]int64, 0, len(t.verified)+len(t.issued))
 	for m := range t.verified {
-		minutes = append(minutes, m)
+		if m < from {
+			minutes = append(minutes, m)
+		}
 	}
 	for m := range t.issued {
-		if _, ok := t.verified[m]; !ok {
+		if _, ok := t.verified[m]; !ok && m < from {
 			minutes = append(minutes, m)
 		}
 	}
@@ -209,15 +245,9 @@ func (t *errorTally) refused() (total int64, last time.Time, perMinute map[int64
 			open = append(open, left{m, n})
 		}
 	}
-	perMinute = map[int64]int64{}
 	for _, l := range open {
-		if l.minute == t.newest {
-			continue
-		}
-		perMinute[l.minute] = l.n
-		total += l.n
-		if at := time.UnixMilli(l.minute); at.After(last) {
-			last = at
+		if l.minute != t.newest {
+			count(l.minute, l.n)
 		}
 	}
 	return total, last, perMinute
@@ -353,7 +383,7 @@ func errorRateRow(e *ErrorRate, c errorRateConfig) (Component, bool) {
 func (r *Recorder) errorTraffic(ctx context.Context, now time.Time) (window, baseline traffic, err error) {
 	split := now.Add(-errorWindow)
 	rows, err := r.db.mine().QueryContext(ctx, r.db.q(`SELECT minute, name, count FROM ffs_metrics WHERE minute >= ?
-		AND (name LIKE 'syncstorage.request.%' OR name IN ('`+tokenVerified+`', '`+tokenIssued+`') OR name LIKE 'syncstorage.%error%'
+		AND (name LIKE 'syncstorage.request.%' OR name IN ('`+tokenVerified+`', '`+tokenIssued+`', '`+tokensRefusedMetric+`') OR name LIKE 'syncstorage.%error%'
 		OR name LIKE 'syncstorage.%storage.quota.at_limit' OR name LIKE 'syncstorage.%storage.conflict' OR name LIKE 'syncstorage.%storage.pool.timeout')`),
 		split.Add(-errorBaseline).UnixMilli())
 	if err != nil {

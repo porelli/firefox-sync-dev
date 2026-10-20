@@ -45,6 +45,10 @@ type Recorder struct {
 	mu       sync.Mutex
 	current  map[string]*metric
 	received time.Time // last statsd packet
+	// the token requests verified with no token issued yet, by the datagrams of the Sync
+	// server's own buffer since: [0] the last one, ... [tokenLag] those refused once the
+	// next one comes in (tokensRefusedMetric)
+	tokenOpen [tokenLag + 1]int64
 	// since the start, for Prometheus (counters only grow)
 	cumulative map[string]*metric
 }
@@ -143,10 +147,15 @@ func (r *Recorder) parseStatsd(packet string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.received = time.Now()
+	own := false
 	for _, line := range strings.Split(packet, "\n") {
 		name, rest, ok := strings.Cut(strings.TrimSpace(line), ":")
-		if !ok || !metricName.MatchString(name) {
+		// tokensRefusedMetric is the admin UI's own, never a sender's
+		if !ok || !metricName.MatchString(name) || name == tokensRefusedMetric {
 			continue
+		}
+		if service, _, ok := statsdLabel(name); ok && service == storageService {
+			own = true
 		}
 		fields := strings.Split(rest, "|")
 		if len(fields) < 2 {
@@ -156,6 +165,7 @@ func (r *Recorder) parseStatsd(packet string) {
 		if err != nil {
 			continue
 		}
+		r.tokenLine(name)
 		rate := 1.0
 		for _, f := range fields[2:] {
 			if strings.HasPrefix(f, "@") {
@@ -191,6 +201,42 @@ func (r *Recorder) parseStatsd(packet string) {
 			c.total += value
 		}
 	}
+	if own {
+		r.tokenDatagram()
+	}
+}
+
+// tokenLine follows the token requests in the order the Sync server sent them: a token
+// issued pays off a verification before it, the latest first
+func (r *Recorder) tokenLine(name string) {
+	switch name {
+	case tokenVerified:
+		r.tokenOpen[0]++
+	case tokenIssued:
+		for i := range r.tokenOpen {
+			if r.tokenOpen[i] > 0 {
+				r.tokenOpen[i]--
+				return
+			}
+		}
+	}
+}
+
+// tokenDatagram ends a datagram of the Sync server's own buffer (not one of the
+// tokenserver's, syncstorage.tokenserver., which has a buffer of its own): the
+// verifications tokenLag datagrams old still without a token are refused, in the
+// minute this one came in. A row every such minute, 0 too: the minutes of the tokens
+// refused counted here (errorTally.refused)
+func (r *Recorder) tokenDatagram() {
+	refused := r.tokenOpen[tokenLag]
+	copy(r.tokenOpen[1:], r.tokenOpen[:tokenLag])
+	r.tokenOpen[0] = 0
+	m := r.current[tokensRefusedMetric]
+	if m == nil {
+		m = &metric{}
+		r.current[tokensRefusedMetric] = m
+	}
+	m.count += refused
 }
 
 func (r *Recorder) listen(ctx context.Context, addr string) error {
@@ -389,6 +435,10 @@ func (r *Recorder) Activity(ctx context.Context, since time.Time, bucket time.Du
 			}
 		}
 		tally.add(minute, name, count)
+		// the admin UI's own: in the errors (the tokens refused), not a statsd metric
+		if name == tokensRefusedMetric {
+			continue
+		}
 		t := totals[name]
 		if t == nil {
 			t = &MetricTotal{Name: name}

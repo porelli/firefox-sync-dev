@@ -495,7 +495,7 @@ def test_errors_by_kind(admin, alice):
     assert requests.get(f"{SERVER}{path}/info/collections", headers=PROXY_HEADERS, timeout=30).status_code == 401
     assert alice.request("PUT", "/storage/bookmarks/bad", {"payload": 5}).status_code == 400
     assert login("alice", generation=1, keys_changed_at=1, client_state="cccc").status_code == 401
-    # the refused token counts once metrics of a later minute came in
+    # the refused token counts once two more datagrams of the Sync server came in
     deadline = time.time() + 120
     while True:
         # more traffic: the Sync server sends its metrics when a datagram is full
