@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the links of the documentation: files, directories and #anchors.
 
-Usage: python3 -I tests/check_markdown_links.py [--code] [--settings] [--root DIR]
+Usage: python3 -I tests/check_markdown_links.py [--code] [--settings] [--external] [--root DIR]
 
 - Files: the tracked *.md files (git ls-files; every *.md under DIR when it is not a git
   repository), but tests/browser.
@@ -21,17 +21,25 @@ Usage: python3 -I tests/check_markdown_links.py [--code] [--settings] [--root DI
   and a line with "check-links: ignore" are skipped.
 - --settings: every NAME= of .env-example (commented ones too) and every top-level key of
   charts/firefox-sync/values.yaml appears in docs/reference/settings.md.
+- --external: also fetches every http(s) link of docs/ and README.md (HEAD, else GET,
+  following redirects) and reports those that do not end in a 2xx. Needs the network, so
+  CI does not run it: run it by hand when editing the docs' links. Only says that a page
+  answers, not that it is about what the sentence says.
 
 Prints one line per error, file:line: message, and exits 1 when there is any. Stdlib only.
 """
 
 import argparse
+import concurrent.futures
 import os
 import re
 import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+import urllib.error
+import urllib.parse
+import urllib.request
 from urllib.parse import unquote
 
 REPO_URL = re.compile(r"https://github\.com/porelli/firefox-sync/(?:blob|tree)/main/([^\s)\"'<>`#]*)(#[\w-]+)?")
@@ -265,11 +273,65 @@ class Checker:
                 if m and not re.search(r"`" + re.escape(m.group(1)) + r"[`.\[]", text):
                     self.error("charts/firefox-sync/values.yaml", n, f"{m.group(1)} is not in docs/reference/settings.md")
 
+    def check_external(self, fetch=None, workers=8):
+        """--external: the http(s) links of docs/ and README.md that do not answer 2xx."""
+        fetch = fetch or fetch_status
+        where = {}
+        for name in self.files("md"):
+            if not (name.startswith("docs/") or name == "README.md"):
+                continue
+            for target, line in self.doc(self.root / name).links:
+                if target.startswith(("http://", "https://")):
+                    where.setdefault(target.split("#", 1)[0], []).append((name, line))
+        with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+            for url, status in zip(where, pool.map(fetch, where)):
+                if isinstance(status, int) and 200 <= status < 300:
+                    continue
+                for name, line in where[url]:
+                    if status in (401, 403, 429):  # often a bot wall, not a dead page
+                        print(f"{name}:{line}: warning: {url}: {status}, check it in a browser", file=sys.stderr)
+                    else:
+                        self.error(name, line, f"{url}: {status}")
+        return len(where)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None  # followed by fetch_status, 308 too (urllib before 3.11 does not)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def fetch_status(url, timeout=20, hops=10):
+    """The final status of url after redirects (HEAD, else GET), or the error as text."""
+    status = None
+    for method in ("HEAD", "GET"):
+        current = url
+        for _ in range(hops):
+            req = urllib.request.Request(current, method=method, headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
+                "Accept": "text/html,*/*"})
+            try:
+                with _OPENER.open(req, timeout=timeout) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                status = e.code
+                if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
+                    current = urllib.parse.urljoin(current, e.headers["Location"])
+                    continue
+                break  # some servers refuse HEAD (403, 405): try GET
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                status = f"{type(e).__name__}: {getattr(e, 'reason', e)}"
+                break
+    return status
+
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--code", action="store_true", help="also check the doc references of non-markdown files")
     p.add_argument("--settings", action="store_true", help="every setting appears in docs/reference/settings.md")
+    p.add_argument("--external", action="store_true", help="also fetch the http(s) links of docs/ and README.md (network)")
     p.add_argument("--root", default=Path(__file__).resolve().parent.parent, help="the repository (default: this one)")
     args = p.parse_args(argv)
     c = Checker(args.root)
@@ -278,6 +340,8 @@ def main(argv=None):
         c.check_code()
     if args.settings:
         c.check_settings()
+    if args.external:
+        print(f"{c.check_external()} external URLs checked", file=sys.stderr)
     for e in c.errors:
         print(e)
     print(f"{len(c.errors)} error(s) in {len(c.files('md'))} markdown files", file=sys.stderr)

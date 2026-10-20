@@ -132,5 +132,26 @@ class Settings(unittest.TestCase):
         self.assertTrue(any("backup is not" in e for e in errors))
 
 
+class External(unittest.TestCase):
+    def test_status_codes(self):
+        # no network: a fake fetch; only docs/ and README.md, the fragment dropped, each URL once
+        answers = {"https://ok.example/a": 200, "https://gone.example/": 404, "https://wall.example/": 403,
+                   "https://down.example/": "URLError: timed out"}
+        asked = []
+
+        def fetch(url):
+            asked.append(url)
+            return answers[url]
+        files = {"README.md": "[a](https://ok.example/a#x) [b](https://ok.example/a)\n",
+                 "docs/x.md": "[g](https://gone.example/) [w](https://wall.example/)\n<a href=\"https://down.example/\">d</a>\n",
+                 "other/y.md": "[n](https://not-checked.example/)\n"}
+        with tree(files) as root:
+            c = checker.Checker(root)
+            self.assertEqual(c.check_external(fetch=fetch), 4)
+        self.assertEqual(sorted(asked), sorted(answers))
+        self.assertEqual(sorted(c.errors), ["docs/x.md:1: https://gone.example/: 404",
+                                            "docs/x.md:2: https://down.example/: URLError: timed out"])
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=1).result.wasSuccessful() else 1)

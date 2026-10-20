@@ -15,7 +15,7 @@ Every image build runs the CI tests before the multi-arch tags (for example `syn
 | [tests/helm.sh](/tests/helm.sh) `<lint\|parity\|e2e>` | the Helm chart, see [Helm chart](#helm-chart) | CI: helm.yml | `EXTERNAL_DB`, `SKIP_BUILD`, `REPOSITORY`, `TAG` |
 | [tests/migrate.sh](/tests/migrate.sh) `<scenario>` | the moves of [Migrating](../migrating.md) from other Sync servers (Mozilla's compose files, dan-r, jeena, NixOS, YunoHost) and the upgrades of older firefox-sync releases ([Upgrading](../upgrading.md#older-firefox-sync-releases)), read back with [migrate_client.py](/tests/migrate_client.py) | local only | the scenario; `PORT` |
 | [tests/test_upstream_patches.py](/tests/test_upstream_patches.py) | the decisions of `.github/scripts/upstream-patches.py` on fixtures, no network | CI: the jobs that pick the release | none |
-| [tests/check_markdown_links.py](/tests/check_markdown_links.py) and [its self-test](/tests/test_check_markdown_links.py) | the links of the docs, see [Links](#links) | CI: docs.yml, every push | `--code`, `--settings` |
+| [tests/check_markdown_links.py](/tests/check_markdown_links.py) and [its self-test](/tests/test_check_markdown_links.py) | the links of the docs, see [Links](#links) | CI: docs.yml, every push | `--code`, `--settings`; `--external` by hand |
 | [tests/check_site_anchors.py](/tests/check_site_anchors.py) | after `mkdocs build`, every anchor of the docs is an id of the site's page, see [Docs site](#docs-site) | CI: docs.yml, every push | `--site` |
 | `cd admin && go test ./...` | the admin UI's unit tests, see [Admin UI](#admin-ui) | CI: admin.yml `unit` | none |
 
@@ -205,6 +205,8 @@ python3 -I tests/test_check_markdown_links.py
 ```
 
 [docs.yml](/.github/workflows/docs.yml) runs both, with `--code --settings`, on every push.
+
+`--external` also fetches every `http(s)` link of `docs/` and `README.md` and lists those that don't end in a 2xx after redirects; a 401, 403 or 429 is only a warning, since it is often a bot wall. It needs the network, so CI does not run it: run it when you edit the docs' links. It only says that a page answers, not that it still says what the sentence claims.
 
 ## Docs site
 
