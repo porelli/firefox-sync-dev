@@ -104,19 +104,21 @@ database:
 
 `imagePullSecrets` (`[{name: my-registry}]`) applies to every pod too, for a registry that needs a login. That is a mirror of `ghcr.io/porelli/firefox-sync`, and of Docker Hub, whose official images the database servers and the backups run. The `database.image.*` values are fully qualified (`docker.io/library/...`) for the nodes whose runtime has another default registry.
 
-### Database volumes
+### Volumes
 
-`database.persistence.size` and `.storageClass` are those of the database servers' StatefulSets (`volumeClaimTemplates`), which Kubernetes never changes: choose them before the first install. A `helm upgrade` with another value fails with `StatefulSet.apps ... is invalid: spec: Forbidden: updates to statefulset spec for fields other than ...`.
+`helm upgrade` refuses a change of a volume that Kubernetes would refuse, before anything is applied, with a `firefox-sync: ...` message that says what to set. Kubernetes itself would refuse it only after the objects before it were changed. The chart reads the volumes of the cluster for that, so `helm template` and a GitOps render check nothing.
 
-To grow a volume, keep the values as they were and resize its PVC, with a StorageClass that has `allowVolumeExpansion: true` ([volume expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)):
+The database servers' volumes, `database.persistence.*` and `fxa.database.persistence.*`, are those of their StatefulSets (`volumeClaimTemplates`), which Kubernetes never changes: choose their size and storage class before the first install, and keep them as they were. To grow such a volume, keep the values and resize its PVC, with a StorageClass that has `allowVolumeExpansion: true` ([volume expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)):
 
 ```bash
 kubectl patch pvc data-ffs-firefox-sync-tokenserver-db-0 -p '{"spec": {"resources": {"requests": {"storage": "20Gi"}}}}'
 ```
 
-The other PVCs are `data-ffs-firefox-sync-storage-db-0` (the storage) and `data-ffs-firefox-sync-postgres-0`. Some storage drivers grow a volume only when its pod restarts: `kubectl delete pod ffs-firefox-sync-storage-db-0`.
+The other PVCs are `data-ffs-firefox-sync-storage-db-0` (the storage), `data-ffs-firefox-sync-postgres-0`, and `data-ffs-firefox-sync-fxa-db-0` for the accounts (`data-mariadb-...` on MariaDB). Some storage drivers grow a volume only when its pod restarts: `kubectl delete pod ffs-firefox-sync-storage-db-0`.
 
-The backups' PVC (`backup.persistence.*`) is a plain one: the same `kubectl patch` grows it, and its storage class never changes either. Another StorageClass needs a backup and a restore into a new install: see [Restore on Kubernetes](../backups.md#restore-on-kubernetes).
+The plain PVCs, the backups' (`backup.persistence.*`), the keys' (`fxa.keys.persistence.*`) and the avatars' (`fxa.profileImages.persistence.*`), grow with the values: a larger `size` and `helm upgrade`, when their StorageClass has `allowVolumeExpansion: true`. Without it, or with a smaller size than the PVC has, the upgrade is refused: Kubernetes never shrinks a volume. A PVC grown by hand needs a `size` of at least its own. Checking the StorageClass reads it from the cluster, which a namespace-only Helm user may not do: grow the PVC with `kubectl patch` then, and set its size in the values.
+
+A volume's storage class never changes. An empty `storageClass` is the cluster's default when the volume is made: a plain PVC keeps its class after that, also when the default changes. Another class, or a database server's on another one, needs a new volume, so a backup and a restore into it: see [Restore on Kubernetes](../backups.md#restore-on-kubernetes).
 
 ## The Secret
 
@@ -357,6 +359,35 @@ With `fxa.volumeOwnerInit: false` there are none, and the accounts' pods get `fs
 | the bundled database, `ffs-firefox-sync-fxa-db` | 3306 | the auth server (also its migrations and policy), the profile server, the admin UI and the backups when they are on |
 
 Only a network plugin that enforces NetworkPolicies applies them. Redis also has a password, `FXA_REDIS_PASSWORD` of the Secret, which it reads from its standard input: it is in neither the pod's spec nor its arguments. A tool of yours that connects to the accounts' database needs a NetworkPolicy of its own.
+
+Without more, any pod of the cluster reaches the accounts' public servers directly, past the Ingress. For the auth server that matters: such a pod sets `X-Forwarded-For` itself, and `fxa.clientAddressDepth` takes the client's address from its end, so it picks the address the rate limits see. It also creates accounts around the sign-up gate, which is on the Ingress' path only (the database still enforces the sign-up policy). `fxa.networkPolicy.servers.enabled: true` admits only the Ingress controller, these pods of the release, and `fxa.networkPolicy.servers.extraFrom`:
+
+| Server | Ports | From the release |
+|---|---|---|
+| auth, `ffs-firefox-sync-fxa-auth` | 9000 | the content and profile servers, the Sync server (it checks Firefox's OAuth tokens there), the admin UI (its sign-up gate, its health checks) |
+| content, `ffs-firefox-sync-fxa-content` | 3030 | the admin UI |
+| profile, `ffs-firefox-sync-fxa-profile` | 1111, 1112 (`static`), 1114 (`img`) | the auth and content servers, the admin UI |
+| pairing, `ffs-firefox-sync-fxa-pairing` (with `fxa.pairing.enabled`) | 8000 | the admin UI |
+
+The backups need none of them. It is off by default because the chart cannot know your Ingress controller. Name its pods in `fxa.networkPolicy.servers.ingressController`, as one NetworkPolicy peer: `namespaceSelector` and `podSelector` together select the pods of those labels in the namespaces of those labels, and `podSelector` alone selects them in the release's namespace. `namespaceSelector` alone admits every pod of those namespaces: with the controller in the release's own namespace, set its `podSelector` too. One of them is required: the render refuses an empty one, which would admit every pod. It also needs `fxa.networkPolicy.enabled`. For ingress-nginx, installed with its Helm chart in the namespace `ingress-nginx`:
+
+```yaml
+fxa:
+  networkPolicy:
+    servers:
+      enabled: true
+      ingressController:
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: ingress-nginx
+```
+
+For Traefik, its Helm chart labels the pods `app.kubernetes.io/name: traefik`, in the namespace you install it in (`kube-system` for the one of k3s). Check the labels with `kubectl get pods -A -l app.kubernetes.io/name=traefik --show-labels`.
+
+`extraFrom` takes more peers as a NetworkPolicy has them: your own reverse proxy, a tool that reads the heartbeats, or a controller on the host network (`hostNetwork: true`), whose connections come from its node's address: `- ipBlock: {cidr: 192.168.1.0/24}`. How a network plugin treats the nodes' own traffic varies; the kubelet's probes still pass with the policies on kind's kindnet, which the tests use.
 
 ## Backups and upgrades
 

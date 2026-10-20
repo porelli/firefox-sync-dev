@@ -2,9 +2,16 @@
 fxa.networkPolicy (chart-only: compose's databases are on a network of its own): Redis and the
 bundled accounts database take connections from the accounts' servers and the admin UI alone
 (it reads the accounts, revokes their tokens), the database also from the backups. Their own
-pods by the chart's labels; enforced where the cluster's network plugin does
+pods by the chart's labels; enforced where the cluster's network plugin does.
+fxa.networkPolicy.servers (off by default: the chart cannot know the Ingress controller): the
+public servers (auth, content, profile, pairing) too, from the Ingress controller
+(servers.ingressController), the release's pods that call them, and servers.extraFrom. Any
+other pod could otherwise reach auth:9000 itself, with an X-Forwarded-For of its own choice
+(fxa.clientAddressDepth counts from its end): the client IP of the rate limits, and around the
+sign-up gate, which is on the Ingress' path only
 */ -}}
 {{- if and .Values.fxa.enabled .Values.fxa.networkPolicy.enabled }}
+{{- $np := .Values.fxa.networkPolicy }}
 {{- $clients := dict "fxa-redis" (list "fxa-auth" "fxa-content" "fxa-profile") "fxa-db" (list "fxa-auth" "fxa-profile") }}
 {{- if .Values.admin.enabled }}
 {{- /* (Redis: the admin UI revokes tokens and reads the sessions' last use, with its password) */}}
@@ -15,12 +22,37 @@ pods by the chart's labels; enforced where the cluster's network plugin does
 {{- /* (the database: the backups dump the accounts as its root, backup.yaml's backup-accounts) */}}
 {{- $_ := set $clients "fxa-db" (append (get $clients "fxa-db") "backup") }}
 {{- end }}
-{{- $ports := dict "fxa-redis" 6379 "fxa-db" 3306 }}
+{{- $ports := dict "fxa-redis" (list 6379) "fxa-db" (list 3306) }}
 {{- $servers := list "fxa-redis" }}
 {{- if .Values.fxa.database.bundled }}
 {{- $servers = append $servers "fxa-db" }}
 {{- end }}
-{{- range $i, $server := $servers }}
+{{- /* the public servers: who of the release calls each (the Sync server checks Firefox's
+OAuth tokens at auth, FXA_OAUTH_SERVER_URL; content's and profile's wait for auth's heartbeat;
+profile checks its tokens at auth, auth reads the profiles; the admin UI's gate passes sign-ups
+on to auth, its health checks every one), the ports of their containers (profile: 1111 its
+API, 1112 static for your own reverse proxy, 1114 img for the chart's Ingress) */}}
+{{- $public := list }}
+{{- if (($np.servers | default dict).enabled) }}
+{{- $_ := set $clients "fxa-auth" (list "fxa-content" "fxa-profile" "syncstorage") }}
+{{- $_ := set $clients "fxa-content" (list) }}
+{{- $_ := set $clients "fxa-profile" (list "fxa-auth" "fxa-content") }}
+{{- $_ := set $clients "fxa-pairing" (list) }}
+{{- $_ := set $ports "fxa-auth" (list 9000) }}
+{{- $_ := set $ports "fxa-content" (list 3030) }}
+{{- $_ := set $ports "fxa-profile" (list 1111 1112 1114) }}
+{{- $_ := set $ports "fxa-pairing" (list 8000) }}
+{{- $public = list "fxa-auth" "fxa-content" "fxa-profile" }}
+{{- if .Values.fxa.pairing.enabled }}
+{{- $public = append $public "fxa-pairing" }}
+{{- end }}
+{{- if .Values.admin.enabled }}
+{{- range $public }}
+{{- $_ := set $clients . (append (get $clients .) "admin") }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $i, $server := concat $servers $public }}
 {{- if $i }}
 ---
 {{- end }}
@@ -37,15 +69,25 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
+        {{- with get $clients $server }}
         - podSelector:
             matchLabels:
               {{- include "firefox-sync.selectorLabels" (dict "root" $) | nindent 14 }}
             matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
-                values: {{ toJson (get $clients $server) }}
+                values: {{ toJson . }}
+        {{- end }}
+        {{- if has $server $public }}
+        - {{ include "firefox-sync.fxaControllerPeer" $ }}
+        {{- range $np.servers.extraFrom }}
+        - {{ toJson . }}
+        {{- end }}
+        {{- end }}
       ports:
+        {{- range get $ports $server }}
         - protocol: TCP
-          port: {{ get $ports $server }}
+          port: {{ . }}
+        {{- end }}
 {{- end }}
 {{- end }}

@@ -154,9 +154,17 @@ func (d deployment) stackHost(host string) bool {
 	return stackHosts[host]
 }
 
+// accountsBackedUp: the backup service dumps the accounts too (their scope), with their
+// database at host (FXA_DB_HOST): only on the stack's own server, as compose's backup-fxa,
+// the Quadlets' and the chart's backup-accounts (only with fxa.database.bundled); with your own
+// accounts server the Sync scope alone, its own backups for the accounts
+// (docs/backups.md#your-own-database-server)
+func (d deployment) accountsBackedUp(host string) bool { return d.stackHost(host) }
+
 // the self-hosted accounts (fxa.enabled): their auth pod runs compose's fxa-migrations and
 // fxa-policy as its init containers (migrations, policy), so a new pod of it applies the
-// values again; one backup Job dumps the accounts before the Sync databases
+// values again; one backup Job dumps the accounts (their bundled database) before the Sync
+// databases
 func (d deployment) authDeployment() string { return "deployment/" + d.fullname() + "-fxa-auth" }
 
 // FxaKeys: the PVC of the accounts' signing keys

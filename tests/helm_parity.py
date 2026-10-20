@@ -117,8 +117,6 @@ ALLOWED_DIFFERENCES = {
     "your own elsewhere: Firefox still gets the URL, content's PAIRING_SERVER_BASE_URI) the chart's is empty: the admin "
     "UI's health check of the pairing server goes to FXA_PAIRING_INTERNAL_URL, else http://fxa-pairing:8000, which no "
     "Service answers; compose with FXA_PAIRING_URL and no pairing profile checks a server that is not there",
-    f"{FXA}:admin/ADMIN_UNCONFIRMED_HOURS": "compose-only: empty there by default (the admin UI's 72); the chart has no "
-    "value for it (docs/reference/settings.md: no Helm column), so the admin UI's default",
     # fxa.extraCaCerts (the fxa-mariadb case sets it): a CA of your own for the accounts' public URLs
     "fxa-mariadb:auth/NODE_EXTRA_CA_CERTS": "chart-only: fxa.extraCaCerts, a CA of your own the accounts' servers trust "
     "for their public URLs; compose has no such setting (tests/docker-compose.fxa-test.yml mounts its test CA itself)",
@@ -368,14 +366,16 @@ EXTERNAL_HELM = ["--set", "database.bundled=false", "--set", f"database.external
 # the self-hosted accounts: docker-compose.fxa.yml on top, .env as prepare_environment.sh writes it
 # for them, the matching values. The bundled accounts database without a policy user (its root
 # installs the policy); the pairing server on (COMPOSE_PROFILES=pairing) but with your own server
+# (ADMIN_UNCONFIRMED_HOURS: the chart passes it only when set, so set in both, 0 the edge)
 FXA_ENV = {
     "FXA_CONTENT_URL": "https://accounts.example.test", "FXA_AUTH_URL": "https://api.example.test",
     "FXA_PROFILE_URL": "https://profile.example.test", "FXA_PAIRING_URL": "wss://pairing.example.test",
     "FXA_OAUTH_SERVER_URL": "http://fxa-auth:9000/v1", "FXA_EMAIL_DOMAIN": "api.example.test",
+    "ADMIN_UNCONFIRMED_HOURS": "0",
 }
 FXA_HELM = ["--set", "fxa.enabled=true", "--set", "fxa.contentUrl=https://accounts.example.test",
             "--set", "fxa.authUrl=https://api.example.test", "--set", "fxa.profileUrl=https://profile.example.test",
-            "--set", "fxa.pairing.url=wss://pairing.example.test"]
+            "--set", "fxa.pairing.url=wss://pairing.example.test", "--set", "admin.unconfirmedHours=0"]
 FXA_BUNDLED_ENV = {**FXA_ENV, "FXA_MYSQL_POLICY_PASSWORD": ""}
 FXA_PAIRING_HELM = FXA_HELM + ["--set", "fxa.pairing.enabled=true"]
 # with the admin UI: signing in to it with the accounts (prepare_environment.sh's .env: the

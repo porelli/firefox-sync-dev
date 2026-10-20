@@ -6,7 +6,8 @@
 #   tests/helm-fxa.sh e2e <mysql|mariadb>
 #               the chart with the accounts on a throwaway kind cluster (fxa_e2e);
 #               EXTERNAL_DB=1 (mysql only): on your own server instead of the bundled one;
-#               SKIP_BROWSER=1: without the real Firefox (test_fxa_browser.py)
+#               SYNC_BACKEND=postgres: the Sync server on the bundled PostgreSQL (default:
+#               the accounts' backend); SKIP_BROWSER=1: without the real Firefox (test_fxa_browser.py)
 #
 # PARITY_BASE_CHART=<dir>: chart 0.1.0 already extracted there (charts/firefox-sync of
 # PARITY_BASE, default 2512e9a), for a checkout without that commit (a copy without .git,
@@ -519,6 +520,17 @@ fxa_admin_lint() {
   out=$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/admin-values.yaml" "${signin[@]}" 2>&1) && fail "admin.fxaSignIn without the accounts: renders"
   grep -qF "admin.fxaSignIn needs fxa.enabled" <<< "${out}" || fail "admin.fxaSignIn without the accounts: ${out}"
   check "admin.fxaSignIn: ADMIN_FXA_CLIENT_ID derived (sha256 of <namespace>/<release>/admin-oidc, 16 hex, the same on every render, another per release) or fxa.adminClientId; the redirect URL of admin.ingress.host; auth's, content's and the admin UI's env as compose's; refused without admin.allowed, a redirect URL (https://), the accounts; fxa.adminClientId refused without it"
+
+  # admin.unconfirmedHours: ADMIN_UNCONFIRMED_HOURS with the accounts, only when set (0 too)
+  unconfirmed() { helm template test-release "${CHART_DIR}" "$@" | manifests | jq -r '[.[] | select(.kind == "Deployment" and .metadata.name == "test-release-firefox-sync-admin")
+    | .spec.template.spec.containers[0].env[] | select(.name == "ADMIN_UNCONFIRMED_HOURS") | .value] | join(",")'; }
+  [[ "$(unconfirmed -f "${fxa}"):$(unconfirmed -f "${fxa}" --set admin.unconfirmedHours=0):$(unconfirmed -f "${fxa}" --set-string admin.unconfirmedHours=48):$(unconfirmed -f "${CHART_DIR}/ci/admin-values.yaml" --set admin.unconfirmedHours=48)" \
+    == ":0:48:" ]] || fail "admin.unconfirmedHours: $(unconfirmed -f "${fxa}"):$(unconfirmed -f "${fxa}" --set admin.unconfirmedHours=0):$(unconfirmed -f "${fxa}" --set-string admin.unconfirmedHours=48)"
+  for bad in admin.unconfirmedHours=-1 admin.unconfirmedHours=soon admin.unconfirmedHours=1000000; do
+    out=$(fxa_render -f "${fxa}" --set "${bad}") && fail "${bad}: not refused by the schema"
+    grep -qi 'schema' <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
+  done
+  check "admin.unconfirmedHours: ADMIN_UNCONFIRMED_HOURS with the accounts only when set (0, 48; none by default or without the accounts), -1, soon and 1000000 refused (the admin UI's hours fit a time.Duration)"
 }
 
 # the accounts' objects: the database, Redis, the keys, the auth pod and its init containers,
@@ -669,6 +681,50 @@ fxa_objects_lint() {
   [[ "$(helm template test-release "${CHART_DIR}" -f "${CHART_DIR}/ci/fxa-external-values.yaml" | manifests | jq -r '[.[] | select(.kind == "NetworkPolicy") | .metadata.name] | join(" ")')" == \
     test-release-firefox-sync-fxa-redis ]] || fail "your own accounts server: not the fxa-redis NetworkPolicy alone"
   check "fxa.networkPolicy: fxa-redis from fxa-auth, fxa-content, fxa-profile; fxa-db from fxa-auth, fxa-profile; both from the admin UI (when on), fxa-db from the backups (when on); none with it off, no fxa-db one with your own server"
+
+  # fxa.networkPolicy.servers (off by default): the public servers from the Ingress controller
+  # (one peer of its selectors), the release's pods that call them and extraFrom alone
+  local ic=(--set fxa.networkPolicy.servers.enabled=true
+    --set-json 'fxa.networkPolicy.servers.ingressController={"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ingress-nginx"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}}')
+  server_policies() { fxa_objs "$@" | jq -c '[.[] | select(.kind == "NetworkPolicy" and (.metadata.name | test("-fxa-(redis|db)$") | not))
+    | {to: .spec.podSelector.matchLabels["app.kubernetes.io/component"], from: [.spec.ingress[0].from[] | if .podSelector.matchLabels["app.kubernetes.io/instance"] == "test-release" and (has("namespaceSelector") | not)
+      then {release: .podSelector.matchExpressions[0].values} else . end], ports: [.spec.ingress[0].ports[] | .port]}]'; }
+  [[ "$(server_policies)" == '[]' ]] || fail "fxa.networkPolicy.servers off by default: $(server_policies)"
+  local controller='{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ingress-nginx"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}}'
+  [[ "$(server_policies "${ic[@]}")" == "[{\"to\":\"fxa-auth\",\"from\":[{\"release\":[\"fxa-content\",\"fxa-profile\",\"syncstorage\",\"admin\"]},${controller}],\"ports\":[9000]},{\"to\":\"fxa-content\",\"from\":[{\"release\":[\"admin\"]},${controller}],\"ports\":[3030]},{\"to\":\"fxa-profile\",\"from\":[{\"release\":[\"fxa-auth\",\"fxa-content\",\"admin\"]},${controller}],\"ports\":[1111,1112,1114]},{\"to\":\"fxa-pairing\",\"from\":[{\"release\":[\"admin\"]},${controller}],\"ports\":[8000]}]" ]] \
+    || fail "fxa.networkPolicy.servers: $(server_policies "${ic[@]}")"
+  # (without the admin UI and pairing: content's from the controller alone, no pairing one;
+  # podSelector alone: the controller's pods in the release's namespace; extraFrom as given)
+  [[ "$(server_policies "${ic[@]}" --set admin.enabled=false --set fxa.pairing.enabled=false --set-json 'fxa.networkPolicy.servers.ingressController.namespaceSelector={}' \
+    --set-json 'fxa.networkPolicy.servers.extraFrom=[{"ipBlock":{"cidr":"10.0.0.0/24"}}]' | jq -c '[.[] | [.to, .from]]')" \
+    == '[["fxa-auth",[{"release":["fxa-content","fxa-profile","syncstorage"]},{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}},{"ipBlock":{"cidr":"10.0.0.0/24"}}]],["fxa-content",[{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}},{"ipBlock":{"cidr":"10.0.0.0/24"}}]],["fxa-profile",[{"release":["fxa-auth","fxa-content"]},{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}},{"ipBlock":{"cidr":"10.0.0.0/24"}}]]]' ]] \
+    || fail "fxa.networkPolicy.servers without the admin UI and pairing, extraFrom: $(server_policies "${ic[@]}" --set admin.enabled=false --set fxa.pairing.enabled=false)"
+  # (refused: no selector, or selectors that select everything; fxa.networkPolicy.enabled off)
+  fxa_refused "fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.servers.ingressController.namespaceSelector or .podSelector" -f "${fxa}" \
+    --set fxa.networkPolicy.servers.enabled=true
+  fxa_refused "fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.servers.ingressController.namespaceSelector or .podSelector" -f "${fxa}" \
+    --set fxa.networkPolicy.servers.enabled=true --set-json 'fxa.networkPolicy.servers.ingressController={"namespaceSelector":{"matchLabels":{}},"podSelector":{"matchExpressions":[]}}'
+  fxa_refused "fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.enabled" -f "${fxa}" "${ic[@]}" --set fxa.networkPolicy.enabled=false
+  for bad in fxa.networkPolicy.servers.ingressController.nameSpaceSelector.matchLabels.a=b fxa.networkPolicy.servers.ingressController.podSelector.labels.a=b \
+    fxa.networkPolicy.servers.enable=true; do
+    out=$(fxa_render -f "${fxa}" --set "${bad}") && fail "${bad}: not refused by the schema"
+    grep -qi 'schema' <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
+  done
+  out=$(fxa_render -f "${fxa}" "${ic[@]}" --set-json 'fxa.networkPolicy.servers.extraFrom=[{}]') && fail "extraFrom [{}] (every pod): not refused by the schema"
+  # (matchExpressions as Kubernetes has them: [{}] or another operator refused; one with its key selects)
+  for bad in '[{}]' '[{"key":"app","operator":"Is","values":["x"]}]' '[{"operator":"Exists"}]'; do
+    out=$(fxa_render -f "${fxa}" --set fxa.networkPolicy.servers.enabled=true --set-json "fxa.networkPolicy.servers.ingressController.podSelector.matchExpressions=${bad}") \
+      && fail "ingressController.podSelector.matchExpressions=${bad}: renders"
+    grep -qi 'schema' <<< "${out}" || fail "matchExpressions=${bad}: refused, but not by the schema: ${out}"
+  done
+  [[ "$(server_policies --set fxa.networkPolicy.servers.enabled=true --set-json 'fxa.networkPolicy.servers.ingressController.podSelector.matchExpressions=[{"key":"app","operator":"In","values":["traefik"]}]' \
+    | jq -c '.[0].from[1]')" == '{"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["traefik"]}]}}' ]] \
+    || fail "ingressController.podSelector.matchExpressions with a key: not the controller's peer"
+  # (the e2e's values: Traefik in ffs-test-ingress, the tests' pods by their label)
+  [[ "$(helm template test-release "${CHART_DIR}" -f "${REPO_ROOT}/tests/helm/fxa-values.yaml" --set fxa.enabled=true | manifests \
+    | jq -c '[.[] | select(.kind == "NetworkPolicy") | .metadata.name | sub("test-release-firefox-sync-"; "")]')" == '["fxa-redis","fxa-db","fxa-auth","fxa-content","fxa-profile","fxa-pairing"]' ]] \
+    || fail "tests/helm/fxa-values.yaml: not the servers' NetworkPolicies"
+  check "fxa.networkPolicy.servers (off by default): auth from content, profile, the Sync server, the admin UI; content, pairing from the admin UI; profile from auth, content, the admin UI; each from the Ingress controller (one peer: namespaceSelector and/or podSelector) and extraFrom; refused without a selector, with selectors of everything, or with fxa.networkPolicy.enabled off"
 
   # the scripts of config/fxa, byte for byte, in the ConfigMap
   local file
@@ -841,6 +897,10 @@ fxa_base_parity() {
 # users from db/mysql/fxa-mysql.sql, the Secret ffs-own): install, flow, the admin UI's
 # tests, the backups (Sync's alone, as compose's), Firefox; the steps of the bundled server
 # and of survival are not rerun.
+# SYNC_BACKEND=postgres: the Sync server on the bundled PostgreSQL (database.backend), the
+# accounts on <mysql|mariadb>; all of the above, and the Sync scope restored too, as
+# docs/backups.md#restore-on-kubernetes says for PostgreSQL (its role, its one database, the
+# admin UI's), next to the accounts'.
 # SKIP_BROWSER=1: test_fxa_pairing.py alone in Firefox's image, not test_fxa_browser.py.
 # REPOSITORY, TAG: the Sync server's images, as tests/helm.sh; FXA_IMAGE (default REPOSITORY),
 # FXA_VERSION (default fxa-mono-latest): the accounts'; FXA_MARIADB_IMAGE, FXA_MYSQL_IMAGE:
@@ -853,6 +913,14 @@ fxa_e2e() {
     *) echo "Usage: $0 e2e <mysql|mariadb>"; exit 1 ;;
   esac
   [[ -z "${external}" || ${backend} == mysql ]] || { echo "EXTERNAL_DB=1: e2e mysql only (db/mysql/fxa-mysql.sql)"; exit 1; }
+  # the Sync server's database (database.backend): the accounts' backend, or PostgreSQL
+  SYNC_BACKEND=${SYNC_BACKEND:-${backend}}
+  local flavor=mysql init_dir=db/mysql/init
+  case "${SYNC_BACKEND}" in
+    "${backend}") ;;
+    postgres) flavor=postgres init_dir=db/postgres/init ;;
+    *) echo "SYNC_BACKEND=${SYNC_BACKEND}: postgres, or empty (the accounts' backend, ${backend})"; exit 1 ;;
+  esac
   local repository=${REPOSITORY:-ghcr.io/porelli/firefox-sync} tag=${TAG:-latest} init_tag=${TAG:-latest}
   local fxa_image=${FXA_IMAGE:-${repository}}:${FXA_VERSION:-fxa-mono-latest}
   local db_image redis_image
@@ -882,11 +950,12 @@ fxa_e2e() {
   fi
   db_args=(--set fxa.database.image."${backend}"="${db_image}")
   ADMIN_TAG=${TAG:-latest}
-  CLUSTER="ffs-helm-fxa-${backend}${external:+-extdb}"
+  CLUSTER="ffs-helm-fxa-${backend}${external:+-extdb}$([[ ${SYNC_BACKEND} == "${backend}" ]] || echo "-sync-${SYNC_BACKEND}")"
   REL=t
   FULL="${REL}-firefox-sync"
   SECRET=${FULL}
-  SYNC_IMAGE="${repository}:syncstorage-rs-mysql-${tag}"
+  # (also the image of the tests' pods: python3 with PyFxA, MySQLdb and psycopg2, curl)
+  SYNC_IMAGE="${repository}:syncstorage-rs-${flavor}-${tag}"
   # the fixtures' images (tests/helm/traefik.yaml, tests/helm/fxa-fixtures.yaml)
   TRAEFIK_IMAGE=docker.io/library/traefik:v3
   MAILPIT_IMAGE=docker.io/axllent/mailpit:latest
@@ -910,14 +979,14 @@ fxa_e2e() {
   docker save --help 2> /dev/null | grep -q -- '--platform' \
     || fail "docker $(docker version -f '{{.Server.Version}}' 2> /dev/null) has no docker save --platform: Docker 27 or later is needed"
 
-  echo "=== e2e of the accounts on kind (${backend}${external:+, your own server}) ==="
+  echo "=== e2e of the accounts on kind (${backend}${external:+, your own server}, Sync on ${SYNC_BACKEND}) ==="
   kind delete cluster --name "${CLUSTER}" > /dev/null 2>&1 || true
   trap 'rc=$?; if ((rc)); then diagnostics; fi; kind delete cluster --name "${CLUSTER}"' EXIT
   kind create cluster --name "${CLUSTER}" --wait 120s
   kubectl config use-context "kind-${CLUSTER}" > /dev/null
   # PodSecurity baseline, enforced, as tests/helm.sh
   kubectl label ns default pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/enforce-version=latest > /dev/null
-  load_images "${repository}" mysql db/mysql/init
+  load_images "${repository}" "${flavor}" "${init_dir}"
   # the images of the host's docker (pulled there first when missing) into the node, as
   # tests/helm.sh loads the Sync server's: the node's platform alone (a pulled image's export
   # lacks the others), the import's layers dropped once unpacked (disk)
@@ -925,7 +994,7 @@ fxa_e2e() {
   platform=$(docker version -f 'linux/{{.Server.Arch}}')
   local sync_db_image
   sync_db_image=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["database"]["image"][sys.argv[2]])' \
-    "${CHART_DIR}/values.yaml" "${backend}") || fail "no database.image.${backend} in values.yaml"
+    "${CHART_DIR}/values.yaml" "${SYNC_BACKEND}") || fail "no database.image.${SYNC_BACKEND} in values.yaml"
   # (and the test fixtures': the Ingress controller, the mail catcher)
   local fixtures_images="${TRAEFIK_IMAGE} ${MAILPIT_IMAGE}"
   for image in "${SYNC_IMAGE}" "${fxa_image}" "${PAIRING_IMAGE}" "${db_image}" "${redis_image}" $([[ ${sync_db_image} == "${db_image}" ]] || echo "${sync_db_image}") ${fixtures_images}; do
@@ -975,7 +1044,7 @@ fxa_e2e() {
   check "images-seed with fxa.volumeOwnerInit=false: the image's var/public copied into a volume of root's (group 10001, 2775), left as it was, 10001 writes there"
 
   local install=("${REL}" "${CHART_DIR}" -f "${SCRIPT_DIR}/helm/fxa-values.yaml" --set fxa.enabled=true
-    --set database.backend="${backend}" --set fxa.database.backend="${backend}"
+    --set database.backend="${SYNC_BACKEND}" --set fxa.database.backend="${backend}"
     --set image.repository="${repository}" --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}"
     --set image.adminTag="${ADMIN_TAG}" --set fxa.image.repository="${fxa_image%:*}" --set fxa.image.tag="${fxa_image##*:}" "${db_args[@]}")
   # the accounts' databases as root, in their server's pod (the bundled one, or your own)
@@ -987,7 +1056,7 @@ fxa_e2e() {
     install+=(--set fxa.database.bundled=false --set fxa.database.external.host=extdb-fxa --set existingSecret=ffs-own)
   fi
   helm install "${install[@]}" --wait --timeout 20m || fail "helm install with the accounts did not get Ready"
-  check "helm install with the accounts (${backend}$([[ -z ${external} ]] || echo ", your own server extdb-fxa, existingSecret ffs-own")) Ready, in a namespace enforcing PodSecurity baseline"
+  check "helm install with the accounts (${backend}$([[ -z ${external} ]] || echo ", your own server extdb-fxa, existingSecret ffs-own"), Sync on ${SYNC_BACKEND}) Ready, in a namespace enforcing PodSecurity baseline"
   admin_test_env
 
   # the auth server only after its init containers, in compose's order, all succeeded
@@ -1013,7 +1082,8 @@ fxa_e2e() {
     # CREATE USER (the administrator's SQL made ffs_admin); the accounts' user on the server's
     # default authentication, or mysql_native_password for an image without mozilla/fxa#21554
     ! kubectl get sts,svc,pvc -o name | grep -q -- '-fxa-db' || fail "a bundled accounts database with your own server: $(kubectl get sts,svc,pvc -o name | grep -- '-fxa-db')"
-    [[ "$(kubectl get networkpolicy -o name | paste -sd' ' -)" == "networkpolicy.networking.k8s.io/${FULL}-fxa-redis" ]] \
+    # (the servers' too, tests/helm/fxa-values.yaml: below)
+    [[ "$(kubectl get networkpolicy -o name | grep -c -- '-fxa-\(redis\|db\)$')" == 1 ]] && ! kubectl get networkpolicy "${FULL}-fxa-db" > /dev/null 2>&1 \
       || fail "the NetworkPolicies with your own server: $(kubectl get networkpolicy -o name | paste -sd' ' -)"
     out=$(kubectl logs "${auth}" -c policy)
     ! grep -qi 'create user' <<< "${out}" || fail "the policy's log names CREATE USER: ${out}"
@@ -1055,6 +1125,33 @@ fxa_e2e() {
   grep -q NOAUTH <<< "${out}" || fail "a pod with the accounts' labels does not reach fxa-redis: ${out}"
   kubectl delete pod np-probe --wait=true > /dev/null
   check "fxa.networkPolicy: fxa-redis unreachable from a pod not of the accounts, reached with their labels (the CNI enforces it)"
+
+  # fxa.networkPolicy.servers (tests/helm/fxa-values.yaml: Traefik's pods in ffs-test-ingress,
+  # the tests' pods): auth, content, profile and pairing unreachable from another pod, also one
+  # with Traefik's label in another namespace (both selectors in one peer); reached by the tests'
+  # pods, and through Traefik (every test below goes through it: the flows, the rate limits by
+  # the client's address, the admin UI's sign-in)
+  server_probe() {
+    kubectl delete pod np-servers --ignore-not-found --wait=true > /dev/null
+    kubectl run np-servers --image="${SYNC_IMAGE}" --image-pull-policy=Never --restart=Never --labels="ffs-e2e=np-servers$1" --command -- sh -c "
+      for u in fxa-auth:9000/__heartbeat__ fxa-content:3030/__heartbeat__ fxa-profile:1111/__heartbeat__ fxa-profile:1114/img/a/00000000000000000000000000000000 fxa-pairing:8000/__heartbeat__; do
+        echo \"\${u%%/*} \$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://${FULL}-\${u})\"
+      done" > /dev/null
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/np-servers --timeout=3m > /dev/null || fail "np-servers did not complete"
+    kubectl logs np-servers 2>&1 | paste -sd' ' -
+  }
+  local blocked="fxa-auth:9000 000 fxa-content:3030 000 fxa-profile:1111 000 fxa-profile:1114 000 fxa-pairing:8000 000"
+  got=$(server_probe "")
+  [[ "${got}" == "${blocked}" ]] || fail "a pod of no label reaches the accounts' servers: ${got}"
+  got=$(server_probe ",app=traefik")
+  [[ "${got}" == "${blocked}" ]] || fail "a pod with Traefik's label in the namespace default reaches the accounts' servers: ${got}"
+  got=$(server_probe ",ffs-e2e-direct=true")
+  [[ "${got}" == "fxa-auth:9000 200 fxa-content:3030 200 fxa-profile:1111 200 fxa-profile:1114 200 fxa-pairing:8000 200" ]] \
+    || fail "a pod of extraFrom does not reach the accounts' servers: ${got}"
+  kubectl delete pod np-servers --wait=true > /dev/null
+  [[ "$(kubectl get networkpolicy -o name | sed 's|.*/||' | LC_ALL=C sort | paste -sd' ' -)" == "$(printf '%s\n' "${FULL}"-fxa-{redis,auth,content,profile,pairing} $([[ -n ${external} ]] || echo "${FULL}-fxa-db") | LC_ALL=C sort | paste -sd' ' -)" ]] \
+    || fail "the NetworkPolicies: $(kubectl get networkpolicy -o name | paste -sd' ' -)"
+  check "fxa.networkPolicy.servers: auth, content, profile (1111, 1114), pairing unreachable from a pod of no label and from one with Traefik's label in another namespace (the CNI enforces it), reached from extraFrom's; through Traefik in the tests below"
 
   # fail closed: a wrong password of the accounts' database stops auth at the migrations
   # (wait-db has no credentials), never Ready, out of its Service
@@ -1141,6 +1238,53 @@ fxa_e2e() {
       || fail "helm upgrade --dry-run=server with fxa.database.allowMajorUpgrade=true refused: ${out}"
     [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the dry run changed fxa-db's StatefulSet"
     check "helm upgrade to fxa.database.image.${backend}=${major_image} (running ${running_image}): refused at render time naming both, revision ${revision} still deployed, fxa-db unchanged; with fxa.database.allowMajorUpgrade=true it renders (server dry run)"
+
+    # the volumes as they are (checkClaim, lookups): what Kubernetes would refuse partway is
+    # refused at render time, nothing applied. fxa-db's volumeClaimTemplate never changes; the
+    # PVCs' class never changes, their size never shrinks and grows only with a StorageClass
+    # of allowVolumeExpansion (kind's standard: set off, then on, then as it was)
+    local sc_before keys_pvc="${FULL}-fxa-keys" images_pvc="${FULL}-fxa-profile-images" sts_claim
+    sc_before=$(kubectl get storageclass standard -o jsonpath='{.allowVolumeExpansion}')
+    kubectl patch storageclass standard --type merge -p '{"allowVolumeExpansion": false}' > /dev/null || fail "kind's StorageClass standard not patched"
+    sts_claim=$(kubectl get sts "${FULL}-fxa-db" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}')
+    storage_refused() {
+      local want=$1 out
+      shift
+      sts_before=$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')
+      if out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values "$@" --timeout 2m 2>&1); then
+        fail "helm upgrade $* accepted"
+      fi
+      grep -qF "${want}" <<< "${out}" || fail "helm upgrade $*: refused, but not by the chart's check: ${out}"
+      [[ "$(helm history "${REL}" -o json | jq -r 'last | "\(.revision) \(.status)"')" == "${revision} deployed" ]] || fail "the refused upgrade ($*) left: $(helm history "${REL}" | tail -2)"
+      [[ "$(kubectl get sts "${FULL}-fxa-db" -o json | jq -cS '[.metadata.generation, .spec]')" == "${sts_before}" ]] || fail "the refused upgrade ($*) changed fxa-db's StatefulSet"
+      [[ "$(kubectl get pvc "${keys_pvc}" "${images_pvc}" -o jsonpath='{range .items[*]}{.spec.storageClassName} {.spec.resources.requests.storage} {end}')" == "standard 1Gi standard 1Gi " ]] \
+        || fail "the refused upgrade ($*) changed the PVCs: $(kubectl get pvc "${keys_pvc}" "${images_pvc}")"
+    }
+    storage_refused "firefox-sync: fxa.database.persistence.size is 9Gi but the StatefulSet ${FULL}-fxa-db (its volume ${old_claim}) was created with ${sts_claim}: Kubernetes never changes a StatefulSet's volumeClaimTemplates; set it back to ${sts_claim}" \
+      --set fxa.database.persistence.size=9Gi
+    storage_refused "firefox-sync: fxa.database.persistence.storageClass is \"fast\" but the StatefulSet ${FULL}-fxa-db (its volume ${old_claim}) was created with \"\"" \
+      --set fxa.database.persistence.storageClass=fast
+    storage_refused "firefox-sync: fxa.keys.persistence.size is 2Gi but the PVC ${keys_pvc} is 1Gi, and its StorageClass \"standard\" does not allow expansion (allowVolumeExpansion): keep 1Gi" \
+      --set fxa.keys.persistence.size=2Gi
+    storage_refused "firefox-sync: fxa.profileImages.persistence.size is 512Mi but the PVC ${images_pvc} is 1Gi: Kubernetes never shrinks a volume; set at least 1Gi" \
+      --set fxa.profileImages.persistence.size=512Mi
+    storage_refused "firefox-sync: fxa.profileImages.persistence.storageClass is \"fast\" but the PVC ${images_pvc} is on \"standard\": Kubernetes never changes a PVC's class" \
+      --set fxa.profileImages.persistence.storageClass=fast
+    # (with allowVolumeExpansion the growth renders, a server dry run: lookup reads the cluster,
+    # nothing changed; an empty storageClass renders the PVC's own)
+    kubectl patch storageclass standard --type merge -p '{"allowVolumeExpansion": true}' > /dev/null || fail "kind's StorageClass standard not patched"
+    out=$(helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --set fxa.keys.persistence.size=2Gi --dry-run=server 2>&1) \
+      || fail "helm upgrade --dry-run=server with fxa.keys.persistence.size=2Gi on a StorageClass of allowVolumeExpansion refused: ${out}"
+    got=$(sed -n '/^MANIFEST:/,/^NOTES:/{/^\(MANIFEST\|NOTES\):/d;p}' <<< "${out}" | manifests | jq -c --arg n "${keys_pvc}" '.[] | select(.kind == "PersistentVolumeClaim" and .metadata.name == $n) | [.spec.storageClassName, .spec.resources.requests.storage]')
+    [[ "${got}" == '["standard","2Gi"]' ]] || fail "the keys' PVC of the dry run: ${got} (expected its class standard, 2Gi)"
+    [[ "$(kubectl get pvc "${keys_pvc}" -o jsonpath='{.spec.resources.requests.storage}')" == 1Gi ]] || fail "the dry run resized ${keys_pvc}"
+    if [[ -n "${sc_before}" ]]; then
+      kubectl patch storageclass standard --type merge -p "{\"allowVolumeExpansion\": ${sc_before}}" > /dev/null
+    else
+      kubectl patch storageclass standard --type json -p '[{"op": "remove", "path": "/allowVolumeExpansion"}]' > /dev/null
+    fi
+    [[ "$(kubectl get storageclass standard -o jsonpath='{.allowVolumeExpansion}')" == "${sc_before}" ]] || fail "kind's StorageClass standard not put back"
+    check "the volumes: fxa.database.persistence.size and .storageClass (fxa-db's volumeClaimTemplate), fxa.keys.persistence.size up on a StorageClass without allowVolumeExpansion, fxa.profileImages.persistence.size down and .storageClass: refused at render time saying what to set, revision ${revision} still deployed, nothing changed; with allowVolumeExpansion the keys' 2Gi renders (server dry run, the PVC's class standard kept)"
   fi
 
   # the accounts' pages and profiles: Ready (helm's --wait), after their init containers; the
@@ -1182,7 +1326,7 @@ fxa_e2e() {
   kubectl exec "${profile}" -c profile -- node -e "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))" \
     || fail "the profile container does not reach its worker at 127.0.0.1:1113"
   kubectl delete pod curl-probe --ignore-not-found --wait=true > /dev/null
-  kubectl run curl-probe --image="${SYNC_IMAGE}" --image-pull-policy=Never --restart=Never --command -- sh -c "
+  kubectl run curl-probe --image="${SYNC_IMAGE}" --image-pull-policy=Never --restart=Never --labels=ffs-e2e-direct=true --command -- sh -c "
     c=http://${FULL}-fxa-content:3030 p=http://${FULL}-fxa-profile a=/a/00000000000000000000000000000000
     echo \"config \$(curl -fsS --max-time 20 \$c/.well-known/fxa-client-configuration | tr -d '\n')\"
     for u in :1114/img\$a :1114\$a :1112\$a :1114/img/a/0123456789abcdef0123456789abcdef; do echo \"GET\$u \$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' \$p\$u)\"; done
@@ -1351,9 +1495,12 @@ PY
   # fxa on your own)
   local fxa_db_url admin_db_url fxa_user=root fxa_host="${FULL}-fxa-db"
   [[ -z "${external}" ]] || fxa_user=fxa fxa_host=extdb-fxa
+  # (the admin UI's own database on the Sync server's: PostgreSQL's one server with SYNC_BACKEND=postgres)
+  local admin_scheme=mysql admin_server="${FULL}-tokenserver-db:3306"
+  [[ ${SYNC_BACKEND} == postgres ]] && admin_scheme=postgresql admin_server="${FULL}-postgres:5432"
   fxa_db_url="mysql://${fxa_user}:${fxa_mysql_password}@$(admin_env FXA_DB_HOST):$(admin_env FXA_DB_PORT)/fxa"
-  admin_db_url="mysql://$(admin_env ADMIN_DB_USER):${admin_db_password}@$(admin_env TOKENSERVER_DB_HOST):$(admin_env TOKENSERVER_DB_PORT)/$(admin_env ADMIN_DB_NAME)"
-  [[ "${fxa_db_url}" == "mysql://${fxa_user}:${fxa_mysql_password}@${fxa_host}:3306/fxa" && "${admin_db_url}" == "mysql://ffs_admin_ui:${admin_db_password}@${FULL}-tokenserver-db:3306/ffs_admin" ]] \
+  admin_db_url="${admin_scheme}://$(admin_env ADMIN_DB_USER):${admin_db_password}@$(admin_env TOKENSERVER_DB_HOST):$(admin_env TOKENSERVER_DB_PORT)/$(admin_env ADMIN_DB_NAME)"
+  [[ "${fxa_db_url}" == "mysql://${fxa_user}:${fxa_mysql_password}@${fxa_host}:3306/fxa" && "${admin_db_url}" == "${admin_scheme}://ffs_admin_ui:${admin_db_password}@${admin_server}/ffs_admin" ]] \
     || fail "the admin UI's databases: ${fxa_db_url//${fxa_mysql_password}/***} ${admin_db_url//${admin_db_password}/***}"
   # (test-only: the tests look at the accounts database as root, as tests/e2e-fxa.sh on compose's
   # network; the chart's fxa.networkPolicy lets only the accounts' servers and the admin UI in,
@@ -1367,7 +1514,8 @@ PY
   admin_k+=" or spoofed_forwarded_for_does_not_bypass_rate_limit or health_and_sizes or public_urls_and_certificates or gate_probe_creates_nothing"
   admin_k+=" or schema_levels or security_history"
   fxa_job admin "${SYNC_IMAGE}" "/tests/test_fxa_admin.py -rs -k \"${admin_k}\"" ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee FXA_ACCOUNT_EVENTS=true \
-    FXA_DB_SERVER="${fxa_db_server}" FXA_TEST_DB_URL="${fxa_db_url}" ADMIN_DB_URL="${admin_db_url}" || fail "test_fxa_admin.py failed"
+    FXA_DB_SERVER="${fxa_db_server}" FXA_TEST_DB_URL="${fxa_db_url}" ADMIN_DB_URL="${admin_db_url}" TOKENSERVER_DB_TYPE="$(admin_env TOKENSERVER_DB_TYPE)" \
+    || fail "test_fxa_admin.py failed"
   # (16 tests; of -k security_history, test_security_history_off is skipped with the history on)
   got=$(kubectl logs job/fxa-test-admin | tail -1)
   [[ "${got}" =~ ^16\ passed,\ 1\ skipped,\ [0-9]+\ deselected(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_admin.py: not the 16 tests passed: ${got}"
@@ -1389,7 +1537,18 @@ PY
       || fail "the backups with your own accounts server: $(kubectl get cronjob "${FULL}-backup" -o json | jq -c '.spec.jobTemplate.spec.template.spec | [(.initContainers // [])[].name, .containers[].name]')"
     kubectl logs job/backup-now-1 -c backup | grep -q "^backup sync: ok: /backups/sync/" || fail "backup-now-1: Sync not dumped: $(kubectl logs job/backup-now-1 -c backup)"
     kubectl delete job backup-now-1 --wait=true > /dev/null
-    check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: the Sync scope alone with your own accounts server (no backup-accounts), complete"
+    # (and the admin UI's Backups card says so: FXA_DB_HOST not the chart's fxa-db)
+    fxa_client_pod backups-card
+    got=$(fxa_py backups-card <<'PY'
+import re
+import test_fxa_admin as t
+card = t.Admin().page().split('id="backups-card"')[1].split("</section>")[0]
+print(" ".join(w for w in ("the Sync scope alone", "both scopes", "accounts/&lt;UTC time&gt;", "Not the accounts databases") if w in card))
+PY
+) || fail "the admin UI's Backups card: ${got}"
+    kubectl delete pod backups-card --wait=true > /dev/null
+    [[ "${got}" == "the Sync scope alone Not the accounts databases" ]] || fail "the admin UI's Backups card with your own accounts server says: ${got}"
+    check "kubectl create job --from=cronjob/${FULL}-backup backup-now-1: the Sync scope alone with your own accounts server (no backup-accounts), complete; the admin UI's Backups card says the Sync scope alone"
   else
     got=$(kubectl logs job/backup-now-1 -c backup-accounts)
     [[ "${got}" =~ backup\ accounts:\ ok:\ /backups/accounts/([0-9]{8}T[0-9]{6}Z), ]] || fail "backup-now-1: the accounts not dumped: ${got}"
@@ -1432,9 +1591,14 @@ PY
     # their DEFINER, the dumps' user), the servers started again (auth's init containers
     # install the policy's trigger again)
     local stopped="deploy/${FULL}-fxa-auth deploy/${FULL}-fxa-content deploy/${FULL}-fxa-profile deploy/${FULL}-admin" contents_before contents_after
+    local stopped_names="fxa-auth fxa-content fxa-profile admin"
+    # (SYNC_BACKEND=postgres: the Sync scope restored too, the Sync server stopped first, the page's step 1)
+    if [[ ${SYNC_BACKEND} == postgres ]]; then
+      stopped+=" deploy/${FULL}-syncstorage" stopped_names+=" syncstorage"
+    fi
     # shellcheck disable=SC2086 # (the list)
     kubectl scale ${stopped} --replicas=0 > /dev/null
-    for name in fxa-auth fxa-content fxa-profile admin; do
+    for name in ${stopped_names}; do
       kubectl wait --for=delete pod -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=${name}" --timeout=5m > /dev/null || fail "${FULL}-${name} not stopped"
     done
     kubectl create job --from="cronjob/${FULL}-backup" backup-now-2 > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
@@ -1459,14 +1623,22 @@ PY
     eval "${full_cmd}" > /dev/null || fail "docs/backups.md's restore of the accounts failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
     contents_after=$(contents)
     [[ "${contents_after}" == "${contents_before}" ]] || fail "the accounts restored are not what was dumped (${contents_after}, before ${contents_before})"
+    local sync_restored=""
+    if [[ ${SYNC_BACKEND} == postgres ]]; then
+      fxa_postgres_restore backup-now-2
+      sync_restored="; the Sync scope (PostgreSQL: ${SYNC_RESTORED})"
+    fi
     # shellcheck disable=SC2086 # (the list)
     kubectl scale ${stopped} --replicas=1 > /dev/null
-    for name in fxa-auth fxa-content fxa-profile admin; do
+    for name in ${stopped_names}; do
       kubectl rollout status "deploy/${FULL}-${name}" --timeout 15m > /dev/null || fail "${FULL}-${name} not back after the restore"
     done
     [[ "$(fxa_db_sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'ffs_signup_policy'")" == 1 ]] || fail "the sign-up policy's trigger not installed again after the restore"
-    kubectl delete job backup-now-2 restore-accounts --wait=true > /dev/null
-    check "the accounts restored whole as docs/backups.md#restore-on-kubernetes says (${accounts_run}, into the five dropped): their rows, ffs' ${ffs_views} views and the procedures with their DEFINER, the events as dumped; the servers back, the policy's trigger again"
+    # (--ignore-not-found: the Jobs of kubectl create job --from=cronjob are the CronJob's, which
+    # keeps the newest 3 that succeeded, successfulJobsHistoryLimit; SYNC_BACKEND=postgres' two
+    # more restores make backup-now-2 an older one)
+    kubectl delete job backup-now-2 restore-accounts --ignore-not-found --wait=true > /dev/null
+    check "the accounts restored whole as docs/backups.md#restore-on-kubernetes says (${accounts_run}, into the five dropped): their rows, ffs' ${ffs_views} views and the procedures with their DEFINER, the events as dumped${sync_restored}; the servers back, the policy's trigger again"
     fxa_client_pod backups-card
     got=$(fxa_py backups-card <<'PY'
 import re, time
@@ -1483,7 +1655,7 @@ PY
 ) || fail "the admin UI's Backups card: ${got}"
     [[ "${got}" == "Last backup of the "*", ok." ]] || fail "the admin UI's Backups card, scope accounts: '${got}'"
     kubectl delete pod backups-card --wait=true > /dev/null
-    kubectl delete job backup-now-1 --wait=true > /dev/null
+    kubectl delete job backup-now-1 --ignore-not-found --wait=true > /dev/null
     check "the admin UI's Backups card: a row of the scope accounts (${got})"
   fi
 
@@ -1691,6 +1863,45 @@ PY
   echo "=== e2e of the accounts (${backend}) passed ==="
 }
 
+# fxa_postgres_restore <backup Job>: SYNC_BACKEND=postgres, the Sync scope of that Job's run
+# restored as docs/backups.md#restore-on-kubernetes says for PostgreSQL, its commands as they
+# are there (restore() already defined, F set, the Sync server and the admin UI stopped): the
+# database emptied (its PVC deleted), the Sync server's role, its one database as that role, the
+# Sync server started, the admin UI's database. The same users, Sync items and rows of the admin
+# UI's tables as dumped (but ffs_backups: the run records itself after its dump). SYNC_RESTORED:
+# what was compared
+fxa_postgres_restore() {
+  local backups_md="${REPO_ROOT}/docs/backups.md" run empty_cmd pg_cmd before after
+  [[ "$(kubectl logs "job/$1" -c backup)" =~ backup\ sync:\ ok:\ /backups/sync/([0-9]{8}T[0-9]{6}Z), ]] || fail "$1: Sync not dumped: $(kubectl logs "job/$1" -c backup)"
+  run=${BASH_REMATCH[1]}
+  # (the page's loop, of the PostgreSQL server alone; its commands of PostgreSQL)
+  empty_cmd=$(sed -n '/^    for db in postgres; do/,/^    done$/p' "${backups_md}")
+  pg_cmd=$(sed -n '/^    kubectl get deploy \$F-syncstorage -o json | jq/,/^        PGPASSWORD="\$ADMIN_DB_PASSWORD" psql/p' "${backups_md}")
+  [[ -n "${empty_cmd}" && "$(grep -c '^ *restore restore-' <<< "${pg_cmd}")" == 2 ]] || fail "docs/backups.md#restore-on-kubernetes: not its PostgreSQL commands: ${empty_cmd} ${pg_cmd}"
+  pg_sql() {
+    kubectl exec "${FULL}-postgres-0" -c db -- env PGPASSWORD="$(kubectl get secret "${SECRET}" -o jsonpath="{.data.$1}" | base64 -d)" \
+      psql -X -tA -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$2" -d "$3" -c "$4"
+  }
+  pg_contents() {
+    local tables t
+    printf 'users %s bsos %s' "$(pg_sql POSTGRES_SYNC_PASSWORD syncserver_app syncserver 'SELECT COUNT(*) FROM users')" \
+      "$(pg_sql POSTGRES_SYNC_PASSWORD syncserver_app syncserver 'SELECT COUNT(*) FROM bsos')"
+    tables=$(pg_sql ADMIN_DB_PASSWORD ffs_admin_ui ffs_admin "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'ffs_backups' ORDER BY 1")
+    for t in ${tables}; do printf ' %s %s' "${t}" "$(pg_sql ADMIN_DB_PASSWORD ffs_admin_ui ffs_admin "SELECT COUNT(*) FROM ${t}")"; done
+  }
+  before=$(pg_contents)
+  [[ "${before}" =~ ^users\ [1-9][0-9]*\ bsos\ [1-9][0-9]*\ .*ffs_ ]] || fail "nothing of Sync or the admin UI to restore: ${before}"
+  eval "${empty_cmd}" > /dev/null || fail "docs/backups.md's emptying of the PostgreSQL server failed"
+  [[ "$(pg_sql POSTGRES_PASSWORD "$(kubectl exec "${FULL}-postgres-0" -c db -- printenv POSTGRES_USER)" syncserver "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public'")" == 0 ]] \
+    || fail "the PostgreSQL server not empty after docs/backups.md's loop"
+  eval "${pg_cmd}" > /dev/null || fail "docs/backups.md's PostgreSQL restore (${run}) failed: $(kubectl logs job/restore-sync 2>&1 | tail -5; kubectl logs job/restore-admin 2>&1 | tail -5)"
+  after=$(pg_contents)
+  [[ "${after}" == "${before}" ]] || fail "the Sync scope restored (${run}) is not what was dumped: ${after}, before ${before}"
+  kubectl delete job restore-sync restore-admin --ignore-not-found --wait=true > /dev/null
+  # shellcheck disable=SC2034 # (read by the caller)
+  SYNC_RESTORED="${run}, its role, the Sync database and the admin UI's as the page says: ${after}"
+}
+
 # admin_test_env: tests/docker-compose.fxa-test.yml's test-only settings of the admin UI (its
 # checks every 5 s, no update check, accounts inactive and unconfirmed at once), after every
 # helm install and upgrade (they put its values back); nothing without the admin UI
@@ -1880,8 +2091,9 @@ fxa_job() {
   spec=$(fxa_test_spec "${image}" '["sh", "-c", "eval \"set -- ${PYTEST_ARGS}\" && exec python3 -m pytest -q -p no:cacheprovider \"$@\""]' \
     PYTEST_ARGS="${args}" "$@")
   kubectl delete job "fxa-test-${name}" --ignore-not-found --wait=true > /dev/null
+  # (ffs-e2e-direct: the servers' NetworkPolicies let the tests' pods in, tests/helm/fxa-values.yaml)
   jq -n --arg name "fxa-test-${name}" --argjson spec "${spec}" '{apiVersion: "batch/v1", kind: "Job", metadata: {name: $name, labels: {"ffs-e2e": $name}},
-    spec: {backoffLimit: 0, template: {metadata: {labels: {"ffs-e2e": $name}}, spec: $spec}}}' | kubectl apply -f - > /dev/null
+    spec: {backoffLimit: 0, template: {metadata: {labels: {"ffs-e2e": $name, "ffs-e2e-direct": "true"}}, spec: $spec}}}' | kubectl apply -f - > /dev/null
   wait_job "fxa-test-${name}" 1800
 }
 
@@ -1889,7 +2101,7 @@ fxa_job() {
 fxa_client_pod() {
   kubectl delete pod "$1" --ignore-not-found --wait=true > /dev/null
   jq -n --arg name "$1" --argjson spec "$(fxa_test_spec "${SYNC_IMAGE}" '["sleep", "3600"]')" \
-    '{apiVersion: "v1", kind: "Pod", metadata: {name: $name, labels: {"ffs-e2e": $name}}, spec: $spec}' | kubectl apply -f - > /dev/null
+    '{apiVersion: "v1", kind: "Pod", metadata: {name: $name, labels: {"ffs-e2e": $name, "ffs-e2e-direct": "true"}}, spec: $spec}' | kubectl apply -f - > /dev/null
   kubectl wait --for=condition=Ready "pod/$1" --timeout=3m > /dev/null || fail "the test pod $1 not Ready"
 }
 

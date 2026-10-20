@@ -265,7 +265,7 @@ func TestDeploymentKubernetesFxA(t *testing.T) {
 		var b strings.Builder
 		data := map[string]any{"CSRF": "x", "FxA": true, "Health": []Component{{Name: "Sync server", Up: true}},
 			"Policy": &SignupPolicy{Mode: "allowlist"}, "AccountLimit": Limit{Count: 1, Max: 10}, "MaxAccountsEditable": editable,
-			"Backup":     map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": false, "Kubernetes": d.Kubernetes()},
+			"Backup":     map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": false, "Kubernetes": d.Kubernetes(), "Accounts": true},
 			"Kubernetes": d.Kubernetes()}
 		if err := templates.ExecuteTemplate(&b, "dashboard.html", data); err != nil {
 			t.Fatal(err)
@@ -366,4 +366,78 @@ func TestDeploymentKubernetesFxASMTP(t *testing.T) {
 		}
 	}
 	t.Error("no check of the accounts' SMTP server")
+}
+
+// the Backups card with the accounts on your own server (fxa.database.bundled false, compose's
+// FXA_DB_CONTAINERS=0): the backups dump the Sync scope alone, the card says so, not "both
+// scopes", no accounts/ in the volume, no backup-fxa; on the stack's own server both
+func TestBackupsCardAccountsScope(t *testing.T) {
+	k8s := deployment{kind: "kubernetes", release: "t", prefix: "t-firefox-sync", secret: "t-firefox-sync"}
+	for _, c := range []struct {
+		d    deployment
+		host string
+		want bool
+	}{
+		{k8s, "t-firefox-sync-fxa-db", true}, {k8s, "fxadb.example.com", false},
+		{deployment{kind: "compose"}, "fxa-db", true}, {deployment{kind: "compose"}, "fxadb.example.com", false},
+		{deployment{kind: "quadlets"}, "firefox-sync-fxa-db", true}, {deployment{kind: "quadlets"}, "10.0.0.5", false},
+	} {
+		if got := c.d.accountsBackedUp(c.host); got != c.want {
+			t.Errorf("%s, the accounts on %s: accountsBackedUp %v", c.d.kind, c.host, got)
+		}
+	}
+	// the card's data as the overview builds it: FXA_DB_HOST read there, the accounts on
+	for _, c := range []struct {
+		d    deployment
+		fxa  bool
+		host string
+		want bool
+	}{
+		{k8s, true, "t-firefox-sync-fxa-db", true}, {k8s, true, "fxadb.example.com", false}, {k8s, false, "t-firefox-sync-fxa-db", false},
+		{deployment{kind: "compose"}, true, "", true}, {deployment{kind: "compose"}, true, "fxadb.example.com", false},
+	} {
+		t.Setenv("FXA_DB_HOST", c.host)
+		a := &App{deployment: c.d, backupTime: "03:00", backupKeep: 7}
+		if c.fxa {
+			a.fxa = &FxaDB{}
+		}
+		if got := a.backupHelp(time.Now())["Accounts"]; got != c.want {
+			t.Errorf("%s, accounts %v on %q: backupHelp Accounts %v", c.d.kind, c.fxa, c.host, got)
+		}
+	}
+	card := func(d deployment, accounts bool) string {
+		t.Helper()
+		var b strings.Builder
+		data := map[string]any{"CSRF": "x", "FxA": true, "Health": []Component{{Name: "Sync server", Up: true}},
+			"Backup":     map[string]any{"Time": "03:00", "Local": "03:00", "Keep": 7, "Quadlets": d.Quadlets(), "Kubernetes": d.Kubernetes(), "Accounts": accounts},
+			"Kubernetes": d.Kubernetes()}
+		if err := templates.ExecuteTemplate(&b, "dashboard.html", data); err != nil {
+			t.Fatal(err)
+		}
+		page := b.String()
+		page = page[strings.Index(page, `id="backups-card"`):]
+		return page[:strings.Index(page, "</section>")]
+	}
+	for _, d := range []deployment{k8s, {kind: "compose"}, {kind: "quadlets"}} {
+		own, bundled := card(d, false), card(d, true)
+		for _, bad := range []string{"both scopes", "accounts/&lt;UTC time&gt;", "backup-fxa", "the accounts first", "and the accounts databases into"} {
+			if strings.Contains(own, bad) {
+				t.Errorf("%s, the accounts on your own server: the backups card says %q", d.kind, bad)
+			}
+		}
+		if !strings.Contains(own, "on your own server") {
+			t.Errorf("%s, the accounts on your own server: the backups card does not say they are not dumped: %s", d.kind, own)
+		}
+		for _, want := range []string{"accounts/&lt;UTC time&gt;", "and the accounts databases into"} {
+			if !strings.Contains(bundled, want) {
+				t.Errorf("%s, the accounts on the stack's server: no %q in the backups card", d.kind, want)
+			}
+		}
+		if strings.Contains(bundled, "on your own server: back them") {
+			t.Errorf("%s, the accounts on the stack's server: the card says they are on your own", d.kind)
+		}
+	}
+	if !strings.Contains(card(k8s, true), "both scopes run in one Job, the accounts first") || !strings.Contains(card(k8s, false), "the Sync scope alone") {
+		t.Errorf("kubernetes: One now: %s", card(k8s, false))
+	}
 }

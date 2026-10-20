@@ -294,6 +294,12 @@ spec:
               value: {{ include "firefox-sync.number" $f.clientAddressDepth | quote }}
             - name: FXA_ACCESS_TOKEN_LIFETIME
               value: {{ $f.accessTokenLifetime | quote }}
+            {{- /* only when set (0 too): empty is the admin UI's 72, as compose's */}}
+            {{- with include "firefox-sync.number" $a.unconfirmedHours }}
+            # accounts not confirmed this many hours after their sign-up are marked unconfirmed
+            - name: ADMIN_UNCONFIRMED_HOURS
+              value: {{ . | quote }}
+            {{- end }}
             # (chart-only: compose's names are its containers', its Redis without a password on a
             # network of its own) Redis, the accounts' servers inside the cluster
             - name: FXA_REDIS

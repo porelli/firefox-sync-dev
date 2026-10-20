@@ -783,3 +783,116 @@ resources:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}
+
+{{/*
+A Kubernetes quantity (8Gi, 500M, 1073741824) in bytes, for comparing the sizes of volumes,
+rounded up as Kubernetes does; also milli-units (1395864371200m), how Kubernetes stores a size
+that is no whole number of bytes (1.3Gi, which the schema now refuses, an older chart did not)
+*/}}
+{{- define "firefox-sync.bytes" -}}
+{{- $q := toString . | trim }}
+{{- $n := regexFind "^[0-9]+(\\.[0-9]+)?" $q }}
+{{- $units := dict "" 1.0 "Ki" 1024.0 "Mi" 1048576.0 "Gi" 1073741824.0 "Ti" 1099511627776.0 "Pi" 1125899906842624.0 "Ei" 1152921504606846976.0
+  "k" 1000.0 "M" 1000000.0 "G" 1000000000.0 "T" 1000000000000.0 "P" 1000000000000000.0 "E" 1000000000000000000.0 "m" 1.0 }}
+{{- $unit := trimPrefix $n $q }}
+{{- if or (not $n) (not (hasKey $units $unit)) }}
+{{- fail (printf "firefox-sync: %q is no size of a volume (e.g. 8Gi, 500Mi)" $q) }}
+{{- end }}
+{{- if eq $unit "m" }}
+{{- /* (divided: an exact quotient stays exact) */}}
+{{- printf "%.0f" (ceil (divf (float64 $n) 1000.0)) }}
+{{- else }}
+{{- printf "%.0f" (ceil (mulf (float64 $n) (get $units $unit))) }}
+{{- end }}
+{{- end }}
+
+{{/*
+A volume's persistence values (size, storageClass) against the volume the cluster has, or the
+render fails before anything is applied, saying what to set: Kubernetes refuses those changes
+only once the objects before it were changed (docs/install/helm.md#volumes). Accepts a dict
+with "setting" (the values' name, e.g. database.persistence), "what" (the object, for the
+message), "persistence" (the values), "accessModes" (the chart's), "live" (the spec of the
+existing PVC, or of the StatefulSet's volumeClaimTemplate), "template" (true: a
+StatefulSet's) and "class" (the StorageClass of the PVC when the size grows: its
+allowVolumeExpansion).
+- a StatefulSet's volumeClaimTemplates never change: the size, the class and the access modes
+  as they were (to grow, resize its PVC itself);
+- a PVC: its class and access modes never change (an empty storageClass keeps the PVC's,
+  pvcStorageClass); its size never shrinks (at least the PVC's, also one grown by hand); it
+  grows only with a StorageClass of allowVolumeExpansion
+*/}}
+{{- define "firefox-sync.checkClaim" -}}
+{{- $p := .persistence }}
+{{- $live := .live | default dict }}
+{{- $help := "docs/install/helm.md#volumes (another class or access mode: a new volume, a backup and a restore)" }}
+{{- $liveClass := $live.storageClassName | default "" }}
+{{- $liveModes := $live.accessModes | default list }}
+{{- $liveSize := ((($live.resources | default dict).requests | default dict).storage | default "") | toString }}
+{{- if .template }}
+{{- if ne ($p.storageClass | default "") $liveClass }}
+{{- fail (printf "firefox-sync: %s.storageClass is %q but %s was created with %q (empty: the cluster's default): Kubernetes never changes a StatefulSet's volumeClaimTemplates; set it back to %q, see %s" .setting ($p.storageClass | default "") .what $liveClass $liveClass $help) }}
+{{- end }}
+{{- if and $liveSize (ne (include "firefox-sync.bytes" $p.size) (include "firefox-sync.bytes" $liveSize)) }}
+{{- fail (printf "firefox-sync: %s.size is %s but %s was created with %s: Kubernetes never changes a StatefulSet's volumeClaimTemplates; set it back to %s, and to grow the volume resize its PVC itself (a StorageClass with allowVolumeExpansion), see docs/install/helm.md#volumes" .setting $p.size .what $liveSize $liveSize) }}
+{{- end }}
+{{- else }}
+{{- if and $p.storageClass (ne $p.storageClass $liveClass) }}
+{{- fail (printf "firefox-sync: %s.storageClass is %q but %s is on %q: Kubernetes never changes a PVC's class; set it back to %q (or empty: the PVC's), see %s" .setting $p.storageClass .what $liveClass $liveClass $help) }}
+{{- end }}
+{{- if $liveSize }}
+{{- $new := include "firefox-sync.bytes" $p.size | float64 }}
+{{- $old := include "firefox-sync.bytes" $liveSize | float64 }}
+{{- if lt $new $old }}
+{{- fail (printf "firefox-sync: %s.size is %s but %s is %s: Kubernetes never shrinks a volume; set at least %s, see docs/install/helm.md#volumes" .setting $p.size .what $liveSize $liveSize) }}
+{{- end }}
+{{- if and (gt $new $old) (not (.class | default dict).allowVolumeExpansion) }}
+{{- fail (printf "firefox-sync: %s.size is %s but %s is %s, and its StorageClass %q does not allow expansion (allowVolumeExpansion): keep %s, see docs/install/helm.md#volumes" .setting $p.size .what $liveSize $liveClass $liveSize) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $liveModes (ne (toJson $liveModes) (toJson .accessModes)) }}
+{{- fail (printf "firefox-sync: %s has the access modes %s, the chart's are %s: Kubernetes never changes them; see %s" .what (toJson $liveModes) (toJson .accessModes) $help) }}
+{{- end }}
+{{- end }}
+
+{{/*
+The storageClassName of one of the chart's PVCs (empty: none rendered), after checkClaim on
+the PVC the cluster has (lookup on install and upgrade; nothing to check where it returns
+nothing: helm template, a GitOps render, a new PVC): the values' storageClass, else the PVC's
+own (an empty storageClass is the cluster's default when the PVC is made, kept after: no
+change to apply when the default class changes, or when a class set before is emptied).
+Accepts a dict with "root", "name" (the PVC), "setting" and "persistence"
+*/}}
+{{- define "firefox-sync.pvcStorageClass" -}}
+{{- $p := .persistence }}
+{{- $existing := lookup "v1" "PersistentVolumeClaim" .root.Release.Namespace .name }}
+{{- if $existing }}
+{{- $class := dict }}
+{{- $liveSize := ((($existing.spec.resources | default dict).requests | default dict).storage | default "") | toString }}
+{{- if and $liveSize $existing.spec.storageClassName (gt (include "firefox-sync.bytes" $p.size | float64) (include "firefox-sync.bytes" $liveSize | float64)) }}
+{{- /* (a cluster-scoped read, only when the size grows) */}}
+{{- $class = lookup "storage.k8s.io/v1" "StorageClass" "" $existing.spec.storageClassName }}
+{{- end }}
+{{- include "firefox-sync.checkClaim" (dict "setting" .setting "what" (printf "the PVC %s" .name) "persistence" $p "accessModes" (list "ReadWriteOnce")
+  "live" $existing.spec "class" $class) }}
+{{- $p.storageClass | default $existing.spec.storageClassName | default "" }}
+{{- else }}
+{{- $p.storageClass | default "" }}
+{{- end }}
+{{- end }}
+
+{{/*
+checkClaim on a StatefulSet's volumeClaimTemplate the cluster has (lookup on install and
+upgrade; nothing where it returns nothing). Accepts a dict with "root", "name" (the
+StatefulSet), "claim" (its template's name), "setting" and "persistence"
+*/}}
+{{- define "firefox-sync.checkStatefulSetClaim" -}}
+{{- with lookup "apps/v1" "StatefulSet" .root.Release.Namespace .name }}
+{{- range (.spec.volumeClaimTemplates | default list) }}
+{{- if eq .metadata.name $.claim }}
+{{- include "firefox-sync.checkClaim" (dict "setting" $.setting "what" (printf "the StatefulSet %s (its volume %s)" $.name $.claim) "persistence" $.persistence
+  "accessModes" (list "ReadWriteOnce") "live" .spec "template" true) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

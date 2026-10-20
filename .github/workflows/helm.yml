@@ -237,6 +237,11 @@ jobs:
           - fxa_db: mysql
             external_db: "1"
             skip_browser: "1"
+          # the Sync server on PostgreSQL next to the accounts (MySQL): the backups of both
+          # scopes, the restores of docs/backups.md#restore-on-kubernetes for each
+          - fxa_db: mysql
+            sync_backend: postgres
+            skip_browser: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -278,10 +283,11 @@ jobs:
           fi
           sudo grep mysqld /sys/kernel/security/apparmor/profiles && exit 1 || echo "no mysqld profile loaded"
 
-      - name: The accounts on kind (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }})
+      - name: The accounts on kind (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }}${{ matrix.sync_backend && format(', Sync on {0}', matrix.sync_backend) || '' }})
         env:
           FXA_DB: ${{ matrix.fxa_db }}
           EXTERNAL_DB: ${{ matrix.external_db }}
+          SYNC_BACKEND: ${{ matrix.sync_backend }}
           SKIP_BROWSER: ${{ matrix.skip_browser }}
         # (an image reference is lowercase)
         run: REPOSITORY="${REPOSITORY_REGISTRY}/${REPOSITORY_FULL_NAME,,}" ./tests/helm-fxa.sh e2e "${FXA_DB}"

@@ -106,6 +106,25 @@ fxa:
   # the admin UI's, for the database). Enforced where the cluster's network plugin does
   networkPolicy:
     enabled: true
+    # the public servers (auth, content, profile, pairing) too: from your Ingress controller,
+    # the release's own pods that call them and extraFrom only; else any pod of the cluster
+    # reaches auth:9000 with an X-Forwarded-For of its choice (the rate limits' client IP),
+    # around the sign-up gate. Off by default: the chart cannot know your controller
+    # (docs/install/helm.md#networkpolicies), with enabled above
+    servers:
+      enabled: false
+      # the controller's pods, one NetworkPolicy peer (both selectors: the pods of those
+      # labels in the namespaces of those labels; podSelector alone: in the release's
+      # namespace; namespaceSelector alone: every pod there, so with the controller in the
+      # release's namespace set podSelector too; at least one required), e.g. ingress-nginx:
+      #   namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
+      #   podSelector: {matchLabels: {app.kubernetes.io/name: ingress-nginx}}
+      ingressController:
+        namespaceSelector: {}
+        podSelector: {}
+      # more peers (NetworkPolicyPeer: podSelector, namespaceSelector, ipBlock), e.g. a
+      # controller on the host network ({ipBlock: {cidr: 10.0.0.0/24}}) or your monitoring
+      extraFrom: []
 
   # the accounts database: compose's fxa-db, or your own server (docs/databases.md#your-own-server)
   database:
@@ -307,10 +326,10 @@ database:
     tlsVerify: false
 
   # Persistence configuration for bundled databases: the StatefulSets' volumeClaimTemplates,
-  # which Kubernetes never changes. Set them before the first install: a helm upgrade with
-  # another size or storageClass fails (forbidden: updates to statefulset spec). To grow a
-  # volume, resize its PVC (data-<release>-firefox-sync-<server>-0) with a StorageClass that
-  # has allowVolumeExpansion (docs/install/helm.md#database-volumes)
+  # which Kubernetes never changes. Set them before the first install: helm upgrade refuses
+  # another size or storageClass (read from the running StatefulSets). To grow a volume,
+  # resize its PVC (data-<release>-firefox-sync-<server>-0) with a StorageClass that has
+  # allowVolumeExpansion (docs/install/helm.md#volumes)
   persistence:
     # Size of persistent volume
     size: 8Gi
@@ -450,6 +469,9 @@ admin:
   # ADMIN_DELETE_UNCONFIRMED_DAYS, ADMIN_SIGNUP_BURST
   deleteUnconfirmedDays: ""
   signupBurst: 10
+  # ADMIN_UNCONFIRMED_HOURS (fxa.enabled): an account that has not confirmed its email this
+  # many hours after its sign-up is marked unconfirmed in the accounts list (empty: 72)
+  unconfirmedHours: ""
   # with fxa.enabled: sign in to the admin UI with the self-hosted accounts (OpenID Connect,
   # ADMIN_FXA_CLIENT_ID), who may in admin.allowed (required then). It comes back to
   # oidc.redirectUrl, empty: https://<ingress.host>/auth/callback (one of them required); the

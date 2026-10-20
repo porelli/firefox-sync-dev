@@ -51,6 +51,23 @@ fxa:
   pairing:
     enabled: true
     url: wss://pairing.fxa.test
+  # the public servers from the Ingress controller alone (Traefik, tests/helm/traefik.yaml), and
+  # the tests' pods (label ffs-e2e-direct, test-only: test_fxa_admin.py's FXA_DIRECT_URL, the
+  # probes of tests/helm-fxa.sh), as docs/install/helm.md#networkpolicies
+  networkPolicy:
+    servers:
+      enabled: true
+      ingressController:
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ffs-test-ingress
+        podSelector:
+          matchLabels:
+            app: traefik
+      extraFrom:
+        - podSelector:
+            matchLabels:
+              ffs-e2e-direct: "true"
   # the accounts' servers trust the test CA (compose's NODE_EXTRA_CA_CERTS=/caddy-ca/root.crt)
   extraCaCerts:
     configMap: fxa-test-ca

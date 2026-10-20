@@ -349,7 +349,7 @@ Then, on the same cluster or the new one, with `F=ffs-firefox-sync`:
       gunzip -t "$f" && gunzip -c "$f" |
         PGPASSWORD="$TOKENSERVER_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$TOKENSERVER_DB_USER" -d "$TOKENSERVER_DB_NAME" -v ON_ERROR_STOP=1'
     kubectl scale deploy/$F-syncstorage --replicas=1
-    kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=ffs,app.kubernetes.io/component=syncstorage --timeout=10m
+    kubectl rollout status deploy/$F-syncstorage --timeout=10m
     restore restore-admin 'f=/backups/sync/'$run'/$ADMIN_DB_NAME.sql.gz
       gunzip -t "$f" && gunzip -c "$f" |
         PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h "$TOKENSERVER_DB_HOST" -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'

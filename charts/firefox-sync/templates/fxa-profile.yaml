@@ -20,7 +20,8 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   accessModes: [ReadWriteOnce]
-  {{- with $f.profileImages.persistence.storageClass }}
+  {{- /* (a class or size Kubernetes would refuse: refused here first, pvcStorageClass) */}}
+  {{- with include "firefox-sync.pvcStorageClass" (dict "root" . "name" (printf "%s-fxa-profile-images" $fullname) "setting" "fxa.profileImages.persistence" "persistence" $f.profileImages.persistence) }}
   storageClassName: {{ . | quote }}
   {{- end }}
   resources:

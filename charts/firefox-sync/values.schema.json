@@ -190,6 +190,78 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "servers": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "ingressController": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "namespaceSelector": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "matchLabels": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "matchExpressions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["key", "operator"],
+                            "properties": {
+                              "key": {"type": "string", "minLength": 1},
+                              "operator": {"enum": ["In", "NotIn", "Exists", "DoesNotExist"]},
+                              "values": {"type": "array", "items": {"type": "string"}}
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "podSelector": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "matchLabels": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "matchExpressions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["key", "operator"],
+                            "properties": {
+                              "key": {"type": "string", "minLength": 1},
+                              "operator": {"enum": ["In", "NotIn", "Exists", "DoesNotExist"]},
+                              "values": {"type": "array", "items": {"type": "string"}}
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "extraFrom": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "minProperties": 1
+                  }
+                }
+              }
             }
           }
         },
@@ -258,7 +330,8 @@
               "type": "object",
               "properties": {
                 "size": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -297,7 +370,8 @@
               "type": "object",
               "properties": {
                 "size": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -315,7 +389,8 @@
               "type": "object",
               "properties": {
                 "size": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
                 },
                 "storageClass": {
                   "type": "string"
@@ -566,7 +641,8 @@
           "type": "object",
           "properties": {
             "size": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
             },
             "storageClass": {
               "type": "string"
@@ -748,6 +824,12 @@
         "deleteUnconfirmedDays": {
           "type": ["string", "integer"]
         },
+        "unconfirmedHours": {
+          "anyOf": [
+            {"type": "integer", "minimum": 0, "maximum": 999999},
+            {"type": "string", "pattern": "^([0-9]{1,6})?$"}
+          ]
+        },
         "signupBurst": {
           "type": "integer",
           "minimum": 0
@@ -817,7 +899,8 @@
           "type": "object",
           "properties": {
             "size": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+([KMGTPE]i|[kMGTPE])?$"
             },
             "storageClass": {
               "type": "string"
