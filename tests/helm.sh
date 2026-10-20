@@ -1295,7 +1295,7 @@ backup_restore() {
   local restore
   restore=$(admin_md_restore "$([[ "${BACKEND}" == postgres ]] && echo 2 || echo 1)")
   [[ -n "${restore}" ]] || fail "no restore command of step 4 in docs/backups.md#restore"
-  [[ "${BACKEND}" == mysql ]] && restore=$(sed 's/^\( *\)mariadb /\1mysql /' <<< "${restore}")
+  [[ "${BACKEND}" == mysql ]] && restore=$(sed -e 's/^\( *\)mariadb /\1mysql /' -e 's/^\( *MYSQL_PWD="[^"]*" \)mariadb /\1mysql /' <<< "${restore}")
   if [[ "${BACKEND}" == postgres && -z "${EXTERNAL}" ]]; then
     # into the empty database as the Sync server's role, which sync_role_init creates first:
     # here the sync-role init container of the Sync server's pod, on the new server
