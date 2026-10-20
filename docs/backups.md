@@ -190,7 +190,7 @@ With docker compose, on the same host or a new one: you need the `.env` of the s
     docker compose run --rm --no-deps --entrypoint sh backup -c '
       f=/backups/sync/20261013T030000Z/$TOKENSERVER_DB_NAME.sql.gz
       gunzip -t "$f" && gunzip -c "$f" |
-        mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" -p"$TOKENSERVER_DB_PASSWORD" "$TOKENSERVER_DB_NAME"'
+        MYSQL_PWD="$TOKENSERVER_DB_PASSWORD" mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" "$TOKENSERVER_DB_NAME"'
     # PostgreSQL (tokenserver and storage, one database): into the empty database, as the
     # Sync server's role SYNC_POSTGRES_APP_USER (TOKENSERVER_DB_USER of the backups, SYNC_POSTGRES_USER
     # without it), which this creates first. Not as the superuser: what the dump holds is
@@ -210,7 +210,7 @@ With docker compose, on the same host or a new one: you need the `.env` of the s
     docker compose run --rm --no-deps --entrypoint sh backup -c '
       f=/backups/sync/20261013T030000Z/$ADMIN_DB_NAME.sql.gz
       gunzip -t "$f" && gunzip -c "$f" |
-        mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+        MYSQL_PWD="$ADMIN_DB_PASSWORD" mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" "$ADMIN_DB_NAME"'
     # PostgreSQL: the init container creates it and the roles, after step 4 (it runs the
     # migrations first, on the database restored there), then exits:
     docker compose run --rm tokenserver_db_init
@@ -248,16 +248,16 @@ set -o pipefail   # a missing or broken dump fails its line, instead of an empty
 run=20261013T030000Z
 dump() { podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts gunzip -c "/backups/$1"; }
 for db in fxa fxa_oauth fxa_profile pushbox ffs; do   # MariaDB accounts: mariadb and $MARIADB_ROOT_PASSWORD
-  podman exec firefox-sync-fxa-db sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e 'CREATE DATABASE IF NOT EXISTS $db'"
-  dump accounts/$run/$db.sql.gz | podman exec -i firefox-sync-fxa-db sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" $db"
+  podman exec firefox-sync-fxa-db sh -c "MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql -uroot -e 'CREATE DATABASE IF NOT EXISTS $db'"
+  dump accounts/$run/$db.sql.gz | podman exec -i firefox-sync-fxa-db sh -c "MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql -uroot $db"
 done
-dump sync/$run/tokenserver.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
-dump sync/$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c 'mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+dump sync/$run/tokenserver.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"'
+dump sync/$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c 'MYSQL_PWD="$ADMIN_DB_PASSWORD" mariadb -u"$ADMIN_DB_USER" "$ADMIN_DB_NAME"'
 # only when no device has the data any more (step 6 above)
-dump sync/$run/syncstorage.sql.gz | podman exec -i firefox-sync-syncstorage-db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
+dump sync/$run/syncstorage.sql.gz | podman exec -i firefox-sync-syncstorage-db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"'
 ```
 
-With `SYNC_DB=mysql` the Sync databases take `mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"`. The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`).
+With `SYNC_DB=mysql` the Sync databases take `MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"`. (The passwords go in `MYSQL_PWD`, not after `-p`: the arguments of a process show in `ps` on the host.) The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`).
 
 Start them again as at install: the Sync server and the accounts' units pull in the one-shot ones.
 

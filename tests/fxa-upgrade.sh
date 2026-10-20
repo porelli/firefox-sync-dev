@@ -146,7 +146,7 @@ check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expecte
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 image_of() { docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "$1")" 2> /dev/null; }
 image_id_of() { docker inspect -f '{{.Image}}' "$(dc ps -a -q "$1")" 2> /dev/null; }
-fxa_sql() { dc exec -T fxa-db "${DB_CLIENT}" -uroot -p"${FXA_MYSQL_PASSWORD}" -sN -e "$1" 2> /dev/null; }
+fxa_sql() { dc exec -T -e MYSQL_PWD="${FXA_MYSQL_PASSWORD}" fxa-db "${DB_CLIENT}" -uroot -sN -e "$1" 2> /dev/null; }
 # the schema-patch-level of each accounts database, "fxa=201 fxa_oauth=40 ..."
 levels() {
   for db in fxa fxa_oauth fxa_profile pushbox; do

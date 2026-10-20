@@ -729,15 +729,15 @@ if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   # the view runs as the policy user: all 5 databases only with its SELECT on them
   check "$(fxa_sql "SELECT COUNT(*) FROM ffs.database_sizes")" 5 "the admin UI sees the sizes of all the accounts databases"
 else
-  fxa_sql() { dc exec -T fxa-db "${DB_CLIENT}" -uroot -p"${FXA_MYSQL_PASSWORD}" -sN -e "$1" 2> /dev/null; }
+  fxa_sql() { dc exec -T -e MYSQL_PWD="${FXA_MYSQL_PASSWORD}" fxa-db "${DB_CLIENT}" -uroot -sN -e "$1" 2> /dev/null; }
 fi
 if [ "${SYNC_DB_CONTAINERS:-1}" = 0 ]; then
   ts_sql() { docker exec -i -e MYSQL_PWD="${SYNC_TOKENSERVER_DB_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -u"${SYNC_TOKENSERVER_DB_USER}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" < /dev/null 2> /dev/null; }
   admin_sql() { docker exec -i -e MYSQL_PWD="${ADMIN_DB_PASSWORD}" "${EXTDB}" "${DB_CLIENT}" -u"${ADMIN_DB_USER}" "${ADMIN_DB_NAME}" -sN -e "$1" < /dev/null 2> /dev/null; }
 else
-  ts_sql() { dc exec -T tokenserver_db mariadb -u"${SYNC_TOKENSERVER_DB_USER}" -p"${SYNC_TOKENSERVER_DB_PASSWORD}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" 2> /dev/null; }
+  ts_sql() { dc exec -T -e MYSQL_PWD="${SYNC_TOKENSERVER_DB_PASSWORD}" tokenserver_db mariadb -u"${SYNC_TOKENSERVER_DB_USER}" "${SYNC_TOKENSERVER_DB_NAME}" -sN -e "$1" 2> /dev/null; }
   # the admin UI's own database (the event log, the backup runs), as its user
-  admin_sql() { dc exec -T tokenserver_db mariadb -u"${ADMIN_DB_USER}" -p"${ADMIN_DB_PASSWORD}" "${ADMIN_DB_NAME}" -sN -e "$1" 2> /dev/null; }
+  admin_sql() { dc exec -T -e MYSQL_PWD="${ADMIN_DB_PASSWORD}" tokenserver_db mariadb -u"${ADMIN_DB_USER}" "${ADMIN_DB_NAME}" -sN -e "$1" 2> /dev/null; }
 fi
 if [ "${FXA_DB}" = mysql ]; then
   echo "== the accounts on ${FXA_MYSQL_IMAGE}${FXA_MYSQL_ARGS:+ ${FXA_MYSQL_ARGS}}"

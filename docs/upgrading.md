@@ -88,6 +88,8 @@ Don't stay too far behind: Firefox refuses to sign in to accounts servers that a
 
     With self-hosted accounts, start their units too, as in [Self-hosted accounts](install/podman.md#self-hosted-accounts). With the nightly backups on, start their timer again: `systemctl --user start firefox-sync-backup.timer`.
 
+`--upgrade` and `--render-units` read `.env` as compose does: a comment after a value starts with a space before its `#` (`SYNC_MAX_USERS=5 # a comment`). After a tab, the `#` and what follows are part of the value, for compose too.
+
 Which units `--upgrade` renders: the units installed in `~/.config/containers/systemd/` when they are this install's, without asking.
 
 - Units rendered from this checkout (they mount its `config/backup/`): rendered again.

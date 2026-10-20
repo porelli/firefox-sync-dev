@@ -190,7 +190,7 @@ EOF
 dst() { (cd "${DST}" && docker compose "$@"); }
 dst_sql() {
   case ${DST_DB} in
-    mariadb) dst exec -T tokenserver_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -sN -e "$0"' "$1" ;;
+    mariadb) dst exec -T tokenserver_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -sN -e "$0"' "$1" ;;
     mysql) dst exec -T tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -sN -e "$0"' "$1" ;;
     # as the Sync server's role, the owner of the tables (never the superuser, docs/reference/database-users.md#postgresql)
     postgres) dst exec -T postgres_db sh -c 'PGPASSWORD="$1" psql -h 127.0.0.1 -U "$2" -d "$POSTGRES_DB" -tA -F "	" -c "$0"' "$1" \

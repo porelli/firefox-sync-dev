@@ -28,12 +28,50 @@ generate_random_string() {
   tr -dc '[:alnum:]' < /dev/urandom | head -c "${length}"
 }
 
+# The temporary files that hold passwords (sed scripts, the .env being written, the units
+# rendered aside) are removed at the exit, also on Ctrl-C (INT) and TERM: those of a subshell
+# are in FFS_TMP, a directory of this user only (mktemp -d) that the main shell removes, the
+# others listed with ffs_temp. The traps run after those set before (chained, not replaced)
+FFS_TMP="" FFS_TEMPS=()
+ffs_cleanup() {
+    local f
+    for f in ${FFS_TEMPS[@]+"${FFS_TEMPS[@]}"}; do rm -rf -- "${f}"; done
+    FFS_TEMPS=()
+    [ -n "${FFS_TMP}" ] && rm -rf -- "${FFS_TMP}"
+    FFS_TMP=""
+}
+ffs_traps() {
+    local sig before end main=yes
+    # in a subshell the traps of the main shell are not set (trap -p still shows them): not
+    # chained there (bash 3.2 has no BASHPID: the parent of a command of this shell)
+    [ "$(exec sh -c 'echo "${PPID}"')" = "$$" ] || main=""
+    for sig in EXIT INT TERM; do
+        # (trap -p prints the trap as a command, quoted: its third word is the action)
+        before=""
+        [ -n "${main}" ] && { eval "set -- $(trap -p "${sig}")"; before=${3:-}; }
+        case "${sig}" in INT) end="exit 130" ;; TERM) end="exit 143" ;; *) end="" ;; esac
+        # shellcheck disable=SC2064 # (the action of before, as it is now)
+        trap "ffs_cleanup${before:+; ${before}}${end:+; ${end}}" "${sig}"
+    done
+}
+# ffs_temp <path>: removed at the exit
+ffs_temp() { FFS_TEMPS+=("${1}"); }
+# FFS_TMP and the traps, once, in the main shell (run: at the start; sourced: at the first need)
+ffs_temp_init() {
+    [ -n "${FFS_TMP}" ] && [ -d "${FFS_TMP}" ] && return 0
+    FFS_TMP=$(mktemp -d "${TMPDIR:-/tmp}/ffs.XXXXXX") || return 1
+    ffs_traps
+}
+# (run, not sourced: return outside a function fails)
+(return 0 2> /dev/null) || { ffs_temp_init || exit 1; }
+
 # sed_script <script> <sed arguments...>: sed with its script in a file of this user only
-# (mktemp: 0600), never on the command line: the values of .env in it (passwords, secrets)
-# would be in the arguments any user sees with ps while it runs
+# (in FFS_TMP; mktemp: 0600), never on the command line: the values of .env in it (passwords,
+# secrets) would be in the arguments any user sees with ps while it runs
 sed_script() {
     local script rc
-    script=$(mktemp "${TMPDIR:-/tmp}/ffs-sed.XXXXXX") || return 1
+    ffs_temp_init || return 1
+    script=$(mktemp "${FFS_TMP}/sed.XXXXXX") || return 1
     printf '%s\n' "${1}" > "${script}" || { rm -f "${script}"; return 1; }
     shift
     sed -f "${script}" "$@"
@@ -192,6 +230,15 @@ resolve_path() {
     done
     printf '%s' "${path}"
 }
+# private_temp <path> <variable>: a new file of this user only (0600) next to path, named
+# after it (mktemp: a name nobody could have put a symlink at), in the variable; removed at
+# the exit unless moved (in this shell: not in a $(...))
+private_temp() {
+    local ffs_new
+    ffs_new=$(mktemp "$(dirname "${1}")/.$(basename "${1}").XXXXXX") || return 1
+    ffs_temp "${ffs_new}"
+    printf -v "${2}" '%s' "${ffs_new}"
+}
 # replace_env <new> <.env>: the new file (this user only) in place of .env. A symlink stays one:
 # its target is replaced, by a rename in the target's own directory, else (that directory not
 # writable) by writing the content into it; 0600 in both cases
@@ -199,12 +246,12 @@ replace_env() {
     local new=${1} dest=${2} target tmp
     target=$(resolve_path "${dest}")
     [ "${target}" = "${dest}" ] && { mv "${new}" "${dest}"; return; }
-    tmp=$(dirname "${target}")/.$(basename "${target}").ffs-new.$$
-    if (umask 077; cp "${new}" "${tmp}") 2> /dev/null && chmod 600 "${tmp}" && mv "${tmp}" "${target}"; then
+    tmp=""
+    if private_temp "${target}" tmp 2> /dev/null && cat "${new}" > "${tmp}" && chmod 600 "${tmp}" && mv "${tmp}" "${target}"; then
         rm -f "${new}"
         return 0
     fi
-    rm -f "${tmp}"
+    [ -n "${tmp}" ] && rm -f "${tmp}"
     (umask 077; cat "${new}" > "${target}") && chmod 600 "${target}" && rm -f "${new}"
 }
 # the SQL for your own database server, with the names and passwords of .env (docs/databases.md#create-the-databases-and-users)
@@ -280,7 +327,7 @@ fxa_fixed_in() {
 fxa_release() {
     local v=${1#fxa-mono-}
     v=${v#v}
-    [[ "${v}" =~ ^[0-9]+(\.[0-9]+)*$ ]] && printf '%s' "${v}"
+    [[ "${v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s' "${v}"
     return 0
 }
 # version_at_least <a> <b>: release a is b or later, part by part (1.350.0 after 1.347.10)
@@ -702,6 +749,7 @@ render_units() {
     fi
     echo "Processing quadlet files..."
     stage=$(mktemp -d) || exit 1
+    ffs_temp "${stage}"
     for source in "${QUADLET_SOURCES[@]}"; do
         for file in "${source}"/*.{network,volume,container,timer}; do
             [ -f "${file}" ] || continue
@@ -904,8 +952,8 @@ upgrade_env() {
     }
     # every change on a copy (this user only), which replaces .env at the end: a run that stops
     # halfway leaves .env as it was
-    env_file=${dot_env}.upgrading
-    private_copy "${dot_env}" "${env_file}" || exit 1
+    # (mktemp in the directory of .env: the rename at the end stays one)
+    private_temp "${dot_env}.upgrading" env_file && cat "${dot_env}" > "${env_file}" || exit 1
     ENV_READ=${env_file}
     rename_settings
     # the names: those of .env-example
@@ -1095,7 +1143,7 @@ valid_export_port() {
 }
 
 # sourced (tests/prepare_functions.sh, and the tests that ask fxa_has_fix): the functions only
-[ "${BASH_SOURCE[0]}" = "${0}" ] || return 0
+(return 0 2> /dev/null) && return 0
 
 case "${1:-}" in
     --upgrade) upgrade_env ;;
@@ -1496,8 +1544,7 @@ fi
 # replaces .env at the end. Run again on an install, its .env of before is kept as
 # .env.before-setup-<UTC time> (the passwords its databases have); ./prepare_environment.sh
 # --upgrade keeps them instead
-NEW_ENV=${SCRIPT_DIR}/.env.setup
-private_copy "${SCRIPT_DIR}/.env-example" "${NEW_ENV}" || exit 1
+private_temp "${SCRIPT_DIR}/.env.setup" NEW_ENV && cat "${SCRIPT_DIR}/.env-example" > "${NEW_ENV}" || exit 1
 ENV_READ=${NEW_ENV}
 apply_sed "${NEW_ENV}" "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=${SYNC_TOKENSERVER_DB_PASSWORD}|"
 apply_sed "${NEW_ENV}" "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=${SYNC_STORAGE_DB_PASSWORD}|"

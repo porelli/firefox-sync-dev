@@ -140,7 +140,7 @@ check "$(sed_script "s|@V@|$(sed_escape "${tricky}")|g" "${WORK}/template")" "X=
 two_lines=$'one\ntwo'
 check "$(sed_script "s|@V@|$(sed_escape "${two_lines}")|g" "${WORK}/template")" "X=one
 two %V%" "sed_escape: a line break in the value"
-check "$(ls "${TMPDIR}"/ffs-sed.* 2> /dev/null | wc -l | tr -d ' ')" 0 "sed_script leaves no script behind"
+check "$(find "${TMPDIR}" -type f | wc -l | tr -d ' ')" 0 "sed_script leaves no script behind"
 # the script's file is this user's only while sed runs
 check "$(s=$(mktemp "${TMPDIR}/ffs-sed.XXXXXX"); mode "${s}"; rm -f "${s}")" 600 "mktemp's files (sed_script's): 0600"
 # no value on sed's command line: the arguments sed gets, as ps shows them
@@ -151,6 +151,22 @@ secret=ffsSECRETvalue
   render_sql "${WORK}/template" "${WORK}/out.sql" V="${secret}")
 check "$(grep -c "${secret}" "${WORK}/argv") $(cat "${WORK}/plain") $(cut -d' ' -f1 "${WORK}/out.sql") $(mode "${WORK}/out.sql")" "0 P=${secret} X=${secret} 600" \
   "apply_sed and render_sql: the value written, never in sed's arguments"
+
+# stopped while sed runs (TERM, INT): its script removed all the same, and a trap of before
+# (EXIT) still runs after
+printf '#!/bin/sh\nsleep 2\n' > "${WORK}/bin/sed"; chmod +x "${WORK}/bin/sed"
+for sig in TERM INT; do
+  TMPDIR=${WORK}/stop-${sig}; mkdir -p "${TMPDIR}"
+  TMPDIR=${TMPDIR} bash -c 'trap "echo before > \"${TMPDIR}/../before-$1\"" EXIT; source "$0"; PATH=$2:${PATH}; sed_script "s/x/y/" /dev/null' \
+    "${CODE}/prepare_environment.sh" "${sig}" "${WORK}/bin" &
+  pid=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -n "$(find "${TMPDIR}" -type f)" ] && break; sleep 0.2; done
+  during=$(find "${TMPDIR}" -type f | wc -l | tr -d ' ')
+  kill -s "${sig}" "${pid}"; wait "${pid}"
+  check "${during} $(find "${TMPDIR}" -type f | wc -l | tr -d ' ') $(cat "${WORK}/before-${sig}" 2> /dev/null)" "1 0 before" \
+    "a ${sig} while sed runs: its script removed, the EXIT trap of before kept"
+done
+TMPDIR=${WORK}/tmp
 
 echo "== accounts images with a fix of upstream-patches.yml (fxa_has_fix, config/fxa/fixed-in)"
 has() { fxa_has_fix "$@"; echo $?; }
@@ -176,7 +192,7 @@ check "$(has mozilla/fxa#21554 "" "" latest) $(has mozilla/fxa#21554 "" "" "sha2
 check "$(has mozilla/fxa#21494 none v1.400.0 latest)" 1 "released: another pull request still by its label"
 check "$(version_at_least 1.352.0 1.352.0 && echo y) $(version_at_least 1.352.10 1.352.9 && echo y) $(version_at_least 1.400 1.352.1 && echo y) $(version_at_least 1.352 1.352.1 || echo n) $(version_at_least 2.0.0 1.999.999 && echo y)" \
   "y y y n y" "version_at_least: part by part, numbers"
-check "$(fxa_release v1.347.3) $(fxa_release fxa-mono-v1.347.3) $(fxa_release 1.347.3) [$(fxa_release fxa-mono-latest)] [$(fxa_release v1.347.3-rc1)]" "1.347.3 1.347.3 1.347.3 [] []" \
+check "$(fxa_release v1.347.3) $(fxa_release fxa-mono-v1.347.3) $(fxa_release 1.347.3) [$(fxa_release fxa-mono-latest)] [$(fxa_release v1.347.3-rc1)] [$(fxa_release 1)] [$(fxa_release 20261020)] [$(fxa_release v1.347)] [$(fxa_release 1.2.3.4)]" "1.347.3 1.347.3 1.347.3 [] [] [] [] [] []" \
   "fxa_release: of the version label or the tag"
 # the JSON of an image (docker, podman inspect, buildx imagetools)
 json='[{"Config":{"Labels":{"org.firefox-sync.upstream-patches":"none","org.opencontainers.image.version":"v1.353.0"}}}]'

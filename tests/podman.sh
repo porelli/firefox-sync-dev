@@ -629,7 +629,7 @@ check "$(ts_sql 'SELECT COUNT(*) FROM users')-$(st_sql 'SELECT COUNT(*) FROM col
 run=$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts ls /backups/sync | tail -1)
 dump() { podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts gunzip -c "/backups/$1"; }
 # shellcheck disable=SC2016 # (expanded in the database container)
-if [ "${SYNC_DB}" = mysql ]; then load='mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'; else load='mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'; fi
+if [ "${SYNC_DB}" = mysql ]; then load='MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"'; else load='MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"'; fi
 # with set -o pipefail, as docs/backups.md#restore-with-quadlets says: a run that is not there fails, instead of loading nothing
 check "$(grep -cxF 'set -o pipefail   # a missing or broken dump fails its line, instead of an empty restore' "${CODE}/docs/backups.md")" 1 "docs/backups.md's Quadlet restore sets pipefail"
 missing=$( (set -o pipefail; dump "sync/20000101T000000Z/tokenserver.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${load}") >> restore.log 2>&1 || echo failed)
@@ -640,9 +640,9 @@ for db in tokenserver syncstorage; do
 done
 # the admin UI's database, as its user (the line of docs/backups.md#restore-with-quadlets, the client of the image)
 # shellcheck disable=SC2016
-admin_load='mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+admin_load='MYSQL_PWD="$ADMIN_DB_PASSWORD" mariadb -u"$ADMIN_DB_USER" "$ADMIN_DB_NAME"'
 check "$(grep -cF "dump sync/\$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh -c '${admin_load}'" "${CODE}/docs/backups.md")" 1 "docs/backups.md's Quadlet restore of the admin UI's database"
-[ "${SYNC_DB}" = mysql ] && admin_load=${admin_load/#mariadb/mysql}
+[ "${SYNC_DB}" = mysql ] && admin_load=${admin_load/ mariadb / mysql }
 (set -o pipefail; dump "sync/${run}/ffs_admin.sql.gz" | podman exec -i firefox-sync-tokenserver-db sh -c "${admin_load}") >> restore.log 2>&1
 check "$?" 0 "ffs_admin restored from ${run} as its user (quadlets)"
 check "$(admin_db_sql "SELECT COUNT(*) FROM ffs_events")" "${EVENTS}" "the event log as it was (quadlets)"
