@@ -63,9 +63,9 @@ The scheme says the kind. For the services that give you a webhook URL, it is th
 
 | Destination | URL |
 |---|---|
-| [Slack](https://api.slack.com/messaging/webhooks) | `slack://hooks.slack.com/services/T…/B…/…`. [Mattermost](https://developers.mattermost.com/integrate/webhooks/incoming/)'s incoming webhooks take the same: `slack://mattermost.example.com/hooks/<key>` |
+| [Slack](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/) | `slack://hooks.slack.com/services/T…/B…/…`. [Mattermost](https://docs.mattermost.com/developers/integrate/webhooks/incoming)'s incoming webhooks take the same: `slack://mattermost.example.com/hooks/<key>` |
 | [Discord](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks) | `discord://discord.com/api/webhooks/<id>/<token>` |
-| [Microsoft Teams](https://support.microsoft.com/en-us/office/create-incoming-webhooks-with-workflows-for-microsoft-teams-8ae491c7-0394-4861-ba59-055e33f75498) | `teams://<the workflow URL without https://>`, from the workflow "Post to a channel when a webhook request is received". The old Office 365 connectors are retired |
+| [Microsoft Teams](https://support.microsoft.com/en-us/workflows/send-messages-in-teams-using-incoming-webhooks) | `teams://<the workflow URL without https://>`, from the workflow template "Send webhook alerts to a channel". The old Office 365 connectors are being retired |
 | [ntfy](https://docs.ntfy.sh/publish/) | `ntfy://ntfy.sh/<topic>`, `ntfy://<access token>@ntfy.example.com/<topic>` or `ntfy://user:password@…`. On ntfy.sh, pick a topic name nobody guesses |
 | [Gotify](https://gotify.net/docs/pushmsg) | `gotify://gotify.example.com/<application token>`, also under a path: `gotify://example.com/gotify/<token>` |
 | [Telegram](https://core.telegram.org/bots/tutorial) | `telegram://<bot token>/<chat id>`. The chat is your own id after you sent the bot a message, a group's (`-100…`, with the bot in it), or `@channelname` (with the bot an admin of the channel) |
