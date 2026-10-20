@@ -6,7 +6,8 @@
 #   tests/helm-fxa.sh e2e <mysql|mariadb>
 #               the chart with the accounts on a throwaway kind cluster (fxa_e2e);
 #               EXTERNAL_DB=1 (mysql only): on your own server instead of the bundled one;
-#               SKIP_BROWSER=1: without the real Firefox (test_fxa_browser.py)
+#               SYNC_BACKEND=postgres: the Sync server on the bundled PostgreSQL (default:
+#               the accounts' backend); SKIP_BROWSER=1: without the real Firefox (test_fxa_browser.py)
 #
 # PARITY_BASE_CHART=<dir>: chart 0.1.0 already extracted there (charts/firefox-sync of
 # PARITY_BASE, default 2512e9a), for a checkout without that commit (a copy without .git,
@@ -852,6 +853,10 @@ fxa_base_parity() {
 # users from db/mysql/fxa-mysql.sql, the Secret ffs-own): install, flow, the admin UI's
 # tests, the backups (Sync's alone, as compose's), Firefox; the steps of the bundled server
 # and of survival are not rerun.
+# SYNC_BACKEND=postgres: the Sync server on the bundled PostgreSQL (database.backend), the
+# accounts on <mysql|mariadb>; all of the above, and the Sync scope restored too, as
+# docs/backups.md#restore-on-kubernetes says for PostgreSQL (its role, its one database, the
+# admin UI's), next to the accounts'.
 # SKIP_BROWSER=1: test_fxa_pairing.py alone in Firefox's image, not test_fxa_browser.py.
 # REPOSITORY, TAG: the Sync server's images, as tests/helm.sh; FXA_IMAGE (default REPOSITORY),
 # FXA_VERSION (default fxa-mono-latest): the accounts'; FXA_MARIADB_IMAGE, FXA_MYSQL_IMAGE:
@@ -864,6 +869,14 @@ fxa_e2e() {
     *) echo "Usage: $0 e2e <mysql|mariadb>"; exit 1 ;;
   esac
   [[ -z "${external}" || ${backend} == mysql ]] || { echo "EXTERNAL_DB=1: e2e mysql only (db/mysql/fxa-mysql.sql)"; exit 1; }
+  # the Sync server's database (database.backend): the accounts' backend, or PostgreSQL
+  SYNC_BACKEND=${SYNC_BACKEND:-${backend}}
+  local flavor=mysql init_dir=db/mysql/init
+  case "${SYNC_BACKEND}" in
+    "${backend}") ;;
+    postgres) flavor=postgres init_dir=db/postgres/init ;;
+    *) echo "SYNC_BACKEND=${SYNC_BACKEND}: postgres, or empty (the accounts' backend, ${backend})"; exit 1 ;;
+  esac
   local repository=${REPOSITORY:-ghcr.io/porelli/firefox-sync} tag=${TAG:-latest} init_tag=${TAG:-latest}
   local fxa_image=${FXA_IMAGE:-${repository}}:${FXA_VERSION:-fxa-mono-latest}
   local db_image redis_image
@@ -893,11 +906,12 @@ fxa_e2e() {
   fi
   db_args=(--set fxa.database.image."${backend}"="${db_image}")
   ADMIN_TAG=${TAG:-latest}
-  CLUSTER="ffs-helm-fxa-${backend}${external:+-extdb}"
+  CLUSTER="ffs-helm-fxa-${backend}${external:+-extdb}$([[ ${SYNC_BACKEND} == "${backend}" ]] || echo "-sync-${SYNC_BACKEND}")"
   REL=t
   FULL="${REL}-firefox-sync"
   SECRET=${FULL}
-  SYNC_IMAGE="${repository}:syncstorage-rs-mysql-${tag}"
+  # (also the image of the tests' pods: python3 with PyFxA, MySQLdb and psycopg2, curl)
+  SYNC_IMAGE="${repository}:syncstorage-rs-${flavor}-${tag}"
   # the fixtures' images (tests/helm/traefik.yaml, tests/helm/fxa-fixtures.yaml)
   TRAEFIK_IMAGE=docker.io/library/traefik:v3
   MAILPIT_IMAGE=docker.io/axllent/mailpit:latest
@@ -921,14 +935,14 @@ fxa_e2e() {
   docker save --help 2> /dev/null | grep -q -- '--platform' \
     || fail "docker $(docker version -f '{{.Server.Version}}' 2> /dev/null) has no docker save --platform: Docker 27 or later is needed"
 
-  echo "=== e2e of the accounts on kind (${backend}${external:+, your own server}) ==="
+  echo "=== e2e of the accounts on kind (${backend}${external:+, your own server}, Sync on ${SYNC_BACKEND}) ==="
   kind delete cluster --name "${CLUSTER}" > /dev/null 2>&1 || true
   trap 'rc=$?; if ((rc)); then diagnostics; fi; kind delete cluster --name "${CLUSTER}"' EXIT
   kind create cluster --name "${CLUSTER}" --wait 120s
   kubectl config use-context "kind-${CLUSTER}" > /dev/null
   # PodSecurity baseline, enforced, as tests/helm.sh
   kubectl label ns default pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/enforce-version=latest > /dev/null
-  load_images "${repository}" mysql db/mysql/init
+  load_images "${repository}" "${flavor}" "${init_dir}"
   # the images of the host's docker (pulled there first when missing) into the node, as
   # tests/helm.sh loads the Sync server's: the node's platform alone (a pulled image's export
   # lacks the others), the import's layers dropped once unpacked (disk)
@@ -936,7 +950,7 @@ fxa_e2e() {
   platform=$(docker version -f 'linux/{{.Server.Arch}}')
   local sync_db_image
   sync_db_image=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["database"]["image"][sys.argv[2]])' \
-    "${CHART_DIR}/values.yaml" "${backend}") || fail "no database.image.${backend} in values.yaml"
+    "${CHART_DIR}/values.yaml" "${SYNC_BACKEND}") || fail "no database.image.${SYNC_BACKEND} in values.yaml"
   # (and the test fixtures': the Ingress controller, the mail catcher)
   local fixtures_images="${TRAEFIK_IMAGE} ${MAILPIT_IMAGE}"
   for image in "${SYNC_IMAGE}" "${fxa_image}" "${PAIRING_IMAGE}" "${db_image}" "${redis_image}" $([[ ${sync_db_image} == "${db_image}" ]] || echo "${sync_db_image}") ${fixtures_images}; do
@@ -986,7 +1000,7 @@ fxa_e2e() {
   check "images-seed with fxa.volumeOwnerInit=false: the image's var/public copied into a volume of root's (group 10001, 2775), left as it was, 10001 writes there"
 
   local install=("${REL}" "${CHART_DIR}" -f "${SCRIPT_DIR}/helm/fxa-values.yaml" --set fxa.enabled=true
-    --set database.backend="${backend}" --set fxa.database.backend="${backend}"
+    --set database.backend="${SYNC_BACKEND}" --set fxa.database.backend="${backend}"
     --set image.repository="${repository}" --set image.syncstorageTag="${tag}" --set image.initTag="${init_tag}"
     --set image.adminTag="${ADMIN_TAG}" --set fxa.image.repository="${fxa_image%:*}" --set fxa.image.tag="${fxa_image##*:}" "${db_args[@]}")
   # the accounts' databases as root, in their server's pod (the bundled one, or your own)
@@ -998,7 +1012,7 @@ fxa_e2e() {
     install+=(--set fxa.database.bundled=false --set fxa.database.external.host=extdb-fxa --set existingSecret=ffs-own)
   fi
   helm install "${install[@]}" --wait --timeout 20m || fail "helm install with the accounts did not get Ready"
-  check "helm install with the accounts (${backend}$([[ -z ${external} ]] || echo ", your own server extdb-fxa, existingSecret ffs-own")) Ready, in a namespace enforcing PodSecurity baseline"
+  check "helm install with the accounts (${backend}$([[ -z ${external} ]] || echo ", your own server extdb-fxa, existingSecret ffs-own"), Sync on ${SYNC_BACKEND}) Ready, in a namespace enforcing PodSecurity baseline"
   admin_test_env
 
   # the auth server only after its init containers, in compose's order, all succeeded
@@ -1409,9 +1423,12 @@ PY
   # fxa on your own)
   local fxa_db_url admin_db_url fxa_user=root fxa_host="${FULL}-fxa-db"
   [[ -z "${external}" ]] || fxa_user=fxa fxa_host=extdb-fxa
+  # (the admin UI's own database on the Sync server's: PostgreSQL's one server with SYNC_BACKEND=postgres)
+  local admin_scheme=mysql admin_server="${FULL}-tokenserver-db:3306"
+  [[ ${SYNC_BACKEND} == postgres ]] && admin_scheme=postgresql admin_server="${FULL}-postgres:5432"
   fxa_db_url="mysql://${fxa_user}:${fxa_mysql_password}@$(admin_env FXA_DB_HOST):$(admin_env FXA_DB_PORT)/fxa"
-  admin_db_url="mysql://$(admin_env ADMIN_DB_USER):${admin_db_password}@$(admin_env TOKENSERVER_DB_HOST):$(admin_env TOKENSERVER_DB_PORT)/$(admin_env ADMIN_DB_NAME)"
-  [[ "${fxa_db_url}" == "mysql://${fxa_user}:${fxa_mysql_password}@${fxa_host}:3306/fxa" && "${admin_db_url}" == "mysql://ffs_admin_ui:${admin_db_password}@${FULL}-tokenserver-db:3306/ffs_admin" ]] \
+  admin_db_url="${admin_scheme}://$(admin_env ADMIN_DB_USER):${admin_db_password}@$(admin_env TOKENSERVER_DB_HOST):$(admin_env TOKENSERVER_DB_PORT)/$(admin_env ADMIN_DB_NAME)"
+  [[ "${fxa_db_url}" == "mysql://${fxa_user}:${fxa_mysql_password}@${fxa_host}:3306/fxa" && "${admin_db_url}" == "${admin_scheme}://ffs_admin_ui:${admin_db_password}@${admin_server}/ffs_admin" ]] \
     || fail "the admin UI's databases: ${fxa_db_url//${fxa_mysql_password}/***} ${admin_db_url//${admin_db_password}/***}"
   # (test-only: the tests look at the accounts database as root, as tests/e2e-fxa.sh on compose's
   # network; the chart's fxa.networkPolicy lets only the accounts' servers and the admin UI in,
@@ -1425,7 +1442,8 @@ PY
   admin_k+=" or spoofed_forwarded_for_does_not_bypass_rate_limit or health_and_sizes or public_urls_and_certificates or gate_probe_creates_nothing"
   admin_k+=" or schema_levels or security_history"
   fxa_job admin "${SYNC_IMAGE}" "/tests/test_fxa_admin.py -rs -k \"${admin_k}\"" ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee FXA_ACCOUNT_EVENTS=true \
-    FXA_DB_SERVER="${fxa_db_server}" FXA_TEST_DB_URL="${fxa_db_url}" ADMIN_DB_URL="${admin_db_url}" || fail "test_fxa_admin.py failed"
+    FXA_DB_SERVER="${fxa_db_server}" FXA_TEST_DB_URL="${fxa_db_url}" ADMIN_DB_URL="${admin_db_url}" TOKENSERVER_DB_TYPE="$(admin_env TOKENSERVER_DB_TYPE)" \
+    || fail "test_fxa_admin.py failed"
   # (16 tests; of -k security_history, test_security_history_off is skipped with the history on)
   got=$(kubectl logs job/fxa-test-admin | tail -1)
   [[ "${got}" =~ ^16\ passed,\ 1\ skipped,\ [0-9]+\ deselected(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_admin.py: not the 16 tests passed: ${got}"
@@ -1501,9 +1519,14 @@ PY
     # their DEFINER, the dumps' user), the servers started again (auth's init containers
     # install the policy's trigger again)
     local stopped="deploy/${FULL}-fxa-auth deploy/${FULL}-fxa-content deploy/${FULL}-fxa-profile deploy/${FULL}-admin" contents_before contents_after
+    local stopped_names="fxa-auth fxa-content fxa-profile admin"
+    # (SYNC_BACKEND=postgres: the Sync scope restored too, the Sync server stopped first, the page's step 1)
+    if [[ ${SYNC_BACKEND} == postgres ]]; then
+      stopped+=" deploy/${FULL}-syncstorage" stopped_names+=" syncstorage"
+    fi
     # shellcheck disable=SC2086 # (the list)
     kubectl scale ${stopped} --replicas=0 > /dev/null
-    for name in fxa-auth fxa-content fxa-profile admin; do
+    for name in ${stopped_names}; do
       kubectl wait --for=delete pod -l "app.kubernetes.io/instance=${REL},app.kubernetes.io/component=${name}" --timeout=5m > /dev/null || fail "${FULL}-${name} not stopped"
     done
     kubectl create job --from="cronjob/${FULL}-backup" backup-now-2 > /dev/null || fail "kubectl create job --from=cronjob/${FULL}-backup failed"
@@ -1528,14 +1551,22 @@ PY
     eval "${full_cmd}" > /dev/null || fail "docs/backups.md's restore of the accounts failed: $(kubectl logs job/restore-accounts 2>&1 | tail -10)"
     contents_after=$(contents)
     [[ "${contents_after}" == "${contents_before}" ]] || fail "the accounts restored are not what was dumped (${contents_after}, before ${contents_before})"
+    local sync_restored=""
+    if [[ ${SYNC_BACKEND} == postgres ]]; then
+      fxa_postgres_restore backup-now-2
+      sync_restored="; the Sync scope (PostgreSQL: ${SYNC_RESTORED})"
+    fi
     # shellcheck disable=SC2086 # (the list)
     kubectl scale ${stopped} --replicas=1 > /dev/null
-    for name in fxa-auth fxa-content fxa-profile admin; do
+    for name in ${stopped_names}; do
       kubectl rollout status "deploy/${FULL}-${name}" --timeout 15m > /dev/null || fail "${FULL}-${name} not back after the restore"
     done
     [[ "$(fxa_db_sql "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'ffs_signup_policy'")" == 1 ]] || fail "the sign-up policy's trigger not installed again after the restore"
-    kubectl delete job backup-now-2 restore-accounts --wait=true > /dev/null
-    check "the accounts restored whole as docs/backups.md#restore-on-kubernetes says (${accounts_run}, into the five dropped): their rows, ffs' ${ffs_views} views and the procedures with their DEFINER, the events as dumped; the servers back, the policy's trigger again"
+    # (--ignore-not-found: the Jobs of kubectl create job --from=cronjob are the CronJob's, which
+    # keeps the newest 3 that succeeded, successfulJobsHistoryLimit; SYNC_BACKEND=postgres' two
+    # more restores make backup-now-2 an older one)
+    kubectl delete job backup-now-2 restore-accounts --ignore-not-found --wait=true > /dev/null
+    check "the accounts restored whole as docs/backups.md#restore-on-kubernetes says (${accounts_run}, into the five dropped): their rows, ffs' ${ffs_views} views and the procedures with their DEFINER, the events as dumped${sync_restored}; the servers back, the policy's trigger again"
     fxa_client_pod backups-card
     got=$(fxa_py backups-card <<'PY'
 import re, time
@@ -1552,7 +1583,7 @@ PY
 ) || fail "the admin UI's Backups card: ${got}"
     [[ "${got}" == "Last backup of the "*", ok." ]] || fail "the admin UI's Backups card, scope accounts: '${got}'"
     kubectl delete pod backups-card --wait=true > /dev/null
-    kubectl delete job backup-now-1 --wait=true > /dev/null
+    kubectl delete job backup-now-1 --ignore-not-found --wait=true > /dev/null
     check "the admin UI's Backups card: a row of the scope accounts (${got})"
   fi
 
@@ -1758,6 +1789,45 @@ PY
 
   echo ""
   echo "=== e2e of the accounts (${backend}) passed ==="
+}
+
+# fxa_postgres_restore <backup Job>: SYNC_BACKEND=postgres, the Sync scope of that Job's run
+# restored as docs/backups.md#restore-on-kubernetes says for PostgreSQL, its commands as they
+# are there (restore() already defined, F set, the Sync server and the admin UI stopped): the
+# database emptied (its PVC deleted), the Sync server's role, its one database as that role, the
+# Sync server started, the admin UI's database. The same users, Sync items and rows of the admin
+# UI's tables as dumped (but ffs_backups: the run records itself after its dump). SYNC_RESTORED:
+# what was compared
+fxa_postgres_restore() {
+  local backups_md="${REPO_ROOT}/docs/backups.md" run empty_cmd pg_cmd before after
+  [[ "$(kubectl logs "job/$1" -c backup)" =~ backup\ sync:\ ok:\ /backups/sync/([0-9]{8}T[0-9]{6}Z), ]] || fail "$1: Sync not dumped: $(kubectl logs "job/$1" -c backup)"
+  run=${BASH_REMATCH[1]}
+  # (the page's loop, of the PostgreSQL server alone; its commands of PostgreSQL)
+  empty_cmd=$(sed -n '/^    for db in postgres; do/,/^    done$/p' "${backups_md}")
+  pg_cmd=$(sed -n '/^    kubectl get deploy \$F-syncstorage -o json | jq/,/^        PGPASSWORD="\$ADMIN_DB_PASSWORD" psql/p' "${backups_md}")
+  [[ -n "${empty_cmd}" && "$(grep -c '^ *restore restore-' <<< "${pg_cmd}")" == 2 ]] || fail "docs/backups.md#restore-on-kubernetes: not its PostgreSQL commands: ${empty_cmd} ${pg_cmd}"
+  pg_sql() {
+    kubectl exec "${FULL}-postgres-0" -c db -- env PGPASSWORD="$(kubectl get secret "${SECRET}" -o jsonpath="{.data.$1}" | base64 -d)" \
+      psql -X -tA -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$2" -d "$3" -c "$4"
+  }
+  pg_contents() {
+    local tables t
+    printf 'users %s bsos %s' "$(pg_sql POSTGRES_SYNC_PASSWORD syncserver_app syncserver 'SELECT COUNT(*) FROM users')" \
+      "$(pg_sql POSTGRES_SYNC_PASSWORD syncserver_app syncserver 'SELECT COUNT(*) FROM bsos')"
+    tables=$(pg_sql ADMIN_DB_PASSWORD ffs_admin_ui ffs_admin "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'ffs_backups' ORDER BY 1")
+    for t in ${tables}; do printf ' %s %s' "${t}" "$(pg_sql ADMIN_DB_PASSWORD ffs_admin_ui ffs_admin "SELECT COUNT(*) FROM ${t}")"; done
+  }
+  before=$(pg_contents)
+  [[ "${before}" =~ ^users\ [1-9][0-9]*\ bsos\ [1-9][0-9]*\ .*ffs_ ]] || fail "nothing of Sync or the admin UI to restore: ${before}"
+  eval "${empty_cmd}" > /dev/null || fail "docs/backups.md's emptying of the PostgreSQL server failed"
+  [[ "$(pg_sql POSTGRES_PASSWORD "$(kubectl exec "${FULL}-postgres-0" -c db -- printenv POSTGRES_USER)" syncserver "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public'")" == 0 ]] \
+    || fail "the PostgreSQL server not empty after docs/backups.md's loop"
+  eval "${pg_cmd}" > /dev/null || fail "docs/backups.md's PostgreSQL restore (${run}) failed: $(kubectl logs job/restore-sync 2>&1 | tail -5; kubectl logs job/restore-admin 2>&1 | tail -5)"
+  after=$(pg_contents)
+  [[ "${after}" == "${before}" ]] || fail "the Sync scope restored (${run}) is not what was dumped: ${after}, before ${before}"
+  kubectl delete job restore-sync restore-admin --ignore-not-found --wait=true > /dev/null
+  # shellcheck disable=SC2034 # (read by the caller)
+  SYNC_RESTORED="${run}, its role, the Sync database and the admin UI's as the page says: ${after}"
 }
 
 # admin_test_env: tests/docker-compose.fxa-test.yml's test-only settings of the admin UI (its

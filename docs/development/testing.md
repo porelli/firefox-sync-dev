@@ -35,7 +35,7 @@ The defaults follow each database's long-term tag (`mariadb:lts`, `mysql:lts`; P
 | Sync | MariaDB `lts` | syncstorage-rs.yml `test`, admin.yml `e2e`, helm.yml `e2e` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`: one MariaDB server for Sync and the accounts) |
 | Sync | MySQL `lts` | syncstorage-rs.yml and admin.yml `e2e` (`SYNC_DB=mysql`), helm.yml `e2e` | syncstorage-rs.yml and admin.yml, helm.yml |
 | Sync | MySQL 8 (installs from before) | syncstorage-rs.yml `test` (`SYNC_DB=mysql`, `SYNC_MYSQL_IMAGE=mysql:8`) | syncstorage-rs.yml `test` (`SYNC_MYSQL_IMAGE=mysql:8`) |
-| Sync | PostgreSQL `latest` (its major pinned) | syncstorage-rs.yml and admin.yml `test`/`e2e`, helm.yml `e2e` | the same |
+| Sync | PostgreSQL `latest` (its major pinned) | syncstorage-rs.yml and admin.yml `test`/`e2e`, helm.yml `e2e`, and `e2e-fxa` with the accounts (`SYNC_BACKEND=postgres`) | syncstorage-rs.yml and admin.yml `test`/`e2e`, helm.yml `e2e` |
 | Accounts | MySQL `lts` (images with mozilla/fxa#21554) | fxa.yml `test` (amd64, arm64), admin.yml `e2e-fxa` once `fxa-mono-latest` has it | admin.yml `e2e-fxa` (`EXTERNAL_DB=1`) |
 | Accounts | MySQL 8 with `mysql_native_password` (installs from before, images without it) | fxa.yml `test` (`FXA_MYSQL_IMAGE=mysql:8`), syncstorage-rs.yml `test-fxa` (Mozilla's images), fxa.yml `test-upgrade` (then to `lts`) | admin.yml `e2e-fxa` while `fxa-mono-latest` has no mozilla/fxa#21554 |
 | Accounts | MariaDB `lts` (needs mozilla/fxa#21494) | fxa.yml `test-mariadb`, admin.yml `e2e-fxa` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`) |
@@ -171,12 +171,12 @@ The unit tests (`cd admin && go test ./...`) cover the backups' age and failures
     - a wrong `FXA_MYSQL_PASSWORD` keeping the auth server out of its Service; a backend switch and a database major refused at render time;
     - [test_fxa_flow.py](/tests/test_fxa_flow.py) through the Ingresses over HTTPS, the rate limits by client address through the Ingress, an uploaded avatar kept across a restart, and [test_fxa_pairing.py](/tests/test_fxa_pairing.py) in a browser through the pairing server's Ingress;
     - [test_fxa_admin.py](/tests/test_fxa_admin.py): the gate, signing in with the accounts, max accounts, health and the security history; then the admin UI turned off;
-    - a backup of both scopes, and the accounts' `fxa` dump restored into a scratch database with the `restore()` and `restore restore-accounts` commands of [Restore on Kubernetes](../backups.md#restore-on-kubernetes);
+    - a backup of both scopes, and the accounts' `fxa` dump restored into a scratch database with the `restore()` and `restore restore-accounts` commands of [Restore on Kubernetes](../backups.md#restore-on-kubernetes), then all of them over the dropped databases; with `SYNC_BACKEND=postgres` also the Sync scope, with that page's PostgreSQL commands;
     - a new install with `fxa.volumeOwnerInit=false`.
 
     `REPOSITORY`, `TAG`, `FXA_IMAGE` and `FXA_VERSION` choose the images, as in `tests/e2e-fxa.sh`. The accounts database is `mysql:8` or `mariadb:11` when the accounts image lacks the patch for `lts` ([Upstream patches](../reference/images.md#upstream-patches)); `FXA_MYSQL_IMAGE` and `FXA_MARIADB_IMAGE` override that.
 
-[helm.yml](/.github/workflows/helm.yml) runs `fxa_lint` through `tests/helm.sh lint`, with the whole history for `git archive`. The e2e runs locally only.
+[helm.yml](/.github/workflows/helm.yml) runs `fxa_lint` through `tests/helm.sh lint`, with the whole history for `git archive`, and the e2e (`e2e-fxa`) on MySQL with Firefox, MariaDB, your own MySQL server, and MySQL with the Sync server on PostgreSQL.
 
 ## Docs that tests read
 
@@ -186,7 +186,7 @@ Some tests read commands from the docs and check them word for word, so a page a
 |---|---|---|
 | `tests/e2e.sh` | [backups.md](../backups.md#restore) | the compose restore commands |
 | `tests/helm.sh` | [backups.md](../backups.md#restore) | the blocks starting `--entrypoint sh backup -c '` that contain `$TOKENSERVER_DB_NAME.sql.gz`: the first is MariaDB, the second PostgreSQL |
-| `tests/helm-fxa.sh` | [backups.md](../backups.md#restore-on-kubernetes) | `restore() {` to its closing `}`, and the `restore restore-accounts 'run=` command to its line ending `backup-accounts`, both indented four spaces, each exactly once |
+| `tests/helm-fxa.sh` | [backups.md](../backups.md#restore-on-kubernetes) | `restore() {` to its closing `}`, and the `restore restore-accounts 'run=` command to its line ending `backup-accounts`, both indented four spaces, each exactly once; with `SYNC_BACKEND=postgres` also the `for db in postgres; do` loop to its `done`, and the PostgreSQL block from `kubectl get deploy $F-syncstorage -o json | jq` to the `PGPASSWORD="$ADMIN_DB_PASSWORD" psql` line (two `restore restore-` commands) |
 | `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; the Quadlet `systemctl --user stop` line, exactly once |
 | `tests/migrate.sh` | [migrating.md](../migrating.md), [upgrading.md](../upgrading.md#older-firefox-sync-releases) | every command it runs, with `grep -qF` in either page |
 

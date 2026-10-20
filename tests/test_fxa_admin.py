@@ -10,6 +10,8 @@ Environment (besides those of test_fxa_flow.py):
   FXA_DIRECT_URL     the auth server itself, without the sign-up gate (http://fxa-auth:9000)
   ADMIN_FXA_CLIENT_ID the admin UI's OAuth client: it signs in with these accounts
                      (ADMIN_ALLOWED_USERS=@example.com)
+  TOKENSERVER_DB_TYPE the Sync databases' server, as the admin UI's: mysql (empty) or
+                     postgres (one database, no storage database of its own)
 """
 
 import html
@@ -34,6 +36,9 @@ DIRECT = os.environ["FXA_DIRECT_URL"].rstrip("/")
 # run again against a kept stack, tests/e2e-fxa.sh RERUN=1)
 INVITED = f"invited-{uuid.uuid4().hex[:8]}@example.net"
 ADMIN_CLIENT_ID = os.environ.get("ADMIN_FXA_CLIENT_ID", "")
+# PostgreSQL: the tokenserver and the storage in one database, as the admin UI names it
+SYNC_POSTGRES = os.environ.get("TOKENSERVER_DB_TYPE") == "postgres"
+TOKENSERVER = "Sync (tokenserver and storage)" if SYNC_POSTGRES else "Tokenserver"
 sso = pytest.mark.skipif(not ADMIN_CLIENT_ID, reason="the admin UI does not sign in with these accounts")
 
 
@@ -468,13 +473,15 @@ def test_activity_page():
 def test_health_and_sizes(admin):
     page = admin.page()
     health = page.split('<table id="health"')[1].split("</table>")[0]
-    for component in ("Sync server", "Tokenserver database", "Storage database", "Admin UI database", "Accounts API", "Accounts pages",
+    # (PostgreSQL: its check the tokenserver's)
+    storage = () if SYNC_POSTGRES else ("Storage database",)
+    for component in ("Sync server", "Tokenserver database", *storage, "Admin UI database", "Accounts API", "Accounts pages",
                       "Profile server", "Accounts database", "Accounts Redis"):
         row = re.search(r"<td>" + component + r"</td><td>(.*?)</td><td>(.*?)</td>", health)
         assert row and "up" in row.group(1), (component, health)
     # versions from /__version__ (our syncstorage images fill it in since APP_BUILD_REVISION 2)
     assert re.search(r"<td>Accounts API</td><td>[^<]*<span[^>]*>up</span></td><td>\d+\.\d+", health), health
-    assert re.search(r"Databases: .*Tokenserver \d", page), page[:3000]
+    assert re.search(r"Databases: .*" + re.escape(TOKENSERVER) + r" \d", page), page[:3000]
     # FXA_DB_SERVER: set by e2e-fxa.sh from FXA_MYSQL_IMAGE (MariaDB with FXA_DB=mariadb)
     for component, v in (("Accounts database", os.environ.get("FXA_DB_SERVER") or r"MySQL \d+\.\d+"), ("Accounts Redis", r"Redis \d"), ("Profile server", r"\d+\.\d+")):
         assert re.search(r"<td>" + component + r"</td><td>[^<]*<span[^>]*>up</span></td><td>" + v, health), (component, health)
@@ -1154,12 +1161,12 @@ def test_schema_levels(admin):
     levels = dict(re.findall(r"<tr><td>([^<]+)</td><td>([^<]*)</td>", schema))
     # the accounts databases' schema-patch-level (fxa 201, fxa_oauth 40 in v1.348), and syncstorage-rs's migrations
     assert int(levels["fxa"]) >= 201 and int(levels["fxa_oauth"]) >= 40, levels
-    for name in ("fxa_profile", "Tokenserver", "Sync storage"):
+    for name in ("fxa_profile", TOKENSERVER) + (() if SYNC_POSTGRES else ("Sync storage",)):
         assert levels.get(name), (name, levels)
     # FxA records no time: said, not left blank; syncstorage-rs's migrations have theirs
     for name in ("fxa", "fxa_oauth", "fxa_profile", "pushbox"):
         assert re.search(r"<tr><td>" + name + r'</td><td>\d+</td><td><span class="quiet-text">not recorded by FxA</span></td></tr>', schema), (name, schema)
-    assert re.search(r"<tr><td>Tokenserver</td><td>\d+[^<]*</td><td>\d{4}-\d\d-\d\d \d\d:\d\d</td></tr>", schema), schema
+    assert re.search(r"<tr><td>" + re.escape(TOKENSERVER) + r"</td><td>\d+[^<]*</td><td>\d{4}-\d\d-\d\d \d\d:\d\d</td></tr>", schema), schema
 
 
 def allowlist_row(admin, address):
