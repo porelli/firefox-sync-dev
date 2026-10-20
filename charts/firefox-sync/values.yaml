@@ -106,6 +106,24 @@ fxa:
   # the admin UI's, for the database). Enforced where the cluster's network plugin does
   networkPolicy:
     enabled: true
+    # the public servers (auth, content, profile, pairing) too: from your Ingress controller,
+    # the release's own pods that call them and extraFrom only; else any pod of the cluster
+    # reaches auth:9000 with an X-Forwarded-For of its choice (the rate limits' client IP),
+    # around the sign-up gate. Off by default: the chart cannot know your controller
+    # (docs/install/helm.md#networkpolicies), with enabled above
+    servers:
+      enabled: false
+      # the controller's pods, one NetworkPolicy peer (both selectors: the pods of those
+      # labels in the namespaces of those labels; podSelector alone: in the release's
+      # namespace; at least one required), e.g. ingress-nginx:
+      #   namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
+      #   podSelector: {matchLabels: {app.kubernetes.io/name: ingress-nginx}}
+      ingressController:
+        namespaceSelector: {}
+        podSelector: {}
+      # more peers (NetworkPolicyPeer: podSelector, namespaceSelector, ipBlock), e.g. a
+      # controller on the host network ({ipBlock: {cidr: 10.0.0.0/24}}) or your monitoring
+      extraFrom: []
 
   # the accounts database: compose's fxa-db, or your own server (docs/databases.md#your-own-server)
   database:

@@ -148,6 +148,7 @@ The chart leaves these to the controller:
   ```
 
 - **The client IP address.** `fxa.clientAddressDepth` (`2`) is for the Ingress controller alone. Add 1 for each proxy in front of it that adds to `X-Forwarded-For`: see [Client IP address](#client-ip-address).
+- **Who reaches the servers.** Without a NetworkPolicy, any pod of the cluster reaches the auth server's Service past the controller, with an `X-Forwarded-For` of its own and around the sign-up gate. `fxa.networkPolicy.servers` admits the controller's pods alone, which you name in it: see [NetworkPolicies](install/helm.md#networkpolicies).
 
 ### Your own Ingress or proxy
 

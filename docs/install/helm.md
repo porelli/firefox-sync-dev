@@ -360,6 +360,35 @@ With `fxa.volumeOwnerInit: false` there are none, and the accounts' pods get `fs
 
 Only a network plugin that enforces NetworkPolicies applies them. Redis also has a password, `FXA_REDIS_PASSWORD` of the Secret, which it reads from its standard input: it is in neither the pod's spec nor its arguments. A tool of yours that connects to the accounts' database needs a NetworkPolicy of its own.
 
+Without more, any pod of the cluster reaches the accounts' public servers directly, past the Ingress. For the auth server that matters: such a pod sets `X-Forwarded-For` itself, and `fxa.clientAddressDepth` takes the client's address from its end, so it picks the address the rate limits see. It also creates accounts around the sign-up gate, which is on the Ingress' path only (the database still enforces the sign-up policy). `fxa.networkPolicy.servers.enabled: true` admits only the Ingress controller, these pods of the release, and `fxa.networkPolicy.servers.extraFrom`:
+
+| Server | Ports | From the release |
+|---|---|---|
+| auth, `ffs-firefox-sync-fxa-auth` | 9000 | the content and profile servers, the Sync server (it checks Firefox's OAuth tokens there), the admin UI (its sign-up gate, its health checks) |
+| content, `ffs-firefox-sync-fxa-content` | 3030 | the admin UI |
+| profile, `ffs-firefox-sync-fxa-profile` | 1111, 1112 (`static`), 1114 (`img`) | the auth and content servers, the admin UI |
+| pairing, `ffs-firefox-sync-fxa-pairing` (with `fxa.pairing.enabled`) | 8000 | the admin UI |
+
+The backups need none of them. It is off by default because the chart cannot know your Ingress controller. Name its pods in `fxa.networkPolicy.servers.ingressController`, as one NetworkPolicy peer: `namespaceSelector` and `podSelector` together select the pods of those labels in the namespaces of those labels, and `podSelector` alone selects them in the release's namespace. One of them is required: the render refuses an empty one, which would admit every pod. It also needs `fxa.networkPolicy.enabled`. For ingress-nginx, installed with its Helm chart in the namespace `ingress-nginx`:
+
+```yaml
+fxa:
+  networkPolicy:
+    servers:
+      enabled: true
+      ingressController:
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: ingress-nginx
+```
+
+For Traefik, its Helm chart labels the pods `app.kubernetes.io/name: traefik`, in the namespace you install it in (`kube-system` for the one of k3s). Check the labels with `kubectl get pods -A -l app.kubernetes.io/name=traefik --show-labels`.
+
+`extraFrom` takes more peers as a NetworkPolicy has them: your own reverse proxy, a tool that reads the heartbeats, or a controller on the host network (`hostNetwork: true`), whose connections come from its node's address: `- ipBlock: {cidr: 192.168.1.0/24}`. How a network plugin treats the nodes' own traffic varies; the kubelet's probes still pass with the policies on kind's kindnet, which the tests use.
+
 ## Backups and upgrades
 
 - Backups: `backup.enabled`, see [Backups on Kubernetes](../backups.md#kubernetes). With the self-hosted accounts, they dump the accounts too.

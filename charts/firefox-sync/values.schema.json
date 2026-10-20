@@ -190,6 +190,64 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "servers": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "ingressController": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "namespaceSelector": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "matchLabels": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "matchExpressions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object"
+                          }
+                        }
+                      }
+                    },
+                    "podSelector": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "matchLabels": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "matchExpressions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "extraFrom": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "minProperties": 1
+                  }
+                }
+              }
             }
           }
         },

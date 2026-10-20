@@ -232,6 +232,7 @@ Values of the chart with no `.env` counterpart, besides those in the tables abov
 | `fxa.extraCaCerts.configMap`, `.key` | empty, `ca.crt` | a ConfigMap with a CA the accounts and the admin UI trust, for your SMTP server or your own HTTPS hosts |
 | `fxa.volumeOwnerInit` | `true` | `false`: no root init container, `fsGroup` instead: [Resources and PodSecurity](../install/helm.md#resources-and-podsecurity) |
 | `fxa.networkPolicy.enabled` | `true` | NetworkPolicies for the accounts' Redis and database: [NetworkPolicies](../install/helm.md#networkpolicies) |
+| `fxa.networkPolicy.servers.enabled`, `.ingressController.namespaceSelector`, `.podSelector`, `.extraFrom` | off | NetworkPolicies for the accounts' public servers too, from your Ingress controller: [NetworkPolicies](../install/helm.md#networkpolicies) |
 | `admin.fxaSignIn` | `false` | sign in to the admin UI with the self-hosted accounts: [Sign in with the accounts](../install/helm.md#sign-in-with-the-accounts) |
 | `syncstorage.replicas` | `1` | keep 1: the migrations and the max users init run in its init containers |
 | `syncstorage.resources`, `syncstorage.initResources` | none | the Sync server and its init containers: [Resources](../install/helm.md#resources) |

@@ -245,6 +245,14 @@ firefox-sync.checkValues
 {{- if and $port (or (lt (atoi $port) 1) (gt (atoi $port) 65535)) }}
 {{- fail (printf "firefox-sync: fxa.database.external.port %s is no port: 1 to 65535, or empty for 3306" $port) }}
 {{- end }}
+{{- if ($f.networkPolicy.servers | default dict).enabled }}
+{{- if not $f.networkPolicy.enabled }}
+{{- fail "firefox-sync: fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.enabled, the NetworkPolicies of the accounts (docs/install/helm.md#networkpolicies)" }}
+{{- end }}
+{{- if eq (include "firefox-sync.fxaControllerPeer" .) "{}" }}
+{{- fail "firefox-sync: fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.servers.ingressController.namespaceSelector or .podSelector (matchLabels or matchExpressions), your Ingress controller's pods: empty, the policy would let every pod in (docs/install/helm.md#networkpolicies)" }}
+{{- end }}
+{{- end }}
 {{- if and $f.pairing.enabled (not $f.pairing.url) }}
 {{- fail "firefox-sync: fxa.pairing.enabled needs fxa.pairing.url, the public wss:// URL of the pairing server" }}
 {{- end }}
@@ -278,6 +286,25 @@ may be the same */ -}}
 {{- include "firefox-sync.checkExistingSecret" . }}
 {{- include "firefox-sync.checkFxaDbBackend" . }}
 {{- end }}
+{{- end }}
+
+{{/*
+fxa.networkPolicy.servers.ingressController as a NetworkPolicy peer (JSON): its
+namespaceSelector and podSelector that select something (matchLabels or matchExpressions), in
+one peer (both: the pods of those labels in the namespaces of those labels; podSelector alone:
+in the release's namespace). "{}" when neither does, which checkFxaValues refuses: an empty
+peer would let every pod in
+*/}}
+{{- define "firefox-sync.fxaControllerPeer" -}}
+{{- $ic := ((.Values.fxa.networkPolicy.servers | default dict).ingressController | default dict) }}
+{{- $peer := dict }}
+{{- range $k := list "namespaceSelector" "podSelector" }}
+{{- $sel := get $ic $k | default dict }}
+{{- if or $sel.matchLabels $sel.matchExpressions }}
+{{- $_ := set $peer $k $sel }}
+{{- end }}
+{{- end }}
+{{- toJson $peer }}
 {{- end }}
 
 {{/*

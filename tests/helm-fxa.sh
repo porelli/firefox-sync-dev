@@ -682,6 +682,41 @@ fxa_objects_lint() {
     test-release-firefox-sync-fxa-redis ]] || fail "your own accounts server: not the fxa-redis NetworkPolicy alone"
   check "fxa.networkPolicy: fxa-redis from fxa-auth, fxa-content, fxa-profile; fxa-db from fxa-auth, fxa-profile; both from the admin UI (when on), fxa-db from the backups (when on); none with it off, no fxa-db one with your own server"
 
+  # fxa.networkPolicy.servers (off by default): the public servers from the Ingress controller
+  # (one peer of its selectors), the release's pods that call them and extraFrom alone
+  local ic=(--set fxa.networkPolicy.servers.enabled=true
+    --set-json 'fxa.networkPolicy.servers.ingressController={"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ingress-nginx"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}}')
+  server_policies() { fxa_objs "$@" | jq -c '[.[] | select(.kind == "NetworkPolicy" and (.metadata.name | test("-fxa-(redis|db)$") | not))
+    | {to: .spec.podSelector.matchLabels["app.kubernetes.io/component"], from: [.spec.ingress[0].from[] | if .podSelector.matchLabels["app.kubernetes.io/instance"] == "test-release" and (has("namespaceSelector") | not)
+      then {release: .podSelector.matchExpressions[0].values} else . end], ports: [.spec.ingress[0].ports[] | .port]}]'; }
+  [[ "$(server_policies)" == '[]' ]] || fail "fxa.networkPolicy.servers off by default: $(server_policies)"
+  local controller='{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ingress-nginx"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}}'
+  [[ "$(server_policies "${ic[@]}")" == "[{\"to\":\"fxa-auth\",\"from\":[{\"release\":[\"fxa-content\",\"fxa-profile\",\"syncstorage\",\"admin\"]},${controller}],\"ports\":[9000]},{\"to\":\"fxa-content\",\"from\":[{\"release\":[\"admin\"]},${controller}],\"ports\":[3030]},{\"to\":\"fxa-profile\",\"from\":[{\"release\":[\"fxa-auth\",\"fxa-content\",\"admin\"]},${controller}],\"ports\":[1111,1112,1114]},{\"to\":\"fxa-pairing\",\"from\":[{\"release\":[\"admin\"]},${controller}],\"ports\":[8000]}]" ]] \
+    || fail "fxa.networkPolicy.servers: $(server_policies "${ic[@]}")"
+  # (without the admin UI and pairing: content's from the controller alone, no pairing one;
+  # podSelector alone: the controller's pods in the release's namespace; extraFrom as given)
+  [[ "$(server_policies "${ic[@]}" --set admin.enabled=false --set fxa.pairing.enabled=false --set-json 'fxa.networkPolicy.servers.ingressController.namespaceSelector={}' \
+    --set-json 'fxa.networkPolicy.servers.extraFrom=[{"ipBlock":{"cidr":"10.0.0.0/24"}}]' | jq -c '[.[] | [.to, .from]]')" \
+    == '[["fxa-auth",[{"release":["fxa-content","fxa-profile","syncstorage"]},{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}},{"ipBlock":{"cidr":"10.0.0.0/24"}}]],["fxa-content",[{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}},{"ipBlock":{"cidr":"10.0.0.0/24"}}]],["fxa-profile",[{"release":["fxa-auth","fxa-content"]},{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ingress-nginx"}}},{"ipBlock":{"cidr":"10.0.0.0/24"}}]]]' ]] \
+    || fail "fxa.networkPolicy.servers without the admin UI and pairing, extraFrom: $(server_policies "${ic[@]}" --set admin.enabled=false --set fxa.pairing.enabled=false)"
+  # (refused: no selector, or selectors that select everything; fxa.networkPolicy.enabled off)
+  fxa_refused "fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.servers.ingressController.namespaceSelector or .podSelector" -f "${fxa}" \
+    --set fxa.networkPolicy.servers.enabled=true
+  fxa_refused "fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.servers.ingressController.namespaceSelector or .podSelector" -f "${fxa}" \
+    --set fxa.networkPolicy.servers.enabled=true --set-json 'fxa.networkPolicy.servers.ingressController={"namespaceSelector":{"matchLabels":{}},"podSelector":{"matchExpressions":[]}}'
+  fxa_refused "fxa.networkPolicy.servers.enabled needs fxa.networkPolicy.enabled" -f "${fxa}" "${ic[@]}" --set fxa.networkPolicy.enabled=false
+  for bad in fxa.networkPolicy.servers.ingressController.nameSpaceSelector.matchLabels.a=b fxa.networkPolicy.servers.ingressController.podSelector.labels.a=b \
+    fxa.networkPolicy.servers.enable=true; do
+    out=$(fxa_render -f "${fxa}" --set "${bad}") && fail "${bad}: not refused by the schema"
+    grep -qi 'schema' <<< "${out}" || fail "${bad}: refused, but not by the schema: ${out}"
+  done
+  out=$(fxa_render -f "${fxa}" "${ic[@]}" --set-json 'fxa.networkPolicy.servers.extraFrom=[{}]') && fail "extraFrom [{}] (every pod): not refused by the schema"
+  # (the e2e's values: Traefik in ffs-test-ingress, the tests' pods by their label)
+  [[ "$(helm template test-release "${CHART_DIR}" -f "${REPO_ROOT}/tests/helm/fxa-values.yaml" --set fxa.enabled=true | manifests \
+    | jq -c '[.[] | select(.kind == "NetworkPolicy") | .metadata.name | sub("test-release-firefox-sync-"; "")]')" == '["fxa-redis","fxa-db","fxa-auth","fxa-content","fxa-profile","fxa-pairing"]' ]] \
+    || fail "tests/helm/fxa-values.yaml: not the servers' NetworkPolicies"
+  check "fxa.networkPolicy.servers (off by default): auth from content, profile, the Sync server, the admin UI; content, pairing from the admin UI; profile from auth, content, the admin UI; each from the Ingress controller (one peer: namespaceSelector and/or podSelector) and extraFrom; refused without a selector, with selectors of everything, or with fxa.networkPolicy.enabled off"
+
   # the scripts of config/fxa, byte for byte, in the ConfigMap
   local file
   for file in content-server.js oauth-clients.js; do
@@ -1038,7 +1073,8 @@ fxa_e2e() {
     # CREATE USER (the administrator's SQL made ffs_admin); the accounts' user on the server's
     # default authentication, or mysql_native_password for an image without mozilla/fxa#21554
     ! kubectl get sts,svc,pvc -o name | grep -q -- '-fxa-db' || fail "a bundled accounts database with your own server: $(kubectl get sts,svc,pvc -o name | grep -- '-fxa-db')"
-    [[ "$(kubectl get networkpolicy -o name | paste -sd' ' -)" == "networkpolicy.networking.k8s.io/${FULL}-fxa-redis" ]] \
+    # (the servers' too, tests/helm/fxa-values.yaml: below)
+    [[ "$(kubectl get networkpolicy -o name | grep -c -- '-fxa-\(redis\|db\)$')" == 1 ]] && ! kubectl get networkpolicy "${FULL}-fxa-db" > /dev/null 2>&1 \
       || fail "the NetworkPolicies with your own server: $(kubectl get networkpolicy -o name | paste -sd' ' -)"
     out=$(kubectl logs "${auth}" -c policy)
     ! grep -qi 'create user' <<< "${out}" || fail "the policy's log names CREATE USER: ${out}"
@@ -1080,6 +1116,33 @@ fxa_e2e() {
   grep -q NOAUTH <<< "${out}" || fail "a pod with the accounts' labels does not reach fxa-redis: ${out}"
   kubectl delete pod np-probe --wait=true > /dev/null
   check "fxa.networkPolicy: fxa-redis unreachable from a pod not of the accounts, reached with their labels (the CNI enforces it)"
+
+  # fxa.networkPolicy.servers (tests/helm/fxa-values.yaml: Traefik's pods in ffs-test-ingress,
+  # the tests' pods): auth, content, profile and pairing unreachable from another pod, also one
+  # with Traefik's label in another namespace (both selectors in one peer); reached by the tests'
+  # pods, and through Traefik (every test below goes through it: the flows, the rate limits by
+  # the client's address, the admin UI's sign-in)
+  server_probe() {
+    kubectl delete pod np-servers --ignore-not-found --wait=true > /dev/null
+    kubectl run np-servers --image="${SYNC_IMAGE}" --image-pull-policy=Never --restart=Never --labels="ffs-e2e=np-servers$1" --command -- sh -c "
+      for u in fxa-auth:9000/__heartbeat__ fxa-content:3030/__heartbeat__ fxa-profile:1111/__heartbeat__ fxa-profile:1114/img/a/00000000000000000000000000000000 fxa-pairing:8000/__heartbeat__; do
+        echo \"\${u%%/*} \$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://${FULL}-\${u})\"
+      done" > /dev/null
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/np-servers --timeout=3m > /dev/null || fail "np-servers did not complete"
+    kubectl logs np-servers 2>&1 | paste -sd' ' -
+  }
+  local blocked="fxa-auth:9000 000 fxa-content:3030 000 fxa-profile:1111 000 fxa-profile:1114 000 fxa-pairing:8000 000"
+  got=$(server_probe "")
+  [[ "${got}" == "${blocked}" ]] || fail "a pod of no label reaches the accounts' servers: ${got}"
+  got=$(server_probe ",app=traefik")
+  [[ "${got}" == "${blocked}" ]] || fail "a pod with Traefik's label in the namespace default reaches the accounts' servers: ${got}"
+  got=$(server_probe ",ffs-e2e-direct=true")
+  [[ "${got}" == "fxa-auth:9000 200 fxa-content:3030 200 fxa-profile:1111 200 fxa-profile:1114 200 fxa-pairing:8000 200" ]] \
+    || fail "a pod of extraFrom does not reach the accounts' servers: ${got}"
+  kubectl delete pod np-servers --wait=true > /dev/null
+  [[ "$(kubectl get networkpolicy -o name | sed 's|.*/||' | LC_ALL=C sort | paste -sd' ' -)" == "$(printf '%s\n' "${FULL}"-fxa-{redis,auth,content,profile,pairing} $([[ -n ${external} ]] || echo "${FULL}-fxa-db") | LC_ALL=C sort | paste -sd' ' -)" ]] \
+    || fail "the NetworkPolicies: $(kubectl get networkpolicy -o name | paste -sd' ' -)"
+  check "fxa.networkPolicy.servers: auth, content, profile (1111, 1114), pairing unreachable from a pod of no label and from one with Traefik's label in another namespace (the CNI enforces it), reached from extraFrom's; through Traefik in the tests below"
 
   # fail closed: a wrong password of the accounts' database stops auth at the migrations
   # (wait-db has no credentials), never Ready, out of its Service
@@ -1254,7 +1317,7 @@ fxa_e2e() {
   kubectl exec "${profile}" -c profile -- node -e "fetch('http://127.0.0.1:1113/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))" \
     || fail "the profile container does not reach its worker at 127.0.0.1:1113"
   kubectl delete pod curl-probe --ignore-not-found --wait=true > /dev/null
-  kubectl run curl-probe --image="${SYNC_IMAGE}" --image-pull-policy=Never --restart=Never --command -- sh -c "
+  kubectl run curl-probe --image="${SYNC_IMAGE}" --image-pull-policy=Never --restart=Never --labels=ffs-e2e-direct=true --command -- sh -c "
     c=http://${FULL}-fxa-content:3030 p=http://${FULL}-fxa-profile a=/a/00000000000000000000000000000000
     echo \"config \$(curl -fsS --max-time 20 \$c/.well-known/fxa-client-configuration | tr -d '\n')\"
     for u in :1114/img\$a :1114\$a :1112\$a :1114/img/a/0123456789abcdef0123456789abcdef; do echo \"GET\$u \$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' \$p\$u)\"; done
@@ -2019,8 +2082,9 @@ fxa_job() {
   spec=$(fxa_test_spec "${image}" '["sh", "-c", "eval \"set -- ${PYTEST_ARGS}\" && exec python3 -m pytest -q -p no:cacheprovider \"$@\""]' \
     PYTEST_ARGS="${args}" "$@")
   kubectl delete job "fxa-test-${name}" --ignore-not-found --wait=true > /dev/null
+  # (ffs-e2e-direct: the servers' NetworkPolicies let the tests' pods in, tests/helm/fxa-values.yaml)
   jq -n --arg name "fxa-test-${name}" --argjson spec "${spec}" '{apiVersion: "batch/v1", kind: "Job", metadata: {name: $name, labels: {"ffs-e2e": $name}},
-    spec: {backoffLimit: 0, template: {metadata: {labels: {"ffs-e2e": $name}}, spec: $spec}}}' | kubectl apply -f - > /dev/null
+    spec: {backoffLimit: 0, template: {metadata: {labels: {"ffs-e2e": $name, "ffs-e2e-direct": "true"}}, spec: $spec}}}' | kubectl apply -f - > /dev/null
   wait_job "fxa-test-${name}" 1800
 }
 
@@ -2028,7 +2092,7 @@ fxa_job() {
 fxa_client_pod() {
   kubectl delete pod "$1" --ignore-not-found --wait=true > /dev/null
   jq -n --arg name "$1" --argjson spec "$(fxa_test_spec "${SYNC_IMAGE}" '["sleep", "3600"]')" \
-    '{apiVersion: "v1", kind: "Pod", metadata: {name: $name, labels: {"ffs-e2e": $name}}, spec: $spec}' | kubectl apply -f - > /dev/null
+    '{apiVersion: "v1", kind: "Pod", metadata: {name: $name, labels: {"ffs-e2e": $name, "ffs-e2e-direct": "true"}}, spec: $spec}' | kubectl apply -f - > /dev/null
   kubectl wait --for=condition=Ready "pod/$1" --timeout=3m > /dev/null || fail "the test pod $1 not Ready"
 }
 
