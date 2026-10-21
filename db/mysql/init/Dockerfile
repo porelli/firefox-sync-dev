@@ -1,4 +1,4 @@
-FROM mariadb:lts
+FROM docker.io/library/mariadb:lts
 
 COPY db_init.sh /scripts/db_init.sh
 COPY db_init.sql /scripts/db_init.sql

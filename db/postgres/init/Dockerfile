@@ -1,5 +1,5 @@
 # the client only (psql, newer than or as new as any server it reaches): the newest major
-FROM postgres:latest
+FROM docker.io/library/postgres:latest
 
 COPY db_init.sh /scripts/db_init.sh
 COPY db_init.sql /scripts/db_init.sql

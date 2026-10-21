@@ -1,5 +1,5 @@
 # Real Firefox (Mozilla's own build) driven by Selenium, for tests/test_fxa_browser.py
-FROM debian:trixie-slim
+FROM docker.io/library/debian:trixie-slim
 
 ARG GECKODRIVER_VERSION=0.37.1
 ARG TARGETARCH
