@@ -236,6 +236,7 @@ teardown() {
     return
   fi
   echo "== teardown"
+  docker rm -f "${PROJECT}-browser" > /dev/null 2>&1
   dc down -v --remove-orphans > /dev/null 2>&1
   docker rm -f "${EXTDB}" > /dev/null 2>&1
   docker network rm "${EXTDB}" > /dev/null 2>&1
@@ -899,17 +900,21 @@ if [ -z "${SKIP_BROWSER:-}" ] && runs browser; then
     check build failed "Firefox test image"
   # (Mozilla's latest release, tests/browser/Dockerfile: the first suspect when only these fail)
   echo "Firefox test image ${BROWSER_IMAGE}: $(docker run --rm "${BROWSER_IMAGE}" firefox --version 2> /dev/null)"
-  # on a failure, the page source and a screenshot of each Firefox window: kept after the run
-  # (CI uploads them on a failure: browser-pages-<job> in .github/workflows), those of a previous run removed
-  BROWSER_ARTIFACTS=${BROWSER_ARTIFACTS:-${RUNNER_TEMP:-/tmp}/ffs-browser-artifacts${SLOT_SUFFIX}}
-  mkdir -p "${BROWSER_ARTIFACTS}" && chmod 777 "${BROWSER_ARTIFACTS}" && rm -f "${BROWSER_ARTIFACTS}"/*.html "${BROWSER_ARTIFACTS}"/*.png
-  docker run --rm --network "${PROJECT}_default" --shm-size 1g \
-    -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" -v "${BROWSER_ARTIFACTS}:/artifacts" -e BROWSER_ARTIFACTS=/artifacts \
+  # on a failure, the page source and a screenshot of each Firefox window: written in the
+  # container's /tmp, copied out (docker cp: owned by this user) to a new private directory,
+  # kept when not empty (CI uploads it: browser-pages-<job> in .github/workflows)
+  browser=${PROJECT}-browser
+  docker rm -f "${browser}" > /dev/null 2>&1
+  docker run --name "${browser}" --network "${PROJECT}_default" --shm-size 1g \
+    -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" -e BROWSER_ARTIFACTS=/tmp/ffs-browser-artifacts \
     -e FXA_CONTENT_URL -e MAILPIT_URL=http://mailpit:8025 -e PYTHONDONTWRITEBYTECODE=1 \
     -e FXA_PAIRING_URL -e ADMIN_PASSWORD -e ADMIN_URL=https://admin.fxa.test -e ADMIN_FXA_CLIENT_ID \
     "${BROWSER_IMAGE}" sh -c "$(pytest_sh "/tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS}" "grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10")" < /dev/null
   check "$?" 0 "real Firefox sign-up and sync, pairing server"
-  [ -z "$(ls -A "${BROWSER_ARTIFACTS}")" ] || echo "the failed pages: ${BROWSER_ARTIFACTS} ($(ls "${BROWSER_ARTIFACTS}" | tr '\n' ' '))"
+  pages=$(mktemp -d "${RUNNER_TEMP:-/tmp}/ffs-browser-artifacts.XXXXXX")
+  docker cp "${browser}:/tmp/ffs-browser-artifacts/." "${pages}" > /dev/null 2>&1  # (none when it passed)
+  docker rm -f "${browser}" > /dev/null 2>&1
+  rmdir "${pages}" 2> /dev/null || echo "the failed pages: ${pages} ($(ls "${pages}" | tr '\n' ' '))"
 fi
 echo "== admin UI"
 for _ in $(seq 1 60); do [ "$(state ffs-admin Health.Status)" = healthy ] && break; sleep 1; done
