@@ -1258,7 +1258,7 @@ echo "upstream patches of the image: ${UPSTREAM_PATCHES:-none (no label)}"
 #   1 in 10 here, when the test runs in a loop).
 UPSTREAM_RACY=(
   "mozilla-services/syncstorage-rs#2671 tokenserver/test_misc.py::test_user_updates_with_new_client_state"
-  "- test_storage.py::test_if_modified_since_on_info_views"
+  "mozilla-services/syncstorage-rs#2680 test_storage.py::test_if_modified_since_on_info_views"
 )
 # racy <suite>: the entries of UPSTREAM_RACY under <suite> (a test file or directory relative
 # to tools/integration_tests) whose fix the image does not have

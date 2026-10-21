@@ -109,9 +109,27 @@
     when both fall in the same millisecond the test fails with assert 0 == 1. The image ships
     tools/integration_tests and tests/e2e.sh runs them from it, so the fix goes in the image.
   when_released: >-
-    In tests/e2e.sh drop the special handling of test_misc.py::test_user_updates_with_new_client_state
-    (deselected from the tokenserver run, run on its own with one retry) and its check of the
-    image label: every image tested then has the fix.
+    In tests/e2e.sh drop the UPSTREAM_RACY entry of
+    tokenserver/test_misc.py::test_user_updates_with_new_client_state and its comment: every
+    image tested then has the fix.
+
+- id: storage-info-views-same-centisecond-test
+  repo: mozilla-services/syncstorage-rs
+  pr: 2680
+  head_repo: porelli/syncstorage-rs
+  base: 3606b83859c779945067f65e64170b6ea3c9696e
+  sha: 077a0f668ef77af3b675fb58a60772f1b6f457f2
+  component: syncstorage-rs
+  why: >-
+    test: wait a centisecond before the second write in test_if_modified_since_on_info_views.
+    The test's first write to xxx_col2 could get the centisecond of ts1 (the server only
+    advances a collection's own timestamp), and the info views then answered 304 to
+    X-If-Modified-Since ts1: 2 to 4 percent of the runs here. The image ships
+    tools/integration_tests and tests/e2e.sh runs them from it, so the fix goes in the image.
+  when_released: >-
+    In tests/e2e.sh drop the UPSTREAM_RACY entry of
+    test_storage.py::test_if_modified_since_on_info_views and its comment: every image tested
+    then has the fix.
 
 - id: fxa-mysql2
   repo: mozilla/fxa
