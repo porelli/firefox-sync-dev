@@ -70,6 +70,8 @@ Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mys
 - [test_fxa_flow.py](/tests/test_fxa_flow.py) does what Firefox does: reads the client configuration, signs up, confirms the email, gets the keys and an OAuth token, gets a sync token and syncs, then signs in again as a second device.
 - [test_fxa_admin.py](/tests/test_fxa_admin.py) checks the sign-up policy and the admin UI ([Admin UI](#admin-ui)).
 - [test_fxa_browser.py](/tests/test_fxa_browser.py) does the same with a real Firefox (Mozilla's build, in [tests/browser](/tests/browser)): one profile signs up through the accounts web pages and syncs a bookmark, a second profile signs in and must receive it.
+  - Its image installs the latest Firefox release, the one users have, and the log starts with its version. A new Firefox or a new accounts release can change the pages: the test finds their fields by their role (email, password, code), not by their exact markup.
+  - When it fails, the log shows what each Firefox window showed: the version, the address, the text and the form fields. The page source and a screenshot go to `BROWSER_ARTIFACTS` (by default `ffs-browser-artifacts` under `RUNNER_TEMP` or `/tmp`). CI uploads them as the `browser-pages-<job>` artifact.
 - [test_fxa_pairing.py](/tests/test_fxa_pairing.py) checks the pairing server's websocket channel.
 - It runs with the newest Mozilla accounts release every week, and on amd64 and arm64 for the [accounts images](/.github/workflows/fxa.yml).
 - The accounts database is MySQL, `FXA_MYSQL_IMAGE`: by default `mysql:lts` for an accounts image with mozilla/fxa#21554 in its label, else `mysql:8` with `FXA_MYSQL_ARGS` (`mysql_native_password`).

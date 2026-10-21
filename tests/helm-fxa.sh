@@ -968,6 +968,8 @@ fxa_e2e() {
   # built first, so that the free space below is what is left with it
   docker image inspect "${BROWSER_IMAGE}" > /dev/null 2>&1 || docker build -q -t "${BROWSER_IMAGE}" "${SCRIPT_DIR}/browser" > /dev/null \
     || fail "the Firefox test image (tests/browser) not built"
+  # (Mozilla's latest release, tests/browser/Dockerfile: the first suspect when only it fails)
+  echo "Firefox test image ${BROWSER_IMAGE}: $(docker run --rm "${BROWSER_IMAGE}" firefox --version 2> /dev/null)"
   # the accounts image is about 5 GB in the node, on top of the Sync server's images; and the
   # Firefox image's copy there (kind load)
   local free need
@@ -1664,7 +1666,9 @@ PY
   # server's websockets
   if [[ -z "${SKIP_BROWSER:-}" ]]; then
     fxa_job browser "${BROWSER_IMAGE}" "/tests/test_fxa_browser.py /tests/test_fxa_pairing.py" ADMIN_FXA_CLIENT_ID=ad41a7e5f0c0ffee \
-      || fail "test_fxa_browser.py, test_fxa_pairing.py failed"
+      || { # what the failed tests' Firefox windows showed (wait_job printed the last lines only)
+        kubectl logs job/fxa-test-browser | sed -n '/^==== /,/^=* FAILURES/p' | head -300
+        fail "test_fxa_browser.py, test_fxa_pairing.py failed"; }
     got=$(kubectl logs job/fxa-test-browser | tail -1)
     [[ "${got}" =~ ^9\ passed(,\ [0-9]+\ warnings?)?\ in ]] || fail "test_fxa_browser.py, test_fxa_pairing.py: not their 9 tests passed: ${got}"
     check "a real Firefox (test_fxa_browser.py) and the pairing server (test_fxa_pairing.py) through the Ingresses: ${got}"

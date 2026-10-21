@@ -462,6 +462,17 @@ jobs:
           FXA_ARCH: ${{ matrix.arch }}
         run: ./tests/e2e-fxa.sh
 
+      # the page source and a screenshot of each Firefox window of a failed test_fxa_browser.py
+      # (BROWSER_ARTIFACTS of tests/e2e-fxa.sh; the job log has their text and form fields)
+      - name: Upload the pages of the failed browser tests
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-pages-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/ffs-browser-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
   # the candidate with the accounts database on MariaDB (FXA_DB=mariadb, docs/accounts.md#mysql-or-mariadb). Not needed
   # by publish: Mozilla supports MySQL only, a release that breaks MariaDB must not hold back
   # MySQL installs. The failed run is the warning for MariaDB installs (docs/accounts.md#mysql-or-mariadb: pin FXA_VERSION).
@@ -553,6 +564,17 @@ jobs:
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           FXA_ARCH: amd64
         run: ./tests/e2e-fxa.sh
+
+      # the page source and a screenshot of each Firefox window of a failed test_fxa_browser.py
+      # (BROWSER_ARTIFACTS of tests/e2e-fxa.sh; the job log has their text and form fields)
+      - name: Upload the pages of the failed browser tests
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-pages-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/ffs-browser-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
 
   # an install of the published release (fxa-mono-latest, not moved yet) with an account,
   # a device and Sync data, upgraded in place to the candidate as docs/upgrading.md#self-hosted-accounts says; on MySQL 8 with

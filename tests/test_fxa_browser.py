@@ -10,6 +10,9 @@ Environment:
   MAILPIT_URL      mail catcher API, e.g. http://mailpit:8025
   FIREFOX_BINARY   default: /usr/bin/firefox
   GECKODRIVER      default: /usr/local/bin/geckodriver
+  BROWSER_ARTIFACTS  a directory: on a failure, the page source and a screenshot of every
+                   open Firefox go there (the job log gets the Firefox version, the address,
+                   the text and the form fields of the page either way)
 """
 
 import json
@@ -32,7 +35,15 @@ EMAIL = f"ffs-browser-{uuid.uuid4().hex[:12]}@example.com"
 PASSWORD = f"Ffs-{uuid.uuid4().hex}"
 BOOKMARK_URL = "https://example.org/self-hosted-fxa"
 BOOKMARK_TITLE = "Self-hosted FxA test bookmark"
+# the accounts pages' fields by their role, not one exact markup
+EMAIL_INPUT = "input[type=email], input[autocomplete=email], input[autocomplete=username], input[name=email]"
+PASSWORD_INPUT = "input[type=password]"
 CODE_INPUT = "input[autocomplete=one-time-code], input[name=code], input[inputmode=numeric]"
+SUBMIT = "button[type=submit]"
+
+
+# the Firefox profiles of the running test (and first_device's): dumped when it fails
+LIVE = []
 
 
 def start_firefox(**extra_prefs):
@@ -58,7 +69,90 @@ def start_firefox(**extra_prefs):
         service_args=["--allow-system-access"],
         log_output=log,
     )
-    return webdriver.Firefox(options=opts, service=service)
+    driver = webdriver.Firefox(options=opts, service=service)
+    LIVE.append(driver)
+    return driver
+
+
+def quit_firefox(driver):
+    if driver in LIVE:
+        LIVE.remove(driver)
+    driver.quit()
+
+
+def firefox_version(driver):
+    caps = driver.capabilities
+    return f"Firefox {caps.get('browserVersion')} ({caps.get('platformName')}), geckodriver {caps.get('moz:geckodriverVersion')}"
+
+
+PAGE_SUMMARY = """
+    const shown = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    const attrs = e => ['type', 'name', 'id', 'autocomplete', 'inputmode', 'role', 'href', 'data-testid']
+      .filter(a => e.getAttribute(a)).map(a => `${a}=${e.getAttribute(a)}`).join(' ');
+    const fields = [...document.querySelectorAll('input, button, a[role=button], select, textarea')].filter(shown)
+      .map(e => `<${e.tagName.toLowerCase()} ${attrs(e)}${e.disabled ? ' disabled' : ''}> ${(e.innerText || e.value || '').trim().slice(0, 60)}`);
+    return { title: document.title, text: (document.body || {}).innerText || '', fields };
+"""
+
+
+def describe(driver, name):
+    """What every open window of this Firefox shows (for a failure): the job log gets the
+    version, the address, the text and the form fields; BROWSER_ARTIFACTS the page source and
+    a screenshot."""
+    out = [f"---- {name}: {firefox_version(driver)}"]
+    artifacts = os.environ.get("BROWSER_ARTIFACTS")
+    try:
+        handles = driver.window_handles
+        current = driver.current_window_handle
+    except Exception as e:  # (the browser is gone)
+        return f"{out[0]}: no window ({e})"
+    for i, handle in enumerate(handles):
+        try:
+            driver.switch_to.window(handle)
+            page = driver.execute_script(PAGE_SUMMARY)
+            out.append(f"window {i + 1}/{len(handles)}{' (current)' if handle == current else ''}: {driver.current_url} {page['title']!r}")
+            out.append("  text: " + " | ".join(line.strip() for line in page["text"].splitlines() if line.strip())[:1500])
+            out.extend(f"  {f}" for f in page["fields"][:40])
+            if artifacts:
+                os.makedirs(artifacts, exist_ok=True)
+                base = os.path.join(artifacts, f"{re.sub(r'[^A-Za-z0-9_.-]', '_', name)}-{i + 1}")
+                with open(f"{base}.html", "w") as f:
+                    f.write(driver.page_source)
+                driver.save_screenshot(f"{base}.png")
+                out.append(f"  page source and screenshot: {os.path.basename(base)}.html, .png")
+        except Exception as e:
+            out.append(f"window {i + 1}: not readable ({e})")
+    try:
+        driver.switch_to.window(current)
+    except Exception:
+        pass
+    return "\n".join(out)
+
+
+@pytest.fixture(autouse=True)
+def browsers(request):
+    """Each test's Firefox profiles quit after it; when it failed, what they showed first."""
+    failed = request.session.testsfailed
+    started = len(LIVE)
+    yield
+    if request.session.testsfailed > failed:
+        # its own and first_device, when it uses it
+        drivers = ([request.getfixturevalue("first_device")] if "first_device" in request.fixturenames else []) + LIVE[started:]
+        dumps = [describe(d, f"{request.node.name}-firefox{i + 1}") for i, d in enumerate(drivers)]
+        # (to the job log, past pytest's capture: the failed test's report is out already)
+        with request.config.pluginmanager.getplugin("capturemanager").global_and_fixture_disabled():
+            print(f"\n==== {request.node.name} failed, its Firefox windows:\n" + "\n".join(dumps), flush=True)
+    for driver in LIVE[started:]:
+        quit_firefox(driver)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def version_banner(request):
+    """The Firefox version, first in the log: when only these tests fail, a new Firefox
+    (tests/browser installs the latest) or a new accounts release are the suspects."""
+    out = os.popen(f"{os.environ.get('FIREFOX_BINARY', '/usr/bin/firefox')} --version 2>/dev/null").read().strip()
+    with request.config.pluginmanager.getplugin("capturemanager").global_and_fixture_disabled():
+        print(f"\n{out or 'Firefox: version unknown'}, accounts pages {CONTENT}", flush=True)
 
 
 def chrome(driver, script, *args):
@@ -88,6 +182,12 @@ def signed_in_user(driver):
     """)
 
 
+def first_uid(first_device):
+    user = signed_in_user(first_device)
+    assert user, "the first Firefox is not signed in: test_sign_up_and_sync failed before"
+    return user["uid"]
+
+
 def sign_in(driver):
     """Click 'Sign in' in the Sync preferences, then fill in the accounts pages."""
     chrome(driver, """
@@ -105,36 +205,80 @@ def sign_in(driver):
     return fill_in_accounts_pages(driver, finished)
 
 
+def follow_new_window(driver, known):
+    """The newest window or tab, when the accounts pages opened one (or closed the current
+    one); known: the window handles seen so far, updated."""
+    handles = driver.window_handles
+    new = [h for h in handles if h not in known]
+    known.update(handles)
+    try:
+        closed = driver.current_window_handle not in handles
+    except Exception:  # (NoSuchWindowException: the current one is closed)
+        closed = True
+    if new or closed:
+        driver.switch_to.window((new or handles)[-1])
+
+
+def fill_in_page(driver, email, code=None):
+    """One accounts page, by the role of its fields (their markup changes between releases:
+    the email-first page has <input type=text autocomplete=email> since v1.348.0): the email,
+    the password(s) or the confirmation code (code(): the next one from the mailbox, or None
+    while none came), then its submit button. What it did, for the error."""
+    passwords = visible(driver, PASSWORD_INPUT)
+    emails = [e for e in visible(driver, EMAIL_INPUT) if not e.get_attribute("readonly")]
+    codes = visible(driver, CODE_INPUT)
+    if passwords:
+        for field in passwords:
+            field.clear()
+            field.send_keys(PASSWORD)
+        done = f"{len(passwords)} password(s)"
+    elif emails:
+        emails[0].clear()
+        emails[0].send_keys(email)
+        done = "email"
+    elif codes and code:
+        value = code()
+        if not value:
+            return "waiting for the code"
+        codes[0].clear()
+        codes[0].send_keys(value)
+        done = "code"
+    else:
+        done = "nothing to fill in"
+    buttons = visible(driver, SUBMIT)
+    if buttons:
+        done += f", clicked {buttons[0].text.strip()[:40]!r}"  # (before: the click can replace it)
+        buttons[0].click()
+    return done
+
+
+def heading_of(driver):
+    return driver.execute_script("return (document.querySelector('h1,h2')||{}).innerText||''")
+
+
 def fill_in_accounts_pages(driver, finished, used_codes=()):
     """The accounts pages, page after page, until finished(heading) returns something.
     used_codes: confirmation codes already in the mailbox, not for this sign-in."""
     used_codes = set(used_codes)
+
+    def next_code():
+        fresh = [c for c in mail_codes(EMAIL) if c not in used_codes]
+        if fresh:
+            used_codes.add(fresh[0])
+            return fresh[0]
+
+    known, steps = set(driver.window_handles), []
     for _ in range(15):
         time.sleep(3)
-        heading = driver.execute_script("return (document.querySelector('h1,h2')||{}).innerText||''")
+        follow_new_window(driver, known)
+        heading = heading_of(driver)
         result = finished(heading)
         if result:
             return result
-        if visible(driver, "input[type=email]") and not visible(driver, "input[type=password]"):
-            field = visible(driver, "input[type=email]")[0]
-            field.clear()
-            field.send_keys(EMAIL)
-        elif visible(driver, "input[type=password]"):
-            for field in visible(driver, "input[type=password]"):
-                field.clear()
-                field.send_keys(PASSWORD)
-        elif visible(driver, CODE_INPUT):
-            codes = [c for c in mail_codes(EMAIL) if c not in used_codes]
-            if not codes:
-                continue
-            used_codes.add(codes[0])
-            field = visible(driver, CODE_INPUT)[0]
-            field.clear()
-            field.send_keys(codes[0])
-        buttons = visible(driver, "button[type=submit]")
-        if buttons:
-            buttons[0].click()
-    raise AssertionError(f"sign-in did not finish, last page: {driver.current_url.split('?')[0]} {heading!r}")
+        steps.append(f"{driver.current_url.split('?')[0]} {heading!r}: {fill_in_page(driver, EMAIL, next_code)}")
+    raise AssertionError(f"sign-in did not finish ({firefox_version(driver)}), last page: "
+                         f"{driver.current_url.split('?')[0]} {heading!r}; the pages and what the test did:\n  "
+                         + "\n  ".join(steps[-8:]) + "\n(the last page's text and fields: '==== <this test> failed' in the log)")
 
 
 def wait_for_sync(driver, timeout=180):
@@ -174,7 +318,7 @@ SYNC = """
 def first_device():
     driver = start_firefox()
     yield driver
-    driver.quit()
+    quit_firefox(driver)
 
 
 def test_sign_up_and_sync(first_device):
@@ -188,15 +332,12 @@ def test_sign_up_and_sync(first_device):
 
 def test_second_device_gets_the_bookmark(first_device):
     driver = start_firefox()
-    try:
-        user = sign_in(driver)
-        assert user["uid"] == signed_in_user(first_device)["uid"]
-        wait_for_sync(driver)
-        result = chrome(driver, SYNC, BOOKMARK_URL, None)
-        assert result.get("status") == "success.sync", result
-        assert result["found"] == [BOOKMARK_TITLE], result
-    finally:
-        driver.quit()
+    user = sign_in(driver)
+    assert user["uid"] == first_uid(first_device)
+    wait_for_sync(driver)
+    result = chrome(driver, SYNC, BOOKMARK_URL, None)
+    assert result.get("status") == "success.sync", result
+    assert result["found"] == [BOOKMARK_TITLE], result
 
 
 def test_admin_shows_the_devices_and_the_data(first_device):
@@ -207,7 +348,7 @@ def test_admin_shows_the_devices_and_the_data(first_device):
     http = requests.Session()
     http.verify = "/caddy-ca/root.crt"
     http.post(f"{admin}/login", data={"password": os.environ["ADMIN_PASSWORD"]}, timeout=30)
-    uid = signed_in_user(first_device)["uid"]
+    uid = first_uid(first_device)
     page = http.get(f"{admin}/users/{uid}", timeout=30).text
     assert EMAIL in page, page[:1000]
     # errors of the queries (Devices: ..., Sync storage: ...)
@@ -225,50 +366,34 @@ def test_admin_sign_in_with_the_account(first_device):
         pytest.skip("the admin UI does not sign in with these accounts")
     admin = os.environ.get("ADMIN_URL", "https://admin.fxa.test").rstrip("/")
     driver = start_firefox()
-    try:
-        stale = set(mail_codes(EMAIL))
-        driver.get(f"{admin}/login")
-        driver.find_element(By.LINK_TEXT, "Sign in with Mozilla account").click()
+    stale = set(mail_codes(EMAIL))
+    driver.get(f"{admin}/login")
+    driver.find_element(By.LINK_TEXT, "Sign in with Mozilla account").click()
 
-        def finished(heading):
-            # the callback's page moves on to the dashboard by itself
-            if driver.current_url == f"{admin}/" and "Sign out" in driver.page_source:
-                return driver.page_source
+    def finished(heading):
+        # the callback's page moves on to the dashboard by itself
+        if driver.current_url == f"{admin}/" and "Sign out" in driver.page_source:
+            return driver.page_source
 
-        page = fill_in_accounts_pages(driver, finished, used_codes=stale)
-        assert f'<span class="hint">{EMAIL}</span>' in page, page[:2000]
-    finally:
-        driver.quit()
+    page = fill_in_accounts_pages(driver, finished, used_codes=stale)
+    assert f'<span class="hint">{EMAIL}</span>' in page, page[:2000]
 
 
 def test_refused_sign_up_shows_an_error():
     # FXA_SIGNUP_ALLOWLIST of tests/e2e-fxa.sh: example.org is not on it
     driver = start_firefox()
-    try:
-        driver.get(f"{CONTENT}/")
-        address = f"ffs-refused-{uuid.uuid4().hex[:8]}@example.org"
-        text = ""
-        for _ in range(10):
-            time.sleep(3)
-            text = driver.execute_script("return document.body.innerText")
-            if "blocked" in text.lower():
-                break
-            if visible(driver, CODE_INPUT):
-                raise AssertionError("refused sign-up got to the confirmation code")
-            if visible(driver, "input[type=email]") and not visible(driver, "input[type=password]"):
-                field = visible(driver, "input[type=email]")[0]
-                field.clear()
-                field.send_keys(address)
-            elif visible(driver, "input[type=password]"):
-                for field in visible(driver, "input[type=password]"):
-                    field.clear()
-                    field.send_keys(PASSWORD)
-            buttons = visible(driver, "button[type=submit]")
-            if buttons:
-                buttons[0].click()
-        assert "blocked" in text.lower(), text[:600]
-    finally:
-        driver.quit()
+    driver.get(f"{CONTENT}/")
+    address = f"ffs-refused-{uuid.uuid4().hex[:8]}@example.org"
+    text, steps = "", []
+    for _ in range(10):
+        time.sleep(3)
+        text = driver.execute_script("return document.body.innerText")
+        if "blocked" in text.lower():
+            break
+        if visible(driver, CODE_INPUT):
+            raise AssertionError("refused sign-up got to the confirmation code")
+        steps.append(f"{heading_of(driver)!r}: {fill_in_page(driver, address)}")
+    assert "blocked" in text.lower(), (steps[-5:], text[:600])
 
 
 def admin_browser(**prefs):
@@ -284,7 +409,6 @@ def admin_browser(**prefs):
         if driver.current_url == f"{admin}/" and "Sign out" in driver.page_source:
             return driver, admin
         time.sleep(0.5)
-    driver.quit()
     raise AssertionError(f"admin sign-in failed: {driver.current_url}")
 
 
@@ -294,30 +418,27 @@ def test_admin_fits_a_phone():
     driver, admin = admin_browser()
     if not driver:
         pytest.skip("no admin UI")
-    try:
-        driver.set_window_size(500, 1028)
-        for path in ("/", "/activity", "/security", "/config"):
-            driver.get(f"{admin}{path}")
-            with driver.context(driver.CONTEXT_CHROME):
-                driver.execute_script("gBrowser.selectedBrowser.fullZoom = 500 / 360")
-            time.sleep(0.5)
-            width = driver.execute_script("return window.innerWidth")
-            assert 350 <= width <= 370, f"the window is {width} CSS px wide"
-            # the page itself does not scroll sideways, the wide tables do in their box
-            scroll = driver.execute_script("return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth)")
-            # (what sticks out, for the error)
-            widest = driver.execute_script("""return [...document.querySelectorAll('body *')].map(e => [e.getBoundingClientRect().right, e.tagName + '.' + e.className])
-                .sort((x, y) => y[0] - x[0]).slice(0, 3)""")
-            assert scroll <= width, (path, scroll, width, widest)
-            # the stylesheet applies (style-src 'self' of the CSP): buttons tall enough to tap
-            # (the shown ones: those of a closed <details> have no box)
-            heights = driver.execute_script("return [...document.querySelectorAll('main button, header nav a')].map(e => e.getBoundingClientRect().height).filter(h => h > 0)")
-            assert heights and min(heights) >= 44, (path, heights)
-            if path == "/":
-                accounts = driver.find_element(By.ID, "accounts")
-                assert accounts.find_element(By.XPATH, "..").get_attribute("class") == "scroll"
-    finally:
-        driver.quit()
+    driver.set_window_size(500, 1028)
+    for path in ("/", "/activity", "/security", "/config"):
+        driver.get(f"{admin}{path}")
+        with driver.context(driver.CONTEXT_CHROME):
+            driver.execute_script("gBrowser.selectedBrowser.fullZoom = 500 / 360")
+        time.sleep(0.5)
+        width = driver.execute_script("return window.innerWidth")
+        assert 350 <= width <= 370, f"the window is {width} CSS px wide"
+        # the page itself does not scroll sideways, the wide tables do in their box
+        scroll = driver.execute_script("return Math.max(document.body.scrollWidth, document.documentElement.scrollWidth)")
+        # (what sticks out, for the error)
+        widest = driver.execute_script("""return [...document.querySelectorAll('body *')].map(e => [e.getBoundingClientRect().right, e.tagName + '.' + e.className])
+            .sort((x, y) => y[0] - x[0]).slice(0, 3)""")
+        assert scroll <= width, (path, scroll, width, widest)
+        # the stylesheet applies (style-src 'self' of the CSP): buttons tall enough to tap
+        # (the shown ones: those of a closed <details> have no box)
+        heights = driver.execute_script("return [...document.querySelectorAll('main button, header nav a')].map(e => e.getBoundingClientRect().height).filter(h => h > 0)")
+        assert heights and min(heights) >= 44, (path, heights)
+        if path == "/":
+            accounts = driver.find_element(By.ID, "accounts")
+            assert accounts.find_element(By.XPATH, "..").get_attribute("class") == "scroll"
 
 
 def test_admin_disables_through_the_confirm_page(first_device):
@@ -325,33 +446,30 @@ def test_admin_disables_through_the_confirm_page(first_device):
     driver, admin = admin_browser()
     if not driver:
         pytest.skip("no admin UI")
-    try:
-        uid = signed_in_user(first_device)["uid"]
-        # the account through the search of the list (50 a page)
-        driver.find_element(By.ID, "find-q").send_keys(EMAIL)
-        driver.find_element(By.CSS_SELECTOR, "#find button[type=submit]").click()
-        time.sleep(1)
-        driver.find_element(By.CSS_SELECTOR, f'tr[data-email="{EMAIL}"] a[href="/accounts/{uid}/disable"]').click()
-        assert driver.current_url == f"{admin}/accounts/{uid}/disable"
-        page = driver.page_source
-        assert f"Disable {EMAIL}?" in page and "Firefox" in page.split('id="confirm-devices"')[1], page[:3000]
-        # the CSP blocks inline styles and scripts: the page is styled by the stylesheet only
-        color = driver.execute_script("return getComputedStyle(document.querySelector('#confirm button.danger')).backgroundColor")
-        assert color == "rgb(180, 35, 42)", color
-        assert driver.find_element(By.ID, "cancel").get_attribute("href") == f"{admin}/users/{uid}"
-        driver.find_element(By.ID, "reason").send_keys("browser test")
-        driver.find_element(By.CSS_SELECTOR, "#confirm button[type=submit]").click()
-        time.sleep(1)
-        assert driver.current_url == f"{admin}/users/{uid}", driver.current_url
-        message = driver.find_element(By.CSS_SELECTOR, "p.message[role=status]").text
-        assert message.startswith(f"Disabled {EMAIL} (uid {uid[:8]})"), message
-        assert "disabled" in driver.find_element(By.TAG_NAME, "main").text
-        # enabling is one click
-        driver.find_element(By.CSS_SELECTOR, f'form[action="/accounts/{uid}/enable"] button').click()
-        time.sleep(1)
-        assert driver.find_element(By.CSS_SELECTOR, "p.message[role=status]").text.startswith(f"Enabled {EMAIL}")
-    finally:
-        driver.quit()
+    uid = first_uid(first_device)
+    # the account through the search of the list (50 a page)
+    driver.find_element(By.ID, "find-q").send_keys(EMAIL)
+    driver.find_element(By.CSS_SELECTOR, "#find button[type=submit]").click()
+    time.sleep(1)
+    driver.find_element(By.CSS_SELECTOR, f'tr[data-email="{EMAIL}"] a[href="/accounts/{uid}/disable"]').click()
+    assert driver.current_url == f"{admin}/accounts/{uid}/disable"
+    page = driver.page_source
+    assert f"Disable {EMAIL}?" in page and "Firefox" in page.split('id="confirm-devices"')[1], page[:3000]
+    # the CSP blocks inline styles and scripts: the page is styled by the stylesheet only
+    color = driver.execute_script("return getComputedStyle(document.querySelector('#confirm button.danger')).backgroundColor")
+    assert color == "rgb(180, 35, 42)", color
+    assert driver.find_element(By.ID, "cancel").get_attribute("href") == f"{admin}/users/{uid}"
+    driver.find_element(By.ID, "reason").send_keys("browser test")
+    driver.find_element(By.CSS_SELECTOR, "#confirm button[type=submit]").click()
+    time.sleep(1)
+    assert driver.current_url == f"{admin}/users/{uid}", driver.current_url
+    message = driver.find_element(By.CSS_SELECTOR, "p.message[role=status]").text
+    assert message.startswith(f"Disabled {EMAIL} (uid {uid[:8]})"), message
+    assert "disabled" in driver.find_element(By.TAG_NAME, "main").text
+    # enabling is one click
+    driver.find_element(By.CSS_SELECTOR, f'form[action="/accounts/{uid}/enable"] button').click()
+    time.sleep(1)
+    assert driver.find_element(By.CSS_SELECTOR, "p.message[role=status]").text.startswith(f"Enabled {EMAIL}")
 
 
 def test_invite_link_fills_in_the_email():
@@ -376,17 +494,14 @@ def test_invite_link_fills_in_the_email():
         time.sleep(1)
     assert link and link.startswith(CONTENT), link
     driver = start_firefox()
-    try:
-        driver.get(link)
-        seen = ""
-        for _ in range(20):
-            time.sleep(1.5)
-            values = [e.get_attribute("value") for e in visible(driver, "input[type=email]")]
-            seen = " ".join(values) + " " + driver.execute_script("return document.body.innerText")
-            if address in seen:
-                break
-        # filled in the email field, or shown on the sign-up page it moves on to
-        assert address in seen, (driver.current_url.split("?")[0], seen[:600])
-        print(f"invite link: {driver.current_url.split('?')[0]}, email in a field: {address in values}")
-    finally:
-        driver.quit()
+    driver.get(link)
+    seen = ""
+    for _ in range(20):
+        time.sleep(1.5)
+        values = [e.get_attribute("value") for e in visible(driver, EMAIL_INPUT)]
+        seen = " ".join(values) + " " + driver.execute_script("return document.body.innerText")
+        if address in seen:
+            break
+    # filled in the email field, or shown on the sign-up page it moves on to
+    assert address in seen, (driver.current_url.split("?")[0], seen[:600])
+    print(f"invite link: {driver.current_url.split('?')[0]}, email in a field: {address in values}")
