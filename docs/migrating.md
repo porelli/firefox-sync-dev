@@ -67,13 +67,13 @@ This only works between syncstorage-rs servers (the Rust one) on the same kind o
     ```bash
     # MariaDB (docker-compose.yml)
     docker compose up -d --wait tokenserver_db syncstorage_db
-    docker compose exec -T tokenserver_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"' < tokenserver.sql
-    docker compose exec -T syncstorage_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"' < syncstorage.sql
+    docker compose exec -T tokenserver_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"' < tokenserver.sql
+    docker compose exec -T syncstorage_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"' < syncstorage.sql
 
     # MySQL (SYNC_DB=mysql, docker-compose.sync-mysql.yml): the same, with the MySQL client
     docker compose up -d --wait tokenserver_db syncstorage_db
-    docker compose exec -T tokenserver_db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' < tokenserver.sql
-    docker compose exec -T syncstorage_db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' < syncstorage.sql
+    docker compose exec -T tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"' < tokenserver.sql
+    docker compose exec -T syncstorage_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"' < syncstorage.sql
 
     # PostgreSQL (COMPOSE_FILE=docker-compose.sync-postgres.yml): as the Sync server's role
     # SYNC_POSTGRES_APP_USER, created first. Not as SYNC_POSTGRES_USER, the superuser: what the dump
@@ -96,9 +96,9 @@ To Kubernetes: load the dumps into docker compose as above, then follow [From do
 - The [admin UI](admin/README.md) (`COMPOSE_PROFILES=admin`) lists the accounts on its first page, with what each stores.
 - In the tokenserver database every current account points to the new node:
     ```bash
-    docker compose exec tokenserver_db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
+    docker compose exec tokenserver_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
     # MySQL (SYNC_DB=mysql)
-    docker compose exec tokenserver_db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
+    docker compose exec tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
     # PostgreSQL, as the Sync server's role (never SYNC_POSTGRES_USER on the Sync database, reference/database-users.md)
     docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" psql -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" -d "$POSTGRES_DATABASE" -c "SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL"'
     ```
@@ -197,17 +197,17 @@ Tested: not as a migration. `tests/helm.sh e2e` restores the chart's own backups
 
 Recommended: start fresh. The database path is supported. Its node is `SYNC_TOKENSERVER__INIT_NODE_URL` (`http://localhost:8000` by default); firefox-sync moves the accounts to its own.
 
-The dumps. Use the users and passwords of your files; with your own changes the names may differ:
+The dumps, as the user of each database container's environment (`MYSQL_USER`, `MYSQL_PASSWORD`); with your own changes the database names may differ:
 
 ```bash
 # MySQL, one-shot file
-docker exec syncserver-tokenserver-db mysqldump -usync -psync --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver > tokenserver.sql
-docker exec syncserver-sync-db mysqldump -usync -psync --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage > syncstorage.sql
+docker exec syncserver-tokenserver-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysqldump -u"$MYSQL_USER" --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver' > tokenserver.sql
+docker exec syncserver-sync-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysqldump -u"$MYSQL_USER" --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage' > syncstorage.sql
 
 # MySQL, the test setup (from the directory of your checkout)
 dc="docker compose -f docker/docker-compose.mysql.yaml exec -T"
-$dc tokenserver-db mysqldump -utest -ptest --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver > tokenserver.sql
-$dc sync-db mysqldump -utest -ptest --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage > syncstorage.sql
+$dc tokenserver-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysqldump -u"$MYSQL_USER" --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver' > tokenserver.sql
+$dc sync-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysqldump -u"$MYSQL_USER" --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage' > syncstorage.sql
 
 # PostgreSQL, one-shot file: one database, like firefox-sync
 docker exec syncserver-postgres pg_dump -U sync --no-owner --no-acl syncserver > syncserver.sql
@@ -241,8 +241,8 @@ The [MASH playbook](https://github.com/mother-of-all-self-hosting/mash-playbook)
 Recommended: start fresh. The database path is supported (MariaDB 10.6 into MariaDB):
 
 ```bash
-docker exec firefox_mariadb sh -c 'mariadb-dump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --no-tablespaces tokenserver_rs' > tokenserver.sql
-docker exec firefox_mariadb sh -c 'mariadb-dump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --no-tablespaces syncstorage_rs' > syncstorage.sql
+docker exec firefox_mariadb sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb-dump -uroot --single-transaction --no-tablespaces tokenserver_rs' > tokenserver.sql
+docker exec firefox_mariadb sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb-dump -uroot --single-transaction --no-tablespaces syncstorage_rs' > syncstorage.sql
 ```
 
 With MASH, run it against the server of `syncstorage_rs_docker_database_mysql_hostname`, with `mysqldump` if that is MySQL. Then [Loading into firefox-sync](#loading-into-firefox-sync), with `SYNC_MAX_USERS` at least the accounts you had (`SYNC_CAPACITY`). Firefox: `SYNC_URL/1.0/sync/1.5`, the same path as firefox-sync.
@@ -256,8 +256,8 @@ Tested: `tests/migrate.sh dan-r`, its layout rather than its image (which builds
 Recommended: start fresh. The database path is supported:
 
 ```bash
-docker exec firefox_tokenserver_db sh -c 'mariadb-dump -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" --single-transaction --no-tablespaces tokenserver' > tokenserver.sql
-docker exec firefox_syncstorage_db sh -c 'mariadb-dump -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" --single-transaction --no-tablespaces syncstorage' > syncstorage.sql
+docker exec firefox_tokenserver_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb-dump -u"$MARIADB_USER" --single-transaction --no-tablespaces tokenserver' > tokenserver.sql
+docker exec firefox_syncstorage_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb-dump -u"$MARIADB_USER" --single-transaction --no-tablespaces syncstorage' > syncstorage.sql
 ```
 
 Then [Loading into firefox-sync](#loading-into-firefox-sync). syncstorage-rs 0.13.6 is old: firefox-sync runs the migrations added since. Firefox: the same path.
@@ -342,7 +342,7 @@ The accounts must move: an account is the record in `fxa.accounts`, and its Sync
 1. In firefox-sync, load the dump into the new, empty `fxa-db`, then the keys into the `fxa-keys` volume and the avatars, all before the accounts start:
     ```bash
     docker compose up -d --wait fxa-db
-    docker compose exec -T fxa-db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' < fxa.sql
+    docker compose exec -T fxa-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' < fxa.sql
     docker compose run --rm --no-deps -v "$PWD/old-keys:/old:ro" fxa-keys-owner sh -c '
       cp /old/secret-key.json /old/public-key.json /old/vapid-keys.json /fxa-keys/ &&
       cp /old/key.json /fxa-keys/openid-key.json &&
@@ -361,7 +361,7 @@ The accounts must move: an account is the record in `fxa.accounts`, and its Sync
 
     Start with the device that has the most data, as in [Start fresh first](#start-fresh-first).
 
-Checking: the [admin UI](admin/README.md) lists the old accounts with their emails, `docker compose exec fxa-db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT COUNT(*) FROM fxa.accounts"'` gives their number, and an existing account signed in on a new profile gets the bookmarks of its other devices: its keys did not change.
+Checking: the [admin UI](admin/README.md) lists the old accounts with their emails, `docker compose exec fxa-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT COUNT(*) FROM fxa.accounts"'` gives their number, and an existing account signed in on a new profile gets the bookmarks of its other devices: its keys did not change.
 
 Rollback: stop firefox-sync, start the old stack and point the reverse proxy back. Accounts created and passwords changed in the meantime are not on the old server.
 

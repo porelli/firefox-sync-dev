@@ -339,7 +339,7 @@ The accounts (`FXA_DB=mysql`):
 1. Move the users to `caching_sha2_password`. List the ones still on `mysql_native_password`:
 
     ```bash
-    docker compose exec fxa-db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT user, host, plugin FROM mysql.user WHERE plugin = \"mysql_native_password\""'
+    docker compose exec fxa-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT user, host, plugin FROM mysql.user WHERE plugin = \"mysql_native_password\""'
     ```
 
     `fxa-db` has `root`@`%` and `root`@`localhost` (`FXA_MYSQL_USER`, with the password `FXA_MYSQL_PASSWORD` of `.env`). `ffs_admin` gets `caching_sha2_password` from `fxa-policy` itself at its next start. Change each with its own password, in `mysql -uroot -p` in that container:

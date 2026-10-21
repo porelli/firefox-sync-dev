@@ -147,9 +147,11 @@ CREATE TABLE IF NOT EXISTS ffs_backups (id BIGINT AUTO_INCREMENT PRIMARY KEY, sc
 `scope` is `sync` or `accounts`. The times are milliseconds since 1970. `ok` is 1 or 0, with the reason in `error`. `bytes` is the size. At the end of your job, for example:
 
 ```bash
-mariadb -h db.example.com -u ffs_admin_ui -p"$ADMIN_DB_PASSWORD" ffs_admin -e \
+mariadb --defaults-extra-file="$HOME/.ffs-admin.cnf" -h db.example.com -u ffs_admin_ui ffs_admin -e \
   "INSERT INTO ffs_backups (scope, started, finished, ok, bytes, location) VALUES ('sync', ${START}000, $(date +%s)000, 1, ${BYTES}, 'backup-host:/srv/ffs')"
 ```
+
+`.ffs-admin.cnf` holds the password of `ffs_admin_ui`, in a file only the job's user can read: see [Passwords in commands](databases.md#passwords-in-commands).
 
 ## Restore
 
@@ -176,10 +178,10 @@ With docker compose, on the same host or a new one: you need the `.env` of the s
 
     ```bash
     docker compose run --rm --no-deps --entrypoint sh backup-fxa -c '
-      run=/backups/accounts/20261013T030000Z
+      run=/backups/accounts/20261013T030000Z; export MYSQL_PWD="$FXA_DB_PASSWORD"
       for db in fxa fxa_oauth fxa_profile pushbox ffs; do
-        mysql -h "$FXA_DB_HOST" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $db" &&
-        gunzip -t $run/$db.sql.gz && gunzip -c $run/$db.sql.gz | mysql -h "$FXA_DB_HOST" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" $db || exit 1
+        mysql -h "$FXA_DB_HOST" -u"$FXA_DB_USER" -e "CREATE DATABASE IF NOT EXISTS $db" &&
+        gunzip -t $run/$db.sql.gz && gunzip -c $run/$db.sql.gz | mysql -h "$FXA_DB_HOST" -u"$FXA_DB_USER" $db || exit 1
       done'
     ```
 
@@ -257,7 +259,7 @@ dump sync/$run/ffs_admin.sql.gz | podman exec -i firefox-sync-tokenserver-db sh 
 dump sync/$run/syncstorage.sql.gz | podman exec -i firefox-sync-syncstorage-db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"'
 ```
 
-With `SYNC_DB=mysql` the Sync databases take `MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"`. (The passwords go in `MYSQL_PWD`, not after `-p`: the arguments of a process show in `ps` on the host.) The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`).
+With `SYNC_DB=mysql` the Sync databases take `MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"`. (Why the passwords go in `MYSQL_PWD`: [Passwords in commands](databases.md#passwords-in-commands).) The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`).
 
 Start them again as at install: the Sync server and the accounts' units pull in the one-shot ones.
 
@@ -319,10 +321,10 @@ Then, on the same cluster or the new one, with `F=ffs-firefox-sync`:
 
     ```bash
     accounts_run=20261013T030000Z
-    restore restore-accounts 'run=/backups/accounts/'$accounts_run'
+    restore restore-accounts 'run=/backups/accounts/'$accounts_run'; export MYSQL_PWD="$FXA_DB_PASSWORD"
       for db in fxa fxa_oauth fxa_profile pushbox ffs; do
-        mysql -h "$FXA_DB_HOST" -P "$FXA_DB_PORT" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $db" &&
-        gunzip -t $run/$db.sql.gz && gunzip -c $run/$db.sql.gz | mysql -h "$FXA_DB_HOST" -P "$FXA_DB_PORT" -u"$FXA_DB_USER" -p"$FXA_DB_PASSWORD" $db || exit 1
+        mysql -h "$FXA_DB_HOST" -P "$FXA_DB_PORT" -u"$FXA_DB_USER" -e "CREATE DATABASE IF NOT EXISTS $db" &&
+        gunzip -t $run/$db.sql.gz && gunzip -c $run/$db.sql.gz | mysql -h "$FXA_DB_HOST" -P "$FXA_DB_PORT" -u"$FXA_DB_USER" $db || exit 1
       done' backup-accounts
     ```
 
@@ -330,12 +332,12 @@ Then, on the same cluster or the new one, with `F=ffs-firefox-sync`:
 
     ```bash
     restore restore-tokenserver 'f=/backups/sync/'$run'/$TOKENSERVER_DB_NAME.sql.gz
-      gunzip -t "$f" && gunzip -c "$f" | mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" -p"$TOKENSERVER_DB_PASSWORD" "$TOKENSERVER_DB_NAME"'
+      gunzip -t "$f" && gunzip -c "$f" | MYSQL_PWD="$TOKENSERVER_DB_PASSWORD" mariadb -h "$TOKENSERVER_DB_HOST" -u"$TOKENSERVER_DB_USER" "$TOKENSERVER_DB_NAME"'
     restore restore-admin 'f=/backups/sync/'$run'/$ADMIN_DB_NAME.sql.gz
-      gunzip -t "$f" && gunzip -c "$f" | mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+      gunzip -t "$f" && gunzip -c "$f" | MYSQL_PWD="$ADMIN_DB_PASSWORD" mariadb -h "$TOKENSERVER_DB_HOST" -u"$ADMIN_DB_USER" "$ADMIN_DB_NAME"'
     # only when no device has the data any more
     restore restore-storage 'f=/backups/sync/'$run'/$STORAGE_DB_NAME.sql.gz
-      gunzip -t "$f" && gunzip -c "$f" | mariadb -h "$STORAGE_DB_HOST" -u"$STORAGE_DB_USER" -p"$STORAGE_DB_PASSWORD" "$STORAGE_DB_NAME"'
+      gunzip -t "$f" && gunzip -c "$f" | MYSQL_PWD="$STORAGE_DB_PASSWORD" mariadb -h "$STORAGE_DB_HOST" -u"$STORAGE_DB_USER" "$STORAGE_DB_NAME"'
     kubectl scale deploy/$F-syncstorage --replicas=1
     ```
 
@@ -363,7 +365,7 @@ Now and then, check that a dump restores. This loads the newest accounts dump in
 
 ```bash
 docker compose run --rm --no-deps --entrypoint sh backup-fxa -c '
-  run=$(ls -1d /backups/accounts/* | tail -1); db="mysql -h $FXA_DB_HOST -u$FXA_DB_USER -p$FXA_DB_PASSWORD"
+  run=$(ls -1d /backups/accounts/* | tail -1); export MYSQL_PWD="$FXA_DB_PASSWORD"; db="mysql -h $FXA_DB_HOST -u$FXA_DB_USER"
   $db -e "CREATE DATABASE ffs_restore_test" && gunzip -c $run/fxa.sql.gz | $db ffs_restore_test &&
   $db -e "SELECT COUNT(*) AS restored FROM ffs_restore_test.accounts; SELECT COUNT(*) AS now FROM fxa.accounts"
   $db -e "DROP DATABASE ffs_restore_test"'

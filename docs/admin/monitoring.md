@@ -184,7 +184,7 @@ To remove them sooner, delete them in the admin UI's database as its user:
    MariaDB (use `mysql` instead of `mariadb` with `SYNC_DB=mysql`):
 
    ```bash
-   docker compose exec tokenserver_db sh -c 'mariadb -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" "$ADMIN_DB_NAME"'
+   docker compose exec tokenserver_db sh -c 'MYSQL_PWD="$ADMIN_DB_PASSWORD" mariadb -u"$ADMIN_DB_USER" "$ADMIN_DB_NAME"'
    ```
 
    PostgreSQL:

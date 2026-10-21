@@ -209,17 +209,17 @@ dst_load() {
       guide "docker compose up -d --wait tokenserver_db syncstorage_db" > /dev/null 2>&1
       check "$?" 0 "database containers up"
       echo "  $(dst_sql 'SELECT VERSION()')"
-      guide "docker compose exec -T tokenserver_db sh -c 'mariadb -u\"\$MARIADB_USER\" -p\"\$MARIADB_PASSWORD\" \"\$MARIADB_DATABASE\"' < tokenserver.sql"
+      guide "docker compose exec -T tokenserver_db sh -c 'MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb -u\"\$MARIADB_USER\" \"\$MARIADB_DATABASE\"' < tokenserver.sql"
       check "$?" 0 "tokenserver.sql loaded"
-      guide "docker compose exec -T syncstorage_db sh -c 'mariadb -u\"\$MARIADB_USER\" -p\"\$MARIADB_PASSWORD\" \"\$MARIADB_DATABASE\"' < syncstorage.sql"
+      guide "docker compose exec -T syncstorage_db sh -c 'MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb -u\"\$MARIADB_USER\" \"\$MARIADB_DATABASE\"' < syncstorage.sql"
       check "$?" 0 "syncstorage.sql loaded" ;;
     mysql)
       guide "docker compose up -d --wait tokenserver_db syncstorage_db" > /dev/null 2>&1
       check "$?" 0 "database containers up"
       echo "  $(dst_sql 'SELECT VERSION()')"
-      guide "docker compose exec -T tokenserver_db sh -c 'mysql -u\"\$MYSQL_USER\" -p\"\$MYSQL_PASSWORD\" \"\$MYSQL_DATABASE\"' < tokenserver.sql"
+      guide "docker compose exec -T tokenserver_db sh -c 'MYSQL_PWD=\"\$MYSQL_PASSWORD\" mysql -u\"\$MYSQL_USER\" \"\$MYSQL_DATABASE\"' < tokenserver.sql"
       check "$?" 0 "tokenserver.sql loaded"
-      guide "docker compose exec -T syncstorage_db sh -c 'mysql -u\"\$MYSQL_USER\" -p\"\$MYSQL_PASSWORD\" \"\$MYSQL_DATABASE\"' < syncstorage.sql"
+      guide "docker compose exec -T syncstorage_db sh -c 'MYSQL_PWD=\"\$MYSQL_PASSWORD\" mysql -u\"\$MYSQL_USER\" \"\$MYSQL_DATABASE\"' < syncstorage.sql"
       check "$?" 0 "syncstorage.sql loaded" ;;
     postgres)
       guide "docker compose up -d --wait postgres_db" > /dev/null 2>&1
@@ -267,9 +267,9 @@ dst_verify() {
   cd "${DST}" || exit 1
   case ${DST_DB} in
     mariadb)
-      users=$(guide "docker compose exec tokenserver_db sh -c 'mariadb -u\"\$MARIADB_USER\" -p\"\$MARIADB_PASSWORD\" \"\$MARIADB_DATABASE\" -e \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
+      users=$(guide "docker compose exec tokenserver_db sh -c 'MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb -u\"\$MARIADB_USER\" \"\$MARIADB_DATABASE\" -e \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
     mysql)
-      users=$(guide "docker compose exec tokenserver_db sh -c 'mysql -u\"\$MYSQL_USER\" -p\"\$MYSQL_PASSWORD\" \"\$MYSQL_DATABASE\" -e \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
+      users=$(guide "docker compose exec tokenserver_db sh -c 'MYSQL_PWD=\"\$MYSQL_PASSWORD\" mysql -u\"\$MYSQL_USER\" \"\$MYSQL_DATABASE\" -e \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
     postgres)
       users=$(guide "docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD=\"\$POSTGRES_SYNC_PASSWORD\" psql -h \"\$POSTGRES_SERVER\" -U \"\$POSTGRES_SYNC_USER\" -d \"\$POSTGRES_DATABASE\" -c \"SELECT u.uid, u.email, u.generation, u.keys_changed_at, u.client_state, n.node FROM users u JOIN nodes n ON n.id = u.nodeid WHERE u.replaced_at IS NULL\"'" 2>&1) ;;
   esac
@@ -350,9 +350,9 @@ scenario_upstream_mysql() {
   src_stop docker-compose.one-shot.mysql.yaml syncserver
   echo "== dumps (docs/migrating.md, Mozilla's compose files)"
   cd "${SRC}" || exit 1
-  guide "docker exec syncserver-tokenserver-db mysqldump -usync -psync --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver > tokenserver.sql"
+  guide "docker exec syncserver-tokenserver-db sh -c 'MYSQL_PWD=\"\$MYSQL_PASSWORD\" mysqldump -u\"\$MYSQL_USER\" --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver' > tokenserver.sql"
   check "$?" 0 "tokenserver dump"
-  guide "docker exec syncserver-sync-db mysqldump -usync -psync --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage > syncstorage.sql"
+  guide "docker exec syncserver-sync-db sh -c 'MYSQL_PWD=\"\$MYSQL_PASSWORD\" mysqldump -u\"\$MYSQL_USER\" --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage' > syncstorage.sql"
   check "$?" 0 "syncstorage dump"
   echo "  source: MySQL $(docker exec syncserver-sync-db mysql -usync -psync -sN -e 'SELECT VERSION()' 2> /dev/null)"
   cd - > /dev/null || exit 1
@@ -389,8 +389,8 @@ EOF
   echo "== dumps (docs/migrating.md, Mozilla's test setup)"
   cd "${SRC}" || exit 1
   guide 'dc="docker compose -f docker/docker-compose.mysql.yaml exec -T"' \
-    '$dc tokenserver-db mysqldump -utest -ptest --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver > tokenserver.sql' \
-    '$dc sync-db mysqldump -utest -ptest --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage > syncstorage.sql'
+    "\$dc tokenserver-db sh -c 'MYSQL_PWD=\"\$MYSQL_PASSWORD\" mysqldump -u\"\$MYSQL_USER\" --single-transaction --no-tablespaces --set-gtid-purged=OFF tokenserver' > tokenserver.sql" \
+    "\$dc sync-db sh -c 'MYSQL_PWD=\"\$MYSQL_PASSWORD\" mysqldump -u\"\$MYSQL_USER\" --single-transaction --no-tablespaces --set-gtid-purged=OFF syncstorage' > syncstorage.sql"
   check "$?" 0 "two dumps"
   cd - > /dev/null || exit 1
   dst_prepare mariadb
@@ -541,9 +541,9 @@ EOF
   (cd "${SRC}" && docker compose stop syncserver) > /dev/null 2>&1
   echo "== dumps (docs/migrating.md, dan-r)"
   cd "${SRC}" || exit 1
-  guide "docker exec firefox_mariadb sh -c 'mariadb-dump -uroot -p\"\$MYSQL_ROOT_PASSWORD\" --single-transaction --no-tablespaces tokenserver_rs' > tokenserver.sql"
+  guide "docker exec firefox_mariadb sh -c 'MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mariadb-dump -uroot --single-transaction --no-tablespaces tokenserver_rs' > tokenserver.sql"
   check "$?" 0 "tokenserver_rs dump"
-  guide "docker exec firefox_mariadb sh -c 'mariadb-dump -uroot -p\"\$MYSQL_ROOT_PASSWORD\" --single-transaction --no-tablespaces syncstorage_rs' > syncstorage.sql"
+  guide "docker exec firefox_mariadb sh -c 'MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mariadb-dump -uroot --single-transaction --no-tablespaces syncstorage_rs' > syncstorage.sql"
   check "$?" 0 "syncstorage_rs dump"
   echo "  source: MariaDB $(docker exec firefox_mariadb mysql -usync -p"${pw}" -sN -e 'SELECT VERSION()' 2> /dev/null)"
   cd - > /dev/null || exit 1
@@ -592,9 +592,9 @@ EOF
   (cd "${SRC}" && docker compose -f docker-compose.yaml -f migrate-test.yaml stop syncstorage) > /dev/null 2>&1
   echo "== dumps (docs/migrating.md, jeena)"
   cd "${SRC}" || exit 1
-  guide "docker exec firefox_tokenserver_db sh -c 'mariadb-dump -u\"\$MARIADB_USER\" -p\"\$MARIADB_PASSWORD\" --single-transaction --no-tablespaces tokenserver' > tokenserver.sql"
+  guide "docker exec firefox_tokenserver_db sh -c 'MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb-dump -u\"\$MARIADB_USER\" --single-transaction --no-tablespaces tokenserver' > tokenserver.sql"
   check "$?" 0 "tokenserver dump"
-  guide "docker exec firefox_syncstorage_db sh -c 'mariadb-dump -u\"\$MARIADB_USER\" -p\"\$MARIADB_PASSWORD\" --single-transaction --no-tablespaces syncstorage' > syncstorage.sql"
+  guide "docker exec firefox_syncstorage_db sh -c 'MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb-dump -u\"\$MARIADB_USER\" --single-transaction --no-tablespaces syncstorage' > syncstorage.sql"
   check "$?" 0 "syncstorage dump"
   cd - > /dev/null || exit 1
   dst_prepare mariadb

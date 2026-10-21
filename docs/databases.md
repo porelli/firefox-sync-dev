@@ -265,14 +265,14 @@ Not covered by the tests: check the result before you remove the old volumes. Mo
     - MariaDB, the same for `syncstorage_db`:
 
       ```bash
-      docker compose exec tokenserver_db sh -c 'mariadb-dump -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" --routines --triggers "$MARIADB_DATABASE"' > tokenserver.sql
+      docker compose exec tokenserver_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb-dump -u"$MARIADB_USER" --routines --triggers "$MARIADB_DATABASE"' > tokenserver.sql
       ```
 
       These dumps load into MariaDB 10.10 and later only: MySQL rejects their `uca1400` collations.
     - MySQL (`SYNC_DB=mysql`), the same for `syncstorage_db`. The stack's users have no `PROCESS` privilege, hence `--no-tablespaces`:
 
       ```bash
-      docker compose exec tokenserver_db sh -c 'mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" --routines --triggers --no-tablespaces "$MYSQL_DATABASE"' > tokenserver.sql
+      docker compose exec tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysqldump -u"$MYSQL_USER" --routines --triggers --no-tablespaces "$MYSQL_DATABASE"' > tokenserver.sql
       ```
 
     - PostgreSQL, as the Sync server's role, like the backups:
@@ -290,14 +290,14 @@ Not covered by the tests: check the result before you remove the old volumes. Mo
     - The admin UI's database (the event log, the audit trail), as its user. Use `mysqldump ... --no-tablespaces` with `SYNC_DB=mysql`:
 
       ```bash
-      docker compose exec tokenserver_db sh -c 'mariadb-dump -u"$ADMIN_DB_USER" -p"$ADMIN_DB_PASSWORD" --single-transaction "$ADMIN_DB_NAME"' > ffs_admin.sql
+      docker compose exec tokenserver_db sh -c 'MYSQL_PWD="$ADMIN_DB_PASSWORD" mariadb-dump -u"$ADMIN_DB_USER" --single-transaction "$ADMIN_DB_NAME"' > ffs_admin.sql
       docker compose exec postgres_db pg_dump -U ffs_admin_ui --no-owner --no-acl ffs_admin > ffs_admin.sql   # PostgreSQL
       ```
 
     - The accounts. Use `mariadb-dump` instead of `mysqldump` with `FXA_DB=mariadb`, and load it into the same kind of server (MySQL to MariaDB or back is not tested):
 
       ```bash
-      docker compose exec fxa-db sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --routines --triggers --databases fxa fxa_oauth fxa_profile pushbox ffs'  > fxa.sql
+      docker compose exec fxa-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump -uroot --routines --triggers --databases fxa fxa_oauth fxa_profile pushbox ffs'  > fxa.sql
       ```
 
 1. Create the databases and users on your server with the passwords already in your `.env`:
@@ -323,6 +323,34 @@ Not covered by the tests: check the result before you remove the old volumes. Mo
    ```
 
 The old volumes stay until you remove them, with `docker volume rm`, or `docker compose down -v` while `SYNC_DB_CONTAINERS=1`.
+
+## Passwords in commands
+
+The commands of these pages never put a password after `-p` or in a URL. The arguments of a process show in `ps` to every user of the host, and a command you type stays in your shell history. The stack's scripts, units and chart do the same.
+
+- **Typed by hand:** `-p` with nothing after it, and the client asks for the password. `psql` asks by itself when the server wants one.
+- **Inside a container of the stack**, whose environment holds the password: the client reads it from `MYSQL_PWD` (MariaDB, MySQL) or `PGPASSWORD`, set from that variable in `sh -c '...'`. The single quotes keep the host's shell from expanding it: only the container's `sh` reads the value.
+
+    ```bash
+    docker compose exec tokenserver_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"'
+    ```
+
+- **In a script on the host**, for your own server, such as a backup job: a file that only you can read. Give it to MariaDB's and MySQL's clients with `--defaults-extra-file`, which must be their first option:
+
+    ```bash
+    install -m 600 /dev/null "$HOME/.ffs-admin.cnf"   # then, with an editor, the two lines below
+    ```
+
+    ```ini
+    [client]
+    password=<the password>
+    ```
+
+    ```bash
+    mariadb --defaults-extra-file="$HOME/.ffs-admin.cnf" -h db.example.com -u ffs_admin_ui ffs_admin -e 'SELECT 1'
+    ```
+
+    `psql` and `pg_dump` read `~/.pgpass` (mode 600, lines `host:port:database:user:password`) by themselves, or the file named by `PGPASSFILE`.
 
 ## Troubleshooting
 
