@@ -116,6 +116,10 @@ server {
 
 Sessions, plain HTTP and signing in: see [Admin UI](admin/README.md#set-up) and [Signing in](admin/signing-in.md). A sign-in proxy in front of it: see [Trusted header](admin/signing-in.md#trusted-header).
 
+## Single sign-on and client certificates
+
+A sign-in proxy (such as Authelia) or client certificates fit in front of the accounts pages and the admin UI only: Firefox calls the other hosts in the background, without cookies or a certificate. See [Single sign-on and client certificates](access-control.md).
+
 ## Kubernetes
 
 With the Helm chart, the chart's Ingress publishes the Sync server, and the admin UI on a host of its own: see [Ingress](install/helm.md#ingress) and [Admin UI](install/helm.md#admin-ui). The rules of this page still apply, in the Ingress controller's terms: [Request size](#request-size) is the one that matters for the Sync server.
