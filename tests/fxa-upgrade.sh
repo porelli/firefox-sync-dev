@@ -125,7 +125,7 @@ slot_fxa_ports "${ENV_FILE}"
 # environment (CI passes its matrix values, empty for the defaults), which compose would
 # prefer to the file and which would hide its pins from db/mysql/keep-major.sh
 export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
-set -a; source "${ENV_FILE}"; set +a
+load_env "${ENV_FILE}"
 COMPOSE_EXTRA=()
 if [ "${FXA_DB}" = mariadb ]; then
   COMPOSE_EXTRA=(-f "${CODE}/docker-compose.fxa-mariadb.yml") DB_CLIENT=mariadb
@@ -142,7 +142,7 @@ dc() {
 FAILED=0
 # compose prefers the environment to --env-file: change both
 set_env() { sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"; }
-check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
+check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; return 1; fi; }
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 image_of() { docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q "$1")" 2> /dev/null; }
 image_id_of() { docker inspect -f '{{.Image}}' "$(dc ps -a -q "$1")" 2> /dev/null; }
@@ -293,7 +293,7 @@ if [ "${FXA_DB}" = mysql ]; then
   check "$? $(grep '^FXA_MYSQL_IMAGE=' "${UP}/.env") [$(sed -n 's/^FXA_MYSQL_ARGS=//p' "${UP}/.env")] $(grep -c 'stays on MySQL 8 with mysql_native_password' "${WORK}/prepare-upgrade.log")" \
     "0 FXA_MYSQL_IMAGE=mysql:8 [${NATIVE_ARGS}] 1" "prepare_environment.sh --upgrade pins the accounts on MySQL 8 with mysql_native_password"
   cp "${UP}/.env" "${ENV_FILE}"
-  set -a; source "${ENV_FILE}"; set +a
+  load_env "${ENV_FILE}"
   dc up -d --no-deps fxa-db > "${WORK}/up-pinned.log" 2>&1
   for _ in $(seq 1 60); do [ "$(state fxa-db Health.Status)" = healthy ] && break; sleep 2; done
   check "$(state fxa-db Health.Status) $(fxa_sql "SELECT VERSION()")" "healthy ${old_db_version}" "fxa-db back on mysql:8, its data as it was"

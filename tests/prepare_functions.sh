@@ -15,7 +15,7 @@ CODE=$(dirname "${TESTS}")
 WORK=$(mktemp -d)
 trap 'chmod -R u+w "${WORK}" 2> /dev/null; rm -rf "${WORK}"' EXIT
 FAILED=0
-check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
+check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; return 1; fi; }
 
 # sed_script's files there
 export TMPDIR=${WORK}/tmp

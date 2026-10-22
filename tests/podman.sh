@@ -49,7 +49,7 @@ source "${TESTS}/healthy.sh"
 # shellcheck source=tests/fxa_fix.sh
 source "${TESTS}/fxa_fix.sh"
 
-check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
+check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; return 1; fi; }
 hb() {
   local c
   for _ in $(seq 1 90); do

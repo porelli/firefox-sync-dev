@@ -158,7 +158,7 @@ fi
 # environment (CI passes its matrix values, empty for the defaults), which compose would
 # prefer to the file and which would hide its pins from db/mysql/keep-major.sh
 export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
-set -a; source "${ENV_FILE}"; set +a
+load_env "${ENV_FILE}"
 # the admin UI's own database users, the Sync server's role in the PostgreSQL container
 # (set_env empties them until the upgrade)
 ADMIN_DB_SECRET=${ADMIN_DB_PASSWORD} SYNC_ROLE=${SYNC_POSTGRES_APP_USER} SYNC_ROLE_SECRET=${SYNC_POSTGRES_APP_PASSWORD}
@@ -193,7 +193,7 @@ FAILED=0
 # compose_healthy, the healthchecks of the stack
 # shellcheck source=tests/healthy.sh
 source "${TESTS}/healthy.sh"
-check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
+check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; return 1; fi; }
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 hb() {
   local c
@@ -579,7 +579,7 @@ for pair in "${RENAMED_SETTINGS[@]}"; do
   case "${pair#*=}" in REPOSITORY|POSTGRES_IMAGE) export -n "${pair#*=}" ;; *) unset "${pair#*=}" ;; esac
 done
 OLD_NAMES=
-set -a; source "${ENV_FILE}"; set +a
+load_env "${ENV_FILE}"
 set_env ADMIN_DB_PASSWORD "${ADMIN_DB_SECRET}"
 set_env SYNC_POSTGRES_APP_USER "${SYNC_ROLE}"
 set_env SYNC_POSTGRES_APP_PASSWORD "${SYNC_ROLE_SECRET}"

@@ -60,3 +60,23 @@ src_hash() {
 pytest_sh() {
   echo "python3 -m pytest -q -p no:cacheprovider --tb=short $1 > /tmp/pytest.log 2>&1; rc=\$?; if [ \$rc = 0 ]; then tail -25 /tmp/pytest.log; else cat /tmp/pytest.log; ${2:-:}; fi; exit \$rc"
 }
+
+# load_env <file>: export the settings of a .env as docker compose reads them, not as bash
+# would (sourcing it runs an unquoted value with spaces, FXA_MYSQL_ARGS=--a --b, as a command):
+# NAME=value lines (optionally indented or after export), the value without a ' #' comment, or
+# inside matching single (literal) or double quotes
+load_env() {
+  local line name value
+  while IFS= read -r line || [ -n "${line}" ]; do
+    line=${line%$'\r'}
+    [[ "${line}" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    name=${BASH_REMATCH[2]} value=${BASH_REMATCH[3]}
+    if [[ "${value}" =~ ^\'(.*)\'[[:space:]]*(#.*)?$ ]] || [[ "${value}" =~ ^\"(.*)\"[[:space:]]*(#.*)?$ ]]; then
+      value=${BASH_REMATCH[1]}
+    else
+      value=${value%%[[:space:]]#*}
+      value=${value%"${value##*[![:space:]]}"}
+    fi
+    export "${name}=${value}"
+  done < "$1"
+}

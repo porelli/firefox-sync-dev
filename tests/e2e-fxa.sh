@@ -174,7 +174,7 @@ fi
 # environment (CI passes its matrix values, empty for the defaults), which compose would
 # prefer to the file and which would hide its pins from db/mysql/keep-major.sh
 export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
-set -a; source "${ENV_FILE}"; set +a
+load_env "${ENV_FILE}"
 FXA_DB=${FXA_DB:-mysql}
 # (RERUN: as the kept stack was started)
 COMPOSE_EXTRA=()
@@ -225,7 +225,7 @@ FAILED=0
 source "${TESTS}/healthy.sh"
 # compose prefers the environment to --env-file: change both
 set_env() { sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"; }
-check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; fi; }
+check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; return 1; fi; }
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 
 teardown() {
