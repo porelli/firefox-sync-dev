@@ -253,4 +253,4 @@ The admin UI and the backup script also read these variables, from their contain
 | `ALERT_INTERVAL_SECONDS` | `600` | the alerts are collected and sent at most this often |
 | `FXA_INIT_TIMEOUT` | `120` | seconds the admin UI waits at its start for the accounts' tables, which the migrations create |
 | `BACKUP_LOCK_WAIT` | `3600` | seconds a backup run waits for another one to finish |
-| `BACKUP_RETRY_PAUSE` | `10` | seconds before a MariaDB or MySQL dump is tried again after error 1412 |
+| `BACKUP_RETRY_PAUSE` | `10` | seconds before a dump is tried again after a table changed or was dropped while it ran (error 1412 or 1146, PostgreSQL's "relation does not exist") |

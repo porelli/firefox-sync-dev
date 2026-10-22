@@ -954,9 +954,14 @@ backup_event() {
 }
 if [ -z "${EXTDB}" ]; then
   backup_run() { dc exec -T "$@" backup sh /ffs-backup/backup.sh now >> "${WORK}/backup.log" 2>&1; }
-  # the run of the loop at the start met the upgrade, which moves the admin UI's tables out
-  # of the tokenserver database: a dump then fails with error 1412, done again once
-  check "$(backups_of "ok = 0")" 0 "no backup failed so far (the loop's run at the start, during the upgrade)"
+  # the run of the loop at the start can meet the upgrade, which moves the admin UI's tables
+  # out of the tokenserver database: a dump then fails with error 1412 (a table changed) or
+  # 1146 (dropped), done again once. (The run of the install of before, when it ran before
+  # the test stopped the stack: then none at the upgrade, the same day)
+  failed_runs=$(backups_of "ok = 0")
+  check "${failed_runs}" 0 "no backup failed so far (the loop's run at the start, during the upgrade)"
+  # (what they recorded, and the loop's log)
+  [ "${failed_runs}" = 0 ] || { admin_sql "SELECT started, finished, error FROM ffs_backups WHERE scope = 'sync' AND ok = 0;"; dc logs --timestamps backup 2>&1 | tail -20; }
   good=$(backups_of "ok = 1 AND bytes > 0 AND location LIKE '/backups/sync/%'")
   backup_run
   check "$?" 0 "a backup run (COMPOSE_PROFILES=backup)"
@@ -1048,15 +1053,15 @@ if [ -z "${EXTDB}" ]; then
     check "$(dc exec -T backup sh -c "for f in /backups/sync/${r}/*.sql.gz; do gzip -t \"\$f\" && basename \"\$f\"; done" | LC_ALL=C sort | paste -sd' ')" "${expected}" "every dump of ${r} there and passing gzip -t"
   done
   check "$(lock_owner | wc -c) $(dc exec -T backup sh -c 'ls -a /backups/sync | grep -c partial')" "0 0" "no lock and no partial run left"
+  echo "== a dump that meets a table changing (error 1412) or dropped (1146, PostgreSQL's \"does not exist\") is done again, once"
+  dc exec -T backup sh -c 'mkdir -p /tmp/ffs-1412 && cat > /tmp/ffs-1412/fake && for n in mariadb-dump mysqldump pg_dump; do [ ! -x /usr/bin/$n ] || install -m 755 /tmp/ffs-1412/fake /tmp/ffs-1412/$n; done' < "${TESTS}/fake_dump_1412.sh"
+  fake_run() { # times it fails [its error: 1412, 1146]
+    dc exec -T backup rm -f /tmp/ffs-1412/count
+    dc exec -T -e PATH=/tmp/ffs-1412:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin -e BACKUP_RETRY_PAUSE=1 -e FAKE_1412="$1" -e FAKE_ERROR="${2:-1412}" \
+      backup sh /ffs-backup/backup.sh now 2>&1
+  }
+  calls() { dc exec -T backup cat /tmp/ffs-1412/count; }
   if [ "${BACKEND}" = mysql ]; then
-    echo "== a dump that meets a table changing (error 1412) is done again, once"
-    dc exec -T backup sh -c 'mkdir -p /tmp/ffs-1412 && cat > /tmp/ffs-1412/fake && for n in mariadb-dump mysqldump; do [ ! -x /usr/bin/$n ] || install -m 755 /tmp/ffs-1412/fake /tmp/ffs-1412/$n; done' < "${TESTS}/fake_dump_1412.sh"
-    fake_run() { # times it fails
-      dc exec -T backup rm -f /tmp/ffs-1412/count
-      dc exec -T -e PATH=/tmp/ffs-1412:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin -e BACKUP_RETRY_PAUSE=1 -e FAKE_1412="$1" \
-        backup sh /ffs-backup/backup.sh now 2>&1
-    }
-    calls() { dc exec -T backup cat /tmp/ffs-1412/count; }
     OUT=$(fake_run 1)
     check "$? $(grep -c 'Table definition has changed.*once more in 1 s' <<< "${OUT}") $(calls)" "0 1 4" \
       "a dump failing once with error 1412 is done again and the run works (3 dumps, 4 calls)"
@@ -1064,6 +1069,16 @@ if [ -z "${EXTDB}" ]; then
     OUT=$(fake_run 2)
     check "$? $(calls)" "1 4" "failing again, the run fails (one retry only)"
     check "$(admin_sql "SELECT ok FROM ffs_backups WHERE scope = 'sync' AND error LIKE '%Error 1412: Table definition has changed%' ORDER BY id DESC LIMIT 1;")" 0 "recorded with the error"
+    # the admin UI's move at an upgrade drops its tables of the tokenserver database: one
+    # the dump listed is gone when it reads it (the loop's run at the start)
+    OUT=$(fake_run 1 1146)
+    check "$? $(grep -c "Table tokenserver.ffs_events doesnt exist (1146).*once more in 1 s" <<< "${OUT}") $(calls)" "0 1 4" \
+      "a dump failing once with error 1146 (a table dropped) is done again and the run works"
+  else
+    # (2 dumps, 3 calls)
+    OUT=$(fake_run 1)
+    check "$? $(grep -c 'relation public.ffs_metrics does not exist.*once more in 1 s' <<< "${OUT}") $(calls)" "0 1 3" \
+      "a pg_dump failing once on a table dropped (relation does not exist) is done again and the run works"
   fi
   # BACKUP_KEEP=1 again: the restore below takes the one run left
   backup_run

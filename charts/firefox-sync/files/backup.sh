@@ -137,9 +137,11 @@ dump_mysql() {
   d_cnf=$1 d_db=$2 d_out=$3
   shift 3
   { "${DUMP}" --defaults-extra-file="${d_cnf}" "$@" "${d_db}" 2> "${TMP}/err"; echo $? > "${TMP}/rc"; } | gzip > "${d_out}"
-  # a table created, dropped or altered while it dumps (error 1412, e.g. the admin UI moving
-  # its tables at an upgrade, once): again, once, after BACKUP_RETRY_PAUSE seconds
-  if [ "$(cat "${TMP}/rc")" != 0 ] && grep -q 'Table definition has changed' "${TMP}/err"; then
+  # a table created or altered while it dumps (error 1412), or dropped after the dump listed
+  # it (1146): e.g. the admin UI moving its tables out of the tokenserver database at an
+  # upgrade, once, at its start, next to the loop's run at the start. Again, once, after
+  # BACKUP_RETRY_PAUSE seconds
+  if [ "$(cat "${TMP}/rc")" != 0 ] && grep -qE "Table definition has changed|Table '[^']*' doesn't exist" "${TMP}/err"; then
     log "${d_db}: $(clean < "${TMP}/err"), once more in ${PAUSE} s" >&2
     sleep "${PAUSE}"
     { "${DUMP}" --defaults-extra-file="${d_cnf}" "$@" "${d_db}" 2> "${TMP}/err"; echo $? > "${TMP}/rc"; } | gzip > "${d_out}"
@@ -151,10 +153,20 @@ dump_mysql() {
 # server has only once the init container ran, and it gives them again at every start.
 # The admin UI's database with DROP ... IF EXISTS: restored over the tables it has
 dump_postgres() { # database out [user password [options]]
+  pg_once "$@"
+  # a table dropped after pg_dump listed it, before it locked it (the admin UI's move at an
+  # upgrade, as with dump_mysql): again, once, after BACKUP_RETRY_PAUSE seconds
+  if [ "$(cat "${TMP}/rc")" != 0 ] && grep -qE 'relation "[^"]*" does not exist|could not open relation with OID|cache lookup failed for relation' "${TMP}/err"; then
+    log "$1: $(clean < "${TMP}/err"), once more in ${PAUSE} s" >&2
+    sleep "${PAUSE}"
+    pg_once "$@"
+  fi
+  [ "$(cat "${TMP}/rc")" = 0 ] || { echo "$1: $(clean < "${TMP}/err")"; return 1; }
+}
+pg_once() {
   # shellcheck disable=SC2086 # (options: words)
   { PGPASSWORD=${4:-${TOKENSERVER_DB_PASSWORD}} pg_dump --no-password -h "${TOKENSERVER_DB_HOST}" -p "${TOKENSERVER_DB_PORT:-5432}" \
       -U "${3:-${TOKENSERVER_DB_USER}}" --no-owner --no-privileges ${5:-} -d "$1" 2> "${TMP}/err"; echo $? > "${TMP}/rc"; } | gzip > "$2"
-  [ "$(cat "${TMP}/rc")" = 0 ] || { echo "$1: $(clean < "${TMP}/err")"; return 1; }
 }
 
 # where the runs are recorded (sync scope only): the admin UI's database as its user, or
