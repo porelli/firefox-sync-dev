@@ -859,13 +859,16 @@ fxa_base_parity() {
   # (the Secret's data masked: its generated values differ on every render, and so does the
   # admin UI's checksum/admin-secrets, the sha256 of that data; its keys are compared. The
   # MySQL probes too: since 0.1.0 their password is in mysqladmin's environment, not its
-  # arguments, as compose's healthchecks)
+  # arguments, as compose's healthchecks. And backup.sh's text: the chart ships compose's
+  # config/backup/backup.sh as it is, which the parity of tests/helm_parity.py checks, and fixes
+  # to it are not a change of the chart's objects)
   mask='walk(if type == "string" and test("^MYSQL_PWD=[$][{]MYSQL_PASSWORD[}] mysqladmin ping |^mysqladmin ping .* -p\"[$][{]MYSQL_PASSWORD[}]\" ") then "mysqladmin ping (masked)"
     elif type == "object" then
       (if has("helm.sh/chart") then .["helm.sh/chart"] = "masked" else . end)
       | (if has("checksum/admin-secrets") then .["checksum/admin-secrets"] = "masked" else . end)
       | (if .name? == "ADMIN_K8S_CHART_VERSION" and has("value") then .value = "masked" else . end)
       | (if .kind? == "Secret" and has("data") then .data = (.data | map_values("masked")) else . end)
+      | (if .kind? == "ConfigMap" and (.data? | type) == "object" and (.data | has("backup.sh")) then .data["backup.sh"] = "masked" else . end)
     else . end)'
   diffs=""
   for values in "${base_dir}"/ci/*.yaml; do
@@ -880,7 +883,7 @@ fxa_base_parity() {
   done
   rm -rf "${base}"
   [[ -z "${diffs}" ]] || fail "with the accounts off, not what chart 0.1.0 renders:${diffs}"
-  check "accounts off: the same objects as chart 0.1.0 (${PARITY_BASE}) for every ci/*.yaml it had (but helm.sh/chart, ADMIN_K8S_CHART_VERSION, the Secret's values and their checksum)"
+  check "accounts off: the same objects as chart 0.1.0 (${PARITY_BASE}) for every ci/*.yaml it had (but helm.sh/chart, ADMIN_K8S_CHART_VERSION, the Secret's values and their checksum, backup.sh's text)"
 }
 
 # e2e <mysql|mariadb>: the chart with the accounts (their database on that backend, the Sync
