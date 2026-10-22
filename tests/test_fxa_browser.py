@@ -10,6 +10,9 @@ Environment:
   MAILPIT_URL      mail catcher API, e.g. http://mailpit:8025
   FIREFOX_BINARY   default: /usr/bin/firefox
   GECKODRIVER      default: /usr/local/bin/geckodriver
+  FFS_ACCESS       the access control in front of the hosts (tests/e2e-fxa.sh): mtls, each
+                   Firefox has the client certificate /client-certs/client.p12 in its profile;
+                   authelia, each Firefox signs in to Authelia first (FFS_SSO_USER, FFS_SSO_PASSWORD)
   BROWSER_ARTIFACTS  a directory: on a failure, the page source and a screenshot of every
                    open Firefox go there (the job log gets the Firefox version, the address,
                    the text and the form fields of the page either way)
@@ -18,6 +21,7 @@ Environment:
 import json
 import os
 import re
+import subprocess
 import tempfile
 import time
 import uuid
@@ -44,10 +48,45 @@ SUBMIT = "button[type=submit]"
 
 # the Firefox profiles of the running test (and first_device's): dumped when it fails
 LIVE = []
+ACCESS = os.environ.get("FFS_ACCESS", "none")
+CLIENT_P12 = "/client-certs/client.p12"
 
 
-def start_firefox(**extra_prefs):
+def add_client_certificate(profile, p12=CLIENT_P12):
+    """The client certificate in the profile's own certificate database, as a user imports it
+    (Settings, Certificates, Your Certificates, Import): a new database, then the PKCS#12"""
+    db = f"sql:{profile}"
+    subprocess.run(["certutil", "-N", "-d", db, "--empty-password"], check=True, capture_output=True)
+    subprocess.run(["pk12util", "-i", p12, "-d", db, "-W", "ffs-test"], check=True, capture_output=True)
+
+
+def sso_sign_in(driver):
+    """Authelia's sign-in page, where the accounts pages send a browser without its session
+    cookie (on the parent domain: the cookie of every host); back on the accounts pages"""
+    driver.get(f"{CONTENT}/")
+    for _ in range(30):
+        if driver.current_url.startswith("https://auth.fxa.test/") and visible(driver, "#username-textfield"):
+            break
+        time.sleep(0.5)
+    assert driver.current_url.startswith("https://auth.fxa.test/"), f"not sent to Authelia: {driver.current_url}"
+    visible(driver, "#username-textfield")[0].send_keys(os.environ["FFS_SSO_USER"])
+    visible(driver, "#password-textfield")[0].send_keys(os.environ["FFS_SSO_PASSWORD"])
+    visible(driver, "#sign-in-button")[0].click()
+    for _ in range(30):
+        if driver.current_url.startswith(f"{CONTENT}/"):
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"Authelia did not send Firefox back to the accounts pages: {driver.current_url}")
+
+
+def start_firefox(client_certificate=None, sso=None, **extra_prefs):
     profile = tempfile.mkdtemp(prefix="ffs-firefox-")
+    if client_certificate is None:
+        client_certificate = ACCESS == "mtls"
+    if client_certificate:
+        add_client_certificate(profile)
+        # sends it without asking (the default asks every time)
+        extra_prefs.setdefault("security.default_personal_cert", "Select Automatically")
     prefs = {
         "identity.fxaccounts.autoconfig.uri": CONTENT,
         "browser.aboutwelcome.enabled": False,
@@ -71,6 +110,10 @@ def start_firefox(**extra_prefs):
     )
     driver = webdriver.Firefox(options=opts, service=service)
     LIVE.append(driver)
+    if sso is None:
+        sso = ACCESS == "authelia"
+    if sso:
+        sso_sign_in(driver)
     return driver
 
 

@@ -1,0 +1,3 @@
+# SSO=authelia: on this host the admin UI must not take the header from the client
+request_header -Remote-Email
+request_header -Remote-Groups

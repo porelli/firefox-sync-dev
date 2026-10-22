@@ -40,6 +40,10 @@
 #                    ffs-e2e-fxa, port 28653 and the other ports of .env-example; 1, 2...: -s<SLOT>
 #                    after the project, 1000 * SLOT added to 28653, the others at 28700-28706 + 1000 * SLOT
 #   INIT_TAG         tag suffix of the init image (default: TAG), e.g. one built from this tree
+#   CLIENT_CERT      set to 1 for client certificates (a test CA) on the accounts pages and the
+#                    admin UI; SSO=authelia for Authelia's forward auth on them instead
+#                    (tests/caddy, test_fxa_access.py, docs/development/testing.md#access-control)
+#   SKIP_SETUP       set to 1 to leave out the prepare_environment.sh checks
 #   DEMO             set to 1 for the screenshot demo (docs/development/testing.md#the-screenshot-demo) instead of the tests: a fresh
 #                    stack seeded by tests/demo_seed.py (a household, sign-ups on an allowlist,
 #                    a backup run), kept running (KEEP=1); the admin UI on ADMIN_EXPORT_PORT
@@ -165,6 +169,38 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
   # the server's administrator, for the checks below
   echo "EXTDB_ROOT=$(rnd)" >> "${ENV_FILE}"
 fi
+# the access control in front of the public hosts (docs/access-control.md), in Caddy:
+# tests/caddy/<FFS_ACCESS>/
+if [ -n "${CLIENT_CERT:-}" ] && [ -n "${SSO:-}" ]; then echo "CLIENT_CERT or SSO, not both"; exit 2; fi
+FFS_ACCESS=none
+[ -n "${CLIENT_CERT:-}" ] && FFS_ACCESS=mtls
+case "${SSO:-}" in "") ;; authelia) FFS_ACCESS=authelia ;; *) echo "SSO: authelia"; exit 2 ;; esac
+FFS_CERTS=${HOME}/.cache/${PROJECT}-certs
+echo "FFS_ACCESS=${FFS_ACCESS}" >> "${ENV_FILE}"
+# (mounted into Caddy: only when there)
+[ "${FFS_ACCESS}" = mtls ] && echo "FFS_CERTS=${FFS_CERTS}" >> "${ENV_FILE}"
+# SSO=authelia: its container
+[ "${FFS_ACCESS}" = authelia ] && sed -i 's|^COMPOSE_PROFILES=.*|&,authelia|' "${ENV_FILE}"
+# CLIENT_CERT=1: a test client CA, a client certificate of it (PEM, and PKCS#12 for Firefox),
+# and one of another CA, which the hosts must refuse
+client_certs() {
+  local d=${FFS_CERTS} ca
+  rm -rf "${d}" && mkdir -p "${d}" || return 1
+  for ca in ca other-ca; do
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 -subj "/CN=ffs test ${ca}" \
+      -keyout "${d}/${ca}.key" -out "${d}/${ca}.crt" 2> /dev/null || return 1
+  done
+  printf 'extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature\n' > "${d}/client.ext"
+  for c in client:ca other:other-ca; do
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=ffs ${c%%:*}@example.com" \
+      -keyout "${d}/${c%%:*}.key" -out "${d}/${c%%:*}.csr" 2> /dev/null &&
+      openssl x509 -req -in "${d}/${c%%:*}.csr" -CA "${d}/${c#*:}.crt" -CAkey "${d}/${c#*:}.key" -CAcreateserial -days 30 \
+        -extfile "${d}/client.ext" -out "${d}/${c%%:*}.crt" 2> /dev/null || return 1
+  done
+  openssl pkcs12 -export -in "${d}/client.crt" -inkey "${d}/client.key" -name "ffs test client" -passout pass:ffs-test -out "${d}/client.p12" || return 1
+  # (read by the containers, whatever their user)
+  chmod 755 "${d}" && chmod 644 "${d}"/*
+}
 if [ -n "${RERUN:-}" ]; then
   [ -f "${KEPT_ENV}" ] || { echo "RERUN: no ${KEPT_ENV}, run with KEEP=1 first"; exit 2; }
   cp "${KEPT_ENV}" "${ENV_FILE}"
@@ -176,6 +212,12 @@ fi
 export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
 load_env "${ENV_FILE}"
 FXA_DB=${FXA_DB:-mysql}
+# the tests' containers with CLIENT_CERT=1: the client certificate, which their requests
+# sessions present (tests/conftest.py); with SSO=authelia: Authelia's user, whose session
+# cookie they send
+ACCESS_RUN=()
+[ "${FFS_ACCESS}" = mtls ] && ACCESS_RUN=(-v "${FFS_CERTS}:/client-certs:ro" -e FFS_CLIENT_CERT=/client-certs/client.crt -e FFS_CLIENT_KEY=/client-certs/client.key)
+[ "${FFS_ACCESS}" = authelia ] && ACCESS_RUN=(-e FFS_SSO_USER=sso -e FFS_SSO_PASSWORD=ffs-sso-test)
 # (RERUN: as the kept stack was started)
 COMPOSE_EXTRA=()
 [ "${FXA_DB}" = mariadb ] && COMPOSE_EXTRA=(-f "${CODE}/docker-compose.fxa-mariadb.yml")
@@ -241,12 +283,12 @@ teardown() {
   docker rm -f "${EXTDB}" > /dev/null 2>&1
   docker network rm "${EXTDB}" > /dev/null 2>&1
   rm -f "${KEPT_ENV}"
-  rm -rf "${WORK}"
+  rm -rf "${WORK}" "${FFS_CERTS}"
 }
 trap teardown EXIT
 
 if [ -z "${RERUN:-}" ]; then
-if [ -z "${DEMO:-}" ]; then
+if [ -z "${DEMO:-}" ] && [ -z "${SKIP_SETUP:-}" ]; then
 echo "== prepare_environment.sh with self-hosted accounts"
 SETUP=${WORK}/setup${SLOT_SUFFIX} && mkdir -p "${SETUP}" && cp -r "${CODE}/." "${SETUP}/" && rm -f "${SETUP}/.env"
 # answers: domain, compose dir, port, max users, backend, [deploy method], user, image tag, admin UI,
@@ -611,6 +653,10 @@ fi
 dc down -v --remove-orphans > /dev/null 2>&1
 docker rm -f "${EXTDB}" > /dev/null 2>&1
 docker network rm "${EXTDB}" > /dev/null 2>&1
+if [ "${FFS_ACCESS}" = mtls ]; then
+  echo "== client certificates of a test CA (CLIENT_CERT=1): the accounts pages and the admin UI ask for one"
+  client_certs || { echo "FAIL: client certificates made"; exit 1; }
+fi
 if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   echo "== external database server ${EXTDB} (${EXTDB_IMAGE}) for $([ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && echo "Sync and ")the accounts"
   docker network create "${EXTDB}" > /dev/null
@@ -659,6 +705,14 @@ check "$(state fxa-migrations ExitCode)" 0 "FxA database migrations"
 check "$(state fxa-auth Health.Status)" healthy "FxA auth server healthy"
 check "$(state fxa-content Health.Status)" healthy "FxA content server healthy"
 check "$(state syncstorage Health.Status)" healthy "syncstorage healthy"
+if [ "${FFS_ACCESS}" = authelia ] && [ "${FAILED}" = 0 ]; then
+  echo "== SSO=authelia: the admin UI also signs in with Authelia's header, from Caddy's address"
+  set_env ADMIN_AUTH_HEADER Remote-Email
+  set_env ADMIN_TRUSTED_PROXIES "$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(dc ps -q caddy)")/32"
+  dc up -d ffs-admin > "${WORK}/admin-header.log" 2>&1
+  for _ in $(seq 1 60); do [ "$(state ffs-admin Health.Status)" = healthy ] && break; sleep 1; done
+  check "$(state ffs-admin Health.Status) $(state authelia Health.Status)" "healthy healthy" "admin UI with ADMIN_AUTH_HEADER (${ADMIN_TRUSTED_PROXIES}), Authelia"
+fi
 if [ "${FAILED}" != 0 ]; then
   tail -20 "${WORK}/up.log"
   for s in fxa-migrations fxa-auth fxa-content fxa-profile syncstorage; do echo "---- ${s}"; dc logs --tail 25 "${s}" 2>&1; done
@@ -690,7 +744,7 @@ dc run --rm -T --no-deps --user root \
   -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" \
   -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
   -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e FXA_PAIRING_URL -e SYNC_PUBLIC_URL -e MAILPIT_URL=http://mailpit:8025 \
-  -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD \
+  -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD "${ACCESS_RUN[@]}" \
   -e PYTHONPATH=/app:/app/tools -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint /bin/sh syncstorage \
   -c "cd /app && $(pytest_sh "/tests/test_fxa_flow.py ${PYTEST_ARGS}")" < /dev/null
@@ -711,7 +765,7 @@ dc run --rm -T --no-deps --user root \
   -e REQUESTS_CA_BUNDLE=/caddy-ca/root.crt \
   -e FXA_CONTENT_URL -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNC_PUBLIC_URL -e MAILPIT_URL=http://mailpit:8025 \
   -e ADMIN_URL=https://admin.fxa.test -e ADMIN_PASSWORD -e FXA_DIRECT_URL=http://fxa-auth:9000 -e ADMIN_FXA_CLIENT_ID \
-  -e FXA_DB_SERVER="${FXA_DB_SERVER}" -e FXA_ACCOUNT_EVENTS -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
+  -e FXA_DB_SERVER="${FXA_DB_SERVER}" -e FXA_ACCOUNT_EVENTS "${ACCESS_RUN[@]}" -e PYTHONPATH=/app:/app/tools:/tests -e PYTHONDONTWRITEBYTECODE=1 \
   -e FXA_TEST_DB_URL="mysql://${FXA_MYSQL_USER}:${FXA_MYSQL_PASSWORD}@${FXA_MYSQL_HOST}:${FXA_MYSQL_PORT}/fxa" \
   -e ADMIN_DB_URL="mysql://${ADMIN_DB_USER}:${ADMIN_DB_PASSWORD}@${SYNC_TOKENSERVER_DB_HOST}:${SYNC_TOKENSERVER_DB_PORT}/${ADMIN_DB_NAME}" \
   --entrypoint /bin/sh syncstorage \
@@ -905,11 +959,15 @@ if [ -z "${SKIP_BROWSER:-}" ] && runs browser; then
   # kept when not empty (CI uploads it: browser-pages-<job> in .github/workflows)
   browser=${PROJECT}-browser
   docker rm -f "${browser}" > /dev/null 2>&1
+  # with access control (FFS_ACCESS), its own tests first
+  access_tests=""
+  [ "${FFS_ACCESS}" = none ] || access_tests=/tests/test_fxa_access.py
   docker run --name "${browser}" --network "${PROJECT}_default" --shm-size 1g \
     -v "${TESTS}:/tests:ro" -v "${PROJECT}_caddy-ca:/caddy-ca:ro" -e BROWSER_ARTIFACTS=/tmp/ffs-browser-artifacts \
     -e FXA_CONTENT_URL -e MAILPIT_URL=http://mailpit:8025 -e PYTHONDONTWRITEBYTECODE=1 \
     -e FXA_PAIRING_URL -e ADMIN_PASSWORD -e ADMIN_URL=https://admin.fxa.test -e ADMIN_FXA_CLIENT_ID \
-    "${BROWSER_IMAGE}" sh -c "$(pytest_sh "/tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS}" "grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10")" < /dev/null
+    -e FXA_AUTH_URL -e FXA_PROFILE_URL -e SYNC_PUBLIC_URL -e FFS_ACCESS "${ACCESS_RUN[@]}" \
+    "${BROWSER_IMAGE}" sh -c "$(pytest_sh "${access_tests} /tests/test_fxa_browser.py /tests/test_fxa_pairing.py ${PYTEST_ARGS}" "grep -h FirefoxAccounts /tmp/ffs-firefox-*.log | grep -E 'ERROR|WARN' | tail -10")" < /dev/null
   check "$?" 0 "real Firefox sign-up and sync, pairing server"
   pages=$(mktemp -d "${RUNNER_TEMP:-/tmp}/ffs-browser-artifacts.XXXXXX")
   docker cp "${browser}:/tmp/ffs-browser-artifacts/." "${pages}" > /dev/null 2>&1  # (none when it passed)

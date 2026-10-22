@@ -1,0 +1,9 @@
+# the user of SSO=authelia: sso@example.com, password ffs-sso-test
+# (authelia crypto hash generate argon2 --password ffs-sso-test)
+users:
+  sso:
+    disabled: false
+    displayname: SSO test user
+    email: sso@example.com
+    password: '$argon2id$v=19$m=65536,t=3,p=4$AEhpYOXpwYPGo3kph/+uyA$M3W2vylqTEGuHkYMLfjMuy5+6mT95o65AYtn5/6xNZA'
+    groups: [ffs-admins]

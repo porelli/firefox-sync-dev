@@ -169,6 +169,16 @@ jobs:
             runner: ubuntu-latest
             fxa_db: mariadb
             external_db: "1"
+          # client certificates, then Authelia, in front of the accounts pages and the admin UI
+          # (docs/access-control.md), without the prepare_environment.sh checks of the others
+          - arch: amd64
+            runner: ubuntu-latest
+            fxa_db: mysql
+            client_cert: "1"
+          - arch: amd64
+            runner: ubuntu-latest
+            fxa_db: mysql
+            sso: authelia
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -191,7 +201,7 @@ jobs:
           docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
           docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
-      - name: End-to-end tests with self-hosted Mozilla accounts (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }})
+      - name: End-to-end tests with self-hosted Mozilla accounts (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }}${{ matrix.client_cert && ', client certificates' || '' }}${{ matrix.sso && format(', {0}', matrix.sso) || '' }})
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
@@ -203,6 +213,9 @@ jobs:
           FXA_ARCH: ${{ matrix.arch }}
           FXA_PAIRING_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}:fxa-channelserver-latest
           SKIP_PULL: 1
+          CLIENT_CERT: ${{ matrix.client_cert || '' }}
+          SSO: ${{ matrix.sso || '' }}
+          SKIP_SETUP: ${{ (matrix.client_cert || matrix.sso) && '1' || '' }}
         run: ./tests/e2e-fxa.sh
 
       # the page source and a screenshot of each Firefox window of a failed test_fxa_browser.py

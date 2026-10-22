@@ -20,6 +20,11 @@ services:
     volumes:
       - ./tests/Caddyfile.fxa:/etc/caddy/Caddyfile:ro
       - caddy-data:/data/caddy
+      # the access control of a variant (FFS_ACCESS), the test client CA (FFS_CERTS)
+      - ./tests/caddy:/etc/caddy/caddy:ro
+      - ${FFS_CERTS:-./tests/caddy}:/client-certs:ro
+    environment:
+      FFS_ACCESS: ${FFS_ACCESS:-none}
     # its admin API (only inside the container): Caddy runs with its configuration loaded; the
     # sites themselves answer only once what they proxy to does
     healthcheck:
@@ -29,7 +34,16 @@ services:
       retries: 3
     networks:
       default:
-        aliases: [accounts.fxa.test, api.fxa.test, admin.fxa.test, profile.fxa.test, pairing.fxa.test, sync.fxa.test]
+        aliases: [accounts.fxa.test, api.fxa.test, admin.fxa.test, profile.fxa.test, pairing.fxa.test, sync.fxa.test, auth.fxa.test, admin-sso.fxa.test]
+
+  # SSO=authelia (COMPOSE_PROFILES): forward auth in front of the accounts pages and of the
+  # admin UI's admin-sso.fxa.test, its login page at auth.fxa.test (tests/caddy/authelia)
+  authelia:
+    image: authelia/authelia:4.39
+    profiles: [authelia]
+    volumes:
+      - ./tests/caddy/authelia/configuration.yml:/config/configuration.yml:ro
+      - ./tests/caddy/authelia/users.yml:/config/users.yml:ro
 
   # Caddy keeps its CA private, publish the certificate for the FxA services and the tests
   caddy-ca:

@@ -1,0 +1,14 @@
+# SSO=authelia of tests/e2e-fxa.sh: Authelia's own pages
+auth.fxa.test {
+	reverse_proxy authelia:9091
+}
+
+# the admin UI behind Authelia, which signs in with its header (ADMIN_AUTH_HEADER): a host of
+# its own, the admin UI's other host (admin.fxa.test) keeps the password and OpenID Connect
+admin-sso.fxa.test {
+	forward_auth authelia:9091 {
+		uri /api/authz/forward-auth
+		copy_headers Remote-Email Remote-Groups
+	}
+	reverse_proxy ffs-admin:8080
+}
