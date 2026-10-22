@@ -37,7 +37,7 @@ The backup service is optional. Every night it dumps each database into a volume
 - **Checks.** Each file must pass `gzip -t`, or the run fails. The files are readable by root only (0600).
 - **As whom.** It runs in the images of the databases, already on the host, as the stack's own users: the tokenserver and storage users (with PostgreSQL the Sync server's role `SYNC_POSTGRES_APP_USER`), the admin UI's user for `ffs_admin.sql.gz`, and `FXA_MYSQL_USER` for the accounts.
 - **One at a time.** A run started while another is going on waits for it, at most an hour, then fails. The lock is `.lock-<scope>` in the volume. The lock of a run that was killed is taken over by the next run (after a day when that run was in another container).
-- **Retries.** A MariaDB or MySQL dump that fails because a table changed while it ran (error 1412, for example the admin UI moving its tables at an upgrade) is tried again once, 10 seconds later.
+- **Retries.** A dump that fails because a table changed while it ran (MariaDB and MySQL error 1412) or was dropped after the dump listed it (error 1146, PostgreSQL's "relation does not exist"), for example as the admin UI moves its tables at an upgrade, is tried again once, 10 seconds later.
 
 <details><summary>Why the dumps are made the way they are</summary>
 
