@@ -39,6 +39,11 @@
 #                   the install from before below runs its compose files, its admin UI and its
 #                   init image (built from it), then upgrades to this tree. Default: this tree
 #                   without ADMIN_DB_PASSWORD (and SYNC_POSTGRES_APP_USER), the same layout
+#   PG_MAJOR_MOVE   set to 1 (postgres, not with EXTERNAL_DB) for the move to a newer PostgreSQL major:
+#                   the install runs on the major before that of postgres:latest (SYNC_POSTGRES_IMAGE,
+#                   read at run time), then at the end the steps of docs/upgrading.md#postgresql: a
+#                   backup, SYNC_POSTGRES_IMAGE to the major of postgres:latest (refused on the old
+#                   data), the restore into an empty volume, the same Sync data served
 #   DEMO            set to 1 for the screenshot demo (docs/development/testing.md#the-screenshot-demo) instead of the tests: a fresh
 #                   stack of this tree seeded by tests/demo_seed.py (three accounts of Mozilla's,
 #                   the mock FxA, with Sync data and notes; a backup run), kept running (KEEP=1);
@@ -143,6 +148,21 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
       -e "s|^SYNC_TOKENSERVER_DB_HOST=.*|SYNC_TOKENSERVER_DB_HOST=${EXTDB}|" \
       -e "s|^SYNC_STORAGE_DB_HOST=.*|SYNC_STORAGE_DB_HOST=${EXTDB}|" \
       -e "s|^SYNC_POSTGRES_HOST=.*|SYNC_POSTGRES_HOST=${EXTDB}|" "${ENV_FILE}"
+fi
+# PG_MAJOR_MOVE=1: the install on the major before that of postgres:latest (read from the image,
+# pulled first), moved to it at the end with the steps of docs/upgrading.md#postgresql
+PG_FROM="" PG_TO=""
+if [ -n "${PG_MAJOR_MOVE:-}" ]; then
+  if [ "${BACKEND}" != postgres ] || [ -n "${EXTERNAL_DB:-}" ] || [ -n "${DEMO:-}" ]; then
+    echo "PG_MAJOR_MOVE is for the postgres backend on the stack's container (no EXTERNAL_DB, no DEMO)"; exit 2
+  fi
+  PG_TO=$(docker run --rm --pull="$([ -n "${SKIP_PULL:-}" ] && echo missing || echo always)" --entrypoint postgres postgres:latest --version 2> /dev/null \
+    | sed -n 's/^postgres (PostgreSQL) \([0-9][0-9]*\)[^0-9].*/\1/p')
+  [ -n "${PG_TO}" ] || { echo "FAIL: the major of postgres:latest not read"; exit 1; }
+  PG_FROM=$((PG_TO - 1))
+  echo "== PG_MAJOR_MOVE: the install on postgres:${PG_FROM}, moved to postgres:${PG_TO} (postgres:latest) at the end"
+  # (as prepare_environment.sh writes the pin)
+  sed -i "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=postgres:${PG_FROM}|" "${ENV_FILE}"
 fi
 if [ -n "${DEMO:-}" ]; then
   # and the password only: Dex and the trusted header of the tests need plain http cookies
@@ -1404,6 +1424,34 @@ if [ -z "${EXTDB}" ]; then
   # copied off the host, as docs/backups.md#copy-them-off-the-host says, put back on the new one
   docker run --rm -v "${PROJECT}_backups:/backups:ro" -v "${WORK}:/out" busybox tar -C /backups -czf /out/ffs-backups.tar.gz . > /dev/null 2>&1
   check "$?" 0 "the backups volume copied off the host"
+  PG_ANON=""
+  if [ -n "${PG_FROM}" ]; then
+    # docs/upgrading.md#postgresql: 1. the backup (above), 2. the new major, 3. the restore below
+    echo "== PostgreSQL ${PG_FROM} to ${PG_TO} as docs/upgrading.md#postgresql says: the backup, the new major, the restore"
+    UPGRADING_MD=$(sed 's/^ *//' "${CODE}/docs/upgrading.md")
+    # shellcheck disable=SC2016 # (the page's backquotes)
+    for c in '1. Make a backup: `docker compose exec backup sh /ffs-backup/backup.sh now`.' \
+      '1. Set `SYNC_POSTGRES_IMAGE` to the new major, for example `postgres:' \
+      '1. Restore the backup into an empty `postgres-db` volume, as in [Restore](backups.md#restore).'; do
+      check "$([[ "${UPGRADING_MD}" == *"${c}"* ]] && echo yes || echo "not in docs/upgrading.md")" yes "docs/upgrading.md#postgresql says: ${c}"
+    done
+    # the old major's data on the postgres-db volume (db/postgres/keep-major.sh: in <major>/docker),
+    # none in the anonymous volume of the image's VOLUME /var/lib/postgresql/data (before 18)
+    PG_ANON=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' "$(dc ps -a -q postgres_db)")
+    anon_files=0
+    [ -z "${PG_ANON}" ] || anon_files=$(docker run --rm -v "${PG_ANON}:/v:ro" busybox sh -c 'ls -A /v | wc -l' | tr -d ' ')
+    check "$(docker run --rm -v "${PROJECT}_postgres-db:/v:ro" busybox cat "/v/${PG_FROM}/docker/PG_VERSION") ${anon_files}" "${PG_FROM} 0" \
+      "the data of PostgreSQL ${PG_FROM} on the postgres-db volume (${PG_FROM}/docker), none in an anonymous volume"
+    # 2. the new major: on the old data the container refuses to start, and leaves it as it is
+    set_env SYNC_POSTGRES_IMAGE "postgres:${PG_TO}"
+    dc up -d --no-deps postgres_db > /dev/null 2>&1
+    for _ in $(seq 1 60); do dc logs postgres_db 2>&1 | grep -q 'keep-major.sh: ' && break; sleep 2; done
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -a -q postgres_db)") $(dc logs postgres_db 2>&1 | grep -qF "keep-major.sh: this database is PostgreSQL ${PG_FROM} (/var/lib/postgresql/${PG_FROM}/docker), the image is PostgreSQL ${PG_TO}," && echo said)" \
+      "postgres:${PG_TO} said" "SYNC_POSTGRES_IMAGE=postgres:${PG_TO} on the data of ${PG_FROM}: keep-major.sh refuses to start, says so"
+    dc stop postgres_db > /dev/null 2>&1
+    check "$(docker run --rm -v "${PROJECT}_postgres-db:/v:ro" busybox sh -c "cat /v/${PG_FROM}/docker/PG_VERSION; [ -e /v/${PG_TO} ] && echo touched")" "${PG_FROM}" \
+      "the data of ${PG_FROM} left as it was, nothing written for ${PG_TO}"
+  fi
 
   # the commands of docs/backups.md#restore, as it writes them (firefox-sync_ the project,
   # 20261013T030000Z the run): each is checked to be there word for word, then run
@@ -1429,6 +1477,8 @@ if [ -z "${EXTDB}" ]; then
   dc down > /dev/null 2>&1
   eval "$(as_here "${RM}")" > /dev/null && docker volume rm "${PROJECT}_backups" > /dev/null
   check "$?" 0 "the volumes of the databases removed (${RM}), and the backups' (a new host)"
+  # (the old major's empty anonymous volume, which compose down leaves)
+  [ -z "${PG_ANON}" ] || docker volume rm "${PG_ANON}" > /dev/null 2>&1
   (cd "${WORK}" && eval "$(as_here "${PUT_BACK}")") > /dev/null 2>&1
   check "$?" 0 "the copy put back into a new backups volume"
   eval "$(as_here "${UP}")" > /dev/null 2>&1
@@ -1505,6 +1555,15 @@ if [ -z "${EXTDB}" ]; then
   in_app "python3 /tests/migrate_client.py check"
   check "$?" 0 "the same accounts, uids and items after the restore"
   check "$(admin_healthy)" healthy "admin UI healthy after the restore"
+  if [ -n "${PG_FROM}" ]; then
+    # keep-major.sh lets the new major start on its own data, at every start
+    dc restart postgres_db > /dev/null 2>&1
+    for _ in $(seq 1 60); do [ "$(state postgres_db Health.Status)" = healthy ] && break; sleep 2; done
+    check "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -q postgres_db)") $(state postgres_db Health.Status) $(sql "SELECT current_setting('server_version_num')::int / 10000;") $(docker run --rm -v "${PROJECT}_postgres-db:/v:ro" busybox sh -c "cat /v/${PG_TO}/docker/PG_VERSION; [ -e /v/${PG_FROM} ] && echo old")" \
+      "postgres:${PG_TO} healthy ${PG_TO} ${PG_TO}" "after the move: PostgreSQL ${PG_TO} on its own data in the new volume, restarted too"
+    in_app "python3 /tests/migrate_client.py check"
+    check "$?" 0 "after the move to PostgreSQL ${PG_TO} and a restart: the same accounts, uids and items"
+  fi
 fi
 
 echo "== every container that keeps running healthy, the one-shot ones exited 0"
@@ -1512,6 +1571,6 @@ echo "== every container that keeps running healthy, the one-shot ones exited 0"
 [ -z "${EXTDB}" ] || dc up -d > /dev/null 2>&1
 check "$(compose_healthy 300 dc)" "all healthy" "every long-running container healthy (docker compose ps), the one-shot ones exited 0"
 
-RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL, ${MYSQL_TESTED})")
+RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL, ${MYSQL_TESTED})")$([ -n "${PG_FROM}" ] && echo " (PostgreSQL ${PG_FROM} to ${PG_TO})")
 [ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"
 exit ${FAILED}

@@ -415,6 +415,9 @@ jobs:
         # mysql:lts (the default), mysql:8 the installs from before (pinned by --upgrade;
         # tests/e2e.sh also checks there that lts refuses their data, and moves them to lts)
         mysql_image: [""]
+        # 1: postgres only, the install on the major before postgres:latest's, moved to it with
+        # the dump and restore of docs/upgrading.md#postgresql (PG_MAJOR_MOVE)
+        pg_major_move: [""]
         include:
           - database_backend: mysql
             external_db: ""
@@ -427,6 +430,10 @@ jobs:
             external_db: "1"
             sync_db: mariadb
             mysql_image: mysql:8
+          - database_backend: postgres
+            external_db: ""
+            sync_db: mariadb
+            pg_major_move: "1"
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -441,13 +448,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: End-to-end tests${{ matrix.external_db && ' (your own database server)' || '' }}${{ matrix.sync_db == 'mysql' && ' (MySQL containers)' || '' }}${{ matrix.database_backend == 'mysql' && matrix.mysql_image && format(' ({0})', matrix.mysql_image) || '' }}
+      - name: End-to-end tests${{ matrix.external_db && ' (your own database server)' || '' }}${{ matrix.sync_db == 'mysql' && ' (MySQL containers)' || '' }}${{ matrix.database_backend == 'mysql' && matrix.mysql_image && format(' ({0})', matrix.mysql_image) || '' }}${{ matrix.pg_major_move && ' (a PostgreSQL major move)' || '' }}
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
           EXTERNAL_DB: ${{ matrix.external_db }}
           SYNC_DB: ${{ matrix.sync_db }}
           SYNC_MYSQL_IMAGE: ${{ matrix.mysql_image }}
+          PG_MAJOR_MOVE: ${{ matrix.pg_major_move }}
         run: ./tests/e2e.sh ${{ matrix.database_backend }}
 
   ## Test rootless podman (quadlets, docker compose on the Podman socket) ##

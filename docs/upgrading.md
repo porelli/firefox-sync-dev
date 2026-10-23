@@ -377,10 +377,12 @@ Tested:
 
 PostgreSQL has no long-term tag (every major is supported for five years), so `SYNC_POSTGRES_IMAGE` pins the major of each install. The official image keeps its data at `/var/lib/postgresql/<major>/docker` and cannot open another major's data. On such data the container stops first and says what to set ([db/postgres/keep-major.sh](/db/postgres/keep-major.sh), whatever `SYNC_POSTGRES_IMAGE` says; the chart's `db-major` init container does the same). Left unset, `postgres:latest` would stop the server at the next major.
 
-To move to a newer major, dump and restore (not tested as a major move):
+To move to a newer major, dump and restore:
 
 1. Make a backup: `docker compose exec backup sh /ffs-backup/backup.sh now`.
 1. Set `SYNC_POSTGRES_IMAGE` to the new major, for example `postgres:19`.
 1. Restore the backup into an empty `postgres-db` volume, as in [Restore](backups.md#restore).
 
 `pg_upgrade` works too, but is not automated here: see [PostgreSQL's pg_upgrade](https://www.postgresql.org/docs/current/pgupgrade.html). With the Helm chart, the same with `database.image.postgres` and [Restore on Kubernetes](backups.md#restore-on-kubernetes).
+
+Tested: `PG_MAJOR_MOVE=1 tests/e2e.sh postgres` (in CI, syncstorage-rs.yml `test`): an install on the major before that of `postgres:latest`, with accounts and Sync data, then these three steps. Before the restore the new major refuses the old data and leaves it as it is; after it, the new major runs on the new volume and the same accounts read back the same items. Not tested: `pg_upgrade`, the Helm chart.
