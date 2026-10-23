@@ -912,43 +912,121 @@ if [ "${SYNC_DB}" != postgres ]; then
 fi
 
 if [ -n "${EXTERNAL_DB:-}" ]; then
-  echo "== quadlets on your own database server (mariadb:lts, binary logging)"
+  # a server of SYNC_DB outside the Quadlets (MariaDB lts and MySQL lts with binary logging,
+  # PostgreSQL latest), its databases and users made by database-setup.sql as
+  # docs/databases.md#create-the-databases-and-users says
+  case "${SYNC_DB}" in
+    mariadb) EXTDB_IMAGE=docker.io/library/mariadb:lts ;;
+    mysql) EXTDB_IMAGE=docker.io/library/mysql:lts ;;
+    postgres) EXTDB_IMAGE=docker.io/library/postgres:latest ;;
+  esac
+  echo "== quadlets on your own database server (${EXTDB_IMAGE##*/})"
   EXTDB=ffs-podman-extdb
-  # answers as above, no accounts, then: your own server? host, port, tokenserver database
-  # and user, storage database and user
-  printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" n y "${EXTDB}" "" "" "" "" "" \
+  # SQL as the server's administrator, on stdin
+  extdb_admin() {
+    if [ "${SYNC_DB}" = postgres ]; then
+      podman exec -i -e PGPASSWORD="${EXTDB_ROOT}" "${EXTDB}" psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA "$@"
+    else
+      podman exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -uroot -h 127.0.0.1 --protocol=tcp -sN "$@"
+    fi
+  }
+  # database-setup.sql as prepare_environment.sh says to run it there (psql -f: an object that
+  # exists already is said and passed, as when it runs again; mysql or mariadb <)
+  extdb_setup() {
+    if [ "${SYNC_DB}" = postgres ]; then
+      podman exec -i -e PGPASSWORD="${EXTDB_ROOT}" "${EXTDB}" psql -h 127.0.0.1 -U postgres -q -f - < database-setup.sql
+    else
+      extdb_admin < database-setup.sql
+    fi
+  }
+  # answers as above, no accounts, then: your own server? host, port, the databases and users
+  # (MariaDB, MySQL: tokenserver database and user, storage database and user; PostgreSQL: the
+  # database and its user), the alerts' destination, the nightly backups: yes
+  rm -f .env database-setup.sql
+  if [ "${SYNC_DB}" = postgres ]; then ext_names=("" ""); else ext_names=("" "" "" ""); fi
+  printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 "${SYNC_DB}" 1 "" "${TAG}" "" n y "${EXTDB}" "" "${ext_names[@]}" "" y \
     | ./prepare_environment.sh > setup-external.log 2>&1
-  check "$?" 0 "prepare_environment.sh (quadlets, your own database server)"
-  check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db.* 2> /dev/null | wc -l)" 0 "no database quadlets"
-  check "$(grep -hE '^(After|Requires)=.*-db\.service' "${QUADLET_DIR}"/firefox-sync-* | wc -l) $(grep -c '^Requires=' "${QUADLET_DIR}/firefox-sync-syncstorage-migrate.container")" "0 0" \
-    "no dependencies on database units"
-  check "$(grep -c '^Requires=firefox-sync-syncstorage-migrate.service$' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "the init still needs the migrations"
-  check "$(grep -hcE "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=mysql://syncstorage:[A-Za-z0-9]+@${EXTDB}:3306/syncstorage|MARIADB_SERVER=${EXTDB}|MARIADB_TLS_VERIFY=false|STORAGE_DB_HOST=${EXTDB})\"?$" \
-    "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container | paste -sd' ')" "1 2 1" "quadlets connect to your server"
+  check "$?" 0 "prepare_environment.sh (quadlets, your own ${SYNC_DB} server)"
+  check "$(env_of SYNC_DB_CONTAINERS) $(ls "${QUADLET_DIR}"/firefox-sync-*-db.* 2> /dev/null | wc -l)" "0 0" "SYNC_DB_CONTAINERS=0, no database quadlets"
+  check "$(grep -hE '^(After|Requires)=.*-db\.service' "${QUADLET_DIR}"/firefox-sync-* | wc -l) $(grep -c '^Requires=firefox-sync-syncstorage-migrate.service$' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" "0 1" \
+    "no dependencies on database units, the init still needs the migrations"
+  if [ "${SYNC_DB}" = postgres ]; then
+    check "$(grep -hcE "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=postgres://syncserver:[A-Za-z0-9]+@${EXTDB}:5432/syncserver|POSTGRES_SERVER=${EXTDB}|TOKENSERVER_DB_HOST=${EXTDB})\"?$" \
+      "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container | paste -sd' ')" "1 1 1" "quadlets connect to your server"
+    ext_dumps="ffs_admin.sql.gz syncserver.sql.gz"
+  else
+    check "$(grep -hcE "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=mysql://syncstorage:[A-Za-z0-9]+@${EXTDB}:3306/syncstorage|MARIADB_SERVER=${EXTDB}|MARIADB_TLS_VERIFY=false|STORAGE_DB_HOST=${EXTDB})\"?$" \
+      "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container | paste -sd' ')" "1 2 1" "quadlets connect to your server"
+    ext_dumps="ffs_admin.sql.gz syncstorage.sql.gz tokenserver.sql.gz"
+  fi
   "${QUADLET}" -dryrun -user > quadlet-external-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the files without database units"
   systemctl --user start firefox-sync-network-network.service
   EXTDB_ROOT=$(tr -dc '[:alnum:]' < /dev/urandom | head -c 24)
   podman rm -f "${EXTDB}" > /dev/null 2>&1
-  podman run -d --name "${EXTDB}" --network firefox-sync --tmpfs /var/lib/mysql -e MARIADB_ROOT_PASSWORD="${EXTDB_ROOT}" \
-    docker.io/library/mariadb:lts mariadbd --log-bin=mysql-bin --server-id=1 --log-bin-trust-function-creators=1 > /dev/null
-  for _ in $(seq 1 60); do
-    podman exec -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" mariadb -uroot -h 127.0.0.1 --protocol=tcp -e 'SELECT 1' > /dev/null 2>&1 && break
+  case "${SYNC_DB}" in
+    mariadb) podman run -d --name "${EXTDB}" --network firefox-sync --tmpfs /var/lib/mysql -e MARIADB_ROOT_PASSWORD="${EXTDB_ROOT}" \
+      "${EXTDB_IMAGE}" mariadbd --log-bin=mysql-bin --server-id=1 --log-bin-trust-function-creators=1 > /dev/null ;;
+    # binary logging is on by default: the trigger needs log_bin_trust_function_creators
+    mysql) podman run -d --name "${EXTDB}" --network firefox-sync --tmpfs /var/lib/mysql -e MYSQL_ROOT_PASSWORD="${EXTDB_ROOT}" \
+      "${EXTDB_IMAGE}" --log-bin-trust-function-creators=ON > /dev/null ;;
+    postgres) podman run -d --name "${EXTDB}" --network firefox-sync --tmpfs /var/lib/postgresql -e POSTGRES_PASSWORD="${EXTDB_ROOT}" \
+      "${EXTDB_IMAGE}" > /dev/null ;;
+  esac
+  # over TCP: while the images initialize, a temporary server listens on the socket only
+  for _ in $(seq 1 90); do
+    if [ "${SYNC_DB}" = postgres ]; then extdb_admin -c 'SELECT 1' < /dev/null > /dev/null 2>&1 && break
+    else extdb_admin -e 'SELECT 1' < /dev/null > /dev/null 2>&1 && break; fi
     sleep 2
   done
   check "$(stat -c %a database-setup.sql)" 600 "database-setup.sql for this user only"
-  podman exec -i -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" mariadb -uroot < database-setup.sql
+  # as prepare_environment.sh says to run it (psql -f, mysql or mariadb <), here in the server's container
+  if [ "${SYNC_DB}" = postgres ]; then said='psql -h ffs-podman-extdb -p 5432 -U postgres -f database-setup.sql'; else said="$([ "${SYNC_DB}" = mysql ] && echo MySQL || echo MariaDB): * $([ "${SYNC_DB}" = mysql ] && echo mysql || echo mariadb) -h ffs-podman-extdb -P 3306 -u root -p < database-setup.sql"; fi
+  check "$(grep -c -- "${said}" setup-external.log)" 1 "prepare_environment.sh says how to run database-setup.sql (${SYNC_DB})"
+  extdb_setup > /dev/null
   check "$?" 0 "database-setup.sql runs on the server"
-  timeout 900 systemctl --user start firefox-sync-syncstorage.service
+  timeout 900 systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service
   check "$?" 0 "systemctl --user start firefox-sync-syncstorage.service (your own server)"
   check "$(hb)" 200 "/__heartbeat__ (quadlets, your own server)"
-  check "$(podman exec -e MYSQL_PWD="${EXTDB_ROOT}" "${EXTDB}" mariadb -uroot -sN -e "SELECT @@log_bin; SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser'" | paste -sd' ')" \
-    "1 1" "SYNC_MAX_USERS trigger on your server, with binary logging"
-  check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')" all "admin UI reaches your server (quadlets)"
+  if [ "${SYNC_DB}" = postgres ]; then
+    check "$(extdb_admin -d syncserver -c "SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'before_insert_user'" < /dev/null) $(extdb_admin -d syncserver -c "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'users' AND relnamespace = 'public'::regnamespace" < /dev/null)" \
+      "1 syncserver" "SYNC_MAX_USERS trigger on your server, the tables of SYNC_POSTGRES_USER (no superuser)"
+    check "$(metrics_show "${SYNC_UP[@]}")" all "admin UI reaches your server (quadlets)"
+  else
+    check "$(extdb_admin -e "SELECT @@log_bin; SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_name = 'BeforeInsertUser'" < /dev/null | paste -sd' ')" \
+      "1 1" "SYNC_MAX_USERS trigger on your server, with binary logging"
+    check "$(metrics_show "${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')" all "admin UI reaches your server (quadlets)"
+  fi
+  # the nightly backups: chosen, their timer on; one now, recorded in the admin UI's database there
+  ext_backups() {
+    if [ "${SYNC_DB}" = postgres ]; then extdb_admin -d ffs_admin -c "SELECT COUNT(*) FROM ffs_backups WHERE scope = 'sync' AND ok = 1 AND bytes > 0" < /dev/null
+    else extdb_admin -e "SELECT COUNT(*) FROM ffs_admin.ffs_backups WHERE scope = 'sync' AND ok = 1 AND bytes > 0" < /dev/null; fi
+  }
+  check "$(env_of COMPOSE_PROFILES) $(systemctl --user is-enabled firefox-sync-backup.timer 2> /dev/null)" "admin,backup enabled" "the nightly backups chosen, the timer enabled (your own server)"
+  timeout 300 systemctl --user start firefox-sync-backup.service
+  check "$? $(ext_backups) $(podman run --rm -v firefox-sync-backups:/backups:ro "${EXTDB_IMAGE}" sh -c 'for f in /backups/sync/*/*.sql.gz; do gzip -t "$f" && basename "$f"; done' | sort | paste -sd' ')" \
+    "0 1 ${ext_dumps}" "a backup of your server, recorded in its ffs_admin, the dumps in the volume (quadlets)"
+  [ "${FAILED}" = 0 ] || journalctl --user -u firefox-sync-backup.service --no-pager | tail -20
+  # the upgrade as docs/upgrading.md#quadlets says: --upgrade (database-setup.sql written
+  # again, run there first), a setting changed and rendered again, every unit started again
+  cp -p .env "${WORK}/external.env"
+  ./prepare_environment.sh --upgrade < /dev/null > upgrade-external.log 2>&1
+  check "$? $(grep -c '^Your own database server: run database-setup.sql there first' upgrade-external.log) $(grep -c 'nothing changed$' upgrade-external.log) $(cmp -s .env "${WORK}/external.env" && echo same)" "0 1 1 same" \
+    "--upgrade on your own server: database-setup.sql written again, nothing else to change (quadlets)"
+  extdb_setup > /dev/null 2> setup-sql-again.log
+  check "$?" 0 "database-setup.sql runs again on the server"
+  sed -i 's|^ADMIN_STALE_DAYS=.*|ADMIN_STALE_DAYS=45|' .env
+  ./prepare_environment.sh --render-units < /dev/null > render-units-external.log 2>&1
+  check "$? $(sed -n 's/^  ✓ //p' render-units-external.log | paste -sd' ')" "0 firefox-sync-admin.container" "--render-units on your own server: the admin UI's unit alone"
+  timeout 300 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service \
+    firefox-sync-tokenserver-db-init.service $([ "${SYNC_DB}" = postgres ] && echo firefox-sync-sync-role-init.service)
+  timeout 900 systemctl --user start firefox-sync-admin.service firefox-sync-syncstorage.service
+  check "$? $(hb) $(admin_up /login)" "0 200 200" "the units started again, rendered again (your own server)"
   [ "${FAILED}" = 0 ] || { journalctl --user -u 'firefox-sync-*' --no-pager | tail -40; podman logs --tail 20 "${EXTDB}"; }
   stop_quadlets
   podman rm -f "${EXTDB}" > /dev/null 2>&1
   podman network rm -f firefox-sync > /dev/null 2>&1
+  rm -f .env database-setup.sql
 
   # the accounts on your own MySQL server: only what is installed (no MySQL here)
   # answers: ..., admin host, your own server for Sync? the accounts? host, port, user, policy user

@@ -22,7 +22,7 @@ Every image build runs the CI tests before the multi-arch tags (for example `syn
 
 The end-to-end scripts finish with [tests/healthy.sh](/tests/healthy.sh): every container that keeps running is healthy, and the one-shot ones exited with 0. `tests/podman.sh` also checks that each long-running Quadlet has the healthcheck of its compose service (the same command and timings), and that no such service lacks one.
 
-`EXTERNAL_DB=1` runs the same on a database server outside the stack, with only the documented grants ([Database users](../reference/database-users.md)): MySQL (`SYNC_MYSQL_IMAGE`) with binary logging, or PostgreSQL set up by a role that is no superuser, with an owner that is no superuser. `tests/e2e-fxa.sh` and `tests/podman.sh` take it too: one MySQL (`FXA_MYSQL_IMAGE`), or MariaDB with `FXA_DB=mariadb`, for Sync and the accounts. `EXTERNAL_DB=fxa` puts only the accounts there.
+`EXTERNAL_DB=1` runs the same on a database server outside the stack, with only the documented grants ([Database users](../reference/database-users.md)): MySQL (`SYNC_MYSQL_IMAGE`) with binary logging, or PostgreSQL set up by a role that is no superuser, with an owner that is no superuser. `tests/e2e-fxa.sh` takes it too: one MySQL (`FXA_MYSQL_IMAGE`), or MariaDB with `FXA_DB=mariadb`, for Sync and the accounts. `EXTERNAL_DB=fxa` puts only the accounts there. `tests/podman.sh`: a server of `SYNC_DB` for the Quadlets, see [The Sync server and Podman](#the-sync-server-and-podman).
 
 Tests that work around an upstream bug read the image's label: see [Upstream patches](upstream-patches.md#in-the-tests).
 
@@ -44,6 +44,7 @@ The defaults follow each database's long-term tag (`mariadb:lts`, `mysql:lts`; P
 | Podman, Quadlets | Sync on MySQL `lts` (`SYNC_DB=mysql`) | syncstorage-rs.yml `test-podman` (`sync-mysql`) | - |
 | Podman, Quadlets | Sync on PostgreSQL `latest` (its major pinned, `SYNC_DB=postgres`) | syncstorage-rs.yml `test-podman` (`sync-postgres`) | - |
 | Podman, Quadlets | the accounts on MariaDB `lts` (`FXA_DB=mariadb`) | syncstorage-rs.yml `test-podman` (`fxa-mariadb`) | - |
+| Podman, Quadlets | your own server (`EXTERNAL_DB=1`) | - | syncstorage-rs.yml `test-podman`: `external-mariadb`, `sync-mysql`, `sync-postgres` |
 
 Redis (the accounts' cache, no volume) follows `redis:alpine` in every run with the accounts.
 
@@ -61,6 +62,7 @@ Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mys
 
 - the Quadlets and docker compose on the Podman socket, both set up with `prepare_environment.sh`;
 - the MySQL Quadlets as rendered; with `SYNC_DB=mysql`, the compose phase as an install from before on `mysql:8` (pinned by `--upgrade`) and the Quadlets on `mysql:lts`;
+- with `EXTERNAL_DB=1`, the Quadlets on a server of `SYNC_DB` outside them (`mariadb:lts`, `mysql:lts` with binary logging, `postgres:latest`), set up by `database-setup.sql`: the Sync server, the admin UI, a backup, `--upgrade` and `--render-units`;
 - the PostgreSQL Quadlets as rendered (also on your own server); with `SYNC_DB=postgres`, the compose phase on PostgreSQL only and the Quadlets on PostgreSQL: pinned to the major of Podman's `postgres:latest` and running it, the Sync server's own role, the backups and the restore of [Restore with Quadlets](../backups.md#restore-with-quadlets), `--upgrade`, `--render-units`, and another major refused by `keep-major.sh`;
 - `--upgrade` renaming the old setting names and `docker-compose.postgres.yml`;
 - with `UPGRADE_FROM=<checkout>`, the Quadlet upgrade steps of [Upgrading](../upgrading.md#quadlets) (the `systemctl --user stop` line is read from that page): the old release where this tree is, the files swapped as `git pull` does, `--upgrade` keeping every secret, no `SET PASSWORD`;

@@ -464,8 +464,9 @@ jobs:
     timeout-minutes: 45
 
     # the defaults (Sync on MariaDB, the accounts on MySQL), Sync on MySQL and on PostgreSQL,
-    # the accounts on MariaDB; every database on its lts (PostgreSQL: latest). Without the
-    # accounts where their phase is the default's
+    # the accounts on MariaDB; every database on its lts (PostgreSQL: latest). Your own
+    # database server (EXTERNAL_DB): MariaDB in an entry of its own, MySQL and PostgreSQL with
+    # theirs. Without the accounts where their phase is the default's
     strategy:
       fail-fast: false
       matrix:
@@ -474,9 +475,15 @@ jobs:
             sync_db: mariadb
           - variant: sync-mysql
             sync_db: mysql
+            external_db: "1"
             skip_fxa: "1"
           - variant: sync-postgres
             sync_db: postgres
+            external_db: "1"
+            skip_fxa: "1"
+          - variant: external-mariadb
+            sync_db: mariadb
+            external_db: "1"
             skip_fxa: "1"
           - variant: fxa-mariadb
             sync_db: mariadb
@@ -519,6 +526,7 @@ jobs:
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
           SYNC_DB: ${{ matrix.sync_db }}
           FXA_DB: ${{ matrix.fxa_db }}
+          EXTERNAL_DB: ${{ matrix.external_db }}
           SKIP_FXA: ${{ matrix.skip_fxa }}
         run: ./tests/podman.sh
 

@@ -232,7 +232,8 @@ Your own backup jobs that record their runs now write into `ffs_admin` as `ffs_a
 - The files moved for `db/`: `tests/podman.sh` has `--upgrade` rename `docker-compose.postgres.yml` in `COMPOSE_FILE`, and `UPGRADE_FROM=<checkout of cb8e519> tests/e2e.sh postgres` runs the upgraded stack through the `docker-compose.postgres.yml` symlink.
 - The admin UI's own database: `tests/e2e.sh` with `UPGRADE_FROM` (MariaDB, MySQL and PostgreSQL), and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
 - The old setting names: `tests/podman.sh` starts its compose phase from an `.env` with only the old names and has `--upgrade` rename them; `tests/e2e.sh` starts its install from before with only the old names; `tests/migrate.sh firefox-sync-2024-12` upgrades a real `.env` of then.
-- Not tested: the Quadlets on your own database server, the backup and the rollback.
+- The Quadlets on your own database server: `EXTERNAL_DB=1 tests/podman.sh` (MariaDB `lts`; MySQL `lts` with `SYNC_DB=mysql`, PostgreSQL `latest` with `SYNC_DB=postgres`), the server outside the units, its databases and users made by `database-setup.sql`: the Sync server and the admin UI on it, a backup recorded there, `--upgrade` writing `database-setup.sql` again, a setting rendered again and every unit started again.
+- Not tested: the backup and the rollback.
 
 ## Renamed settings
 
