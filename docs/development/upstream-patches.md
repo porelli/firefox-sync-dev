@@ -41,7 +41,7 @@ A pull request that moves, is rebased or retargeted changes nothing until the en
 - Any other release gets `base...sha` as always. When that does not apply, the build tries the newest port of an older release with `git apply --check`. If it applies cleanly it is used, the label names that port (`+v1.347.3` on a later release), and the run warns: review the change on the new release and add its port. If neither applies, the build fails: add a port, or rebase the pull request.
 - Review a port like the pull request: the release's code, the same change.
 
-The mysql2 change ([mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554)) has its ports in [upstream-patches/fxa-mysql2/](/upstream-patches/fxa-mysql2).
+No entry has a port today: every pull request applies to the release built as it is. (mozilla/fxa#21554 had one for v1.347.3, where the shared database code was still in `packages/fxa-shared`; from v1.348.0 on the pull request applies itself.)
 
 ## What a run says
 

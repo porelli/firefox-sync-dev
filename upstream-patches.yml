@@ -138,9 +138,6 @@
   base: 3e2cb676f8c561e7c293d44ec979c3be88eb81cb
   sha: 84d71e2165adeca84809afec2f3706822226ca11
   component: fxa-mono
-  # the pull request is on main, where the shared db code moved to libs/shared/db/mysql/legacy
-  # (55110d3): v1.347.x has it in packages/fxa-shared/db, the same change ported by hand
-  ports: upstream-patches/fxa-mysql2
   why: >-
     fix(shared): replace mysql with mysql2 for MySQL 8.4+/9 auth. The accounts used the
     unmaintained mysqljs driver, which only speaks mysql_native_password: MySQL 8.4 needs
@@ -153,4 +150,4 @@
     docs/upgrading.md#database-majors, .env-example and prepare_environment.sh, add the line
     "mozilla/fxa#21554 <that release>" to config/fxa/fixed-in (our images lose the label;
     prepare_environment.sh and the tests then take every image of that release or later as
-    having it), and remove upstream-patches/fxa-mysql2.
+    having it),.
