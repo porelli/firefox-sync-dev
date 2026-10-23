@@ -2,7 +2,7 @@ name: helm
 
 # The Helm chart (charts/firefox-sync): lint, parity with compose, and an install on a
 # throwaway kind cluster per database backend, on its own database server too (tests/helm.sh),
-# and with the self-hosted accounts per accounts database (tests/helm-fxa.sh).
+# and with the self-hosted accounts per accounts database (tests/helm-fxa.sh); one of each on arm64.
 # The init and admin images are built from this commit (tests/helm.sh does it, and kind loads
 # them), the syncstorage images are this repository's published ones.
 # Publishing: on a tag chart-v<version> (the version of Chart.yaml), after every test passed,
@@ -170,7 +170,8 @@ jobs:
   ## the chart on kind: mock FxA, a Firefox client's flow, upgrades, backups, the admin UI ##
   e2e:
     needs: version
-    runs-on: ubuntu-latest
+    # GitHub has no -latest label for arm (actions/runner-images): the newest Ubuntu
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-latest' }}
     permissions:
       contents: read
       # this repository's syncstorage images (private ones too)
@@ -182,10 +183,16 @@ jobs:
         backend: [mariadb, mysql, postgres]
         # 1: on a database server of its own in the cluster (database.bundled=false)
         external_db: ["", "1"]
+        arch: [amd64]
         exclude:
           # (EXTERNAL_DB=1: MySQL lts or PostgreSQL latest, as tests/e2e.sh)
           - backend: mariadb
             external_db: "1"
+        include:
+          # once on arm64: the chart's images and kind there
+          - backend: postgres
+            external_db: ""
+            arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -222,7 +229,7 @@ jobs:
           fi
           sudo grep mysqld /sys/kernel/security/apparmor/profiles && exit 1 || echo "no mysqld profile loaded"
 
-      - name: End-to-end on kind (${{ matrix.backend }}${{ matrix.external_db && ', your own database server' || '' }})
+      - name: End-to-end on kind (${{ matrix.backend }}${{ matrix.external_db && ', your own database server' || '' }}, ${{ matrix.arch }})
         # the init image (db/<engine>/init) and the admin UI (admin/) are built from this
         # commit on every run (whatever changed) and kind-loaded by tests/helm.sh; the
         # syncstorage image is REPOSITORY's, pulled here and imported into the cluster
@@ -236,7 +243,8 @@ jobs:
   ## the chart with the self-hosted accounts on kind (tests/helm-fxa.sh), per accounts database ##
   e2e-fxa:
     needs: version
-    runs-on: ubuntu-latest
+    # (arm64 as in e2e)
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-latest' }}
     permissions:
       contents: read
       # this repository's accounts and syncstorage images
@@ -258,6 +266,9 @@ jobs:
           - fxa_db: mysql
             sync_backend: postgres
             skip_browser: "1"
+          # once on arm64, with Firefox (tests/browser builds for arm64 too)
+          - fxa_db: mysql
+            arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -298,7 +309,7 @@ jobs:
           fi
           sudo grep mysqld /sys/kernel/security/apparmor/profiles && exit 1 || echo "no mysqld profile loaded"
 
-      - name: The accounts on kind (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }}${{ matrix.sync_backend && format(', Sync on {0}', matrix.sync_backend) || '' }})
+      - name: The accounts on kind (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }}${{ matrix.sync_backend && format(', Sync on {0}', matrix.sync_backend) || '' }}${{ matrix.arch && format(', {0}', matrix.arch) || '' }})
         env:
           FXA_DB: ${{ matrix.fxa_db }}
           EXTERNAL_DB: ${{ matrix.external_db }}
