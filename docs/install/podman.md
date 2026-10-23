@@ -59,7 +59,7 @@ Other choices of the setup script, with Quadlets:
 - MySQL instead of MariaDB: see [Databases](../databases.md#mysql-instead-of-mariadb).
 - Your own database server: see [Databases](../databases.md#with-quadlets).
 - The admin UI: see [Admin UI](../admin/README.md#set-up).
-- The nightly backups: see [Backups](../backups.md#the-backup-service).
+- The nightly backups: answered yes, it enables `firefox-sync-backup.timer`, see [Backups](../backups.md#the-backup-service). The pairing server is not asked: the Quadlets have none.
 
 ### Self-hosted accounts
 
@@ -146,7 +146,7 @@ Upgrading the images: see [Upgrading](../upgrading.md#quadlets).
    export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
    ```
 
-1. Choose the optional services in `COMPOSE_PROFILES` of `.env`, as for [docker compose](compose.md#optional-services).
+1. Check the optional services in `COMPOSE_PROFILES` of `.env`, as for [docker compose](compose.md#optional-services).
 
 1. Start the stack, with the file of your database backend:
 

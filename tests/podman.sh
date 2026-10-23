@@ -111,8 +111,9 @@ else
   podman build -q --format docker -t "${REPOSITORY}:admin-latest" admin > build-admin.log 2>&1
 fi
 rc=$?; check "${rc}" 0 "admin UI image"; [ "${rc}" = 0 ] || tail -5 build-admin.log
-# answers: domain, compose dir, port, max users, backend, deploy method, user, image tag, admin UI
-setup() { printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 "$1" "$2" "" "${TAG}" "" | ./prepare_environment.sh > "setup-$1-$2.log" 2>&1; }
+# answers: domain, compose dir, port, max users, backend, deploy method, user, image tag, admin UI,
+# accounts, your own database server, alerts' destination, nightly backups ($3, default n)
+setup() { printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 "$1" "$2" "" "${TAG}" "" "" "" "" "${3:-n}" | ./prepare_environment.sh > "setup-$1-$2.log" 2>&1; }
 admin_up() {
   local c
   for _ in $(seq 1 30); do
@@ -303,7 +304,7 @@ check "$(grep -c 'Quadlets are only provided for MariaDB' setup-postgres-1.log) 
 
 echo "== where the Sync server listens: on this host only by default (nothing started)"
 # answers as setup, the port: the default, a port alone, another address, not a port
-port_setup() { printf '%s\n' ffs-e2e.invalid "" "$1" 1 mariadb 2 "" "${TAG}" "" | ./prepare_environment.sh > setup-port.log 2>&1; }
+port_setup() { printf '%s\n' ffs-e2e.invalid "" "$1" 1 mariadb 2 "" "${TAG}" "" "" "" "" n | ./prepare_environment.sh > setup-port.log 2>&1; }
 rm -f .env .env.before-setup-*
 port_setup ""
 check "$? $(env_of SYNC_EXPORT_PORT) $(grep -c '^    proxy_pass http://127\.0\.0\.1:5000;$' config/nginx/syncstorage-rs.conf)" "0 127.0.0.1:5000 1" \
@@ -665,6 +666,7 @@ fi
 
 stop_quadlets() {
   systemctl --user stop $(systemctl --user list-units --all --plain --no-legend 'firefox-sync-*' | awk '{print $1}') 2> /dev/null
+  systemctl --user disable firefox-sync-backup.timer > /dev/null 2>&1
   rm -f "${QUADLET_DIR}"/firefox-sync-* "${SYSTEMD_USER_DIR}"/firefox-sync-*.timer
   systemctl --user daemon-reload
   podman volume rm -f $(podman volume ls -q | grep '^firefox-sync-') > /dev/null 2>&1
@@ -675,10 +677,16 @@ echo "== quadlets without the admin UI (mariadb)"
 # a new install (the .env of the phase before pins its databases' major, which a setup run
 # again keeps: UPGRADE_FROM's)
 rm -f .env
-# answers as setup, admin UI: n. The Sync server starts without ffs-admin to resolve
-# (the port as address and port)
-printf '%s\n' ffs-e2e.invalid "" "127.0.0.1:${PORT}" 1 mariadb 1 "" "${TAG}" n | ./prepare_environment.sh > setup-no-admin.log 2>&1
+# answers as setup, admin UI: n, the accounts and your own server: no, the nightly backups:
+# yes. The Sync server starts without ffs-admin to resolve (the port as address and port)
+printf '%s\n' ffs-e2e.invalid "" "127.0.0.1:${PORT}" 1 mariadb 1 "" "${TAG}" n "" "" y | ./prepare_environment.sh > setup-no-admin.log 2>&1
 check "$?" 0 "prepare_environment.sh (quadlets, no admin UI)"
+check "$(env_of COMPOSE_PROFILES) $(systemctl --user is-enabled firefox-sync-backup.timer 2> /dev/null)" "backup enabled" \
+  "the nightly backups chosen: COMPOSE_PROFILES=backup, the backup timer enabled (quadlets)"
+# rendered again: .env and the timer as they are, nothing asked
+./prepare_environment.sh --render-units < /dev/null > render-no-admin.log 2>&1
+check "$? $(env_of COMPOSE_PROFILES) $(systemctl --user is-enabled firefox-sync-backup.timer 2> /dev/null) $(grep -c 'nothing changed$' render-no-admin.log)" "0 backup enabled 1" \
+  "--render-units keeps COMPOSE_PROFILES and the backup timer (quadlets)"
 check "$(sed -n 's/^PublishPort=//p' "${QUADLET_DIR}/firefox-sync-syncstorage.container")" "127.0.0.1:${PORT}:8000" "127.0.0.1:<port> answered: the Sync server's PublishPort"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-admin.* 2> /dev/null | wc -l)" 0 "no admin UI quadlet"
 check "$(grep -hcxF 'Environment=MAX_USERS=1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "plain SYNC_MAX_USERS=1 in the init quadlet"

@@ -26,7 +26,7 @@ This page installs the Sync server with docker compose. Read [What you need](../
 
 1. Set up your reverse proxy. With nginx, start from `config/nginx/syncstorage-rs.conf`, which the script wrote: see [Reverse proxy](../reverse-proxy.md).
 
-1. Choose the optional services: the admin UI, the nightly backups and, with self-hosted accounts, your own pairing server. Each starts only when its profile is in `COMPOSE_PROFILES` in `.env`: check that line before the first start, see [Optional services](#optional-services).
+1. Check the optional services before the first start: the admin UI, the nightly backups and, with self-hosted accounts, your own pairing server. The script asked for each and listed those you chose in `COMPOSE_PROFILES` of `.env`. Only those start: to add or remove one, see [Optional services](#optional-services).
 
 1. Start the stack:
 
@@ -56,14 +56,16 @@ This page installs the Sync server with docker compose. Read [What you need](../
 | the database backend: `mariadb`, `mysql` or `postgres` | `SYNC_DB`, and `COMPOSE_FILE` for MySQL and PostgreSQL | [Databases](../databases.md) |
 | an existing database server instead of the containers | `SYNC_DB_CONTAINERS=0`, and a `database-setup.sql` to run there | [Your own server](../databases.md#with-docker-compose) |
 | the image tag of the Sync server | `SYNC_IMAGE_TAG` (`latest`) | [Upgrading](../upgrading.md#sync-server) |
-| the admin UI | `ADMIN_PASSWORD`; when you enable it, `COMPOSE_PROFILES=admin` | [Admin UI](../admin/README.md#set-up) |
+| the admin UI | `admin` in `COMPOSE_PROFILES`, `ADMIN_PASSWORD` | [Admin UI](../admin/README.md#set-up) |
 | self-hosted Mozilla accounts | the accounts' section of `.env`, `config/nginx/fxa.conf` | [Self-hosted accounts](../accounts.md#set-up) |
+| the nightly backups | `backup` in `COMPOSE_PROFILES` (Quadlets: the backup timer enabled) | [Backups](../backups.md#the-backup-service) |
+| with self-hosted accounts, your own pairing server (not with Quadlets) | `pairing` in `COMPOSE_PROFILES`, `FXA_PAIRING_URL=wss://pairing.<accounts domain>`, its server block in `config/nginx/fxa.conf` | [Pairing](../reverse-proxy.md#pairing) |
 
 Every setting is in [Settings](../reference/settings.md). Coming from another Sync server: read [Migrating](../migrating.md) before you run the script.
 
 `COMPOSE_FILE` in `.env` names the compose files of your choices, so a plain `docker compose` always picks the right ones.
 
-The script does not ask about the backups or the pairing server: add them to `COMPOSE_PROFILES` yourself, see [Optional services](#optional-services).
+`COMPOSE_PROFILES` gets every optional service you chose, for example `COMPOSE_PROFILES=admin,backup`. Run again on an install, the script offers what its `.env` has as the answer to each of them.
 
 ## Optional services
 

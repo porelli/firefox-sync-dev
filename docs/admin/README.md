@@ -23,7 +23,7 @@ The screenshots come from a small demo server with self-hosted accounts: three p
 
 ## Set up
 
-`./prepare_environment.sh` asks "Enable the admin UI?" (default yes). It then generates `ADMIN_PASSWORD`, and sets `COMPOSE_PROFILES=admin` and `SYNC_MAX_USERS=initial:<the number you gave>` in `.env`. With self-hosted accounts it also offers to sign in with them, see [Signing in](signing-in.md#self-hosted-accounts).
+`./prepare_environment.sh` asks "Enable the admin UI?" (default yes). It then generates `ADMIN_PASSWORD`, and in `.env` adds `admin` to `COMPOSE_PROFILES` and sets `SYNC_MAX_USERS=initial:<the number you gave>`. With self-hosted accounts it also offers to sign in with them, see [Signing in](signing-in.md#self-hosted-accounts).
 
 To turn it on by hand:
 
