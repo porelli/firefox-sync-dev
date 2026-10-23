@@ -38,6 +38,7 @@ Setting up:
 - [install/podman.md](install/podman.md): rootless Podman, with Quadlets or docker compose on the Podman socket
 - [install/helm.md](install/helm.md): Kubernetes with the Helm chart
 - [reverse-proxy.md](reverse-proxy.md): host names and ports, request size, the sign-up gate, pairing, the client IP address, publishing the admin UI
+- [access-control.md](access-control.md): single sign-on (Authelia) and client certificates in front of the accounts pages and the admin UI, and why not the other hosts
 - [limits.md](limits.md): who can use your server, `SYNC_MAX_USERS` and `FXA_MAX_ACCOUNTS`
 - [firefox.md](firefox.md): Firefox on desktop, Android and iOS, with Mozilla's accounts or yours
 - [accounts.md](accounts.md): self-hosted Mozilla accounts

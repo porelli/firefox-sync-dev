@@ -1,0 +1,8 @@
+# CLIENT_CERT=1 of tests/e2e-fxa.sh, the admin UI: a client certificate of the test client CA
+# at the TLS handshake, or no connection
+tls {
+	client_auth {
+		mode require_and_verify
+		trust_pool file /client-certs/ca.crt
+	}
+}

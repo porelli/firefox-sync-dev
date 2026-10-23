@@ -1,0 +1,37 @@
+# Authelia of SSO=authelia (tests/e2e-fxa.sh): one user (users.yml), forward auth for Caddy
+# (tests/caddy/authelia/*.caddy), its session cookie on the parent domain fxa.test.
+# Test values only: the secrets are in this file.
+server:
+  address: tcp://:9091
+log:
+  level: info
+theme: light
+identity_validation:
+  reset_password:
+    jwt_secret: ffs-test-jwt-secret-not-a-secret-0123456789
+authentication_backend:
+  file:
+    path: /config/users.yml
+    watch: false
+  password_reset:
+    disable: true
+access_control:
+  default_policy: deny
+  rules:
+    - domain: '*.fxa.test'
+      policy: one_factor
+session:
+  secret: ffs-test-session-secret-not-a-secret-0123456789
+  cookies:
+    - domain: fxa.test
+      authelia_url: https://auth.fxa.test
+      default_redirection_url: https://accounts.fxa.test
+regulation:
+  max_retries: 10
+storage:
+  encryption_key: ffs-test-storage-key-not-a-secret-0123456789
+  local:
+    path: /tmp/authelia.sqlite3
+notifier:
+  filesystem:
+    filename: /tmp/authelia-notifications.txt

@@ -1,0 +1,18 @@
+# CLIENT_CERT=1 of tests/e2e-fxa.sh, the accounts pages: a client certificate of the test client
+# CA (tests/e2e-fxa.sh makes it), but on the paths that Firefox and the servers fetch without one
+# (docs/access-control.md#what-firefox-sends): asked for at the TLS handshake, checked here
+tls {
+	client_auth {
+		mode verify_if_given
+		trust_pool file /client-certs/ca.crt
+	}
+}
+@no_certificate {
+	not path /.well-known/fxa-client-configuration /.well-known/openid-configuration /__heartbeat__ /__lbheartbeat__
+	vars {http.request.tls.client.subject} ""
+}
+respond @no_certificate "a client certificate is required" 403
+log {
+	output stdout
+	format json
+}

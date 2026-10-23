@@ -18,11 +18,21 @@
 	}
 }
 
+# FFS_ACCESS (tests/e2e-fxa.sh: CLIENT_CERT=1 mtls, SSO=authelia authelia): the access
+# control of tests/caddy/<FFS_ACCESS>/, its sites (sites.caddy) and on each host
+# (<host>.caddy; public.caddy on the five hosts Firefox uses). Without it: none, the
+# globs match nothing
+import caddy/{$FFS_ACCESS:none}/sites*.caddy
+
 accounts.fxa.test {
+	import caddy/{$FFS_ACCESS:none}/public*.caddy
+	import caddy/{$FFS_ACCESS:none}/content*.caddy
 	reverse_proxy fxa-content:3030
 }
 
 api.fxa.test {
+	import caddy/{$FFS_ACCESS:none}/public*.caddy
+	import caddy/{$FFS_ACCESS:none}/auth*.caddy
 	# the sign-up gate of the admin UI
 	@create {
 		method POST
@@ -33,10 +43,13 @@ api.fxa.test {
 }
 
 admin.fxa.test {
+	import caddy/{$FFS_ACCESS:none}/admin*.caddy
 	reverse_proxy ffs-admin:8080
 }
 
 profile.fxa.test {
+	import caddy/{$FFS_ACCESS:none}/public*.caddy
+	import caddy/{$FFS_ACCESS:none}/profile*.caddy
 	handle_path /img/* {
 		reverse_proxy fxa-profile-static:1112
 	}
@@ -44,9 +57,13 @@ profile.fxa.test {
 }
 
 pairing.fxa.test {
+	import caddy/{$FFS_ACCESS:none}/public*.caddy
+	import caddy/{$FFS_ACCESS:none}/pairing*.caddy
 	reverse_proxy fxa-pairing:8000
 }
 
 sync.fxa.test {
+	import caddy/{$FFS_ACCESS:none}/public*.caddy
+	import caddy/{$FFS_ACCESS:none}/sync*.caddy
 	reverse_proxy syncstorage:8000
 }

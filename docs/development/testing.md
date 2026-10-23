@@ -9,7 +9,7 @@ Every image build runs the CI tests before the multi-arch tags (for example `syn
 | Script | What it covers | Where | Main variables |
 |---|---|---|---|
 | [tests/e2e.sh](/tests/e2e.sh) `<mysql\|postgres>` | the docker compose stack with Mozilla's accounts: start-up order, max users, domain changes, a Firefox-like sign-in and sync ([test_client_flow.py](/tests/test_client_flow.py), upstream's mock FxA), upstream's storage and tokenserver integration tests, the admin UI, an upgrade from an install before `ADMIN_DB_PASSWORD`, a restore | CI: syncstorage-rs.yml, admin.yml | `TAG`, `SYNC_DB`, `SYNC_MYSQL_IMAGE`, `EXTERNAL_DB`, `UPGRADE_FROM`, `DEMO` |
-| [tests/e2e-fxa.sh](/tests/e2e-fxa.sh) | the stack with self-hosted accounts behind an HTTPS proxy and a mail catcher, see [Accounts](#accounts) | CI: fxa.yml, syncstorage-rs.yml, admin.yml | `FXA_DB`, `FXA_MYSQL_IMAGE`, `FXA_MARIADB_IMAGE`, `EXTERNAL_DB`, `DEMO` |
+| [tests/e2e-fxa.sh](/tests/e2e-fxa.sh) | the stack with self-hosted accounts behind an HTTPS proxy and a mail catcher, see [Accounts](#accounts) | CI: fxa.yml, syncstorage-rs.yml, admin.yml | `FXA_DB`, `FXA_MYSQL_IMAGE`, `FXA_MARIADB_IMAGE`, `EXTERNAL_DB`, `CLIENT_CERT`, `SSO`, `SKIP_SETUP`, `DEMO` |
 | [tests/podman.sh](/tests/podman.sh) | rootless Podman, with Quadlets (also with self-hosted accounts) and with docker compose on the Podman socket, set up with `prepare_environment.sh` | CI: syncstorage-rs.yml, fxa.yml, admin.yml | `SYNC_DB`, `FXA_DB`, `EXTERNAL_DB`, `UPGRADE_FROM` |
 | [tests/fxa-upgrade.sh](/tests/fxa-upgrade.sh) | the self-hosted accounts upgraded in place from an older release, see [Accounts](#accounts) | CI: fxa.yml `test-upgrade` | `FXA_FROM`, `FXA_IMAGE`, `FXA_VERSION`, `FXA_SAME_TAG`, `FXA_DB`, `FXA_MARIADB_FROM`, `FXA_MYSQL_TO` |
 | [tests/helm.sh](/tests/helm.sh) `<lint\|parity\|e2e>` | the Helm chart, see [Helm chart](#helm-chart) | CI: helm.yml | `EXTERNAL_DB`, `SKIP_BUILD`, `REPOSITORY`, `TAG` |
@@ -101,6 +101,15 @@ FXA_FROM=ghcr.io/porelli/firefox-sync-dev:fxa-mono-v1.347.3 FXA_IMAGE=ghcr.io/po
 ```
 
 Our builds are in the registry of the repository whose fxa.yml built them; the examples use the development builds.
+
+### Access control
+
+`CLIENT_CERT=1` or `SSO=authelia` put Caddy's access control of [tests/caddy](/tests/caddy) in front of the accounts pages and the admin UI, as [Single sign-on and client certificates](../access-control.md) describes. [test_fxa_access.py](/tests/test_fxa_access.py) runs first, then the usual tests through it ([tests/conftest.py](/tests/conftest.py) gives their requests the certificate or the cookie):
+
+- `CLIENT_CERT=1`: a test client CA (made by the script with OpenSSL), its certificate in each Firefox profile (`pk12util`, `security.default_personal_cert`). The pages answer `403` without it, the admin UI's host refuses the handshake, a certificate of another CA is refused, the open paths and the other hosts answer anybody. A Firefox probe checks that its background requests send no client certificate: when that changes, the page needs to.
+- `SSO=authelia`: an Authelia container (`authelia/authelia:4.39`, one user), forward auth on the pages but the open paths, every Firefox signs in to Authelia first. The admin UI also signs in with Authelia's header on `admin-sso.fxa.test` (`ADMIN_AUTH_HEADER`, `ADMIN_TRUSTED_PROXIES` the address of Caddy), and ignores a forged one on `admin.fxa.test`.
+
+`SKIP_SETUP=1` leaves out the `prepare_environment.sh` checks, which these variants do not change. [admin.yml](/.github/workflows/admin.yml) runs both in `e2e-fxa`, on amd64 with MySQL. Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test 'CLIENT_CERT=1 SKIP_SETUP=1 e2e-fxa'`.
 
 ## Admin UI
 

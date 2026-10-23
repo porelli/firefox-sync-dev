@@ -1,0 +1,6 @@
+# SSO=authelia: what Firefox sends to the five hosts, in Caddy's log (the Cookie header shows
+# as REDACTED when sent)
+log {
+	output stdout
+	format json
+}
