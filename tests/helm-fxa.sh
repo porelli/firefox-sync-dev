@@ -866,6 +866,7 @@ fxa_base_parity() {
   mask='walk(if type == "string" and test("^MYSQL_PWD=[$][{]MYSQL_PASSWORD[}] mysqladmin ping |^mysqladmin ping .* -p\"[$][{]MYSQL_PASSWORD[}]\" ") then "mysqladmin ping (masked)"
     elif type == "object" then
       (if has("helm.sh/chart") then .["helm.sh/chart"] = "masked" else . end)
+      | del(.["app.kubernetes.io/version"])
       | (if has("checksum/admin-secrets") then .["checksum/admin-secrets"] = "masked" else . end)
       | (if .name? == "ADMIN_K8S_CHART_VERSION" and has("value") then .value = "masked" else . end)
       | (if .kind? == "Secret" and has("data") then .data = (.data | map_values("masked")) else . end)
@@ -886,7 +887,7 @@ fxa_base_parity() {
   done
   rm -rf "${base}"
   [[ -z "${diffs}" ]] || fail "with the accounts off, not what chart 0.1.0 renders:${diffs}"
-  check "accounts off: the same objects as chart 0.1.0 (${PARITY_BASE}) for every ci/*.yaml it had (but helm.sh/chart, ADMIN_K8S_CHART_VERSION, the Secret's values and their checksum, backup.sh's and PostgreSQL's keep-major.sh's text and the latter's checksum)"
+  check "accounts off: the same objects as chart 0.1.0 (${PARITY_BASE}) for every ci/*.yaml it had (but helm.sh/chart, app.kubernetes.io/version (set when published), ADMIN_K8S_CHART_VERSION, the Secret's values and their checksum, backup.sh's and PostgreSQL's keep-major.sh's text and the latter's checksum)"
 }
 
 # e2e <mysql|mariadb>: the chart with the accounts (their database on that backend, the Sync

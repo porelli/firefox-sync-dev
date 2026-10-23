@@ -368,7 +368,15 @@ jobs:
           helm show chart "${CHART_DIR}" | grep -Fx "  org.firefox-sync/chart: ${chart}/firefox-sync"
 
       - name: Package
-        run: helm package "${CHART_DIR}"
+        # appVersion: the syncstorage-rs release the chart's default images (latest) run when it
+        # is published, the newest syncstorage-rs-mysql-X.Y.Z tag of this repository's package
+        # (Chart.yaml names none: a version kept there would go stale with Mozilla's next release)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          app_version=$(.github/scripts/sync-app-version.sh "${REPOSITORY_REGISTRY}" "${REPOSITORY_FULL_NAME}")
+          echo "appVersion ${app_version}"
+          helm package --app-version "${app_version}" "${CHART_DIR}"
 
       - name: Push
         # a version once only: a release never changes under the same version

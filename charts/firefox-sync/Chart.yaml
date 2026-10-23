@@ -3,10 +3,9 @@ name: firefox-sync
 description: Self-hosted Firefox Sync server with syncstorage-rs, tokenserver, and optional admin UI
 type: application
 version: 0.2.0
-# informational (Helm shows it, the app.kubernetes.io/version label): the syncstorage-rs
-# release the default image tags (latest) were when this chart version was released, updated
-# at release time; the images that run are those of image.*Tag
-appVersion: "0.23.3"
+# appVersion (informational: helm list, the app.kubernetes.io/version label; the images that run
+# are those of image.*Tag) is set when the chart is published, helm package --app-version: the
+# syncstorage-rs release its default images (latest) run then (.github/workflows/helm.yml)
 # CronJob timeZone (GA in 1.27): the backups run in UTC
 kubeVersion: ">=1.27.0-0"
 keywords:
