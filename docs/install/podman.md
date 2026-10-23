@@ -12,8 +12,7 @@ The stack uses named volumes only, so rootless Podman handles their ownership, a
 
 | | Quadlets | docker compose on the Podman socket |
 |---|---|---|
-| MariaDB, MySQL | yes | yes |
-| PostgreSQL | no | yes |
+| MariaDB, MySQL, PostgreSQL | yes | yes |
 | self-hosted accounts | yes | yes |
 
 ## Quadlets
@@ -57,9 +56,10 @@ QUADLET_DIR=/path/to/units ./prepare_environment.sh
 Other choices of the setup script, with Quadlets:
 
 - MySQL instead of MariaDB: see [Databases](../databases.md#mysql-instead-of-mariadb).
+- PostgreSQL: see [Databases](../databases.md#postgresql).
 - Your own database server: see [Databases](../databases.md#with-quadlets).
 - The admin UI: see [Admin UI](../admin/README.md#set-up).
-- The nightly backups: see [Backups](../backups.md#the-backup-service).
+- The nightly backups: answered yes, it enables `firefox-sync-backup.timer`, see [Backups](../backups.md#the-backup-service). The pairing server is not asked: the Quadlets have none.
 
 ### Self-hosted accounts
 
@@ -96,6 +96,8 @@ Restart and stop:
 systemctl --user restart firefox-sync-syncstorage.service
 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-syncstorage-db.service firefox-sync-tokenserver-db.service
 ```
+
+With PostgreSQL the database unit is `firefox-sync-postgres-db.service`.
 
 A new admin UI container restarts the Sync server: see [Sync metrics](../admin/monitoring.md#sync-metrics).
 
@@ -146,6 +148,8 @@ Upgrading the images: see [Upgrading](../upgrading.md#quadlets).
    export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
    ```
 
+1. Check the optional services in `COMPOSE_PROFILES` of `.env`, as for [docker compose](compose.md#optional-services).
+
 1. Start the stack, with the file of your database backend:
 
    ```bash
@@ -156,6 +160,8 @@ Upgrading the images: see [Upgrading](../upgrading.md#quadlets).
    # PostgreSQL
    docker compose -f docker-compose.sync-postgres.yml up -d
    ```
+
+   With `-f`, compose does not read `COMPOSE_FILE`: with self-hosted accounts add `-f docker-compose.fxa.yml` (and `-f docker-compose.fxa-mariadb.yml` with `FXA_DB=mariadb`), which also has the pairing server. The script prints the whole command for your choices.
 
    [docker-compose.podman.yml](/docker-compose.podman.yml) gives the healthchecks of the Sync server and the MariaDB or MySQL databases more time, for slower rootless starts.
 

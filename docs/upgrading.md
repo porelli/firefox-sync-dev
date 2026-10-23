@@ -70,7 +70,7 @@ Don't stay too far behind: Firefox refuses to sign in to accounts servers that a
 `./prepare_environment.sh --upgrade` renders the units again from your `.env`, with every password and secret it has: nothing to set by hand in the databases. A new firefox-sync release, the Sync server and the admin UI:
 
 1. Make a backup: `systemctl --user start firefox-sync-backup.service` (with self-hosted accounts it backs them up first), or back up the volumes.
-1. Stop the units, the one-shot ones too (they stay active and would not run again), and the backup timer, so that no backup starts halfway: `systemctl --user stop firefox-sync-backup.timer firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`. Without the database containers, the last two are not there.
+1. Stop the units, the one-shot ones too (they stay active and would not run again), and the backup timer, so that no backup starts halfway: `systemctl --user stop firefox-sync-backup.timer firefox-sync-syncstorage.service firefox-sync-admin.service firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`. Without the database containers, the last two are not there. With PostgreSQL, they are `firefox-sync-sync-role-init.service firefox-sync-postgres-db.service`.
 1. Get the new files (`git pull` in the clone), and keep your `.env`. Don't run `./prepare_environment.sh` without `--upgrade`: that is a new install, with new passwords that the databases don't have (it keeps the old file as `.env.before-setup-<UTC time>`).
 1. Run `./prepare_environment.sh --upgrade`. It asks nothing:
     - in `.env` it does what it does for compose ([With docker compose](#with-docker-compose)): it renames the old setting names, sets `ADMIN_DB_PASSWORD` (the database containers create the admin UI's users with it at their next start) and writes the database majors the install runs;
@@ -232,7 +232,8 @@ Your own backup jobs that record their runs now write into `ffs_admin` as `ffs_a
 - The files moved for `db/`: `tests/podman.sh` has `--upgrade` rename `docker-compose.postgres.yml` in `COMPOSE_FILE`, and `UPGRADE_FROM=<checkout of cb8e519> tests/e2e.sh postgres` runs the upgraded stack through the `docker-compose.postgres.yml` symlink.
 - The admin UI's own database: `tests/e2e.sh` with `UPGRADE_FROM` (MariaDB, MySQL and PostgreSQL), and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
 - The old setting names: `tests/podman.sh` starts its compose phase from an `.env` with only the old names and has `--upgrade` rename them; `tests/e2e.sh` starts its install from before with only the old names; `tests/migrate.sh firefox-sync-2024-12` upgrades a real `.env` of then.
-- Not tested: the Quadlets on your own database server, the backup and the rollback.
+- The Quadlets on your own database server: `EXTERNAL_DB=1 tests/podman.sh` (MariaDB `lts`; MySQL `lts` with `SYNC_DB=mysql`, PostgreSQL `latest` with `SYNC_DB=postgres`), the server outside the units, its databases and users made by `database-setup.sql`: the Sync server and the admin UI on it, a backup recorded there, `--upgrade` writing `database-setup.sql` again, a setting rendered again and every unit started again.
+- Not tested: the backup and the rollback.
 
 ## Renamed settings
 
@@ -299,7 +300,7 @@ Each database image moves to a new major in its own way. Which majors are suppor
 - "Installs from before" are those set up by a release that did not write these settings. `./prepare_environment.sh --upgrade` on one (compose and Quadlets), the setup run again, or a new setup that finds its database volumes, writes the same pins.
 - `prepare_environment.sh` reads the label of the accounts image to choose between `mysql:lts` and `mysql:8` ([Upstream patches](reference/images.md#upstream-patches)). When it cannot read the label, it writes `mysql:8` and says so. It reads the local image when there is one, so pull a newer accounts image before running it.
 - A new setup over the PostgreSQL volume of an earlier install is pinned to the major in its `PG_VERSION`. One where the major of `postgres:latest` cannot be read (no runtime, no registry) stops with an error.
-- With Quadlets, `prepare_environment.sh` writes the same images into the units when it installs them. Quadlets have no PostgreSQL.
+- With Quadlets, `prepare_environment.sh` writes the same images into the units when it installs them. It reads the major of `postgres:latest` with Podman, the image store the units run from.
 - `lts` moves to the next long-term major when MariaDB or MySQL releases it. The next pull brings it (`docker compose pull`, or the Quadlets' `AutoUpdate=registry` on its own), and the server upgrades the data at its next start, with no way back but a backup. To choose when the data moves, pin a major: `mariadb:12`, `mysql:9`, `postgres:18` (Helm: fully qualified, `docker.io/library/mysql:9`).
 - The refusal on another MariaDB or MySQL major comes from [db/mysql/keep-major.sh](/db/mysql/keep-major.sh), only while the setting is not set: `keep-major.sh: this database is MySQL 8, the image is MySQL 9`. Set the setting to the major the data has, or move it as in [MariaDB](#mariadb) or [MySQL 8 to 9](#mysql-8-to-9). PostgreSQL's comes from [db/postgres/keep-major.sh](/db/postgres/keep-major.sh) (the chart: its `db-major` init container), whatever the setting says.
 - `FXA_MYSQL_ARGS` is `--mysql-native-password=ON --authentication-policy=mysql_native_password` for accounts images without [mozilla/fxa#21554](https://github.com/mozilla/fxa/pull/21554) (Mozilla's, and ours from before). MySQL 9 refuses those options. Which images have it: [MySQL or MariaDB](accounts.md#mysql-or-mariadb).
@@ -320,12 +321,17 @@ The accounts on MariaDB (`FXA_DB=mariadb`): from MariaDB 11 (`FXA_MARIADB_IMAGE=
 1. Run `docker compose pull && docker compose up -d`. At its first start the new MariaDB upgrades the data itself (`MARIADB_AUTO_UPGRADE`: `mariadb-upgrade`, after a backup of its system tables). `docker compose logs fxa-db` says `Finished mariadb-upgrade`. Then the migrations and the services start as after any upgrade.
 1. Check as in [Self-hosted accounts](#self-hosted-accounts), step 4. The admin UI's overview also shows the new version next to "Accounts database". If anything fails: stop the stack, and restore the backup into an empty `fxa-db-mariadb` volume with the older `FXA_MARIADB_IMAGE` ([Restore](backups.md#restore)).
 
-With Quadlets (not tested): make the backup (`systemctl --user start firefox-sync-backup.service`), then:
+With Quadlets: make the backup (`systemctl --user start firefox-sync-backup.service`), set `FXA_MARIADB_IMAGE=mariadb:lts` in `.env`, then render the units again ([Change a setting](install/podman.md#change-a-setting)) and restart the database:
 
-1. Set `Image=docker.io/library/mariadb:lts` in `~/.config/containers/systemd/firefox-sync-fxa-db.container` and `firefox-sync-backup-fxa.container`, and `FXA_MARIADB_IMAGE=mariadb:lts` in `.env`, for the next `prepare_environment.sh`.
-1. Run `systemctl --user daemon-reload`, `podman pull docker.io/library/mariadb:lts` and `systemctl --user restart firefox-sync-fxa-db.service`.
+```bash
+./prepare_environment.sh --render-units
+podman pull docker.io/library/mariadb:lts
+systemctl --user restart firefox-sync-fxa-db.service
+```
 
-Tested locally, not in CI (it takes an install, a backup and two starts of the accounts), from 11 to `lts` (12): `FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 FXA_MARIADB_IMAGE=mariadb:lts tests/fxa-upgrade.sh`, an install on 11 with an account, a device and Sync data, moved with these steps.
+The units that require it start again after it: the migrations, the sign-up policy, the accounts' services and the admin UI. `journalctl --user -u firefox-sync-fxa-db.service` says `Finished mariadb-upgrade`.
+
+Tested locally, not in CI (it takes an install, a backup and two starts of the accounts), from 11 to `lts` (12): `FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 FXA_MARIADB_IMAGE=mariadb:lts tests/fxa-upgrade.sh`, an install on 11 with an account, a device and Sync data, moved with these steps. The Quadlet steps: `FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 tests/podman.sh` (CI: syncstorage-rs.yml `test-podman`, `fxa-mariadb`), the accounts' units started on 11 and moved with the commands above, as this page writes them.
 
 ### MySQL 8 to 9
 
@@ -357,13 +363,18 @@ The accounts (`FXA_DB=mysql`):
 
 The Sync databases (`SYNC_DB=mysql`): their users are on `caching_sha2_password` already. Make a backup (`docker compose exec backup sh /ffs-backup/backup.sh now`), set `SYNC_MYSQL_IMAGE=mysql:lts` in `.env`, and run `docker compose pull && docker compose up -d`.
 
-With Quadlets, the same steps with these changes:
+With Quadlets, the same steps with these changes. A change of `.env` goes into the units with `./prepare_environment.sh --render-units` ([Change a setting](install/podman.md#change-a-setting)), and restarting a database unit restarts the units that require it after it, the migrations first:
 
-- step 2: `podman exec firefox-sync-fxa-db ...`;
-- the backups: `systemctl --user start firefox-sync-backup.service`;
-- step 3: drop the two options from `Exec=` of `~/.config/containers/systemd/firefox-sync-fxa-db.container`;
-- step 4: set `Image=docker.io/library/mysql:lts` there and in `firefox-sync-backup-fxa.container` (Sync: `firefox-sync-tokenserver-db.container`, `firefox-sync-syncstorage-db.container`, `firefox-sync-backup.container`);
-- each time: `systemctl --user daemon-reload`, `podman pull docker.io/library/mysql:lts` and `systemctl --user restart` of the unit. Change `.env` the same way, for the next `prepare_environment.sh`.
+- step 2: the query in the database's container,
+
+    ```bash
+    podman exec firefox-sync-fxa-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT user, host, plugin FROM mysql.user WHERE plugin = \"mysql_native_password\""'
+    ```
+
+    and the `ALTER USER` statements in `podman exec -it firefox-sync-fxa-db mysql -uroot -p`;
+- step 3: remove `FXA_MYSQL_ARGS` from `.env`, then run `./prepare_environment.sh --render-units` and `systemctl --user restart firefox-sync-fxa-db.service`;
+- step 4: the backup is `systemctl --user start firefox-sync-backup.service`. Then set `FXA_MYSQL_IMAGE=mysql:lts` in `.env`, and run `./prepare_environment.sh --render-units`, `podman pull docker.io/library/mysql:lts` and `systemctl --user restart firefox-sync-fxa-db.service`;
+- the Sync databases: `SYNC_MYSQL_IMAGE=mysql:lts` in `.env`, the same commands, and `systemctl --user restart firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`.
 
 If MySQL 9 already started with a user still on `mysql_native_password`, see [Troubleshooting](troubleshooting.md#databases).
 
@@ -371,7 +382,8 @@ Tested:
 
 - `FXA_FROM=<an older accounts image> tests/fxa-upgrade.sh` (`FXA_MYSQL_TO=mysql:lts`, the default with a new image that has mozilla/fxa#21554): an install on `mysql:8` with `mysql_native_password`, an account with a device and Sync data; the new files without the settings (`fxa-db` refuses the data), `--upgrade`, the accounts upgraded, then steps 2 to 4, the account of before and new ones on MySQL 9.
 - `SYNC_DB=mysql SYNC_MYSQL_IMAGE=mysql:8 tests/e2e.sh mysql`: `--upgrade` pins an install from before, `mysql:lts` unset refuses its data, then `SYNC_MYSQL_IMAGE=mysql:lts` moves it (no backup step).
-- Not tested: the Quadlet steps, your own server.
+- The Quadlet steps: `SYNC_DB=mysql SYNC_MYSQL_FROM=mysql:8 FXA_MYSQL_FROM=mysql:8 tests/podman.sh` (CI: syncstorage-rs.yml `test-podman`, `sync-mysql`): the Sync databases and the accounts' started on `mysql:8` (the accounts with `mysql_native_password`), then moved with the commands above, as this page writes them.
+- Not tested: your own server.
 
 ### PostgreSQL
 

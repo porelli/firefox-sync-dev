@@ -18,8 +18,8 @@ on:
     branches:
       - main
       - '**'
-    # docs only: no image to rebuild, but docs/backups.md and docs/upgrading.md, whose commands
-    # tests/e2e.sh and tests/podman.sh run (paths-ignore cannot negate, so the pages are listed)
+    # docs only: no image to rebuild, but docs/backups.md, docs/upgrading.md and docs/migrating.md,
+    # whose commands tests/e2e.sh and tests/podman.sh run (paths-ignore cannot negate, so the pages are listed)
     paths-ignore:
       - '**/README.md'
       - 'docs/admin/**'
@@ -31,7 +31,6 @@ on:
       - 'docs/databases.md'
       - 'docs/firefox.md'
       - 'docs/limits.md'
-      - 'docs/migrating.md'
       - 'docs/reverse-proxy.md'
       - 'docs/troubleshooting.md'
       - '.github/workflows/docs.yml'
@@ -471,6 +470,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    # the defaults (Sync on MariaDB, the accounts on MySQL), Sync on MySQL and on PostgreSQL,
+    # the accounts on MariaDB; every database on its lts (PostgreSQL: latest). Your own
+    # database server (EXTERNAL_DB): MariaDB in an entry of its own, MySQL and PostgreSQL with
+    # theirs. The moves of docs/upgrading.md for the Quadlets (*_FROM): from MySQL 8 with
+    # sync-mysql (Sync and the accounts), from MariaDB 11 with fxa-mariadb, both to lts.
+    # Without the accounts where their phase is the default's
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: default
+            sync_db: mariadb
+          - variant: sync-mysql
+            sync_db: mysql
+            external_db: "1"
+            sync_mysql_from: mysql:8
+            fxa_mysql_from: mysql:8
+          - variant: sync-postgres
+            sync_db: postgres
+            external_db: "1"
+            skip_fxa: "1"
+          - variant: external-mariadb
+            sync_db: mariadb
+            external_db: "1"
+            skip_fxa: "1"
+          - variant: fxa-mariadb
+            sync_db: mariadb
+            fxa_db: mariadb
+            fxa_mariadb_from: mariadb:11
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -484,6 +513,18 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> ${GITHUB_ENV}
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> ${GITHUB_ENV}
 
+      - name: Disable the runner's AppArmor profile of MySQL
+        # the runner's own MySQL server's profile (/usr/sbin/mysqld) also confines the mysqld of
+        # the mysql image in rootless Podman's containers: no /etc/my.cnf, nor its error messages,
+        # and podman cannot stop it ("given PID did not die within timeout"), as in helm.yml
+        if: matrix.sync_db == 'mysql'
+        run: |
+          if [[ -e /etc/apparmor.d/usr.sbin.mysqld ]]; then
+            sudo ln -sf /etc/apparmor.d/usr.sbin.mysqld /etc/apparmor.d/disable/
+            sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld || true
+          fi
+          sudo grep mysqld /sys/kernel/security/apparmor/profiles && exit 1 || echo "no mysqld profile loaded"
+
       - name: Login to GitHub Container Registry
         # docker compose sends the docker CLI credentials to the Podman socket when pulling
         run: |
@@ -494,6 +535,13 @@ jobs:
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
+          SYNC_DB: ${{ matrix.sync_db }}
+          FXA_DB: ${{ matrix.fxa_db }}
+          EXTERNAL_DB: ${{ matrix.external_db }}
+          SYNC_MYSQL_FROM: ${{ matrix.sync_mysql_from }}
+          FXA_MYSQL_FROM: ${{ matrix.fxa_mysql_from }}
+          FXA_MARIADB_FROM: ${{ matrix.fxa_mariadb_from }}
+          SKIP_FXA: ${{ matrix.skip_fxa }}
         run: ./tests/podman.sh
 
   ## Test the self-hosted Mozilla accounts (does not block publishing) ##

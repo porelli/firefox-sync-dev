@@ -26,6 +26,8 @@ This page installs the Sync server with docker compose. Read [What you need](../
 
 1. Set up your reverse proxy. With nginx, start from `config/nginx/syncstorage-rs.conf`, which the script wrote: see [Reverse proxy](../reverse-proxy.md).
 
+1. Check the optional services before the first start: the admin UI, the nightly backups and, with self-hosted accounts, your own pairing server. The script asked for each and listed those you chose in `COMPOSE_PROFILES` of `.env`. Only those start: to add or remove one, see [Optional services](#optional-services).
+
 1. Start the stack:
 
    ```bash
@@ -54,22 +56,36 @@ This page installs the Sync server with docker compose. Read [What you need](../
 | the database backend: `mariadb`, `mysql` or `postgres` | `SYNC_DB`, and `COMPOSE_FILE` for MySQL and PostgreSQL | [Databases](../databases.md) |
 | an existing database server instead of the containers | `SYNC_DB_CONTAINERS=0`, and a `database-setup.sql` to run there | [Your own server](../databases.md#with-docker-compose) |
 | the image tag of the Sync server | `SYNC_IMAGE_TAG` (`latest`) | [Upgrading](../upgrading.md#sync-server) |
-| the admin UI | `COMPOSE_PROFILES=admin`, `ADMIN_PASSWORD` | [Admin UI](../admin/README.md#set-up) |
+| the admin UI | `admin` in `COMPOSE_PROFILES`, `ADMIN_PASSWORD` | [Admin UI](../admin/README.md#set-up) |
 | self-hosted Mozilla accounts | the accounts' section of `.env`, `config/nginx/fxa.conf` | [Self-hosted accounts](../accounts.md#set-up) |
+| the nightly backups | `backup` in `COMPOSE_PROFILES` (Quadlets: the backup timer enabled) | [Backups](../backups.md#the-backup-service) |
+| with self-hosted accounts, your own pairing server (not with Quadlets) | `pairing` in `COMPOSE_PROFILES`, `FXA_PAIRING_URL=wss://pairing.<accounts domain>`, its server block in `config/nginx/fxa.conf` | [Pairing](../reverse-proxy.md#pairing) |
 
 Every setting is in [Settings](../reference/settings.md). Coming from another Sync server: read [Migrating](../migrating.md) before you run the script.
 
 `COMPOSE_FILE` in `.env` names the compose files of your choices, so a plain `docker compose` always picks the right ones.
 
+`COMPOSE_PROFILES` gets every optional service you chose, for example `COMPOSE_PROFILES=admin,backup`. Run again on an install, the script offers what its `.env` has as the answer to each of them.
+
 ## Optional services
 
-They are compose profiles: add them, comma-separated, to `COMPOSE_PROFILES` in `.env`, then run `docker compose up -d`.
+They are compose profiles. `COMPOSE_PROFILES` in `.env` is the whole list of the profiles that run, comma-separated, without spaces: `COMPOSE_PROFILES=admin,backup` runs the admin UI and the backups. Commented out or empty, none runs.
 
-| Profile | What it adds |
-|---|---|
-| `admin` | the [admin UI](../admin/README.md) |
-| `backup` | the nightly [backups](../backups.md#the-backup-service) |
-| `pairing` | your own pairing server for [self-hosted accounts](../reverse-proxy.md#pairing) |
+| Profile | What it adds | Its services |
+|---|---|---|
+| `admin` | the [admin UI](../admin/README.md) | `ffs-admin` |
+| `backup` | the nightly [backups](../backups.md#the-backup-service) | `backup`, and `backup-fxa` with self-hosted accounts |
+| `pairing` | your own pairing server for [self-hosted accounts](../reverse-proxy.md#pairing) | `fxa-pairing` |
+
+`pairing` is a service of `docker-compose.fxa.yml`: it needs that file in `COMPOSE_FILE`, which the script sets when you self-host the accounts. Without it compose has no such service and starts nothing for it.
+
+To turn one on, add it to the list and run `docker compose up -d`.
+
+To turn one off, remove it from the list, then remove its containers: `docker compose up -d` leaves a service of a profile that is off running, and so does `--remove-orphans`. For example, for the backups:
+
+```bash
+docker compose rm -sf backup        # with self-hosted accounts: backup backup-fxa
+```
 
 ## Change a setting
 

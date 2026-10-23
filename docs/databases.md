@@ -10,7 +10,7 @@ By default the stack starts its own database containers. You choose the server s
 |---|---|---|
 | Sync server | MariaDB (the default) | nothing to do |
 | Sync server | MySQL | [MySQL instead of MariaDB](#mysql-instead-of-mariadb) |
-| Sync server | PostgreSQL | [PostgreSQL](#postgresql). Not with Quadlets |
+| Sync server | PostgreSQL | [PostgreSQL](#postgresql) |
 | Self-hosted accounts | MySQL (the default, what Mozilla runs) | nothing to do |
 | Self-hosted accounts | MariaDB | [MySQL or MariaDB](accounts.md#mysql-or-mariadb) |
 
@@ -86,7 +86,9 @@ On kind or k3s on an Ubuntu host with `mysql-server` installed, see [Troubleshoo
 
 ## PostgreSQL
 
-The Sync server can run on PostgreSQL, with the `syncstorage-rs-postgres` images and [docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml). `prepare_environment.sh` sets both when you answer `postgres` to the database backend question. The self-hosted accounts cannot use PostgreSQL, and Quadlets don't support it: with Podman, `prepare_environment.sh` falls back to docker compose on the Podman socket.
+The Sync server can run on PostgreSQL, with the `syncstorage-rs-postgres` images and [docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml). `prepare_environment.sh` sets both when you answer `postgres` to the database backend question. The self-hosted accounts cannot use PostgreSQL.
+
+With Quadlets, the units of [config/quadlet/sync-postgres/](/config/quadlet/sync-postgres) replace those of the Sync server, its migrations, its init container and the backups. They add `firefox-sync-postgres-db`, the one database, in its own volume `firefox-sync-postgres-db`, and `firefox-sync-sync-role-init`, which gives the Sync server its own role before the migrations, as compose's `sync_role_init`. The MariaDB units are not installed.
 
 `SYNC_POSTGRES_IMAGE` pins the PostgreSQL major of each install, for `postgres_db` and the backups: see [PostgreSQL](upgrading.md#postgresql).
 
@@ -176,9 +178,9 @@ Running `prepare_environment.sh` again makes new passwords and new secrets for e
 
 ### With Quadlets
 
-With `SYNC_DB_CONTAINERS=0`, `prepare_environment.sh` installs no `firefox-sync-syncstorage-db` or `firefox-sync-tokenserver-db` unit. With `FXA_DB_CONTAINERS=0`, no `firefox-sync-fxa-db` unit. It removes them from the other units' `After=` and `Requires=`.
+With `SYNC_DB_CONTAINERS=0`, `prepare_environment.sh` installs no `firefox-sync-syncstorage-db` or `firefox-sync-tokenserver-db` unit (with PostgreSQL, no `firefox-sync-postgres-db`). With `FXA_DB_CONTAINERS=0`, no `firefox-sync-fxa-db` unit. It removes them from the other units' `After=` and `Requires=`.
 
-The migrations retry until your server answers. A server on the same host is `host.containers.internal`, see [Server requirements](#server-requirements). Quadlets support MariaDB and MySQL only.
+The migrations retry until your server answers. A server on the same host is `host.containers.internal`, see [Server requirements](#server-requirements).
 
 ### With Helm
 

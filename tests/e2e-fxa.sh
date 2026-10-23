@@ -299,6 +299,9 @@ answers=(sync.example.org "${SETUP}" 5000 2 mariadb)
 command -v podman > /dev/null && answers+=(2)
 admin_answer=$((${#answers[@]} + 2))
 answers+=("" latest "" y "" smtp.example.org 587 mailer 'p@ss|w&rd\#1 $x' "" "alice@example.org, @example.net" "admin@example.org" "")
+# compose as configured by .env: only what prepare_environment.sh wrote, not this shell's
+# stack settings (compose prefers the environment to .env)
+setup_compose() { (cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} docker compose "$@" 2> /dev/null); }
 # the last questions: your own database servers for Sync and the accounts (no, no), the accounts database (mysql), max accounts
 printf '%s\n' "${answers[@]}" "" "" "" 5 | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
 check "$?" 0 "prepare_environment.sh with self-hosted accounts"
@@ -331,9 +334,19 @@ check "$(cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DO
 rm -f "${SETUP}/.env"
 printf '%s\n' "${answers[@]}" "" "" "" lots | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-bad-max.log" 2>&1
 check "$? $(grep -c "max accounts must be a number or unlimited, got 'lots'" "${WORK}/setup-bad-max.log")" "1 1" "prepare_environment.sh refuses max accounts lots"
-# and the last question, a destination of the alerts: written as given, said without its token
-# (separated by a space; Slack's https:// URL as pasted, turned into slack://)
-printf '%s\n' "${answers[@]}" "" "" "" 5 y 'ntfy://tk_ffsSECRET@ntfy.example.org/ffs-topic https://hooks.slack.com/services/T0/B0/ffsSECRET2' | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
+# and the last questions: a destination of the alerts, written as given, said without its token
+# (separated by a space; Slack's https:// URL as pasted, turned into slack://: yes), then the
+# nightly backups and your own pairing server, both on
+notify_answers=("${answers[@]}" "" "" "" 5 y 'ntfy://tk_ffsSECRET@ntfy.example.org/ffs-topic https://hooks.slack.com/services/T0/B0/ffsSECRET2' "")
+printf '%s\n' "${notify_answers[@]}" y y | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
+check "$(grep -c '^COMPOSE_PROFILES=admin,backup,pairing$' "${SETUP}/.env") $(grep -c '^FXA_PAIRING_URL=wss://pairing.example.org$' "${SETUP}/.env") $(setup_compose config --services | grep -cxE 'backup|backup-fxa|fxa-pairing')" \
+  "1 1 3" "the backups and the pairing server chosen: COMPOSE_PROFILES=admin,backup,pairing, FXA_PAIRING_URL, their services"
+check "$(grep -cx 'server {' "${SETUP}/config/nginx/fxa.conf") $(grep -cxE '  server_name pairing\.example\.org;|    proxy_pass http://127\.0\.0\.1:8058;|  ssl_certificate /etc/letsencrypt/live/pairing\.example\.org/fullchain\.pem;' "${SETUP}/config/nginx/fxa.conf") $(grep -c '<PAIRING_HOST>\|^#   ' "${SETUP}/config/nginx/fxa.conf")" \
+  "$(($(grep -cx 'server {' "${SETUP}/config/nginx/fxa-example.conf") + 1)) 3 0" "the pairing server's block in the nginx example, uncommented"
+# run again on that install, the two questions not answered: what its .env has
+printf '%s\n' "${notify_answers[@]}" | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-again.log" 2>&1
+check "$? $(grep -c '^COMPOSE_PROFILES=admin,backup,pairing$' "${SETUP}/.env") $(grep -c '^FXA_PAIRING_URL=wss://pairing.example.org$' "${SETUP}/.env")" "0 1 1" \
+  "run again: the backups and the pairing server of its .env are the defaults"
 check "$(grep -c '^FXA_ACCOUNT_EVENTS=true$' "${SETUP}/.env")" 1 "security history turned on (y)"
 check "$(grep -cxF "ADMIN_NOTIFY='ntfy://tk_ffsSECRET@ntfy.example.org/ffs-topic,slack://hooks.slack.com/services/T0/B0/ffsSECRET2'" "${SETUP}/.env") $(grep -c 'tk_ffsSECRET\|ffsSECRET2\|ffs-topic' "${WORK}/setup.log") $(grep -c '^Alerts also to ntfy://ntfy.example.org, slack://hooks.slack.com ' "${WORK}/setup.log")" \
   "1 0 1" "ADMIN_NOTIFY written as pasted, shown as scheme://host only"
@@ -366,10 +379,7 @@ check "$(grep -c 'server_name admin.example.org;' "${SETUP}/config/nginx/fxa.con
 check "$(cd "${SETUP}" && env -u ADMIN_FXA_CLIENT_ID docker compose config 2> /dev/null | sed -n '/^  fxa-auth:/,/^  [a-z]/p' | grep -cE "^ +SERVICES_WITH_EMAIL_VERIFICATION: .*,$(env_value ADMIN_FXA_CLIENT_ID)$")" 1 \
   "the accounts always ask the sign-in code for the admin UI"
 # the same with PostgreSQL, then without the admin UI (the answers after the backend
-# are the same); compose as configured by .env, not by this shell's COMPOSE_PROFILES
-# only what prepare_environment.sh wrote: not this shell's stack settings (compose
-# prefers the environment to .env)
-setup_compose() { (cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} docker compose "$@" 2> /dev/null); }
+# are the same); compose as configured by .env (setup_compose), not by this shell's COMPOSE_PROFILES
 prepare_again() {
   rm -f "${SETUP}/.env"
   answers[4]=$1; answers[admin_answer]=$2; answers[admin_answer+9]=${3-admin@example.org}

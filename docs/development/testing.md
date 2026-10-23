@@ -22,7 +22,7 @@ Every image build runs the CI tests before the multi-arch tags (for example `syn
 
 The end-to-end scripts finish with [tests/healthy.sh](/tests/healthy.sh): every container that keeps running is healthy, and the one-shot ones exited with 0. `tests/podman.sh` also checks that each long-running Quadlet has the healthcheck of its compose service (the same command and timings), and that no such service lacks one.
 
-`EXTERNAL_DB=1` runs the same on a database server outside the stack, with only the documented grants ([Database users](../reference/database-users.md)): MySQL (`SYNC_MYSQL_IMAGE`) with binary logging, or PostgreSQL set up by a role that is no superuser, with an owner that is no superuser. `tests/e2e-fxa.sh` and `tests/podman.sh` take it too: one MySQL (`FXA_MYSQL_IMAGE`), or MariaDB with `FXA_DB=mariadb`, for Sync and the accounts. `EXTERNAL_DB=fxa` puts only the accounts there.
+`EXTERNAL_DB=1` runs the same on a database server outside the stack, with only the documented grants ([Database users](../reference/database-users.md)): MySQL (`SYNC_MYSQL_IMAGE`) with binary logging, or PostgreSQL set up by a role that is no superuser, with an owner that is no superuser. `tests/e2e-fxa.sh` takes it too: one MySQL (`FXA_MYSQL_IMAGE`), or MariaDB with `FXA_DB=mariadb`, for Sync and the accounts. `EXTERNAL_DB=fxa` puts only the accounts there. `tests/podman.sh`: a server of `SYNC_DB` for the Quadlets, see [The Sync server and Podman](#the-sync-server-and-podman).
 
 Tests that work around an upstream bug read the image's label: see [Upstream patches](upstream-patches.md#in-the-tests).
 
@@ -42,6 +42,10 @@ The defaults follow each database's long-term tag (`mariadb:lts`, `mysql:lts`; P
 | Accounts | MariaDB `lts` (needs mozilla/fxa#21494) | fxa.yml `test-mariadb`, admin.yml `e2e-fxa`, helm.yml `e2e-fxa` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`) |
 | Accounts | MariaDB 11 (installs from before) | fxa.yml `test-mariadb` (`mariadb:11`) | - |
 | Podman, Quadlets | the defaults (MariaDB `lts`, the accounts on MySQL as above) | syncstorage-rs.yml, fxa.yml and admin.yml `test-podman`/`podman` | - |
+| Podman, Quadlets | Sync on MySQL `lts` (`SYNC_DB=mysql`) | syncstorage-rs.yml `test-podman` (`sync-mysql`) | - |
+| Podman, Quadlets | Sync on PostgreSQL `latest` (its major pinned, `SYNC_DB=postgres`) | syncstorage-rs.yml `test-podman` (`sync-postgres`) | - |
+| Podman, Quadlets | the accounts on MariaDB `lts` (`FXA_DB=mariadb`) | syncstorage-rs.yml `test-podman` (`fxa-mariadb`) | - |
+| Podman, Quadlets | your own server (`EXTERNAL_DB=1`) | - | syncstorage-rs.yml `test-podman`: `external-mariadb`, `sync-mysql`, `sync-postgres` |
 
 The jobs run on amd64, and these on arm64 too: fxa.yml `test` and `test-podman`, admin.yml `e2e-fxa` (MySQL), helm.yml `e2e` (PostgreSQL) and `e2e-fxa` (MySQL, with Firefox).
 
@@ -68,7 +72,10 @@ Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mys
 
 - the Quadlets and docker compose on the Podman socket, both set up with `prepare_environment.sh`;
 - the MySQL Quadlets as rendered; with `SYNC_DB=mysql`, the compose phase as an install from before on `mysql:8` (pinned by `--upgrade`) and the Quadlets on `mysql:lts`;
+- with `EXTERNAL_DB=1`, the Quadlets on a server of `SYNC_DB` outside them (`mariadb:lts`, `mysql:lts` with binary logging, `postgres:latest`), set up by `database-setup.sql`: the Sync server, the admin UI, a backup, `--upgrade` and `--render-units`;
+- the PostgreSQL Quadlets as rendered (also on your own server); with `SYNC_DB=postgres`, the compose phase on PostgreSQL only and the Quadlets on PostgreSQL: pinned to the major of Podman's `postgres:latest` and running it, the Sync server's own role, the backups and the restore of [Restore with Quadlets](../backups.md#restore-with-quadlets), `--upgrade`, `--render-units`, and another major refused by `keep-major.sh`;
 - `--upgrade` renaming the old setting names and `docker-compose.postgres.yml`;
+- the commands of the docs for the Quadlets, read from the pages and run as written: the dumps of an install loaded into a new one ([Loading into firefox-sync](../migrating.md#loading-into-firefox-sync), for `SYNC_DB`); with `SYNC_MYSQL_FROM=mysql:8` (and `SYNC_DB=mysql`) the Sync databases started on it and moved to `mysql:lts`, with `FXA_MYSQL_FROM=mysql:8` the accounts' (with `mysql_native_password`, their users moved first) as [MySQL 8 to 9](../upgrading.md#mysql-8-to-9) says, with `FXA_MARIADB_FROM=mariadb:11` (and `FXA_DB=mariadb`) as [MariaDB](../upgrading.md#mariadb) says;
 - with `UPGRADE_FROM=<checkout>`, the Quadlet upgrade steps of [Upgrading](../upgrading.md#quadlets) (the `systemctl --user stop` line is read from that page): the old release where this tree is, the files swapped as `git pull` does, `--upgrade` keeping every secret, no `SET PASSWORD`;
 - `--render-units` on the running Quadlets (a setting, an `ADMIN_IMAGE` pin, `ADMIN_INSECURE_COOKIE`), and with the accounts on MariaDB (`FXA_LOG_LEVEL`): only the changed units written, the secrets kept, a second run changing nothing, the stack started again;
 - where the Sync server listens: `SYNC_EXPORT_PORT` of a new install on `127.0.0.1` (the answers, nginx, `PublishPort`, `ss`), an upgraded one keeping its value.
@@ -208,7 +215,8 @@ Some tests read commands from the docs and check them word for word, so a page a
 | `tests/e2e.sh` | [backups.md](../backups.md#restore), [upgrading.md](../upgrading.md#postgresql) | the compose restore commands; with `PG_MAJOR_MOVE=1` the three steps of the PostgreSQL move |
 | `tests/helm.sh` | [backups.md](../backups.md#restore) | the blocks starting `--entrypoint sh backup -c '` that contain `$TOKENSERVER_DB_NAME.sql.gz`: the first is MariaDB, the second PostgreSQL |
 | `tests/helm-fxa.sh` | [backups.md](../backups.md#restore-on-kubernetes) | `restore() {` to its closing `}`, and the `restore restore-accounts 'run=` command to its line ending `backup-accounts`, both indented four spaces, each exactly once; with `SYNC_BACKEND=postgres` also the `for db in postgres; do` loop to its `done`, and the PostgreSQL block from `kubectl get deploy $F-syncstorage -o json | jq` to the `PGPASSWORD="$ADMIN_DB_PASSWORD" psql` line (two `restore restore-` commands) |
-| `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; the Quadlet `systemctl --user stop` line, exactly once |
+| `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; with `SYNC_DB=postgres` the PostgreSQL commands of the Quadlet restore, as written; the Quadlet `systemctl --user stop` line, exactly once; the Quadlet commands of [MariaDB](../upgrading.md#mariadb) and [MySQL 8 to 9](../upgrading.md#mysql-8-to-9) with `*_FROM` |
+| `tests/podman.sh` | [migrating.md](../migrating.md#loading-into-firefox-sync) | the Quadlet loading: the `systemctl --user start` and `podman exec -i` commands, and the compose `docker compose exec -T <db>_db sh -c` lines it turns into the Quadlets' |
 | `tests/migrate.sh` | [migrating.md](../migrating.md), [upgrading.md](../upgrading.md#older-firefox-sync-releases) | every command it runs, with `grep -qF` in either page |
 
 ## Links

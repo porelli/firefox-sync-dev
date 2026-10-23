@@ -524,11 +524,13 @@ db_volume() {
 
 # the major of postgres:latest, from its own server ("postgres (PostgreSQL) 18.1 (Debian ...)"):
 # pulled first (a local copy may be older than latest), with Docker, else Podman (a Docker
-# without its daemon fails at once); without a registry, the local copy
+# without its daemon fails at once); without a registry, the local copy. The Quadlets: Podman's
+# only, the store the units run from (also on a host with Docker), for this host's architecture
 postgres_latest_major() {
-    local runtime image pull out
+    local runtime image pull out runtimes="docker podman"
+    [ "${DEPLOY_METHOD:-}" = quadlets ] && runtimes=podman
     for pull in always missing; do
-        for runtime in docker podman; do
+        for runtime in ${runtimes}; do
             command -v "${runtime}" > /dev/null 2>&1 || continue
             image=postgres:latest
             [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
@@ -631,8 +633,8 @@ units_have_env_secret() {
 # that differ installed, the units of before kept first in quadlets.before-<UTC time>/; none
 # differ: nothing written (run again, nothing changes)
 render_units() {
-    local key stage file filename source target_dir changed=() removed=() backup repository
-    local sync_containers sync_db fxa_containers fxa_db
+    local key stage file filename source src target_dir changed=() removed=() backup repository
+    local sync_containers sync_db fxa_containers fxa_db sync_overlay=""
     # the values of the units: those of .env (database names, users, FxA endpoints, etc.) as
     # compose reads them (env_plain: quotes, a comment after the value, export, CRLF), and the
     # ones set below; never this shell's environment (a name .env lacks: .env-example's
@@ -645,6 +647,8 @@ render_units() {
         render_set "${key}" "$(env_plain "${key}")"
     done
     sync_containers=$(env_plain SYNC_DB_CONTAINERS) sync_db=$(env_plain SYNC_DB)
+    # PostgreSQL: the images of .env say it (SYNC_DB is mariadb there, as compose has it)
+    [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && sync_db=postgres
     fxa_containers=$(env_plain FXA_DB_CONTAINERS) fxa_db=$(env_plain FXA_DB)
     mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
     # the images from .env only (not this shell's environment); unset: lts, as the compose
@@ -669,6 +673,7 @@ render_units() {
     podman_image FXA_MARIADB_IMAGE mariadb:lts
     podman_image FXA_MYSQL_IMAGE mysql:lts
     podman_image SYNC_MYSQL_IMAGE mysql:lts
+    podman_image SYNC_POSTGRES_IMAGE postgres:latest
     repository=$(env_value IMAGE_REPOSITORY)
     podman_image ADMIN_IMAGE "${repository:-ghcr.io/porelli/firefox-sync}:admin-latest"
     # fxa-db's extra options, none when not set
@@ -688,7 +693,29 @@ render_units() {
     # containers are reached by their names. Your own server: none of them
     SKIP_UNITS=""
     DROP_DEPS=""
-    if [ "${sync_containers:-1}" = 0 ]; then
+    if [ "${sync_db}" = postgres ]; then
+        # one PostgreSQL database (sync-postgres/), none of MariaDB's or MySQL's units (their
+        # volumes are kept); the Sync server's own role, the superuser without it (an .env
+        # from before SYNC_POSTGRES_APP_USER, your own server), as compose
+        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
+        render_set SYNC_POSTGRES_CONNECT_USER "$(env_value SYNC_POSTGRES_APP_USER)"
+        render_set SYNC_POSTGRES_CONNECT_PASSWORD "$(env_value SYNC_POSTGRES_APP_PASSWORD)"
+        if [ -z "${SYNC_POSTGRES_CONNECT_USER}" ]; then
+            render_set SYNC_POSTGRES_CONNECT_USER "$(env_value SYNC_POSTGRES_USER)"
+            render_set SYNC_POSTGRES_CONNECT_PASSWORD "$(env_value SYNC_POSTGRES_PASSWORD)"
+        fi
+        # the renamed settings under their new names, also from an .env with the old ones
+        for key in SYNC_POSTGRES_NAME SYNC_POSTGRES_USER SYNC_POSTGRES_PASSWORD SYNC_POSTGRES_APP_USER SYNC_POSTGRES_APP_PASSWORD; do
+            render_set "${key}" "$(env_value "${key}")"
+        done
+        if [ "${sync_containers:-1}" = 0 ]; then
+            SKIP_UNITS='^firefox-sync-((syncstorage|tokenserver)-db(-mysql)?|postgres-db)\.(container|volume)$'
+            DROP_DEPS='firefox-sync-postgres-db\.service'
+            render_set SYNC_POSTGRES_HOST "$(env_value SYNC_POSTGRES_HOST)"; render_set SYNC_POSTGRES_PORT "$(env_value SYNC_POSTGRES_PORT)"
+        else
+            render_set SYNC_POSTGRES_HOST firefox-sync-postgres-db; render_set SYNC_POSTGRES_PORT 5432
+        fi
+    elif [ "${sync_containers:-1}" = 0 ]; then
         SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
         DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
     else
@@ -738,8 +765,12 @@ render_units() {
 
     QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
     # SYNC_DB=mysql: sync-mysql/ replaces the database units of the same name (without the
-    # database containers, SKIP_UNITS leaves them out)
-    [ "${sync_db:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/sync-mysql")
+    # database containers, SKIP_UNITS leaves them out); PostgreSQL: sync-postgres/ replaces
+    # the units of the Sync server, its migrations, init and backups, and adds its database
+    # and its role's init
+    [ "${sync_db:-mariadb}" = "mysql" ] && sync_overlay=sync-mysql
+    [ "${sync_db}" = postgres ] && sync_overlay=sync-postgres
+    [ -n "${sync_overlay}" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/${sync_overlay}")
     [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
     # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
     [ "${SELF_HOST_FXA}" = "yes" ] && [ "${fxa_db:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
@@ -755,15 +786,27 @@ render_units() {
             [ -f "${file}" ] || continue
             filename=$(basename "${file}")
             [ "${fxa_db:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
-            [ "${sync_db:-mariadb}" = "mysql" ] && [ -f "${source}/sync-mysql/${filename}" ] && continue
+            [ -n "${sync_overlay}" ] && [ -f "${source}/${sync_overlay}/${filename}" ] && continue
             if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
                 # left from a setup with the database containers (the volume is kept)
                 [ -f "${QUADLET_DIR}/${filename}" ] && removed+=("${filename}")
                 continue
             fi
+            # PostgreSQL: the admin UI's unit (admin/ or fxa/admin/) with the Sync database of
+            # docker-compose.sync-postgres.yml's ffs-admin: one database, as the Sync server's
+            # role (its reader with ADMIN_DB_PASSWORD), no storage database of its own
+            src=${file}
+            if [ "${sync_db}" = postgres ] && [ "${filename}" = firefox-sync-admin.container ]; then
+                src=${stage}/.${filename}.postgres
+                sed -e 's|^Environment="TOKENSERVER_DB_TYPE=mysql"$|Environment="TOKENSERVER_DB_TYPE=postgres"|' \
+                    -e 's|%SYNC_TOKENSERVER_DB_HOST%|%SYNC_POSTGRES_HOST%|; s|%SYNC_TOKENSERVER_DB_PORT%|%SYNC_POSTGRES_PORT%|' \
+                    -e 's|%SYNC_TOKENSERVER_DB_NAME%|%SYNC_POSTGRES_NAME%|; s|%SYNC_TOKENSERVER_DB_USER%|%SYNC_POSTGRES_CONNECT_USER%|' \
+                    -e '/^Environment="STORAGE_DB_[A-Z]*=/d' -e '/^Environment="SYNC_DB=/d' "${file}" > "${src}" || { rm -rf "${stage}"; exit 1; }
+            fi
             # (an empty PodmanArgs= would reset the ones before it, the network aliases)
-            render_quadlet "${file}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
+            render_quadlet "${src}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
             [ "${PIPESTATUS[0]}" = 0 ] || { rm -rf "${stage}"; exit 1; }
+            [ "${src}" = "${file}" ] || rm -f "${src}"
         done
     done
     for file in "${stage}"/*; do
@@ -873,8 +916,6 @@ upgrade_env() {
     fi
     if [ "${quadlets}" = yes ]; then
         command -v podman > /dev/null 2>&1 || { echo "ERROR: --render-units: the Quadlets need podman, which is not installed"; exit 1; }
-        [ "$(env_value SYNC_IMAGE)" != "syncstorage-rs-postgres" ] \
-            || { echo "ERROR: the Quadlets are for MariaDB and MySQL only, this .env is PostgreSQL's (docker compose)"; exit 1; }
         DEPLOY_METHOD=quadlets
     fi
     # the old names of RENAMED_SETTINGS: the line renamed where it is (indented or with
@@ -1243,7 +1284,7 @@ fi
 if [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     echo ""
     echo "Podman detected! Choose deployment method:"
-    echo "  1) Quadlets (systemd integration, recommended, MariaDB and MySQL only)"
+    echo "  1) Quadlets (systemd integration, recommended)"
     echo "  2) docker compose with the Podman socket"
     read -e -p "Deployment method [1]: " DEPLOY_METHOD
     case "${DEPLOY_METHOD:-1}" in
@@ -1251,10 +1292,6 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ]; then
         2) DEPLOY_METHOD=compose ;;
         *) echo "ERROR: unknown deployment method '${DEPLOY_METHOD}'"; exit 1 ;;
     esac
-    if [ "${DEPLOY_METHOD}" = "quadlets" ] && [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        echo "WARNING: Quadlets are only provided for MariaDB and MySQL, using docker compose with the Podman socket"
-        DEPLOY_METHOD=compose
-    fi
 fi
 
 # docker/podman user (for systemd service)
@@ -1474,6 +1511,39 @@ if [ "${ADMIN_UI}" = "yes" ]; then
     [ -z "${ADMIN_NOTIFY}" ] || echo "Alerts also to ${notify_names} (ADMIN_NOTIFY in .env; more destinations there, separated by commas)"
 fi
 
+# the optional services, asked last for the same reason. Run again on an install: what it
+# has is the default (COMPOSE_PROFILES of its .env; with Quadlets also the backup timer on)
+previous_profile() { [ -f "${SCRIPT_DIR}/.env" ] && case ",$(env_plain COMPOSE_PROFILES)," in *",${1},"*) return 0 ;; esac; return 1; }
+# the nightly backups (docs/backups.md#the-backup-service): compose's backup profile, the
+# Quadlets' backup timer
+BACKUPS=no
+previous_profile backup && BACKUPS=yes
+[ "${DEPLOY_METHOD:-}" = quadlets ] && systemctl --user is-enabled -q firefox-sync-backup.timer 2> /dev/null && BACKUPS=yes
+if [ "${BACKUPS}" = yes ]; then
+    read -r -e -p "Enable nightly backups? See docs/backups.md#the-backup-service (Y/n): " BACKUPS
+    case "${BACKUPS}" in n|N|no) BACKUPS=no ;; *) BACKUPS=yes ;; esac
+else
+    read -r -e -p "Enable nightly backups? See docs/backups.md#the-backup-service (y/N): " BACKUPS
+    case "${BACKUPS}" in y|Y|yes) BACKUPS=yes ;; *) BACKUPS=no ;; esac
+fi
+# your own pairing server for the QR code (docs/reverse-proxy.md#pairing), with the accounts:
+# compose's pairing profile (the Quadlets have none: not asked)
+PAIRING=no
+if [ "${SELF_HOST_FXA}" = "yes" ] && [ "${DEPLOY_METHOD:-}" != quadlets ]; then
+    if previous_profile pairing; then
+        read -r -e -p "Run your own pairing server, at pairing.${FXA_DOMAIN}? See docs/reverse-proxy.md#pairing (Y/n): " PAIRING
+        case "${PAIRING}" in n|N|no) PAIRING=no ;; *) PAIRING=yes ;; esac
+    else
+        read -r -e -p "Run your own pairing server, at pairing.${FXA_DOMAIN}? See docs/reverse-proxy.md#pairing (y/N): " PAIRING
+        case "${PAIRING}" in y|Y|yes) PAIRING=yes ;; *) PAIRING=no ;; esac
+    fi
+fi
+# COMPOSE_PROFILES: the whole list of what was chosen (the Quadlets read admin there too)
+COMPOSE_PROFILES_CHOSEN=""
+for profile in admin:${ADMIN_UI} backup:${BACKUPS} pairing:${PAIRING}; do
+    [ "${profile#*:}" = yes ] && COMPOSE_PROFILES_CHOSEN="${COMPOSE_PROFILES_CHOSEN:+${COMPOSE_PROFILES_CHOSEN},}${profile%%:*}"
+done
+
 # SYNC_DB=mysql: the Sync databases in MySQL containers; with your own server there are none,
 # SYNC_DB then only says what it is
 [ "${SYNC_DB}" = "mysql" ] && [ "${EXTERNAL_DB}" != "yes" ] && SYNC_COMPOSE_MYSQL=yes || SYNC_COMPOSE_MYSQL=no
@@ -1572,7 +1642,8 @@ apply_sed "${NEW_ENV}" "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${SYNC_IMAGE_TAG}|"
 apply_sed "${NEW_ENV}" "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|"
 # the admin UI's database user, also for the backups: with or without the admin UI
 apply_sed "${NEW_ENV}" "s|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=${ADMIN_DB_PASSWORD}|"
-[ "${ADMIN_UI}" = "yes" ] && apply_sed "${NEW_ENV}" "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=admin|"
+# the optional services chosen, the whole list (none: the line stays commented out)
+[ -n "${COMPOSE_PROFILES_CHOSEN}" ] && apply_sed "${NEW_ENV}" "s|^# COMPOSE_PROFILES=.*|COMPOSE_PROFILES=${COMPOSE_PROFILES_CHOSEN}|"
 [ -n "${ADMIN_NOTIFY}" ] && apply_sed "${NEW_ENV}" "s|^ADMIN_NOTIFY=.*|ADMIN_NOTIFY='$(sed_escape "${ADMIN_NOTIFY}")'|"
 apply_sed "${NEW_ENV}" "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
 [ "${DATABASE_BACKEND}" = mariadb ] && [ "${EXTERNAL_DB}" != "yes" ] && \
@@ -1642,6 +1713,8 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     apply_sed "${NEW_ENV}" "s|^FXA_SIGNUP_ALLOWLIST=.*|FXA_SIGNUP_ALLOWLIST=${FXA_SIGNUP_ALLOWLIST}|"
     apply_sed "${NEW_ENV}" "s|^FXA_MAX_ACCOUNTS=.*|FXA_MAX_ACCOUNTS=${FXA_MAX_ACCOUNTS}|"
     apply_sed "${NEW_ENV}" "s|^FXA_ACCOUNT_EVENTS=.*|FXA_ACCOUNT_EVENTS=${FXA_ACCOUNT_EVENTS}|"
+    # your own pairing server: Firefox's QR code points to it
+    [ "${PAIRING}" = yes ] && apply_sed "${NEW_ENV}" "s|^# FXA_PAIRING_URL=.*|FXA_PAIRING_URL=wss://pairing.${FXA_DOMAIN}|"
     if [ "${EXTERNAL_FXA_DB}" = "yes" ]; then
         apply_sed "${NEW_ENV}" "s|^FXA_DB_CONTAINERS=.*|FXA_DB_CONTAINERS=0|"
         for name in FXA_MYSQL_HOST FXA_MYSQL_PORT FXA_MYSQL_USER FXA_MYSQL_POLICY_USER; do
@@ -1722,6 +1795,9 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ACCOUNTS_HOST>|accounts.${FXA_DOMAIN}|g"
     apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<API_HOST>|api.${FXA_DOMAIN}|g"
     apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<PROFILE_HOST>|profile.${FXA_DOMAIN}|g"
+    apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<PAIRING_HOST>|pairing.${FXA_DOMAIN}|g"
+    # the pairing server's block, commented out unless it runs here
+    [ "${PAIRING}" = yes ] && apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "/^# server {$/,/^# }$/s|^# \{0,1\}||"
     for port in CONTENT AUTH PROFILE PROFILE_STATIC PAIRING; do
         value=$(grep "^FXA_${port}_EXPORT_PORT=" "${NEW_ENV}" | cut -d= -f2)
         apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<${port}_EXPORT_PORT>|${value}|g"
@@ -1806,6 +1882,14 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     echo ""
     echo "Setting up Podman Quadlets..."
     render_units
+    # the nightly backups: the timer on (at the next start of the user's systemd too), or off
+    if [ "${BACKUPS}" = yes ]; then
+        systemctl --user enable firefox-sync-backup.timer > /dev/null 2>&1 \
+            || echo "WARNING: could not enable firefox-sync-backup.timer: systemctl --user enable --now firefox-sync-backup.timer (docs/backups.md#the-backup-service)"
+    elif systemctl --user is-enabled -q firefox-sync-backup.timer 2> /dev/null; then
+        systemctl --user disable --now firefox-sync-backup.timer > /dev/null 2>&1
+        echo "  the nightly backups off: firefox-sync-backup.timer disabled"
+    fi
 fi
 
 echo ""
@@ -1821,7 +1905,7 @@ echo "  - .env"
 [ "${EXTERNAL_FXA_DB}" = "yes" ] && echo "  - database-setup-fxa.sql (the accounts users for your $([ "${FXA_DB}" = "mariadb" ] && echo MariaDB || echo MySQL) server)"
 echo "  - config/nginx/syncstorage-rs.conf"
 echo "  - config/systemd/syncstorage-rs.service"
-[ "${SELF_HOST_FXA}" = "yes" ] && echo "  - config/nginx/fxa.conf (accounts.${FXA_DOMAIN}, api.${FXA_DOMAIN}, profile.${FXA_DOMAIN}${ADMIN_HOST:+, ${ADMIN_HOST}})"
+[ "${SELF_HOST_FXA}" = "yes" ] && echo "  - config/nginx/fxa.conf (accounts.${FXA_DOMAIN}, api.${FXA_DOMAIN}, profile.${FXA_DOMAIN}${ADMIN_HOST:+, ${ADMIN_HOST}}$([ "${PAIRING}" = yes ] && echo ", pairing.${FXA_DOMAIN}"))"
 
 if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ]; then
     echo "  - Quadlet files in ${QUADLET_DIR}"
@@ -1942,7 +2026,11 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
         echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see docs/firefox.md#self-hosted-accounts)"
     fi
     echo "  2. (Optional) loginctl enable-linger \$USER"
-    echo "  3. (Optional) nightly backups: systemctl --user enable --now firefox-sync-backup.timer (docs/backups.md#the-backup-service)"
+    if [ "${BACKUPS}" = yes ]; then
+        echo "  3. nightly backups: firefox-sync-backup.timer is enabled, start it with the units: systemctl --user start firefox-sync-backup.timer"
+    else
+        echo "  3. (Optional) nightly backups: systemctl --user enable --now firefox-sync-backup.timer (docs/backups.md#the-backup-service)"
+    fi
     echo ""
     echo "To check status:"
     echo "  systemctl --user status firefox-sync-syncstorage.service"
@@ -1961,14 +2049,14 @@ elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     echo "  1. systemctl --user enable --now podman.socket"
     echo "  2. export DOCKER_HOST=unix://\${XDG_RUNTIME_DIR}/podman/podman.sock"
     echo "  3. docker compose ${COMPOSE_FILES} up -d"
-    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
+    [ "${BACKUPS}" = yes ] || echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
     echo ""
     echo "See docs/install/podman.md for detailed instructions (podman-compose is not supported)"
 else
     echo "Next steps:"
     echo "  1. docker compose up -d"
     [ "${SELF_HOST_FXA}" = "yes" ] && echo "     then in Firefox set identity.fxaccounts.autoconfig.uri to https://accounts.${FXA_DOMAIN} (see docs/firefox.md#self-hosted-accounts)"
-    echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
+    [ "${BACKUPS}" = yes ] || echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
     echo "  2. (Optional) Install systemd service:"
     echo "     sudo cp config/systemd/syncstorage-rs.service /etc/systemd/system/"
     echo "     sudo systemctl enable --now syncstorage-rs.service"
