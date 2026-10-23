@@ -215,7 +215,7 @@ python3 -I tests/test_check_markdown_links.py
 
 The pages of `docs/` are also a website, built with MkDocs and the Material theme from [mkdocs.yml](/mkdocs.yml). The markdown stays written for GitHub. [docs/hooks/repo_links.py](/docs/hooks/repo_links.py) bridges what MkDocs reads differently: it turns links to the code into GitHub URLs, re-indents the lists to 4 spaces, and renders `<details>` as collapsed blocks.
 
-To preview it, with the pinned versions of [docs/requirements.txt](/docs/requirements.txt):
+To preview it, with [docs/requirements.txt](/docs/requirements.txt) (the newest Material for MkDocs, as CI):
 
 ```bash
 python3 -m venv /tmp/mkdocs-venv

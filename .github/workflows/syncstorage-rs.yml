@@ -158,7 +158,8 @@ jobs:
           - docker_architecture: amd64
             github_runner_image: ubuntu-latest
           - docker_architecture: arm64
-            github_runner_image: ubuntu-24.04-arm
+            # GitHub has no -latest label for arm (actions/runner-images): the newest Ubuntu
+            github_runner_image: ubuntu-26.04-arm
 
     runs-on: ${{ matrix.github_runner_image }}
 
@@ -459,7 +460,7 @@ jobs:
       contents: read
       packages: read
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
@@ -535,7 +536,7 @@ jobs:
           FXA_IMAGE: docker.io/mozilla/fxa-mono
           FXA_VERSION: ${{ steps.fxa.outputs.version }}
           FXA_ARCH: amd64
-          FXA_PAIRING_IMAGE: docker.io/mozilla/channelserver:1.5.0
+          FXA_PAIRING_IMAGE: docker.io/mozilla/channelserver:latest
         run: ./tests/e2e-fxa.sh
 
       # the page source and a screenshot of each Firefox window of a failed test_fxa_browser.py

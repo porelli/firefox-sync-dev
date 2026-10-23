@@ -58,10 +58,6 @@ env:
   REPOSITORY_REGISTRY: ghcr.io
   REPOSITORY_FULL_NAME: ${{ github.repository }}
   CHART_DIR: charts/firefox-sync
-  HELM_VERSION: v3.22.1
-  KIND_VERSION: v0.33.0
-  KUBECONFORM_VERSION: v0.8.0
-  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
 
 jobs:
   ## the version of Chart.yaml; on a chart-v tag, a mistyped or misplaced tag fails here, first ##
@@ -72,6 +68,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      kind: ${{ steps.tools.outputs.kind }}
+      kubectl: ${{ steps.tools.outputs.kubectl }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -94,6 +92,20 @@ jobs:
           cat version.txt >> "${GITHUB_OUTPUT}"
           cat version.txt
 
+      - name: The latest kind and kubectl
+        # helm/kind-action installs its own release's defaults otherwise: the newest releases,
+        # for every job of the run (Helm is azure/setup-helm's latest, chart-testing its defaults)
+        id: tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          kind=$(gh api repos/kubernetes-sigs/kind/releases/latest --jq .tag_name)
+          kubectl=$(curl -fsSL https://dl.k8s.io/release/stable.txt)
+          [[ "${kind}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "${kubectl}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::no kind (${kind}) or kubectl (${kubectl}) version"; exit 1; }
+          echo "kind ${kind}, kubectl ${kubectl}"
+          { echo "kind=${kind}"; echo "kubectl=${kubectl}"; } >> "${GITHUB_OUTPUT}"
+
   ## ct lint, kubeconform, tests/helm.sh lint (its template checks, then parity with compose) ##
   lint:
     needs: version
@@ -112,26 +124,29 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@v5
-        with:
-          version: ${{ env.HELM_VERSION }}
 
       - name: Set up chart-testing
-        uses: helm/chart-testing-action@v2.9.0
-        with:
-          version: 3.15.0
-          yamllint_version: 1.33.0
-          yamale_version: 6.0.0
+        # (its defaults: the chart-testing, yamllint and yamale of its latest release)
+        uses: helm/chart-testing-action@v2
 
       - name: Install kubeconform and PyYAML
         # (python3 is now the venv of chart-testing, VIRTUAL_ENV: PyYAML for tests/helm.sh in it)
+        # kubeconform: its latest release, checked against that release's CHECKSUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL -o /tmp/kubeconform.tar.gz \
-            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
-          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c
-          mkdir -p "${RUNNER_TEMP}/bin"
-          tar -xzf /tmp/kubeconform.tar.gz -C "${RUNNER_TEMP}/bin" kubeconform
+          tag=$(gh api repos/yannh/kubeconform/releases/latest --jq .tag_name)
+          echo "kubeconform ${tag}"
+          mkdir -p /tmp/kubeconform "${RUNNER_TEMP}/bin"
+          cd /tmp/kubeconform
+          for f in CHECKSUMS kubeconform-linux-amd64.tar.gz; do
+            curl -fsSL -o "${f}" "https://github.com/yannh/kubeconform/releases/download/${tag}/${f}"
+          done
+          grep -E '^[0-9a-f]{64} +kubeconform-linux-amd64\.tar\.gz$' CHECKSUMS | sha256sum -c --strict
+          tar -xzf kubeconform-linux-amd64.tar.gz -C "${RUNNER_TEMP}/bin" kubeconform
+          cd - > /dev/null
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
-          uv pip install pyyaml==6.0.3
+          uv pip install pyyaml
           python3 -I -c 'import yaml'
           docker compose version
 
@@ -177,14 +192,13 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@v5
-        with:
-          version: ${{ env.HELM_VERSION }}
 
       - name: Set up kind and kubectl
         # (tests/helm.sh creates and deletes its cluster)
-        uses: helm/kind-action@v1.15.1
+        uses: helm/kind-action@v1
         with:
-          version: ${{ env.KIND_VERSION }}
+          version: ${{ needs.version.outputs.kind }}
+          kubectl_version: ${{ needs.version.outputs.kubectl }}
           install_only: true
 
       - name: Login to GitHub Container Registry
@@ -257,13 +271,12 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@v5
-        with:
-          version: ${{ env.HELM_VERSION }}
 
       - name: Set up kind and kubectl
-        uses: helm/kind-action@v1.15.1
+        uses: helm/kind-action@v1
         with:
-          version: ${{ env.KIND_VERSION }}
+          version: ${{ needs.version.outputs.kind }}
+          kubectl_version: ${{ needs.version.outputs.kubectl }}
           install_only: true
 
       - name: Login to GitHub Container Registry
@@ -312,8 +325,6 @@ jobs:
         # of a third-party action must not reach the token that publishes (the other jobs
         # keep the tags, as the repository's other workflows)
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: ${{ env.HELM_VERSION }}
 
       - name: Where the chart is published
         # Chart.yaml's annotation (the public repository's in the tree), which the admin UI's

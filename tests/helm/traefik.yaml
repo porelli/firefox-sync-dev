@@ -67,7 +67,7 @@ spec:
       serviceAccountName: traefik
       containers:
         - name: traefik
-          image: docker.io/library/traefik:v3
+          image: docker.io/library/traefik:latest
           imagePullPolicy: Never
           args:
             - --providers.kubernetesingress

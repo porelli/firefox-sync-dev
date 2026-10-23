@@ -37,7 +37,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: admin/go.mod
+          # the newest Go, as admin/Dockerfile's golang:1 (go.mod's go line is the minimum)
+          go-version: stable
           cache-dependency-path: admin/go.sum
 
       - name: Unit tests
@@ -154,7 +155,8 @@ jobs:
             runner: ubuntu-latest
             fxa_db: mysql
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            # GitHub has no -latest label for arm (actions/runner-images): the newest Ubuntu
+            runner: ubuntu-26.04-arm
             fxa_db: mysql
           - arch: amd64
             runner: ubuntu-latest
@@ -222,7 +224,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # the accounts phase pulls a 5 GB image and takes up to 20 minutes to start
     timeout-minutes: 75
     steps:

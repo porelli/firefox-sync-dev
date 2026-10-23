@@ -159,7 +159,8 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            # GitHub has no -latest label for arm (actions/runner-images): the newest Ubuntu
+            runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -253,7 +254,8 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            # GitHub has no -latest label for arm (actions/runner-images): the newest Ubuntu
+            runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
@@ -383,7 +385,8 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            # GitHub has no -latest label for arm (actions/runner-images): the newest Ubuntu
+            runner: ubuntu-26.04-arm
           - arch: amd64
             runner: ubuntu-latest
             mysql_image: mysql:8
@@ -695,9 +698,10 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            # GitHub has no -latest label for arm (actions/runner-images): the newest Ubuntu
+            runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
     # compose (MariaDB, PostgreSQL), quadlets, then the 5 GB accounts image and its
     # quadlets (up to 20 minutes to start)

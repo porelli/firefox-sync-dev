@@ -16,7 +16,7 @@ x-health-test: &health-test
 
 services:
   caddy:
-    image: caddy:2-alpine
+    image: caddy:alpine
     volumes:
       - ./tests/Caddyfile.fxa:/etc/caddy/Caddyfile:ro
       - caddy-data:/data/caddy
@@ -33,7 +33,7 @@ services:
 
   # Caddy keeps its CA private, publish the certificate for the FxA services and the tests
   caddy-ca:
-    image: caddy:2-alpine
+    image: caddy:alpine
     command: [sh, -c, "until [ -f /data/caddy/pki/authorities/local/root.crt ]; do sleep 1; done; cp /data/caddy/pki/authorities/local/root.crt /caddy-ca/root.crt && chmod 644 /caddy-ca/root.crt"]
     volumes:
       - caddy-data:/data/caddy:ro

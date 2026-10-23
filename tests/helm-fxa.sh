@@ -960,7 +960,7 @@ fxa_e2e() {
   # (also the image of the tests' pods: python3 with PyFxA, MySQLdb and psycopg2, curl)
   SYNC_IMAGE="${repository}:syncstorage-rs-${flavor}-${tag}"
   # the fixtures' images (tests/helm/traefik.yaml, tests/helm/fxa-fixtures.yaml)
-  TRAEFIK_IMAGE=docker.io/library/traefik:v3
+  TRAEFIK_IMAGE=docker.io/library/traefik:latest
   MAILPIT_IMAGE=docker.io/axllent/mailpit:latest
   # the pairing server's (fxa.pairing.image empty: <image.repository>:fxa-channelserver-latest)
   PAIRING_IMAGE="${repository}:fxa-channelserver-latest"
