@@ -469,6 +469,8 @@ jobs:
 
       - name: Set up rootless podman and a systemd user session
         run: |
+          # Ubuntu 26.04's AppArmor profile of pasta refuses podman's signal (the script says more)
+          .github/scripts/pasta-apparmor.sh
           sudo loginctl enable-linger "${USER}"
           for i in $(seq 1 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> ${GITHUB_ENV}

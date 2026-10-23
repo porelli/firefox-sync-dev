@@ -45,6 +45,12 @@ Symptoms and their fixes, by area. Each entry starts with what you see: an error
 - **A one-shot unit does not run again** (the migrations, the init container, the sign-up policy). They stay "active" after their first run. Stop them along with the units that need them, as in [Quadlets](upgrading.md#quadlets).
 - **A unit points at `config/database/admin-user.sh`, which is gone.** Units rendered before the release that added `db/`: run `./prepare_environment.sh --upgrade` ([Files that moved](upgrading.md#files-that-moved)).
 - **The Sync server's state, logs and health checks.** See [Check the units](install/podman.md#check-the-units).
+- **`rootless netns: kill network process: permission denied` on Ubuntu 26.04.** Ubuntu's AppArmor profile of `pasta` refuses the signal Podman sends it when the last container of its bridge networks goes ([Ubuntu bug 2154379](https://bugs.launchpad.net/bugs/2154379)): `docker compose up` on the Podman socket cannot remove the containers it recreates. Until Ubuntu fixes it, let `pasta` receive that signal, as CI does ([pasta-apparmor.sh](/.github/scripts/pasta-apparmor.sh)), and again after an update of the `passt` package puts the profile back:
+
+    ```bash
+    sudo sed -i 's|^\(\s*include <abstractions/pasta>\)$|\1\n  signal (receive) set=(term) peer=podman,|' /etc/apparmor.d/usr.bin.pasta
+    sudo apparmor_parser -r /etc/apparmor.d/usr.bin.pasta
+    ```
 
 ## Kubernetes
 
