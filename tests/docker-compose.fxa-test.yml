@@ -39,7 +39,7 @@ services:
   # SSO=authelia (COMPOSE_PROFILES): forward auth in front of the accounts pages and of the
   # admin UI's admin-sso.fxa.test, its login page at auth.fxa.test (tests/caddy/authelia)
   authelia:
-    image: authelia/authelia:4.39
+    image: authelia/authelia:latest
     profiles: [authelia]
     volumes:
       - ./tests/caddy/authelia/configuration.yml:/config/configuration.yml:ro
