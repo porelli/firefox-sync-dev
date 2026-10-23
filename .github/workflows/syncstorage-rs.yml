@@ -463,14 +463,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
-    # the Quadlets on PostgreSQL too (their accounts phase is the same as the default run's)
+    # the defaults (Sync on MariaDB, the accounts on MySQL), Sync on MySQL and on PostgreSQL,
+    # the accounts on MariaDB; every database on its lts (PostgreSQL: latest). Without the
+    # accounts where their phase is the default's
     strategy:
       fail-fast: false
       matrix:
         include:
-          - sync_db: mariadb
-          - sync_db: postgres
+          - variant: default
+            sync_db: mariadb
+          - variant: sync-mysql
+            sync_db: mysql
             skip_fxa: "1"
+          - variant: sync-postgres
+            sync_db: postgres
+            skip_fxa: "1"
+          - variant: fxa-mariadb
+            sync_db: mariadb
+            fxa_db: mariadb
 
     steps:
       - name: Checkout
@@ -485,6 +495,18 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> ${GITHUB_ENV}
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> ${GITHUB_ENV}
 
+      - name: Disable the runner's AppArmor profile of MySQL
+        # the runner's own MySQL server's profile (/usr/sbin/mysqld) also confines the mysqld of
+        # the mysql image in rootless Podman's containers: no /etc/my.cnf, nor its error messages,
+        # and podman cannot stop it ("given PID did not die within timeout"), as in helm.yml
+        if: matrix.sync_db == 'mysql'
+        run: |
+          if [[ -e /etc/apparmor.d/usr.sbin.mysqld ]]; then
+            sudo ln -sf /etc/apparmor.d/usr.sbin.mysqld /etc/apparmor.d/disable/
+            sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld || true
+          fi
+          sudo grep mysqld /sys/kernel/security/apparmor/profiles && exit 1 || echo "no mysqld profile loaded"
+
       - name: Login to GitHub Container Registry
         # docker compose sends the docker CLI credentials to the Podman socket when pulling
         run: |
@@ -496,6 +518,7 @@ jobs:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
           SYNC_DB: ${{ matrix.sync_db }}
+          FXA_DB: ${{ matrix.fxa_db }}
           SKIP_FXA: ${{ matrix.skip_fxa }}
         run: ./tests/podman.sh
 

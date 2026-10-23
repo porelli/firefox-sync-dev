@@ -41,7 +41,9 @@ The defaults follow each database's long-term tag (`mariadb:lts`, `mysql:lts`; P
 | Accounts | MariaDB `lts` (needs mozilla/fxa#21494) | fxa.yml `test-mariadb`, admin.yml `e2e-fxa` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`) |
 | Accounts | MariaDB 11 (installs from before) | fxa.yml `test-mariadb` (`mariadb:11`) | - |
 | Podman, Quadlets | the defaults (MariaDB `lts`, the accounts on MySQL as above) | syncstorage-rs.yml, fxa.yml and admin.yml `test-podman`/`podman` | - |
-| Podman, Quadlets | PostgreSQL `latest` (its major pinned, `SYNC_DB=postgres`) | syncstorage-rs.yml `test-podman` (`postgres`) | - |
+| Podman, Quadlets | Sync on MySQL `lts` (`SYNC_DB=mysql`) | syncstorage-rs.yml `test-podman` (`sync-mysql`) | - |
+| Podman, Quadlets | Sync on PostgreSQL `latest` (its major pinned, `SYNC_DB=postgres`) | syncstorage-rs.yml `test-podman` (`sync-postgres`) | - |
+| Podman, Quadlets | the accounts on MariaDB `lts` (`FXA_DB=mariadb`) | syncstorage-rs.yml `test-podman` (`fxa-mariadb`) | - |
 
 Redis (the accounts' cache, no volume) follows `redis:alpine` in every run with the accounts.
 
