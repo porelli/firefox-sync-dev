@@ -21,7 +21,7 @@ How to read the tables:
 | `FXA_OAUTH_SERVER_URL` | `fxa.oauthServerUrl` | `https://oauth.accounts.firefox.com/v1` | where the tokenserver checks the sign-in tokens. Self-hosted accounts: `http://fxa-auth:9000/v1` (Helm: the chart sets it with `fxa.enabled`) | |
 | `FXA_EMAIL_DOMAIN` | `fxa.emailDomain` | `api.accounts.firefox.com` | the tokenserver keeps each account as `<uid>@FXA_EMAIL_DOMAIN`. Self-hosted accounts: the host of `FXA_AUTH_URL` (Helm: set by the chart). A new value makes every account a new one | |
 | `COMPOSE_FILE` | – | unset: `docker-compose.yml` | the compose files, separated by `:`: add `docker-compose.sync-postgres.yml`, `docker-compose.sync-mysql.yml`, `docker-compose.fxa.yml`, `docker-compose.fxa-mariadb.yml` as needed | |
-| `COMPOSE_PROFILES` | `admin.enabled`, `backup.enabled` | unset: none | the optional services, comma-separated: `admin`, `backup`, `pairing` (self-hosted accounts) | |
+| `COMPOSE_PROFILES` | `admin.enabled`, `backup.enabled` | unset: none | the optional services that run, the whole list comma-separated: `admin`, `backup`, `pairing` (self-hosted accounts), see [Optional services](../install/compose.md#optional-services) | |
 
 ## Images
 

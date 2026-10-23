@@ -146,6 +146,8 @@ Upgrading the images: see [Upgrading](../upgrading.md#quadlets).
    export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
    ```
 
+1. Choose the optional services in `COMPOSE_PROFILES` of `.env`, as for [docker compose](compose.md#optional-services).
+
 1. Start the stack, with the file of your database backend:
 
    ```bash
@@ -156,6 +158,8 @@ Upgrading the images: see [Upgrading](../upgrading.md#quadlets).
    # PostgreSQL
    docker compose -f docker-compose.sync-postgres.yml up -d
    ```
+
+   With `-f`, compose does not read `COMPOSE_FILE`: with self-hosted accounts add `-f docker-compose.fxa.yml` (and `-f docker-compose.fxa-mariadb.yml` with `FXA_DB=mariadb`), which also has the pairing server. The script prints the whole command for your choices.
 
    [docker-compose.podman.yml](/docker-compose.podman.yml) gives the healthchecks of the Sync server and the MariaDB or MySQL databases more time, for slower rootless starts.
 
