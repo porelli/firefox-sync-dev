@@ -9,6 +9,14 @@
 # new database): the command as it is.
 set -eu
 
+# The images before 18 keep their data in /var/lib/postgresql/data, a VOLUME of theirs: under
+# compose's volume at /var/lib/postgresql that is an anonymous volume of its own, which the next
+# docker compose down leaves behind (the data gone from postgres-db). With no data there yet,
+# in <major>/docker, where 18 and later keep it: on the volume, and found by the check below
+if [ -n "${PG_MAJOR:-}" ] && [ "${PGDATA:-}" = /var/lib/postgresql/data ] && [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+  PGDATA=/var/lib/postgresql/${PG_MAJOR}/docker
+  export PGDATA
+fi
 if [ -n "${PG_MAJOR:-}" ] && [ ! -s "${PGDATA:-/nonexistent}/PG_VERSION" ]; then
   for f in /var/lib/postgresql/PG_VERSION /var/lib/postgresql/data/PG_VERSION /var/lib/postgresql/*/docker/PG_VERSION; do
     [ -s "${f}" ] || continue
