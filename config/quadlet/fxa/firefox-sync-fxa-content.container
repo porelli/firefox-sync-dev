@@ -32,7 +32,7 @@ Environment="REDIS_HOST=fxa-redis"
 Environment="GEODB_ENABLED=false"
 Volume=%SCRIPT_DIR%/config/fxa:/fxa-config:ro,z
 PublishPort=%FXA_CONTENT_EXPORT_PORT%:3030
-HealthCmd=node -e "fetch('http://localhost:3030/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+HealthCmd=["node", "-e", "fetch('http://localhost:3030/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 HealthInterval=15s
 HealthTimeout=10s
 HealthRetries=5

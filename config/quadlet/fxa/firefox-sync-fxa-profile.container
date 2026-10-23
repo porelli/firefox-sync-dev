@@ -32,7 +32,7 @@ Environment="EVENTS_ENABLED=false"
 Volume=firefox-sync-fxa-profile-images.volume:/fxa/packages/fxa-profile-server/var/public
 PublishPort=%FXA_PROFILE_EXPORT_PORT%:1111
 # /__heartbeat__ also asks the accounts database (/__lbheartbeat__ only the process)
-HealthCmd=node -e "fetch('http://localhost:1111/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+HealthCmd=["node", "-e", "fetch('http://localhost:1111/__heartbeat__').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 HealthInterval=15s
 HealthTimeout=10s
 HealthRetries=5
