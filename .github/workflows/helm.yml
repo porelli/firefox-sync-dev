@@ -131,7 +131,9 @@ jobs:
 
       - name: Install kubeconform and PyYAML
         # (python3 is now the venv of chart-testing, VIRTUAL_ENV: PyYAML for tests/helm.sh in it)
-        # kubeconform: its latest release, checked against that release's CHECKSUMS
+        # kubeconform: its latest release, checked against that release's CHECKSUMS. It publishes
+        # no signature or attestation: the checksum only guards against a corrupt download, and
+        # this job's token is read-only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -314,6 +316,8 @@ jobs:
       contents: read
       packages: write
     timeout-minutes: 10
+    env:
+      PUBLISH_HELM_VERSION: v4.3.1
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -325,6 +329,23 @@ jobs:
         # of a third-party action must not reach the token that publishes (the other jobs
         # keep the tags, as the repository's other workflows)
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.PUBLISH_HELM_VERSION }}
+
+      - name: The Helm that publishes is the release's binary
+        # a security pin, as the action's commit: the job holds a token that writes packages, so
+        # its Helm is a fixed version checked against that release's sha256 (get.helm.sh and the
+        # release notes give the same), which the action itself does not check. The other jobs
+        # test with the latest Helm; move this one to a version they tested.
+        env:
+          PUBLISH_HELM_SHA256: 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
+        run: |
+          d=$(mktemp -d)
+          curl -fsSL -o "${d}/helm.tar.gz" "https://get.helm.sh/helm-${PUBLISH_HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${PUBLISH_HELM_SHA256}  ${d}/helm.tar.gz" | sha256sum -c --strict
+          tar -xzf "${d}/helm.tar.gz" -C "${d}" linux-amd64/helm
+          cmp "${d}/linux-amd64/helm" "$(command -v helm)"
+          helm version
 
       - name: Where the chart is published
         # Chart.yaml's annotation (the public repository's in the tree), which the admin UI's

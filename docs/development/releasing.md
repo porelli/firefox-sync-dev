@@ -27,7 +27,7 @@ What the workflow checks and does:
 - [chart-version.sh](/.github/scripts/chart-version.sh) refuses a tag that is not `chart-v<version>`. A stable version must come from a commit of the default branch. A pre-release (`0.1.0-dev.1`) can come from any branch, to test the publishing: `helm install` without `--version` or `--devel` never picks one.
 - A version is published once, never replaced: [chart-unpublished.sh](/.github/scripts/chart-unpublished.sh) fails when the registry has it, or does not clearly answer that it is missing.
 - The chart goes to `oci://ghcr.io/<owner>/<repository>/charts/firefox-sync` (for this repository `oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync`). `Chart.yaml`'s annotation `org.firefox-sync/chart` is set to that address: the admin UI's `helm upgrade` commands show it, with the release's `--version`.
-- The publish job holds `packages: write`, so it pins its third-party action (`azure/setup-helm`) by commit. The other jobs use tags, as the other workflows.
+- The publish job holds `packages: write`, so it pins its third-party action (`azure/setup-helm`) by commit, and its Helm to one version (`PUBLISH_HELM_VERSION`), checked against that release's sha256. The other jobs use tags, and the latest Helm: move the publish job's to a version they passed with.
 
 ## Package visibility
 

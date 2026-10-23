@@ -4,7 +4,7 @@
 # published once, .github/workflows/helm.yml). Fails closed: the version there ("already
 # published"), or any other answer (unreachable, login, rate limit, an unknown message), fails
 # with helm's error shown. Not found is helm's (oras') message for a missing tag or repository,
-# as ghcr.io and registry:2 answer it (helm 3.22): '<ref>: not found'.
+# as ghcr.io and registry:2 answer it (helm 3.22 and 4.3): '<ref>: not found'.
 set -uo pipefail
 
 chart=$1 version=$2
