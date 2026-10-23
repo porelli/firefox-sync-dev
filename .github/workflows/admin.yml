@@ -166,6 +166,12 @@ jobs:
             runner: ubuntu-latest
             fxa_db: mysql
             external_db: "1"
+          # the same on MySQL 8 with mysql_native_password, the servers of the installs from before
+          - arch: amd64
+            runner: ubuntu-latest
+            fxa_db: mysql
+            external_db: "1"
+            fxa_mysql_image: mysql:8
           # the same on MariaDB (lts, or 11 for an accounts image without mozilla/fxa#21494)
           - arch: amd64
             runner: ubuntu-latest
@@ -193,12 +199,14 @@ jobs:
           docker build -q -t "${REPOSITORY}:syncstorage-rs-mysql-init-latest" db/mysql/init
           docker build -q -t "${REPOSITORY}:syncstorage-rs-postgres-init-latest" db/postgres/init
 
-      - name: End-to-end tests with self-hosted Mozilla accounts (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }})
+      - name: End-to-end tests with self-hosted Mozilla accounts (${{ matrix.fxa_db }}${{ matrix.external_db && ', your own database server' || '' }}${{ matrix.fxa_mysql_image && format(', {0}', matrix.fxa_mysql_image) || '' }})
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: latest
           FXA_DB: ${{ matrix.fxa_db }}
           EXTERNAL_DB: ${{ matrix.external_db || '' }}
+          # (empty: the default, mysql:lts for an accounts image with mozilla/fxa#21554)
+          FXA_MYSQL_IMAGE: ${{ matrix.fxa_mysql_image || '' }}
           ADMIN_IMAGE: ${{ needs.build.outputs.image }}
           FXA_IMAGE: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           FXA_VERSION: fxa-mono-latest

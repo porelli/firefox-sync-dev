@@ -115,8 +115,10 @@ case "${FXA_DB:-mysql}" in mysql|mariadb) sed -i "s|^FXA_DB=.*|FXA_DB=${FXA_DB:-
 fxa_tested=$(sed -n 's/^FXA_IMAGE=//p' "${ENV_FILE}"):$(sed -n 's/^FXA_VERSION=//p' "${ENV_FILE}")
 # shellcheck source=tests/fxa_fix.sh
 source "${TESTS}/fxa_fix.sh"
+# (a missing image is pulled with SKIP_PULL too, as docker compose up would pull it later: else
+# its labels would read as none, and the accounts would run on the older majors)
 fxa_has() {
-  docker image inspect "${fxa_tested}" > /dev/null 2>&1 || [ -n "${SKIP_PULL:-}" ] ||
+  docker image inspect "${fxa_tested}" > /dev/null 2>&1 ||
     docker pull -q --platform "linux/$(sed -n 's/^FXA_ARCH=//p' "${ENV_FILE}")" "${fxa_tested}" > /dev/null
   fxa_image_fixed "$1" "${fxa_tested}"
 }
