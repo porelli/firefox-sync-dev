@@ -984,11 +984,18 @@ upgrade_env() {
         [ -n "$(env_value SYNC_POSTGRES_APP_USER)" ] || set_value SYNC_POSTGRES_APP_USER syncserver_app
         set_value SYNC_POSTGRES_APP_PASSWORD "$(generate_random_string 32)"
     fi
-    # Sync on PostgreSQL, from before SYNC_POSTGRES_IMAGE: postgres:18, the major it runs (every
-    # release so far used 18, git log -- docker-compose.sync-postgres.yml confirms it)
+    # Sync on PostgreSQL, from before SYNC_POSTGRES_IMAGE: the major its data is on, read from the
+    # stack's volume (PG_VERSION); without a readable volume (your own server, another host)
+    # postgres:18, which every release before SYNC_POSTGRES_IMAGE ran (git log --
+    # docker-compose.sync-postgres.yml)
     if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && ! env_has SYNC_POSTGRES_IMAGE; then
-        set_value SYNC_POSTGRES_IMAGE postgres:18
-        echo "SYNC_POSTGRES_IMAGE=postgres:18: the Sync database stays on PostgreSQL 18. To move it to"
+        local pg_major=18 pg_volume
+        if [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && pg_volume=$(db_volume postgres-db) \
+            && pg_volume=$(postgres_volume_major ${pg_volume}); then
+            pg_major=${pg_volume}
+        fi
+        set_value SYNC_POSTGRES_IMAGE "postgres:${pg_major}"
+        echo "SYNC_POSTGRES_IMAGE=postgres:${pg_major}: the Sync database stays on PostgreSQL ${pg_major}. To move it to"
         echo "  a newer major: a dump and restore or pg_upgrade (docs/upgrading.md#postgresql)"
     fi
     # the accounts on MariaDB, from before FXA_MARIADB_IMAGE: on 11, they stay there (unset
@@ -1504,15 +1511,22 @@ fi
 
 # PostgreSQL has no lts (every major is supported for 5 years) and no major opens another's
 # data: the major of the install, decided before .env is written. One that ran PostgreSQL
-# before keeps its SYNC_POSTGRES_IMAGE (postgres:18 without one: every release before it used
-# 18, git log -- docker-compose.sync-postgres.yml); a new setup over the PostgreSQL volume of an
+# before keeps its SYNC_POSTGRES_IMAGE (without one: the major of its volume's data, else 18,
+# which every release before it used, git log -- docker-compose.sync-postgres.yml); a new setup over the PostgreSQL volume of an
 # earlier install the major of its data; a new install the major postgres:latest is at now, read
 # from the image itself. Unset it would be postgres:latest, which a new major leaves unable to
 # start: not knowing the major is an error
 SYNC_POSTGRES_PIN="" SYNC_POSTGRES_MAJOR="" SYNC_POSTGRES_VOLUME=""
 if [ "${DATABASE_BACKEND}" = postgres ]; then
     if [ "${PREVIOUS_SYNCSTORAGE_IMAGE}" = "syncstorage-rs-postgres" ]; then
-        SYNC_POSTGRES_PIN=${PREVIOUS_POSTGRES_IMAGE:-postgres:18}
+        SYNC_POSTGRES_PIN=${PREVIOUS_POSTGRES_IMAGE}
+        # from before SYNC_POSTGRES_IMAGE: the major of its data, else 18 (every release before it)
+        if [ -z "${SYNC_POSTGRES_PIN}" ]; then
+            SYNC_POSTGRES_PIN=postgres:18
+            [ "${EXTERNAL_DB}" != "yes" ] && SYNC_POSTGRES_VOLUME=$(db_volume postgres-db) \
+                && SYNC_POSTGRES_VOLUME_MAJOR=$(postgres_volume_major ${SYNC_POSTGRES_VOLUME}) \
+                && SYNC_POSTGRES_PIN=postgres:${SYNC_POSTGRES_VOLUME_MAJOR}
+        fi
     elif [ "${EXTERNAL_DB}" != "yes" ] && SYNC_POSTGRES_VOLUME=$(db_volume postgres-db) \
         && SYNC_POSTGRES_VOLUME_MAJOR=$(postgres_volume_major ${SYNC_POSTGRES_VOLUME}); then
         SYNC_POSTGRES_PIN=postgres:${SYNC_POSTGRES_VOLUME_MAJOR}
