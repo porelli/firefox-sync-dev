@@ -82,7 +82,7 @@ This only works between syncstorage-rs servers (the Rust one) on the same kind o
     docker compose run --rm sync_role_init
     docker compose run --rm --no-deps -T --entrypoint sh sync_role_init -c 'PGPASSWORD="$POSTGRES_SYNC_PASSWORD" psql -h "$POSTGRES_SERVER" -U "$POSTGRES_SYNC_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1' < syncserver.sql
     ```
-    With Quadlets (MariaDB only, not tested): `systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`, then the same with `podman exec -i firefox-sync-tokenserver-db sh -c '...' < tokenserver.sql` and `firefox-sync-syncstorage-db`, then start `firefox-sync-syncstorage.service`.
+    With Quadlets, MariaDB or MySQL: `systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`, then, once `podman healthcheck run firefox-sync-tokenserver-db` and `firefox-sync-syncstorage-db` pass, the same with `podman exec -i firefox-sync-tokenserver-db sh -c '...' < tokenserver.sql` and `firefox-sync-syncstorage-db`, then start `firefox-sync-syncstorage.service`. PostgreSQL: `systemctl --user start firefox-sync-sync-role-init.service` (the database starts first), then `podman exec -i firefox-sync-postgres-db sh -c 'PGPASSWORD="$FFS_SYNC_PASSWORD" psql -h 127.0.0.1 -U "$FFS_SYNC_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < syncserver.sql`, then start `firefox-sync-syncstorage.service`.
 
     With [your own database server](databases.md#your-own-server), load them with `mariadb` or `psql` as in [Move an existing install](databases.md#move-an-existing-install) (not tested).
 1. `docker compose up -d`.
@@ -106,7 +106,7 @@ To Kubernetes: load the dumps into docker compose as above, then follow [From do
 
 Rollback: as in [Start fresh first](#start-fresh-first). What was synced to firefox-sync in the meantime is not on the old server, but the devices still have it and upload it again.
 
-Tested: the steps above (docker compose; not the Quadlets nor your own database server) in every scenario of the sections below. `tests/migrate.sh` runs the commands of this section and of "Checking the result" as written, with the admin UI on. Not tested with a real Firefox: the client is upstream's test client, signing in like Firefox does after a sign-in.
+Tested: the steps above (docker compose; not your own database server) in every scenario of the sections below. The Quadlets: `tests/podman.sh` (`SYNC_DB=mysql`, `SYNC_DB=postgres` too) loads the dumps of a Quadlet install into a new one with the commands above, as written here. `tests/migrate.sh` runs the commands of this section and of "Checking the result" as written, with the admin UI on. Not tested with a real Firefox: the client is upstream's test client, signing in like Firefox does after a sign-in.
 
 ## From docker compose to Kubernetes
 

@@ -13,7 +13,13 @@
 #               of a user's install: one run of this test at a time per user in any case
 #   INIT_TAG    tag suffix of the init images (default: TAG), e.g. ones built from this tree
 #   SKIP_FXA    set to 1 to skip the quadlets with self-hosted accounts
+#   EXTERNAL_DB set to 1: the quadlets also on a server of SYNC_DB outside them (SYNC_DB_CONTAINERS=0)
 #   FXA_DB      mysql (default) or mariadb: the accounts database of the quadlets with accounts
+#   FXA_MYSQL_FROM, FXA_MARIADB_FROM  e.g. mysql:8 (with mysql_native_password, as the installs from
+#               before) or mariadb:11: the quadlets with accounts start their database on it, then move
+#               it to lts with the commands of docs/upgrading.md#mysql-8-to-9 or #mariadb
+#   SYNC_MYSQL_FROM  e.g. mysql:8, with SYNC_DB=mysql: the quadlets' Sync databases start on it, then
+#               move to mysql:lts as docs/upgrading.md#mysql-8-to-9 says
 #   SYNC_DB     mariadb (default), mysql or postgres: the Sync databases of the compose and quadlet phases
 #               (MySQL, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/: compose as an
 #               install from before on mysql:8, pinned by --upgrade; the quadlets on mysql:lts.
@@ -485,6 +491,15 @@ else
   setup "${SYNC_DB}" 1
   check "$?" 0 "prepare_environment.sh (quadlets)"
 fi
+# SYNC_MYSQL_FROM=mysql:8: the Sync databases start on it, as an install from before, and move to
+# lts at the end of this phase as docs/upgrading.md#mysql-8-to-9 says for the Quadlets
+if [ -n "${SYNC_MYSQL_FROM:-}" ]; then
+  [ "${SYNC_DB}" = mysql ] || { echo "SYNC_MYSQL_FROM is for SYNC_DB=mysql"; exit 2; }
+  sed -i "s|^SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=${SYNC_MYSQL_FROM}|" .env
+  ./prepare_environment.sh --render-units < /dev/null > render-mysql-from.log 2>&1
+  check "$? $(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | sort -u)" "0 docker.io/library/${SYNC_MYSQL_FROM}" \
+    "the Sync databases and their backups on ${SYNC_MYSQL_FROM} first (quadlets)"
+fi
 # the Sync server on this host only for a new install (a port alone answered: 127.0.0.1),
 # an install from before keeps what it has (a port alone: every interface)
 if [ -n "${UPGRADE_FROM:-}" ]; then sync_listen=${PORT}; else sync_listen=127.0.0.1:${PORT}; fi
@@ -725,7 +740,8 @@ else
     INSERT INTO bso (userid, collection, id, payload, payload_size, modified, ttl) VALUES
       (${uid}, @c, 'restore-1', '{\"ciphertext\":\"it''s \\\\ ok\"}', 30, @m, @m + 86400000),
       (${uid}, @c, 'restore-2', CONCAT('line', CHAR(10), 'break'), 20, @m, @m + 86400000);"
-  payloads() { st_sql "SELECT MD5(GROUP_CONCAT(id, ':', payload ORDER BY id SEPARATOR '|')) FROM bso"; }
+  # (SHA2: MySQL 9 has no MD5)
+  payloads() { st_sql "SELECT SHA2(GROUP_CONCAT(id, ':', payload ORDER BY id SEPARATOR '|'), 256) FROM bso"; }
   PAYLOADS=$(payloads)
   # the units stopped as docs/backups.md#restore-with-quadlets says (nothing writes: the databases hold what the dump holds)
   systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service \
@@ -810,6 +826,29 @@ if [ "${SYNC_DB}" = postgres ]; then
   podman rmi "docker.io/library/postgres:${other}" > /dev/null 2>&1
 fi
 
+if [ -n "${SYNC_MYSQL_FROM:-}" ]; then
+  echo "== the Sync databases from ${SYNC_MYSQL_FROM} to mysql:lts, as docs/upgrading.md#mysql-8-to-9 says for the Quadlets"
+  UPGRADING_MD=$(cat "${CODE}/docs/upgrading.md")
+  for c in 'systemctl --user start firefox-sync-backup.service' './prepare_environment.sh --render-units' 'podman pull docker.io/library/mysql:lts' \
+    'systemctl --user restart firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service'; do
+    check "$([[ "${UPGRADING_MD}" == *"\`${c}\`"* ]] && echo yes)" yes "docs/upgrading.md#mysql-8-to-9 says ${c} for the Quadlets"
+  done
+  mysql_major() { podman exec "firefox-sync-$1-db" mysqld --version | sed -n 's/.* Ver \([0-9][0-9]*\)\..*/\1/p'; }
+  old_major=$(mysql_major tokenserver)
+  timeout 300 systemctl --user start firefox-sync-backup.service
+  check "$?" 0 "a backup before the move (quadlets, MySQL)"
+  sed -i 's|^SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=mysql:lts|' .env
+  ./prepare_environment.sh --render-units < /dev/null > render-mysql-lts.log 2>&1
+  check "$? $(sed -n 's/^  ✓ //p' render-mysql-lts.log | grep -vx 'firefox-sync-admin.container' | LC_ALL=C sort | paste -sd' ')" \
+    "0 firefox-sync-backup.container firefox-sync-syncstorage-db.container firefox-sync-tokenserver-db.container" "SYNC_MYSQL_IMAGE=mysql:lts in the database and backup units (quadlets)"
+  podman pull -q docker.io/library/mysql:lts > /dev/null
+  timeout 900 systemctl --user restart firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service
+  check "$? $(hb)" "0 200" "the databases restarted on mysql:lts, the Sync server after them (quadlets)"
+  check "$([ "$(mysql_major tokenserver)" -gt "${old_major}" ] && [ "$(mysql_major syncstorage)" -gt "${old_major}" ] && echo yes) $(ts_sql "SELECT COUNT(*) FROM users WHERE email = 'restore@ffs-e2e.invalid'") $([ "$(payloads)" = "${PAYLOADS}" ] && echo same)" \
+    "yes 1 same" "the Sync databases on MySQL $(mysql_major tokenserver) (from ${old_major}), their data as it was (quadlets)"
+  check "$(admin_up /login) $(metrics_show "${DB_UP[@]}")" "200 all" "the admin UI reaches the databases on mysql:lts (quadlets)"
+fi
+
 if [ "${FAILED}" != 0 ]; then
   tail -20 quadlet-dryrun.log
   journalctl --user -u 'firefox-sync-*' --no-pager | tail -60
@@ -823,6 +862,58 @@ stop_quadlets() {
   systemctl --user daemon-reload
   podman volume rm -f $(podman volume ls -q | grep '^firefox-sync-') > /dev/null 2>&1
 }
+
+echo "== the dumps of an install loaded into a new one, as docs/migrating.md#loading-into-firefox-sync says for the Quadlets"
+# the dumps: those of the last backup of this install, whole databases with the account and the
+# Sync items of the restore above, as another syncstorage-rs server's would be
+MIGRATING_MD=$(cat "${CODE}/docs/migrating.md")
+mig_documented() { [[ "${MIGRATING_MD}" == *"$1"* ]] && echo yes || echo "not in docs/migrating.md"; }
+run=$(podman run --rm -v firefox-sync-backups:/backups:ro docker.io/library/mariadb:lts ls /backups/sync | tail -1)
+mkdir -p "${WORK}/dumps"
+if [ "${SYNC_DB}" = postgres ]; then mig_dbs=(syncserver); else mig_dbs=(tokenserver syncstorage); fi
+for db in "${mig_dbs[@]}"; do dump "sync/${run}/${db}.sql.gz" > "${WORK}/dumps/${db}.sql"; done
+check "$(for db in "${mig_dbs[@]}"; do [ -s "${WORK}/dumps/${db}.sql" ] && echo "${db}"; done | paste -sd' ')" "${mig_dbs[*]}" "the dumps of ${run}"
+stop_quadlets
+# a new install (new passwords), not started
+rm -f .env
+setup "${SYNC_DB}" 1
+check "$?" 0 "prepare_environment.sh for the new install (quadlets)"
+if [ "${SYNC_DB}" = postgres ]; then
+  # shellcheck disable=SC2016 # (expanded in the database container)
+  MIG=('systemctl --user start firefox-sync-sync-role-init.service'
+    "podman exec -i firefox-sync-postgres-db sh -c 'PGPASSWORD=\"\$FFS_SYNC_PASSWORD\" psql -h 127.0.0.1 -U \"\$FFS_SYNC_USER\" -d \"\$POSTGRES_DB\" -v ON_ERROR_STOP=1' < syncserver.sql")
+else
+  # the lines of docker compose there, as the Quadlets' with podman exec -i in the units' containers
+  client=$([ "${SYNC_DB}" = mysql ] && echo mysql || echo mariadb)
+  MIG=('systemctl --user start firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service')
+  for db in tokenserver syncstorage; do
+    line=$(grep -m1 -E "^ *docker compose exec -T ${db}_db sh -c 'MYSQL_PWD=[^ ]* ${client} " "${CODE}/docs/migrating.md" | sed 's/^ *//')
+    check "$([ -n "${line}" ] && echo yes)" yes "docs/migrating.md loads ${db}.sql with ${client} (docker compose)"
+    MIG+=("$(sed "s/^docker compose exec -T ${db}_db /podman exec -i firefox-sync-${db}-db /" <<< "${line}")")
+  done
+  check "$(mig_documented "podman exec -i firefox-sync-tokenserver-db sh -c '...' < tokenserver.sql\` and \`firefox-sync-syncstorage-db")" yes \
+    "docs/migrating.md says podman exec -i firefox-sync-tokenserver-db for the Quadlets, firefox-sync-syncstorage-db the same"
+fi
+check "$(mig_documented "${MIG[0]}")" yes "docs/migrating.md says ${MIG[0]}"
+[ "${SYNC_DB}" != postgres ] || check "$(mig_documented "${MIG[1]}")" yes "docs/migrating.md says ${MIG[1]%% <*}"
+check "$(mig_documented 'then start `firefox-sync-syncstorage.service`')" yes "docs/migrating.md says to start firefox-sync-syncstorage.service then"
+eval "timeout 300 ${MIG[0]}"
+check "$?" 0 "${MIG[0]} (quadlets)"
+# (the databases answer: their healthchecks, as docs/migrating.md says)
+for _ in $(seq 1 60); do
+  ready=yes
+  for u in "${DB_UNITS[@]}"; do [ "${u}" = sync-role-init ] || podman healthcheck run "firefox-sync-${u}" > /dev/null 2>&1 || ready=""; done
+  [ -n "${ready}" ] && break
+  sleep 2
+done
+for c in "${MIG[@]:1}"; do
+  (cd "${WORK}/dumps" && eval "${c}") >> migrate-load.log 2>&1
+  check "$?" 0 "loaded: ${c%% sh -c*}, $(sed 's/.*< //' <<< "${c}") (quadlets)"
+done
+timeout 900 systemctl --user start firefox-sync-syncstorage.service
+check "$? $(hb) $(ts_sql "SELECT COUNT(*) FROM users WHERE email = 'restore@ffs-e2e.invalid'") $([ "$(payloads)" = "${PAYLOADS}" ] && echo same)" "0 200 1 same" \
+  "the new install with the account and the Sync items of the dumps (quadlets)"
+[ "${FAILED}" = 0 ] || tail -20 migrate-load.log
 stop_quadlets
 
 echo "== quadlets without the admin UI (mariadb)"
@@ -1155,6 +1246,24 @@ if [ -z "${SKIP_FXA:-}" ]; then
     "${QUADLET_DIR}/firefox-sync-admin.container")" 6 "admin UI signs in with the accounts (quadlets)"
   "${QUADLET}" -dryrun -user > quadlet-fxa-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the accounts files"
+  # FXA_MARIADB_FROM / FXA_MYSQL_FROM: the accounts' database starts on that major, as an install
+  # from before (MySQL 8: with mysql_native_password), and moves to lts below as
+  # docs/upgrading.md#mariadb and #mysql-8-to-9 say for the Quadlets
+  if [ "${FXA_DB}" = mariadb ] && [ -n "${FXA_MARIADB_FROM:-}" ]; then
+    sed -i "s|^FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=${FXA_MARIADB_FROM}|" .env
+    fxa_from=${FXA_MARIADB_FROM}
+  elif [ "${FXA_DB}" = mysql ] && [ -n "${FXA_MYSQL_FROM:-}" ]; then
+    sed -i -e '/^FXA_MYSQL_IMAGE=/d' -e '/^FXA_MYSQL_ARGS=/d' .env
+    printf 'FXA_MYSQL_IMAGE=%s\nFXA_MYSQL_ARGS=%s\n' "${FXA_MYSQL_FROM}" "--mysql-native-password=ON --authentication-policy=mysql_native_password" >> .env
+    fxa_from=${FXA_MYSQL_FROM}
+  else
+    fxa_from=""
+  fi
+  if [ -n "${fxa_from}" ]; then
+    ./prepare_environment.sh --render-units < /dev/null > render-fxa-from.log 2>&1
+    check "$? $(fxa_db_image) $(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" "0 docker.io/library/${fxa_from} docker.io/library/${fxa_from}" \
+      "the accounts' database and its backups on ${fxa_from} first (quadlets)"
+  fi
   fast_admin_checks
   check "${fxa_pulled}" 0 "pull mozilla/fxa-mono ${FXA_TEST_IMAGE:-${fxa_image}}"
   check "$(grep '^FXA_IMAGE=' .env | cut -d= -f2):$(grep '^FXA_VERSION=' .env | cut -d= -f2) $(grep '^FXA_ARCH=' .env | cut -d= -f2)" "${fxa_image} ${fxa_arch}" \
@@ -1170,7 +1279,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u) [$(grep -h '^PodmanArgs=--arch' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | sort -u)] $(grep -hc '^PodmanArgs=--network-alias=fxa-' "${QUADLET_DIR}"/firefox-sync-fxa-{migrations,auth}.container | awk '{ s += $1 } END { print s }') ${run_id}" \
     "${fxa_image} [$([ "${fxa_arch}" = "$(case "$(uname -m)" in aarch64|arm64) echo arm64 ;; *) echo amd64 ;; esac)" ] || echo "PodmanArgs=--arch=${fxa_arch}")] 2 ${fxa_image_id}" \
     "the accounts' units run ${fxa_image}, the image prepare_environment.sh read (not pulled over: no --arch on this host's architecture)"
-  if [ "${FXA_DB}" != mariadb ]; then
+  if [ "${FXA_DB}" != mariadb ] && [ -z "${fxa_from}" ]; then
     fxa_image_fixed mozilla/fxa#21554 "${fxa_image}" podman && want_db=docker.io/library/mysql:lts || want_db=docker.io/library/mysql:8
     check "$(fxa_db_image)" "${want_db}" "fxa-db's MySQL agrees with the image the units run ($([ "${want_db##*:}" = lts ] && echo with || echo without) mozilla/fxa#21554)"
   fi
@@ -1186,6 +1295,71 @@ if [ -z "${SKIP_FXA:-}" ]; then
     sleep 2
   done
   check "${ok}" yes "accounts API answers (quadlets)"
+  if [ -n "${fxa_from}" ]; then
+    echo "== the accounts' database from ${fxa_from} to lts, as docs/upgrading.md says for the Quadlets"
+    UPGRADING_MD=$(cat "${CODE}/docs/upgrading.md")
+    up_documented() { [[ "${UPGRADING_MD}" == *"$1"* ]] && echo yes || echo "not in docs/upgrading.md"; }
+    fxa_sql() { podman exec -e MYSQL_PWD="$(env_of FXA_MYSQL_PASSWORD)" firefox-sync-fxa-db sh -c 'exec "$(command -v mariadb || command -v mysql)" "$@"' sql -uroot -sN -e "$1"; }
+    accounts_up() {
+      local c
+      for _ in $(seq 1 225); do
+        c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${AUTH_PORT}/__heartbeat__")
+        [ "${c}" = 200 ] && break
+        sleep 2
+      done
+      echo "${c}"
+    }
+    old_db_version=$(fxa_sql "SELECT VERSION()")
+    migrations_at=$(systemctl --user show -p ActiveEnterTimestampMonotonic --value firefox-sync-fxa-migrations.service)
+    for c in 'systemctl --user start firefox-sync-backup.service' './prepare_environment.sh --render-units' "podman pull docker.io/library/${FXA_DB}:lts" 'systemctl --user restart firefox-sync-fxa-db.service'; do
+      check "$(up_documented "${c}")" yes "docs/upgrading.md says ${c} for the Quadlets"
+    done
+    if [ "${FXA_DB}" = mysql ]; then
+      # 2. the users off mysql_native_password: the query of the page, the ALTER USER statements
+      # (in mysql -uroot -p there) with FXA_MYSQL_PASSWORD
+      # shellcheck disable=SC2016
+      query='podman exec firefox-sync-fxa-db sh -c '"'"'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT user, host, plugin FROM mysql.user WHERE plugin = \"mysql_native_password\""'"'"
+      check "$(up_documented "${query}")" yes "docs/upgrading.md#mysql-8-to-9 lists the users on mysql_native_password with podman exec"
+      check "$(eval "${query}" 2> /dev/null | awk 'NR > 1 { print $1 "@" $2 }' | LC_ALL=C sort | paste -sd' ')" "root@% root@localhost" "on mysql_native_password: root only (quadlets)"
+      alter=$(sed -n "/^    ALTER USER 'root'@/p" "${CODE}/docs/upgrading.md" | sed -e 's/^ *//' -e "s/<FXA_MYSQL_PASSWORD>/$(env_of FXA_MYSQL_PASSWORD)/")
+      check "$(echo "${alter}" | grep -c '^ALTER USER')" 2 "docs/upgrading.md#mysql-8-to-9's ALTER USER statements"
+      fxa_sql "${alter}"
+      check "$? [$(eval "${query}" 2> /dev/null | awk 'NR > 1')]" "0 []" "every user on caching_sha2_password (quadlets)"
+      # 3. FXA_MYSQL_ARGS removed, rendered again, fxa-db restarted
+      sed -i '/^FXA_MYSQL_ARGS=/d' .env
+      ./prepare_environment.sh --render-units < /dev/null > render-fxa-native.log 2>&1
+      check "$? $(sed -n 's/^Exec=//p' "${QUADLET_DIR}/firefox-sync-fxa-db.container")" "0 mysqld --event-scheduler=ON " "FXA_MYSQL_ARGS removed: fxa-db without mysql_native_password (quadlets)"
+      # (the admin UI's unit rendered again too: its line of fast_admin_checks back)
+      fast_admin_checks
+      timeout 900 systemctl --user restart firefox-sync-fxa-db.service
+      check "$? $(accounts_up) $(fxa_sql "SELECT COUNT(*) FROM information_schema.plugins WHERE plugin_name = 'mysql_native_password' AND plugin_status = 'ACTIVE'")" "0 200 0" \
+        "fxa-db restarted on ${fxa_from} without mysql_native_password, the accounts API answers (quadlets)"
+    fi
+    # the backup, then the image of lts rendered into the units, pulled, the database restarted
+    timeout 600 systemctl --user start firefox-sync-backup.service
+    check "$?" 0 "a backup before the move (quadlets)"
+    move_since=$(date '+%Y-%m-%d %H:%M:%S')
+    if [ "${FXA_DB}" = mariadb ]; then sed -i "s|^FXA_MARIADB_IMAGE=.*|FXA_MARIADB_IMAGE=mariadb:lts|" .env; else sed -i "s|^FXA_MYSQL_IMAGE=.*|FXA_MYSQL_IMAGE=mysql:lts|" .env; fi
+    ./prepare_environment.sh --render-units < /dev/null > render-fxa-lts.log 2>&1
+    check "$? $(sed -n 's/^  ✓ //p' render-fxa-lts.log | grep -vx 'firefox-sync-admin.container' | LC_ALL=C sort | paste -sd' ')" "0 firefox-sync-backup-fxa.container firefox-sync-fxa-db.container" "the image of lts in the accounts' database and backup units (quadlets)"
+    fast_admin_checks
+    podman pull -q "docker.io/library/${FXA_DB}:lts" > /dev/null
+    timeout 900 systemctl --user restart firefox-sync-fxa-db.service
+    check "$? $(accounts_up)" "0 200" "fxa-db restarted on lts, the accounts API answers (quadlets)"
+    new_db_version=$(fxa_sql "SELECT VERSION()")
+    echo "accounts database: ${old_db_version} -> ${new_db_version}"
+    check "$([ "${old_db_version%%.*}" != "${new_db_version%%.*}" ] && [ "$(printf '%s\n' "${old_db_version%%-*}" "${new_db_version%%-*}" | sort -V | tail -n 1)" = "${new_db_version%%-*}" ] && echo yes) $(fxa_db_image)" \
+      "yes docker.io/library/${FXA_DB}:lts" "the accounts' database on a newer major (${old_db_version%%-*} -> ${new_db_version%%-*}, quadlets)"
+    if [ "${FXA_DB}" = mariadb ]; then
+      check "$(journalctl --user -u firefox-sync-fxa-db.service --since "${move_since}" --no-pager 2> /dev/null | grep -c 'Finished mariadb-upgrade')" 1 "mariadb-upgrade ran at the first start on lts, as the page says (quadlets)"
+    else
+      check "$(podman exec firefox-sync-fxa-db cat /var/lib/mysql/mysql_upgrade_history 2> /dev/null | grep -o '"version":"[^"]*"' | tail -n 1)" "\"version\":\"${new_db_version}\"" \
+        "MySQL upgraded the data in place at the first start on lts (quadlets)"
+    fi
+    # the units that require it started again after it
+    check "$([ "$(systemctl --user show -p ActiveEnterTimestampMonotonic --value firefox-sync-fxa-migrations.service)" -gt "${migrations_at}" ] && echo yes) $(systemctl --user is-active firefox-sync-fxa-migrations.service firefox-sync-fxa-auth.service firefox-sync-admin.service | sort -u)" \
+      "yes active" "the migrations ran again after the database, the accounts and the admin UI run (quadlets)"
+  fi
   check "$(curl -s http://127.0.0.1:${CONTENT_PORT}/.well-known/fxa-client-configuration | grep -o '"auth_server_base_url":"[^"]*"')" '"auth_server_base_url":"https://api.fxa.invalid"' "client configuration (quadlets)"
   journalctl --user -u firefox-sync-fxa-policy.service --no-pager 2> /dev/null | grep -m1 "sign-ups:"
   check "$(journalctl --user -u firefox-sync-fxa-policy.service --no-pager 2> /dev/null | grep -q 'max accounts: unlimited (FXA_MAX_ACCOUNTS=initial:unlimited' && echo yes)" yes \

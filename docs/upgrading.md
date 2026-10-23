@@ -321,12 +321,17 @@ The accounts on MariaDB (`FXA_DB=mariadb`): from MariaDB 11 (`FXA_MARIADB_IMAGE=
 1. Run `docker compose pull && docker compose up -d`. At its first start the new MariaDB upgrades the data itself (`MARIADB_AUTO_UPGRADE`: `mariadb-upgrade`, after a backup of its system tables). `docker compose logs fxa-db` says `Finished mariadb-upgrade`. Then the migrations and the services start as after any upgrade.
 1. Check as in [Self-hosted accounts](#self-hosted-accounts), step 4. The admin UI's overview also shows the new version next to "Accounts database". If anything fails: stop the stack, and restore the backup into an empty `fxa-db-mariadb` volume with the older `FXA_MARIADB_IMAGE` ([Restore](backups.md#restore)).
 
-With Quadlets (not tested): make the backup (`systemctl --user start firefox-sync-backup.service`), then:
+With Quadlets: make the backup (`systemctl --user start firefox-sync-backup.service`), set `FXA_MARIADB_IMAGE=mariadb:lts` in `.env`, then render the units again ([Change a setting](install/podman.md#change-a-setting)) and restart the database:
 
-1. Set `Image=docker.io/library/mariadb:lts` in `~/.config/containers/systemd/firefox-sync-fxa-db.container` and `firefox-sync-backup-fxa.container`, and `FXA_MARIADB_IMAGE=mariadb:lts` in `.env`, for the next `prepare_environment.sh`.
-1. Run `systemctl --user daemon-reload`, `podman pull docker.io/library/mariadb:lts` and `systemctl --user restart firefox-sync-fxa-db.service`.
+```bash
+./prepare_environment.sh --render-units
+podman pull docker.io/library/mariadb:lts
+systemctl --user restart firefox-sync-fxa-db.service
+```
 
-Tested locally, not in CI (it takes an install, a backup and two starts of the accounts), from 11 to `lts` (12): `FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 FXA_MARIADB_IMAGE=mariadb:lts tests/fxa-upgrade.sh`, an install on 11 with an account, a device and Sync data, moved with these steps.
+The units that require it start again after it: the migrations, the sign-up policy, the accounts' services and the admin UI. `journalctl --user -u firefox-sync-fxa-db.service` says `Finished mariadb-upgrade`.
+
+Tested locally, not in CI (it takes an install, a backup and two starts of the accounts), from 11 to `lts` (12): `FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 FXA_MARIADB_IMAGE=mariadb:lts tests/fxa-upgrade.sh`, an install on 11 with an account, a device and Sync data, moved with these steps. The Quadlet steps: `FXA_DB=mariadb FXA_MARIADB_FROM=mariadb:11 tests/podman.sh` (CI: syncstorage-rs.yml `test-podman`, `fxa-mariadb`), the accounts' units started on 11 and moved with the commands above, as this page writes them.
 
 ### MySQL 8 to 9
 
@@ -358,13 +363,18 @@ The accounts (`FXA_DB=mysql`):
 
 The Sync databases (`SYNC_DB=mysql`): their users are on `caching_sha2_password` already. Make a backup (`docker compose exec backup sh /ffs-backup/backup.sh now`), set `SYNC_MYSQL_IMAGE=mysql:lts` in `.env`, and run `docker compose pull && docker compose up -d`.
 
-With Quadlets, the same steps with these changes:
+With Quadlets, the same steps with these changes. A change of `.env` goes into the units with `./prepare_environment.sh --render-units` ([Change a setting](install/podman.md#change-a-setting)), and restarting a database unit restarts the units that require it after it, the migrations first:
 
-- step 2: `podman exec firefox-sync-fxa-db ...`;
-- the backups: `systemctl --user start firefox-sync-backup.service`;
-- step 3: drop the two options from `Exec=` of `~/.config/containers/systemd/firefox-sync-fxa-db.container`;
-- step 4: set `Image=docker.io/library/mysql:lts` there and in `firefox-sync-backup-fxa.container` (Sync: `firefox-sync-tokenserver-db.container`, `firefox-sync-syncstorage-db.container`, `firefox-sync-backup.container`);
-- each time: `systemctl --user daemon-reload`, `podman pull docker.io/library/mysql:lts` and `systemctl --user restart` of the unit. Change `.env` the same way, for the next `prepare_environment.sh`.
+- step 2: the query in the database's container,
+
+    ```bash
+    podman exec firefox-sync-fxa-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT user, host, plugin FROM mysql.user WHERE plugin = \"mysql_native_password\""'
+    ```
+
+    and the `ALTER USER` statements in `podman exec -it firefox-sync-fxa-db mysql -uroot -p`;
+- step 3: remove `FXA_MYSQL_ARGS` from `.env`, then run `./prepare_environment.sh --render-units` and `systemctl --user restart firefox-sync-fxa-db.service`;
+- step 4: the backup is `systemctl --user start firefox-sync-backup.service`. Then set `FXA_MYSQL_IMAGE=mysql:lts` in `.env`, and run `./prepare_environment.sh --render-units`, `podman pull docker.io/library/mysql:lts` and `systemctl --user restart firefox-sync-fxa-db.service`;
+- the Sync databases: `SYNC_MYSQL_IMAGE=mysql:lts` in `.env`, the same commands, and `systemctl --user restart firefox-sync-tokenserver-db.service firefox-sync-syncstorage-db.service`.
 
 If MySQL 9 already started with a user still on `mysql_native_password`, see [Troubleshooting](troubleshooting.md#databases).
 
@@ -372,7 +382,8 @@ Tested:
 
 - `FXA_FROM=<an older accounts image> tests/fxa-upgrade.sh` (`FXA_MYSQL_TO=mysql:lts`, the default with a new image that has mozilla/fxa#21554): an install on `mysql:8` with `mysql_native_password`, an account with a device and Sync data; the new files without the settings (`fxa-db` refuses the data), `--upgrade`, the accounts upgraded, then steps 2 to 4, the account of before and new ones on MySQL 9.
 - `SYNC_DB=mysql SYNC_MYSQL_IMAGE=mysql:8 tests/e2e.sh mysql`: `--upgrade` pins an install from before, `mysql:lts` unset refuses its data, then `SYNC_MYSQL_IMAGE=mysql:lts` moves it (no backup step).
-- Not tested: the Quadlet steps, your own server.
+- The Quadlet steps: `SYNC_DB=mysql SYNC_MYSQL_FROM=mysql:8 FXA_MYSQL_FROM=mysql:8 tests/podman.sh` (CI: syncstorage-rs.yml `test-podman`, `sync-mysql`): the Sync databases and the accounts' started on `mysql:8` (the accounts with `mysql_native_password`), then moved with the commands above, as this page writes them.
+- Not tested: your own server.
 
 ### PostgreSQL
 

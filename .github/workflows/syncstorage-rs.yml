@@ -18,8 +18,8 @@ on:
     branches:
       - main
       - '**'
-    # docs only: no image to rebuild, but docs/backups.md and docs/upgrading.md, whose commands
-    # tests/e2e.sh and tests/podman.sh run (paths-ignore cannot negate, so the pages are listed)
+    # docs only: no image to rebuild, but docs/backups.md, docs/upgrading.md and docs/migrating.md,
+    # whose commands tests/e2e.sh and tests/podman.sh run (paths-ignore cannot negate, so the pages are listed)
     paths-ignore:
       - '**/README.md'
       - 'docs/admin/**'
@@ -31,7 +31,6 @@ on:
       - 'docs/databases.md'
       - 'docs/firefox.md'
       - 'docs/limits.md'
-      - 'docs/migrating.md'
       - 'docs/reverse-proxy.md'
       - 'docs/troubleshooting.md'
       - '.github/workflows/docs.yml'
@@ -466,7 +465,9 @@ jobs:
     # the defaults (Sync on MariaDB, the accounts on MySQL), Sync on MySQL and on PostgreSQL,
     # the accounts on MariaDB; every database on its lts (PostgreSQL: latest). Your own
     # database server (EXTERNAL_DB): MariaDB in an entry of its own, MySQL and PostgreSQL with
-    # theirs. Without the accounts where their phase is the default's
+    # theirs. The moves of docs/upgrading.md for the Quadlets (*_FROM): from MySQL 8 with
+    # sync-mysql (Sync and the accounts), from MariaDB 11 with fxa-mariadb, both to lts.
+    # Without the accounts where their phase is the default's
     strategy:
       fail-fast: false
       matrix:
@@ -476,7 +477,8 @@ jobs:
           - variant: sync-mysql
             sync_db: mysql
             external_db: "1"
-            skip_fxa: "1"
+            sync_mysql_from: mysql:8
+            fxa_mysql_from: mysql:8
           - variant: sync-postgres
             sync_db: postgres
             external_db: "1"
@@ -488,6 +490,7 @@ jobs:
           - variant: fxa-mariadb
             sync_db: mariadb
             fxa_db: mariadb
+            fxa_mariadb_from: mariadb:11
 
     steps:
       - name: Checkout
@@ -527,6 +530,9 @@ jobs:
           SYNC_DB: ${{ matrix.sync_db }}
           FXA_DB: ${{ matrix.fxa_db }}
           EXTERNAL_DB: ${{ matrix.external_db }}
+          SYNC_MYSQL_FROM: ${{ matrix.sync_mysql_from }}
+          FXA_MYSQL_FROM: ${{ matrix.fxa_mysql_from }}
+          FXA_MARIADB_FROM: ${{ matrix.fxa_mariadb_from }}
           SKIP_FXA: ${{ matrix.skip_fxa }}
         run: ./tests/podman.sh
 
