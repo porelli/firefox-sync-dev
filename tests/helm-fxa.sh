@@ -1746,7 +1746,12 @@ PY
     [[ "$(kubectl get deploy "${FULL}-fxa-${name}" -o jsonpath='{.status.readyReplicas}')" == 1 ]] || fail "${FULL}-fxa-${name} not Ready while auth is down"
   done
   check "FXA_MAX_ACCOUNTS=lots: the old auth pod gone, the new one in ${MATCHED_STATUS} (${inits}), no ready endpoint for 30 s; content and profile Ready (their own heartbeats)"
-  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values --wait --timeout 20m > /dev/null || fail "helm upgrade did not put the policy's values back"
+  # (Helm 4's server-side apply takes back a field kubectl changed only with --force-conflicts,
+  # which Helm 3 has not: its three-way merge does it by itself)
+  local take_back=()
+  [[ "$(helm version --template '{{.Version}}')" == v3.* ]] || take_back=(--force-conflicts)
+  helm upgrade "${REL}" "${CHART_DIR}" --reuse-values "${take_back[@]}" --wait --timeout 20m > /dev/null \
+    || fail "helm upgrade${take_back[*]/#/ } did not put the policy's values back"
   admin_test_env
   [[ "$(kubectl get deploy "${FULL}-fxa-auth" -o json | jq -r '.spec.template.spec.initContainers[] | select(.name == "policy") | .env[] | select(.name == "FXA_MAX_ACCOUNTS") | .value')" != lots ]] \
     || fail "helm upgrade --reuse-values left FXA_MAX_ACCOUNTS=lots"
@@ -1909,14 +1914,15 @@ fxa_postgres_restore() {
   SYNC_RESTORED="${run}, its role, the Sync database and the admin UI's as the page says: ${after}"
 }
 
-# admin_test_env: tests/docker-compose.fxa-test.yml's test-only settings of the admin UI (its
-# checks every 5 s, no update check, accounts inactive and unconfirmed at once), after every
-# helm install and upgrade (they put its values back); nothing without the admin UI
+# admin_test_env: tests/docker-compose.fxa-test.yml's test-only settings of the admin UI that
+# the chart has no value for (its checks every 5 s, accounts unconfirmed at once), after every
+# helm install and upgrade; nothing without the admin UI. (Those the chart has values for are
+# in tests/helm/fxa-values.yaml: set here, Helm 4 would refuse the next upgrade.)
 admin_test_env() {
   local admin="deploy/${FULL}-admin"
   kubectl get "${admin}" > /dev/null 2>&1 || return 0
-  kubectl set env "${admin}" -c admin METRICS_FLUSH_SECONDS=5 HEALTH_CHECK_SECONDS=5 ALERT_INTERVAL_SECONDS=5 ADMIN_UPDATE_CHECK=false \
-    ADMIN_STALE_DAYS=0 ADMIN_UNCONFIRMED_HOURS=0 > /dev/null || fail "kubectl set env ${admin} failed"
+  kubectl set env "${admin}" -c admin METRICS_FLUSH_SECONDS=5 HEALTH_CHECK_SECONDS=5 ALERT_INTERVAL_SECONDS=5 \
+    ADMIN_UNCONFIRMED_HOURS=0 > /dev/null || fail "kubectl set env ${admin} failed"
   kubectl rollout status "${admin}" --timeout 10m > /dev/null || fail "${admin} not rolled out with the test settings"
 }
 

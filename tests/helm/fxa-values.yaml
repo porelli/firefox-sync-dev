@@ -20,9 +20,14 @@ maxUsers: initial:10
 # the admin UI (test_fxa_flow.py's reset of the Sync data, test_fxa_admin.py), signing in with
 # the accounts too (ADMIN_FXA_CLIENT_ID, ADMIN_ALLOWED_USERS=@example.com), alerts to the mail
 # catcher and Prometheus with the token of tests/docker-compose.fxa-test.yml (its faster
-# intervals: admin_test_env of tests/helm-fxa.sh, test-only, after every helm install/upgrade)
+# intervals: admin_test_env of tests/helm-fxa.sh, test-only, after every helm install/upgrade).
+# Its other test settings that the chart has as values (no update check, accounts inactive at
+# once) are set here: changed by kubectl, Helm 4's server-side apply would refuse the next
+# helm upgrade (a conflict with kubectl's field manager)
 admin:
   enabled: true
+  updateCheck: false
+  staleDays: 0
   fxaSignIn: true
   allowed:
     users: "@example.com"
