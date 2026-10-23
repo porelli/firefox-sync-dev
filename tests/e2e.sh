@@ -493,6 +493,8 @@ fi
 dc down -v > /dev/null 2>&1
 
 echo "== starting, as an install from before ADMIN_DB_PASSWORD${UPGRADE_FROM:+ (${UPGRADE_FROM})}, with the old setting names"
+# the renamed settings set in .env: those of .env-example, and PG_MAJOR_MOVE's pin
+RENAMED_SET=$(grep -cE "${NEW_RE}" "${ENV_FILE}")
 use_old_names
 # its layout: the admin UI connects as the Sync server's users, its tables in the tokenserver
 # database; with PostgreSQL the Sync server connects as SYNC_POSTGRES_USER, the superuser
@@ -520,7 +522,7 @@ APP_START=$(date -d "$(state syncstorage StartedAt)" +%s%N)
 check "$([ "${APP_START}" -gt "${INIT_END}" ] && echo yes)" yes "syncstorage started only after the init finished"
 check "$(hb)" 200 "/__heartbeat__"
 dc logs syncstorage 2>&1 | grep -m1 "Server running"
-check "$(grep -cE "${NEW_RE}" "${ENV_FILE}") $(grep -cE "${OLD_RE}" "${ENV_FILE}")" "0 $(grep -cE "${NEW_RE}" "${CODE}/.env-example")" \
+check "$(grep -cE "${NEW_RE}" "${ENV_FILE}") $(grep -cE "${OLD_RE}" "${ENV_FILE}")" "0 ${RENAMED_SET}" \
   "the install of before runs with only the old setting names in .env"
 if [ -z "${UPGRADE_FROM:-}" ]; then
   check "$(dc logs tokenserver_db_init 2>&1 | grep -c 'WARNING: settings under their old names, in .env or in the environment docker compose runs in') $(dc logs tokenserver_db_init 2>&1 | grep -c 'in a later release: .*MARIADB_TOKENSERVER_PASSWORD.* MAX_USERS ')" "1 1" \
