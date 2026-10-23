@@ -6,7 +6,7 @@ The chart runs syncstorage-rs with its tokenserver, its migrations and the init 
 
 ## Requirements
 
-- Kubernetes 1.27 or later, and Helm 3.
+- Kubernetes 1.27 or later, and Helm 4, the one CI tests. Helm 3.16 or later is known to work (it passed the accounts' end-to-end test), but CI does not test it.
 - A default StorageClass, or `database.persistence.storageClass` and `backup.persistence.storageClass`. The chart needs one volume per database server and one for the backups, and with the self-hosted accounts one each for their keys and avatars.
 - A host name with HTTPS that reaches the Sync server: an Ingress controller ([Ingress](#ingress)), or your own reverse proxy in front of the Service `<release>-firefox-sync-syncstorage`, port 8000.
 - A namespace at the [PodSecurity](https://kubernetes.io/docs/concepts/security/pod-security-standards/) level `baseline`, or `privileged` (the default):

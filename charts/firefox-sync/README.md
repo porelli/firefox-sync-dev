@@ -6,7 +6,7 @@ The full guide: [Install with Helm](https://github.com/porelli/firefox-sync/blob
 
 ## Install
 
-Kubernetes 1.27 or later, Helm 3.
+Kubernetes 1.27 or later, Helm 4 (tested; Helm 3.16 or later is known to work, not tested in CI).
 
 ```bash
 helm install ffs oci://ghcr.io/porelli/firefox-sync/charts/firefox-sync --version 0.1.0 \

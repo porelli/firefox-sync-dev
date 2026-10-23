@@ -8,7 +8,7 @@ Every image build runs the CI tests before the multi-arch tags (for example `syn
 
 | Script | What it covers | Where | Main variables |
 |---|---|---|---|
-| [tests/e2e.sh](/tests/e2e.sh) `<mysql\|postgres>` | the docker compose stack with Mozilla's accounts: start-up order, max users, domain changes, a Firefox-like sign-in and sync ([test_client_flow.py](/tests/test_client_flow.py), upstream's mock FxA), upstream's storage and tokenserver integration tests, the admin UI, an upgrade from an install before `ADMIN_DB_PASSWORD`, a restore | CI: syncstorage-rs.yml, admin.yml | `TAG`, `SYNC_DB`, `SYNC_MYSQL_IMAGE`, `EXTERNAL_DB`, `UPGRADE_FROM`, `DEMO` |
+| [tests/e2e.sh](/tests/e2e.sh) `<mysql\|postgres>` | the docker compose stack with Mozilla's accounts: start-up order, max users, domain changes, a Firefox-like sign-in and sync ([test_client_flow.py](/tests/test_client_flow.py), upstream's mock FxA), upstream's storage and tokenserver integration tests, the admin UI, an upgrade from an install before `ADMIN_DB_PASSWORD`, a restore | CI: syncstorage-rs.yml, admin.yml | `TAG`, `SYNC_DB`, `SYNC_MYSQL_IMAGE`, `EXTERNAL_DB`, `UPGRADE_FROM`, `PG_MAJOR_MOVE`, `DEMO` |
 | [tests/e2e-fxa.sh](/tests/e2e-fxa.sh) | the stack with self-hosted accounts behind an HTTPS proxy and a mail catcher, see [Accounts](#accounts) | CI: fxa.yml, syncstorage-rs.yml, admin.yml | `FXA_DB`, `FXA_MYSQL_IMAGE`, `FXA_MARIADB_IMAGE`, `EXTERNAL_DB`, `DEMO` |
 | [tests/podman.sh](/tests/podman.sh) | rootless Podman, with Quadlets (also with self-hosted accounts) and with docker compose on the Podman socket, set up with `prepare_environment.sh` | CI: syncstorage-rs.yml, fxa.yml, admin.yml | `SYNC_DB`, `FXA_DB`, `EXTERNAL_DB`, `UPGRADE_FROM` |
 | [tests/fxa-upgrade.sh](/tests/fxa-upgrade.sh) | the self-hosted accounts upgraded in place from an older release, see [Accounts](#accounts) | CI: fxa.yml `test-upgrade` | `FXA_FROM`, `FXA_IMAGE`, `FXA_VERSION`, `FXA_SAME_TAG`, `FXA_DB`, `FXA_MARIADB_FROM`, `FXA_MYSQL_TO` |
@@ -33,18 +33,27 @@ The defaults follow each database's long-term tag (`mariadb:lts`, `mysql:lts`; P
 | Component | Database | Stack's container | Your own server (`EXTERNAL_DB=1`) |
 |---|---|---|---|
 | Sync | MariaDB `lts` | syncstorage-rs.yml `test`, admin.yml `e2e`, helm.yml `e2e` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`: one MariaDB server for Sync and the accounts) |
-| Sync | MySQL `lts` | syncstorage-rs.yml and admin.yml `e2e` (`SYNC_DB=mysql`), helm.yml `e2e` | syncstorage-rs.yml and admin.yml, helm.yml |
-| Sync | MySQL 8 (installs from before) | syncstorage-rs.yml `test` (`SYNC_DB=mysql`, `SYNC_MYSQL_IMAGE=mysql:8`) | syncstorage-rs.yml `test` (`SYNC_MYSQL_IMAGE=mysql:8`) |
-| Sync | PostgreSQL `latest` (its major pinned) | syncstorage-rs.yml and admin.yml `test`/`e2e`, helm.yml `e2e`, and `e2e-fxa` with the accounts (`SYNC_BACKEND=postgres`) | syncstorage-rs.yml and admin.yml `test`/`e2e`, helm.yml `e2e` |
-| Accounts | MySQL `lts` (images with mozilla/fxa#21554) | fxa.yml `test` (amd64, arm64), admin.yml `e2e-fxa` once `fxa-mono-latest` has it | admin.yml `e2e-fxa` (`EXTERNAL_DB=1`) |
-| Accounts | MySQL 8 with `mysql_native_password` (installs from before, images without it) | fxa.yml `test` (`FXA_MYSQL_IMAGE=mysql:8`), syncstorage-rs.yml `test-fxa` (Mozilla's images), fxa.yml `test-upgrade` (then to `lts`) | admin.yml `e2e-fxa` while `fxa-mono-latest` has no mozilla/fxa#21554 |
-| Accounts | MariaDB `lts` (needs mozilla/fxa#21494) | fxa.yml `test-mariadb`, admin.yml `e2e-fxa` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`) |
+| Sync | MySQL `lts` | syncstorage-rs.yml `test` and admin.yml `e2e` (`SYNC_DB=mysql`), helm.yml `e2e` | syncstorage-rs.yml `test`, admin.yml `e2e`, helm.yml `e2e` |
+| Sync | MySQL 8 (installs from before) | syncstorage-rs.yml `test` (`SYNC_DB=mysql`, `SYNC_MYSQL_IMAGE=mysql:8`) | syncstorage-rs.yml `test` (`SYNC_MYSQL_IMAGE=mysql:8`), admin.yml `e2e-fxa` (`FXA_MYSQL_IMAGE=mysql:8`: one server for Sync and the accounts) |
+| Sync | PostgreSQL `latest` (its major pinned) | syncstorage-rs.yml `test`, admin.yml `e2e`, helm.yml `e2e` (amd64 and arm64), and `e2e-fxa` with the accounts (`SYNC_BACKEND=postgres`) | syncstorage-rs.yml `test`, admin.yml `e2e`, helm.yml `e2e` |
+| Sync | PostgreSQL, the major before that of `latest`, moved to `latest` | syncstorage-rs.yml `test` (`PG_MAJOR_MOVE=1`) | - |
+| Accounts | MySQL `lts` (images with mozilla/fxa#21554) | fxa.yml `test`, admin.yml `e2e-fxa` and helm.yml `e2e-fxa` (each on amd64 and arm64) | admin.yml `e2e-fxa`, helm.yml `e2e-fxa` |
+| Accounts | MySQL 8 with `mysql_native_password` (installs from before, images without it) | fxa.yml `test` (`FXA_MYSQL_IMAGE=mysql:8`), syncstorage-rs.yml `test-fxa` (Mozilla's images), fxa.yml `test-upgrade` (then to `lts`) | admin.yml `e2e-fxa` (`FXA_MYSQL_IMAGE=mysql:8`) |
+| Accounts | MariaDB `lts` (needs mozilla/fxa#21494) | fxa.yml `test-mariadb`, admin.yml `e2e-fxa`, helm.yml `e2e-fxa` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`) |
 | Accounts | MariaDB 11 (installs from before) | fxa.yml `test-mariadb` (`mariadb:11`) | - |
 | Podman, Quadlets | the defaults (MariaDB `lts`, the accounts on MySQL as above) | syncstorage-rs.yml, fxa.yml and admin.yml `test-podman`/`podman` | - |
+
+The jobs run on amd64, and these on arm64 too: fxa.yml `test` and `test-podman`, admin.yml `e2e-fxa` (MySQL), helm.yml `e2e` (PostgreSQL) and `e2e-fxa` (MySQL, with Firefox).
 
 Redis (the accounts' cache, no volume) follows `redis:alpine` in every run with the accounts.
 
 Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mysql` and `SYNC_MYSQL_IMAGE=mysql:8`, `e2e-fxa` with `FXA_MYSQL_IMAGE=mysql:8` or `FXA_DB=mariadb FXA_MARIADB_IMAGE=mariadb:11`, `fxa-upgrade` with `FXA_FROM=<an older accounts image>` (and `FXA_MYSQL_TO`).
+
+### What CI does not test
+
+- Sync with Mozilla's real accounts: the tests sign in through a mock of them (upstream's mock FxA), and upstream's tokenserver test against Mozilla's stage accounts is left out.
+- Firefox on Android and iOS: their sync, pairing from the phone's side, client certificates. The real Firefox of the tests is the desktop one, on Linux.
+- The self-hosted accounts on PostgreSQL: Mozilla's accounts server does not support it, so neither does this project. Not a gap.
 
 ## The Sync server and Podman
 
@@ -52,7 +61,8 @@ Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mys
 
 - with `SYNC_DB=mysql`, the stack on MySQL (`SYNC_MYSQL_IMAGE`: `mysql:lts`, or `mysql:8` as the installs from before; then it also checks that `lts` refuses their data, that `--upgrade` pins them, and the move to `lts`);
 - the upgrade from an install before `ADMIN_DB_PASSWORD` (with `UPGRADE_FROM=<checkout>`, that release's own files and images), which moves the admin UI's event log out of the Sync server's users' reach;
-- the Sync MariaDB containers of an install from before `SYNC_MARIADB_IMAGE`, pinned by `--upgrade` to the major of their data.
+- the Sync MariaDB containers of an install from before `SYNC_MARIADB_IMAGE`, pinned by `--upgrade` to the major of their data;
+- with `PG_MAJOR_MOVE=1` (postgres), the install on the major before that of `postgres:latest` (read at run time) and, at the end, the move of [PostgreSQL](../upgrading.md#postgresql): the backup, the new major refused on the old data (by [keep-major.sh](/db/postgres/keep-major.sh)), the restore into an empty volume, the same accounts and items read back on the new major, also after a restart.
 
 `tests/podman.sh`:
 
@@ -155,7 +165,7 @@ The unit tests (`cd admin && go test ./...`) cover the backups' age and failures
     - `helm uninstall` and `helm install` with the same release name and values: the same Secret and PVCs, and the client's Sync data read back.
 - `EXTERNAL_DB=1` (mysql, postgres): on a database server of its own in the cluster, which the chart does not manage (`database.bundled=false`, `existingSecret`). With MySQL on an Ubuntu host with `mysql-server`, it stops first while the host's AppArmor profile for `mysqld` is loaded ([Troubleshooting](../troubleshooting.md#kubernetes)).
 
-[helm.yml](/.github/workflows/helm.yml) runs `ct lint`, kubeconform with each `ci/` values file, `tests/helm.sh lint`, and `e2e` on MariaDB, MySQL and PostgreSQL and on your own MySQL and PostgreSQL server: on every push that changes the chart, its tests, the compose files, `db/`, the backups, the admin UI or [docs/backups.md](../backups.md), and every week. Publishing the chart: [Releasing](releasing.md#the-helm-chart).
+[helm.yml](/.github/workflows/helm.yml) runs `ct lint`, kubeconform with each `ci/` values file, `tests/helm.sh lint`, and `e2e` on MariaDB, MySQL and PostgreSQL, on your own MySQL and PostgreSQL server, and PostgreSQL on arm64: on every push that changes the chart, its tests, the compose files, `db/`, the backups, the admin UI or [docs/backups.md](../backups.md), and every week. Publishing the chart: [Releasing](releasing.md#the-helm-chart).
 
 ### The accounts in the chart
 
@@ -178,7 +188,7 @@ The unit tests (`cd admin && go test ./...`) cover the backups' age and failures
 
     `REPOSITORY`, `TAG`, `FXA_IMAGE` and `FXA_VERSION` choose the images, as in `tests/e2e-fxa.sh`. The accounts database is `mysql:8` or `mariadb:11` when the accounts image lacks the patch for `lts` ([Upstream patches](../reference/images.md#upstream-patches)); `FXA_MYSQL_IMAGE` and `FXA_MARIADB_IMAGE` override that.
 
-[helm.yml](/.github/workflows/helm.yml) runs `fxa_lint` through `tests/helm.sh lint`, with the whole history for `git archive`, and the e2e (`e2e-fxa`) on MySQL with Firefox, MariaDB, your own MySQL server, and MySQL with the Sync server on PostgreSQL.
+[helm.yml](/.github/workflows/helm.yml) runs `fxa_lint` through `tests/helm.sh lint`, with the whole history for `git archive`, and the e2e (`e2e-fxa`) on MySQL with Firefox, MariaDB, your own MySQL server, MySQL with the Sync server on PostgreSQL, and MySQL with Firefox on arm64.
 
 ## Docs that tests read
 
@@ -186,7 +196,7 @@ Some tests read commands from the docs and check them word for word, so a page a
 
 | Test | Page | What it reads |
 |---|---|---|
-| `tests/e2e.sh` | [backups.md](../backups.md#restore) | the compose restore commands |
+| `tests/e2e.sh` | [backups.md](../backups.md#restore), [upgrading.md](../upgrading.md#postgresql) | the compose restore commands; with `PG_MAJOR_MOVE=1` the three steps of the PostgreSQL move |
 | `tests/helm.sh` | [backups.md](../backups.md#restore) | the blocks starting `--entrypoint sh backup -c '` that contain `$TOKENSERVER_DB_NAME.sql.gz`: the first is MariaDB, the second PostgreSQL |
 | `tests/helm-fxa.sh` | [backups.md](../backups.md#restore-on-kubernetes) | `restore() {` to its closing `}`, and the `restore restore-accounts 'run=` command to its line ending `backup-accounts`, both indented four spaces, each exactly once; with `SYNC_BACKEND=postgres` also the `for db in postgres; do` loop to its `done`, and the PostgreSQL block from `kubectl get deploy $F-syncstorage -o json | jq` to the `PGPASSWORD="$ADMIN_DB_PASSWORD" psql` line (two `restore restore-` commands) |
 | `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; the Quadlet `systemctl --user stop` line, exactly once |
