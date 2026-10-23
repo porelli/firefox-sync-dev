@@ -12,8 +12,7 @@ The stack uses named volumes only, so rootless Podman handles their ownership, a
 
 | | Quadlets | docker compose on the Podman socket |
 |---|---|---|
-| MariaDB, MySQL | yes | yes |
-| PostgreSQL | no | yes |
+| MariaDB, MySQL, PostgreSQL | yes | yes |
 | self-hosted accounts | yes | yes |
 
 ## Quadlets
@@ -57,6 +56,7 @@ QUADLET_DIR=/path/to/units ./prepare_environment.sh
 Other choices of the setup script, with Quadlets:
 
 - MySQL instead of MariaDB: see [Databases](../databases.md#mysql-instead-of-mariadb).
+- PostgreSQL: see [Databases](../databases.md#postgresql).
 - Your own database server: see [Databases](../databases.md#with-quadlets).
 - The admin UI: see [Admin UI](../admin/README.md#set-up).
 - The nightly backups: answered yes, it enables `firefox-sync-backup.timer`, see [Backups](../backups.md#the-backup-service). The pairing server is not asked: the Quadlets have none.
@@ -96,6 +96,8 @@ Restart and stop:
 systemctl --user restart firefox-sync-syncstorage.service
 systemctl --user stop firefox-sync-syncstorage.service firefox-sync-syncstorage-db.service firefox-sync-tokenserver-db.service
 ```
+
+With PostgreSQL the database unit is `firefox-sync-postgres-db.service`.
 
 A new admin UI container restarts the Sync server: see [Sync metrics](../admin/monitoring.md#sync-metrics).
 

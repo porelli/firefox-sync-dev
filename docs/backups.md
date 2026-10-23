@@ -261,6 +261,21 @@ dump sync/$run/syncstorage.sql.gz | podman exec -i firefox-sync-syncstorage-db s
 
 With `SYNC_DB=mysql` the Sync databases take `MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"`. (Why the passwords go in `MYSQL_PWD`: [Passwords in commands](databases.md#passwords-in-commands).) The files are named after the databases of `.env` (`SYNC_TOKENSERVER_DB_NAME`, `SYNC_STORAGE_DB_NAME`).
 
+With PostgreSQL the dump loads only into an empty database, as in [Restore](#restore): stop the database too, remove its volume, and load each dump as the role that owns it, the Sync server's (`FFS_SYNC_USER` in the database container) and the admin UI's. The init container makes the admin UI's database and roles again, between the two. `dump` as above, the file named after `SYNC_POSTGRES_NAME`:
+
+```bash
+systemctl --user stop firefox-sync-syncstorage.service firefox-sync-admin.service \
+  firefox-sync-syncstorage-migrate.service firefox-sync-tokenserver-db-init.service \
+  firefox-sync-sync-role-init.service firefox-sync-postgres-db.service
+podman volume rm firefox-sync-postgres-db
+systemctl --user start firefox-sync-sync-role-init.service   # the empty database, and the Sync server's role
+dump sync/$run/syncserver.sql.gz | podman exec -i firefox-sync-postgres-db sh -c 'PGPASSWORD="$FFS_SYNC_PASSWORD" psql -h 127.0.0.1 -U "$FFS_SYNC_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1'
+systemctl --user start firefox-sync-tokenserver-db-init.service   # the migrations, then the admin UI's database
+dump sync/$run/ffs_admin.sql.gz | podman exec -i firefox-sync-postgres-db sh -c 'PGPASSWORD="$ADMIN_DB_PASSWORD" psql -h 127.0.0.1 -U "$ADMIN_DB_USER" -d "$ADMIN_DB_NAME" -v ON_ERROR_STOP=1'
+```
+
+The storage is in that one dump: to have it empty, reset the Sync data of each account afterwards (step 6 of [Restore](#restore)).
+
 Start them again as at install: the Sync server and the accounts' units pull in the one-shot ones.
 
 ```bash

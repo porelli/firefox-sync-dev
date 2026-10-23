@@ -41,6 +41,7 @@ The defaults follow each database's long-term tag (`mariadb:lts`, `mysql:lts`; P
 | Accounts | MariaDB `lts` (needs mozilla/fxa#21494) | fxa.yml `test-mariadb`, admin.yml `e2e-fxa` | admin.yml `e2e-fxa` (`FXA_DB=mariadb EXTERNAL_DB=1`) |
 | Accounts | MariaDB 11 (installs from before) | fxa.yml `test-mariadb` (`mariadb:11`) | - |
 | Podman, Quadlets | the defaults (MariaDB `lts`, the accounts on MySQL as above) | syncstorage-rs.yml, fxa.yml and admin.yml `test-podman`/`podman` | - |
+| Podman, Quadlets | PostgreSQL `latest` (its major pinned, `SYNC_DB=postgres`) | syncstorage-rs.yml `test-podman` (`postgres`) | - |
 
 Redis (the accounts' cache, no volume) follows `redis:alpine` in every run with the accounts.
 
@@ -58,6 +59,7 @@ Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mys
 
 - the Quadlets and docker compose on the Podman socket, both set up with `prepare_environment.sh`;
 - the MySQL Quadlets as rendered; with `SYNC_DB=mysql`, the compose phase as an install from before on `mysql:8` (pinned by `--upgrade`) and the Quadlets on `mysql:lts`;
+- the PostgreSQL Quadlets as rendered (also on your own server); with `SYNC_DB=postgres`, the compose phase on PostgreSQL only and the Quadlets on PostgreSQL: pinned to the major of Podman's `postgres:latest` and running it, the Sync server's own role, the backups and the restore of [Restore with Quadlets](../backups.md#restore-with-quadlets), `--upgrade`, `--render-units`, and another major refused by `keep-major.sh`;
 - `--upgrade` renaming the old setting names and `docker-compose.postgres.yml`;
 - with `UPGRADE_FROM=<checkout>`, the Quadlet upgrade steps of [Upgrading](../upgrading.md#quadlets) (the `systemctl --user stop` line is read from that page): the old release where this tree is, the files swapped as `git pull` does, `--upgrade` keeping every secret, no `SET PASSWORD`;
 - `--render-units` on the running Quadlets (a setting, an `ADMIN_IMAGE` pin, `ADMIN_INSECURE_COOKIE`), and with the accounts on MariaDB (`FXA_LOG_LEVEL`): only the changed units written, the secrets kept, a second run changing nothing, the stack started again;
@@ -198,7 +200,7 @@ Some tests read commands from the docs and check them word for word, so a page a
 | `tests/e2e.sh` | [backups.md](../backups.md#restore) | the compose restore commands |
 | `tests/helm.sh` | [backups.md](../backups.md#restore) | the blocks starting `--entrypoint sh backup -c '` that contain `$TOKENSERVER_DB_NAME.sql.gz`: the first is MariaDB, the second PostgreSQL |
 | `tests/helm-fxa.sh` | [backups.md](../backups.md#restore-on-kubernetes) | `restore() {` to its closing `}`, and the `restore restore-accounts 'run=` command to its line ending `backup-accounts`, both indented four spaces, each exactly once; with `SYNC_BACKEND=postgres` also the `for db in postgres; do` loop to its `done`, and the PostgreSQL block from `kubectl get deploy $F-syncstorage -o json | jq` to the `PGPASSWORD="$ADMIN_DB_PASSWORD" psql` line (two `restore restore-` commands) |
-| `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; the Quadlet `systemctl --user stop` line, exactly once |
+| `tests/podman.sh` | [backups.md](../backups.md#restore-with-quadlets), [upgrading.md](../upgrading.md#with-quadlets) | the `set -o pipefail` and `dump sync/$run/ffs_admin.sql.gz` lines, exactly once each; with `SYNC_DB=postgres` the PostgreSQL commands of the Quadlet restore, as written; the Quadlet `systemctl --user stop` line, exactly once |
 | `tests/migrate.sh` | [migrating.md](../migrating.md), [upgrading.md](../upgrading.md#older-firefox-sync-releases) | every command it runs, with `grep -qF` in either page |
 
 ## Links

@@ -20,6 +20,7 @@ Containers:
 Subdirectories, installed only for the choices of `prepare_environment.sh`:
 
 - `sync-mysql/`: with `SYNC_DB=mysql`, these replace the two database units and their volumes with MySQL ones (`firefox-sync-*-db-mysql`)
+- `sync-postgres/`: with the Sync server on PostgreSQL (`SYNC_IMAGE=syncstorage-rs-postgres`), these replace the units of the Sync server, its migrations, its init container and the backups, and add `firefox-sync-postgres-db.container` and its volume (one database instead of the two MariaDB units, which are not installed) and `firefox-sync-sync-role-init.container` (the Sync server's own role, before the migrations). The admin UI's unit is rendered with the Sync database of PostgreSQL, as in `docker-compose.sync-postgres.yml`
 - `admin/firefox-sync-admin.container`: the optional [admin UI](../../docs/admin/README.md)
 - `fxa/`: the [self-hosted accounts](../../docs/accounts.md). `firefox-sync-fxa-policy.container` installs the sign-up policy before the accounts start, and `firefox-sync-backup-fxa.container` backs up their databases. `fxa/admin/` is the admin UI's unit with the accounts, where it also manages them and is the sign-up gate. With `FXA_DB=mariadb`, the files of `fxa/mariadb/` replace `firefox-sync-fxa-db.container` and its volume
 

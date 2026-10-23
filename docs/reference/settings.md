@@ -48,7 +48,7 @@ The stack's own database containers. For a server you run yourself, see also [Yo
 | `SYNC_DB` | `database.backend` | `mariadb` | the Sync database containers: `mariadb` or `mysql` ([MySQL instead of MariaDB](../databases.md#mysql-instead-of-mariadb)). PostgreSQL: `docker-compose.sync-postgres.yml` in `COMPOSE_FILE` (Helm: `postgres`) | |
 | `SYNC_MARIADB_IMAGE` | `database.image.mariadb` | unset: `mariadb:lts` (Helm `docker.io/library/mariadb:lts`) | with `SYNC_DB=mariadb`, the MariaDB image of the Sync databases and of their backups. Pins: [Database majors](../upgrading.md#database-majors) | |
 | `SYNC_MYSQL_IMAGE` | `database.image.mysql` | unset: `mysql:lts` (Helm `docker.io/library/mysql:lts`) | with `SYNC_DB=mysql`, the MySQL image of the Sync databases and of their backups. Pins: [Database majors](../upgrading.md#database-majors) | |
-| `SYNC_POSTGRES_IMAGE` | `database.image.postgres` | unset: `postgres:latest`; `prepare_environment.sh` writes the major it finds | the PostgreSQL image of the Sync database and of its backups. Pin the major: [PostgreSQL](../upgrading.md#postgresql) | `POSTGRES_IMAGE` |
+| `SYNC_POSTGRES_IMAGE` | `database.image.postgres` | unset: `postgres:latest`; `prepare_environment.sh` writes the major it finds | the PostgreSQL image of the Sync database and of its backups, compose's and the Quadlets'. Pin the major: [PostgreSQL](../upgrading.md#postgresql) | `POSTGRES_IMAGE` |
 | `SYNC_TOKENSERVER_DB_PASSWORD` | Secret: `TOKENSERVER_DB_PASSWORD` | generated | the tokenserver user's password (MariaDB, MySQL) | `MARIADB_TOKENSERVER_PASSWORD` |
 | `SYNC_STORAGE_DB_PASSWORD` | Secret: `STORAGE_DB_PASSWORD` | generated | the storage user's password (MariaDB, MySQL) | `MARIADB_SYNCSTORAGE_PASSWORD` |
 | `SYNC_POSTGRES_PASSWORD` | Secret: `POSTGRES_PASSWORD` | generated | the password of `SYNC_POSTGRES_USER`: the container's superuser; on your own server, the owner of the database | `POSTGRES_PASSWORD` |
@@ -77,7 +77,7 @@ How to set it up: [Your own database server](../databases.md#your-own-server). T
 | `SYNC_STORAGE_DB_PORT` | `database.external.storagePort` | `3306` (Helm empty: `port`) | its port | `MARIADB_SYNCSTORAGE_SERVER_PORT` |
 | `SYNC_STORAGE_DB_NAME` | `database.external.storageDatabase` | `syncstorage` | the storage database | `MARIADB_SYNCSTORAGE_DATABASE` |
 | `SYNC_STORAGE_DB_USER` | `database.external.storageUser` | `syncstorage` | its user | `MARIADB_SYNCSTORAGE_USER` |
-| `SYNC_POSTGRES_HOST` | `database.external.host` | `postgres_db` | the PostgreSQL server | `POSTGRES_SERVER` |
+| `SYNC_POSTGRES_HOST` | `database.external.host` | `postgres_db` | the PostgreSQL server. With the database container the Quadlets reach it as `firefox-sync-postgres-db`, whatever this says | `POSTGRES_SERVER` |
 | `SYNC_POSTGRES_PORT` | `database.external.port` | `5432` | its port | `POSTGRES_SERVER_PORT` |
 | `SYNC_POSTGRES_NAME` | `database.external.postgresDatabase` | `syncserver` | the one Sync database | `POSTGRES_DATABASE` |
 | `SYNC_POSTGRES_USER` | `database.external.postgresUser` | `syncserver` | in the stack's container its superuser; on your own server the owner of that database, no superuser | `POSTGRES_USER` |

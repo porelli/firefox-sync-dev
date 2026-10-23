@@ -463,6 +463,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    # the Quadlets on PostgreSQL too (their accounts phase is the same as the default run's)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sync_db: mariadb
+          - sync_db: postgres
+            skip_fxa: "1"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -486,6 +495,8 @@ jobs:
         env:
           REPOSITORY: ${{ env.REPOSITORY_REGISTRY }}/${{ env.REPOSITORY_FULL_NAME }}
           TAG: ${{ needs.prepare-env.outputs.service_tag }}-${{ needs.prepare-env.outputs.build_date }}-linux-amd64
+          SYNC_DB: ${{ matrix.sync_db }}
+          SKIP_FXA: ${{ matrix.skip_fxa }}
         run: ./tests/podman.sh
 
   ## Test the self-hosted Mozilla accounts (does not block publishing) ##

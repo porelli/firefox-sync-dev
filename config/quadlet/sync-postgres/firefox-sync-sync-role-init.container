@@ -1,0 +1,32 @@
+# The Sync server's own role (SYNC_POSTGRES_APP_USER), before the migrations: created, given the
+# Sync tables and the right to create them, so that no superuser session reads or writes a
+# table that role owns (docs/reference/database-users.md#postgresql). As compose's sync_role_init.
+# Without SYNC_POSTGRES_APP_USER (your own server) it does nothing.
+[Unit]
+Description=Firefox Sync - The Sync server's PostgreSQL role
+After=firefox-sync-network.service firefox-sync-postgres-db.service
+Requires=firefox-sync-postgres-db.service
+
+[Container]
+Image=%IMAGE_REPOSITORY%:%SYNC_INIT_IMAGE%-%SYNC_INIT_IMAGE_TAG%
+ContainerName=firefox-sync-sync-role-init
+Network=firefox-sync-network.network
+
+Environment=POSTGRES_SERVER=%SYNC_POSTGRES_HOST%
+Environment=POSTGRES_SERVER_PORT=%SYNC_POSTGRES_PORT%
+Environment=POSTGRES_DATABASE=%SYNC_POSTGRES_NAME%
+Environment=POSTGRES_USER=%SYNC_POSTGRES_USER%
+Environment=POSTGRES_PASSWORD=%SYNC_POSTGRES_PASSWORD%
+Environment=POSTGRES_SYNC_USER=%SYNC_POSTGRES_APP_USER%
+Environment=POSTGRES_SYNC_PASSWORD=%SYNC_POSTGRES_APP_PASSWORD%
+
+Exec=sync-role
+
+AutoUpdate=registry
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target default.target

@@ -524,11 +524,13 @@ db_volume() {
 
 # the major of postgres:latest, from its own server ("postgres (PostgreSQL) 18.1 (Debian ...)"):
 # pulled first (a local copy may be older than latest), with Docker, else Podman (a Docker
-# without its daemon fails at once); without a registry, the local copy
+# without its daemon fails at once); without a registry, the local copy. The Quadlets: Podman's
+# only, the store the units run from (also on a host with Docker), for this host's architecture
 postgres_latest_major() {
-    local runtime image pull out
+    local runtime image pull out runtimes="docker podman"
+    [ "${DEPLOY_METHOD:-}" = quadlets ] && runtimes=podman
     for pull in always missing; do
-        for runtime in docker podman; do
+        for runtime in ${runtimes}; do
             command -v "${runtime}" > /dev/null 2>&1 || continue
             image=postgres:latest
             [ "${runtime}" = podman ] && image=docker.io/library/postgres:latest
@@ -631,8 +633,8 @@ units_have_env_secret() {
 # that differ installed, the units of before kept first in quadlets.before-<UTC time>/; none
 # differ: nothing written (run again, nothing changes)
 render_units() {
-    local key stage file filename source target_dir changed=() removed=() backup repository
-    local sync_containers sync_db fxa_containers fxa_db
+    local key stage file filename source src target_dir changed=() removed=() backup repository
+    local sync_containers sync_db fxa_containers fxa_db sync_overlay=""
     # the values of the units: those of .env (database names, users, FxA endpoints, etc.) as
     # compose reads them (env_plain: quotes, a comment after the value, export, CRLF), and the
     # ones set below; never this shell's environment (a name .env lacks: .env-example's
@@ -645,6 +647,8 @@ render_units() {
         render_set "${key}" "$(env_plain "${key}")"
     done
     sync_containers=$(env_plain SYNC_DB_CONTAINERS) sync_db=$(env_plain SYNC_DB)
+    # PostgreSQL: the images of .env say it (SYNC_DB is mariadb there, as compose has it)
+    [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && sync_db=postgres
     fxa_containers=$(env_plain FXA_DB_CONTAINERS) fxa_db=$(env_plain FXA_DB)
     mkdir -p "${QUADLET_DIR}" "${SYSTEMD_USER_DIR}"
     # the images from .env only (not this shell's environment); unset: lts, as the compose
@@ -669,6 +673,7 @@ render_units() {
     podman_image FXA_MARIADB_IMAGE mariadb:lts
     podman_image FXA_MYSQL_IMAGE mysql:lts
     podman_image SYNC_MYSQL_IMAGE mysql:lts
+    podman_image SYNC_POSTGRES_IMAGE postgres:latest
     repository=$(env_value IMAGE_REPOSITORY)
     podman_image ADMIN_IMAGE "${repository:-ghcr.io/porelli/firefox-sync}:admin-latest"
     # fxa-db's extra options, none when not set
@@ -688,7 +693,29 @@ render_units() {
     # containers are reached by their names. Your own server: none of them
     SKIP_UNITS=""
     DROP_DEPS=""
-    if [ "${sync_containers:-1}" = 0 ]; then
+    if [ "${sync_db}" = postgres ]; then
+        # one PostgreSQL database (sync-postgres/), none of MariaDB's or MySQL's units (their
+        # volumes are kept); the Sync server's own role, the superuser without it (an .env
+        # from before SYNC_POSTGRES_APP_USER, your own server), as compose
+        SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
+        render_set SYNC_POSTGRES_CONNECT_USER "$(env_value SYNC_POSTGRES_APP_USER)"
+        render_set SYNC_POSTGRES_CONNECT_PASSWORD "$(env_value SYNC_POSTGRES_APP_PASSWORD)"
+        if [ -z "${SYNC_POSTGRES_CONNECT_USER}" ]; then
+            render_set SYNC_POSTGRES_CONNECT_USER "$(env_value SYNC_POSTGRES_USER)"
+            render_set SYNC_POSTGRES_CONNECT_PASSWORD "$(env_value SYNC_POSTGRES_PASSWORD)"
+        fi
+        # the renamed settings under their new names, also from an .env with the old ones
+        for key in SYNC_POSTGRES_NAME SYNC_POSTGRES_USER SYNC_POSTGRES_PASSWORD SYNC_POSTGRES_APP_USER SYNC_POSTGRES_APP_PASSWORD; do
+            render_set "${key}" "$(env_value "${key}")"
+        done
+        if [ "${sync_containers:-1}" = 0 ]; then
+            SKIP_UNITS='^firefox-sync-((syncstorage|tokenserver)-db(-mysql)?|postgres-db)\.(container|volume)$'
+            DROP_DEPS='firefox-sync-postgres-db\.service'
+            render_set SYNC_POSTGRES_HOST "$(env_value SYNC_POSTGRES_HOST)"; render_set SYNC_POSTGRES_PORT "$(env_value SYNC_POSTGRES_PORT)"
+        else
+            render_set SYNC_POSTGRES_HOST firefox-sync-postgres-db; render_set SYNC_POSTGRES_PORT 5432
+        fi
+    elif [ "${sync_containers:-1}" = 0 ]; then
         SKIP_UNITS='^firefox-sync-(syncstorage|tokenserver)-db(-mysql)?\.(container|volume)$'
         DROP_DEPS='firefox-sync-(syncstorage|tokenserver)-db\.service'
     else
@@ -738,8 +765,12 @@ render_units() {
 
     QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
     # SYNC_DB=mysql: sync-mysql/ replaces the database units of the same name (without the
-    # database containers, SKIP_UNITS leaves them out)
-    [ "${sync_db:-mariadb}" = "mysql" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/sync-mysql")
+    # database containers, SKIP_UNITS leaves them out); PostgreSQL: sync-postgres/ replaces
+    # the units of the Sync server, its migrations, init and backups, and adds its database
+    # and its role's init
+    [ "${sync_db:-mariadb}" = "mysql" ] && sync_overlay=sync-mysql
+    [ "${sync_db}" = postgres ] && sync_overlay=sync-postgres
+    [ -n "${sync_overlay}" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/${sync_overlay}")
     [ "${SELF_HOST_FXA}" = "yes" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa")
     # FXA_DB=mariadb: fxa/mariadb/ replaces the files of the same name in fxa/
     [ "${SELF_HOST_FXA}" = "yes" ] && [ "${fxa_db:-mysql}" = "mariadb" ] && QUADLET_SOURCES+=("${SCRIPT_DIR}/config/quadlet/fxa/mariadb")
@@ -755,15 +786,27 @@ render_units() {
             [ -f "${file}" ] || continue
             filename=$(basename "${file}")
             [ "${fxa_db:-mysql}" = "mariadb" ] && [ -f "${source}/mariadb/${filename}" ] && continue
-            [ "${sync_db:-mariadb}" = "mysql" ] && [ -f "${source}/sync-mysql/${filename}" ] && continue
+            [ -n "${sync_overlay}" ] && [ -f "${source}/${sync_overlay}/${filename}" ] && continue
             if [ -n "${SKIP_UNITS}" ] && [[ "${filename}" =~ ${SKIP_UNITS} ]]; then
                 # left from a setup with the database containers (the volume is kept)
                 [ -f "${QUADLET_DIR}/${filename}" ] && removed+=("${filename}")
                 continue
             fi
+            # PostgreSQL: the admin UI's unit (admin/ or fxa/admin/) with the Sync database of
+            # docker-compose.sync-postgres.yml's ffs-admin: one database, as the Sync server's
+            # role (its reader with ADMIN_DB_PASSWORD), no storage database of its own
+            src=${file}
+            if [ "${sync_db}" = postgres ] && [ "${filename}" = firefox-sync-admin.container ]; then
+                src=${stage}/.${filename}.postgres
+                sed -e 's|^Environment="TOKENSERVER_DB_TYPE=mysql"$|Environment="TOKENSERVER_DB_TYPE=postgres"|' \
+                    -e 's|%SYNC_TOKENSERVER_DB_HOST%|%SYNC_POSTGRES_HOST%|; s|%SYNC_TOKENSERVER_DB_PORT%|%SYNC_POSTGRES_PORT%|' \
+                    -e 's|%SYNC_TOKENSERVER_DB_NAME%|%SYNC_POSTGRES_NAME%|; s|%SYNC_TOKENSERVER_DB_USER%|%SYNC_POSTGRES_CONNECT_USER%|' \
+                    -e '/^Environment="STORAGE_DB_[A-Z]*=/d' -e '/^Environment="SYNC_DB=/d' "${file}" > "${src}" || { rm -rf "${stage}"; exit 1; }
+            fi
             # (an empty PodmanArgs= would reset the ones before it, the network aliases)
-            render_quadlet "${file}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
+            render_quadlet "${src}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
             [ "${PIPESTATUS[0]}" = 0 ] || { rm -rf "${stage}"; exit 1; }
+            [ "${src}" = "${file}" ] || rm -f "${src}"
         done
     done
     for file in "${stage}"/*; do
@@ -873,8 +916,6 @@ upgrade_env() {
     fi
     if [ "${quadlets}" = yes ]; then
         command -v podman > /dev/null 2>&1 || { echo "ERROR: --render-units: the Quadlets need podman, which is not installed"; exit 1; }
-        [ "$(env_value SYNC_IMAGE)" != "syncstorage-rs-postgres" ] \
-            || { echo "ERROR: the Quadlets are for MariaDB and MySQL only, this .env is PostgreSQL's (docker compose)"; exit 1; }
         DEPLOY_METHOD=quadlets
     fi
     # the old names of RENAMED_SETTINGS: the line renamed where it is (indented or with
@@ -1236,7 +1277,7 @@ fi
 if [ "${CONTAINER_RUNTIME}" = "podman" ]; then
     echo ""
     echo "Podman detected! Choose deployment method:"
-    echo "  1) Quadlets (systemd integration, recommended, MariaDB and MySQL only)"
+    echo "  1) Quadlets (systemd integration, recommended)"
     echo "  2) docker compose with the Podman socket"
     read -e -p "Deployment method [1]: " DEPLOY_METHOD
     case "${DEPLOY_METHOD:-1}" in
@@ -1244,10 +1285,6 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ]; then
         2) DEPLOY_METHOD=compose ;;
         *) echo "ERROR: unknown deployment method '${DEPLOY_METHOD}'"; exit 1 ;;
     esac
-    if [ "${DEPLOY_METHOD}" = "quadlets" ] && [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        echo "WARNING: Quadlets are only provided for MariaDB and MySQL, using docker compose with the Podman socket"
-        DEPLOY_METHOD=compose
-    fi
 fi
 
 # docker/podman user (for systemd service)
