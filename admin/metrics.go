@@ -15,7 +15,7 @@ import (
 // Metrics and the event log, kept in the admin UI's own database (ffs_metrics,
 // ffs_events, see owndb.go) for ADMIN_RETENTION_DAYS, what admins did (kind admin) for
 // ADMIN_AUDIT_RETENTION_DAYS. syncstorage-rs (and its tokenserver) send
-// statsd metrics over UDP when the admin UI runs, see docker-compose.yml.
+// statsd metrics over UDP when the admin UI runs, see compose/sync.yml.
 
 const (
 	// distinct metric names kept per minute: the UDP port is only reachable from

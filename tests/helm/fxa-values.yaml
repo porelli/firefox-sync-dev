@@ -1,6 +1,6 @@
 # Test-only: the values of tests/helm-fxa.sh e2e, the self-hosted accounts on *.fxa.test
 # (fxa.enabled, the images and the databases' backends are set by the script), as
-# tests/docker-compose.fxa-test.yml: every public host through the test Ingress controller
+# tests/compose/fxa.yml: every public host through the test Ingress controller
 # (tests/helm/traefik.yaml, class traefik) over HTTPS with the test CA (Secret fxa-test-tls,
 # its CA in the ConfigMap fxa-test-ca), the email to the mail catcher (tests/helm/fxa-fixtures.yaml)
 syncDomain: https://sync.fxa.test
@@ -19,7 +19,7 @@ smtp:
 maxUsers: initial:10
 # the admin UI (test_fxa_flow.py's reset of the Sync data, test_fxa_admin.py), signing in with
 # the accounts too (ADMIN_FXA_CLIENT_ID, ADMIN_ALLOWED_USERS=@example.com), alerts to the mail
-# catcher and Prometheus with the token of tests/docker-compose.fxa-test.yml (its faster
+# catcher and Prometheus with the token of tests/compose/fxa.yml (its faster
 # intervals: admin_test_env of tests/helm-fxa.sh, test-only, after every helm install/upgrade).
 # Its other test settings that the chart has as values (no update check, accounts inactive at
 # once) are set here: changed by kubectl, Helm 4's server-side apply would refuse the next

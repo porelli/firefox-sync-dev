@@ -1,5 +1,5 @@
 # Test-only: upstream's mock FxA OAuth server, shipped in the syncstorage-rs image, as in
-# tests/docker-compose.test.yml (mock_fxa). Install the chart with
+# tests/compose/sync.yml (mock_fxa). Install the chart with
 # --set fxa.oauthServerUrl=http://mock-fxa:6000; tests/helm.sh swaps the image for the
 # backend's (syncstorage-rs-postgres-latest with Postgres).
 apiVersion: apps/v1

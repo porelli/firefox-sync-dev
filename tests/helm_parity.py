@@ -4,7 +4,7 @@ variable names, the same values (but the hosts, compose's service names against 
 <fullname>-..., and the secrets, which must come from the Secret where compose has a secret
 of .env), the same command and working directory, and probes that check what compose's
 healthcheck checks with its timings. The scripts the chart copies are byte-identical to
-compose's. The self-hosted accounts (docker-compose.fxa.yml) too: the fxa-* cases.
+compose's. The self-hosted accounts (compose/fxa.yml) too: the fxa-* cases.
 
   helm_parity.py [case...]   cases: see CASES (default: all), each with the admin UI and
                              the backups on and off
@@ -90,13 +90,7 @@ ALLOWED_DIFFERENCES = {
     f"{SYNC_POSTGRES}:db/FFS_POSTGRES_IMAGE": "compose-only in the server's container: SYNC_POSTGRES_IMAGE for the message of "
     "db/postgres/keep-major.sh, which the chart runs as its db-major init container (with database.image.postgres)",
     # the databases
-    "mysql:db/MARIADB_RANDOM_ROOT_PASSWORD": "compose-only with MySQL: docker-compose.sync-mysql.yml keeps docker-compose.yml's MARIADB_*, "
-    "the MySQL image ignores them",
-    "mysql:db/MARIADB_DATABASE": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    "mysql:db/MARIADB_USER": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    "mysql:db/MARIADB_PASSWORD": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    "mysql:db/MARIADB_AUTO_UPGRADE": "as MARIADB_RANDOM_ROOT_PASSWORD",
-    # the self-hosted accounts (docker-compose.fxa.yml)
+    # the self-hosted accounts (compose/fxa.yml)
     f"{FXA_BUNDLED}:fxa-db/FFS_MYSQL_IMAGE": "compose-only: FXA_MYSQL_IMAGE or FXA_MARIADB_IMAGE as set in .env, for "
     "db/mysql/keep-major.sh; the chart's image is always fxa.database.image.<backend>, and checkFxaDbBackend refuses "
     "another major at render time (fxa.database.allowMajorUpgrade, docs/upgrading.md#database-majors)",
@@ -119,7 +113,7 @@ ALLOWED_DIFFERENCES = {
     "Service answers; compose with FXA_PAIRING_URL and no pairing profile checks a server that is not there",
     # fxa.extraCaCerts (the fxa-mariadb case sets it): a CA of your own for the accounts' public URLs
     "fxa-mariadb:auth/NODE_EXTRA_CA_CERTS": "chart-only: fxa.extraCaCerts, a CA of your own the accounts' servers trust "
-    "for their public URLs; compose has no such setting (tests/docker-compose.fxa-test.yml mounts its test CA itself)",
+    "for their public URLs; compose has no such setting (tests/compose/fxa.yml mounts its test CA itself)",
     "fxa-mariadb:content/NODE_EXTRA_CA_CERTS": "as auth's",
     "fxa-mariadb:profile/NODE_EXTRA_CA_CERTS": "as auth's",
     "fxa-mariadb:admin/SSL_CERT_DIR": "chart-only: fxa.extraCaCerts for the admin UI's public checks and sign-in (Go reads "
@@ -168,7 +162,7 @@ ALLOWED_COMMANDS = {
                           "as fxa-mysql's; on a MySQL 8 pin the chart adds compose's FXA_MYSQL_ARGS of that pin "
                           "(prepare_environment.sh writes both), from the image's major (fxaDbArgs)"),
     "fxa-mariadb:fxa-db": ([None, ["mariadbd", "--event-scheduler=ON"]],
-                           "as fxa-mysql's (docker-compose.fxa-mariadb.yml's command)"),
+                           "as fxa-mysql's (compose/fxa-mariadb.yml's command)"),
     f"{FXA}:redis": ([["/bin/sh", "-c"], ['pass=$(printf %s "$REDISCLI_AUTH" | od -An -v -tx1 | tr -d \' \\n\' | '
                                          "sed 's/../\\\\x&/g')\nexec redis-server - <<EOF\nrequirepass \"$pass\"\nEOF\n"]],
                      "the image's redis-server with a password (REDISCLI_AUTH, chart-only: compose's Redis has none) "
@@ -310,7 +304,7 @@ PAIRS = [
     ("tokenserver_db", "StatefulSet", f"{FULLNAME}-tokenserver-db", "db", "db", False),
     ("syncstorage_db", "StatefulSet", f"{FULLNAME}-storage-db", "db", "db", False),
     ("postgres_db", "StatefulSet", f"{FULLNAME}-postgres", "db", "db", False),
-    # the accounts (docker-compose.fxa.yml): auth's one-shot services are its init containers
+    # the accounts (compose/fxa.yml): auth's one-shot services are its init containers
     ("fxa-db", "StatefulSet", f"{FULLNAME}-fxa-db", "db", "fxa-db", False),
     ("fxa-redis", "Deployment", f"{FULLNAME}-fxa-redis", "redis", "redis", False),
     ("fxa-keys-owner", "Deployment", f"{FULLNAME}-fxa-auth", "keys-owner", "keys-owner", True),
@@ -342,28 +336,31 @@ HOSTS = {
     EXTDB: EXTDB,
 }
 
+# the compose files of Sync on each database (docs/install/compose.md#the-compose-files)
+SYNC_FILES = {db: ["compose/sync.yml", f"compose/sync-{db}.yml"] for db in ("mariadb", "mysql", "postgres")}
 # case -> compose files, .env values, helm values
 CASES = {
-    "mariadb": (["docker-compose.yml"], {}, ["--set", "database.backend=mariadb"]),
-    "mysql": (["docker-compose.yml", "docker-compose.sync-mysql.yml"], {"SYNC_DB": "mysql"}, ["--set", "database.backend=mysql"]),
-    "postgres": (["docker-compose.sync-postgres.yml"], {"SYNC_POSTGRES_APP_USER": "syncserver_app"}, ["--set", "database.backend=postgres"]),
+    "mariadb": (SYNC_FILES["mariadb"], {}, ["--set", "database.backend=mariadb"]),
+    "mysql": (SYNC_FILES["mysql"], {"SYNC_DB": "mysql"}, ["--set", "database.backend=mysql"]),
+    "postgres": (SYNC_FILES["postgres"], {"SYNC_POSTGRES_APP_USER": "syncserver_app"}, ["--set", "database.backend=postgres"]),
     # your own server (docs/databases.md#your-own-server, prepare_environment.sh): no database containers, no TLS
     # check (MySQL's self-signed certificate); PostgreSQL without the Sync role
-    "external-mariadb": (["docker-compose.yml"],
+    "external-mariadb": (SYNC_FILES["mariadb"],
                          {"SYNC_DB_CONTAINERS": "0", "SYNC_DB_TLS_VERIFY": "false", "SYNC_TOKENSERVER_DB_HOST": EXTDB,
                           "SYNC_STORAGE_DB_HOST": EXTDB},
                          ["--set", "database.backend=mariadb"]),
-    "external-mysql": (["docker-compose.yml"],
+    # (sync-mariadb.yml, as prepare_environment.sh writes for your own MySQL server: its client)
+    "external-mysql": (SYNC_FILES["mariadb"],
                        {"SYNC_DB": "mysql", "SYNC_DB_CONTAINERS": "0", "SYNC_DB_TLS_VERIFY": "false",
                         "SYNC_TOKENSERVER_DB_HOST": EXTDB, "SYNC_STORAGE_DB_HOST": EXTDB},
                        ["--set", "database.backend=mysql"]),
-    "external-postgres": (["docker-compose.sync-postgres.yml"],
+    "external-postgres": (SYNC_FILES["postgres"],
                           {"SYNC_DB_CONTAINERS": "0", "SYNC_POSTGRES_HOST": EXTDB, "SYNC_POSTGRES_APP_PASSWORD": ""},
                           ["--set", "database.backend=postgres"]),
 }
 EXTERNAL_HELM = ["--set", "database.bundled=false", "--set", f"database.external.host={EXTDB}", "--set", "existingSecret=mine"]
 
-# the self-hosted accounts: docker-compose.fxa.yml on top, .env as prepare_environment.sh writes it
+# the self-hosted accounts: compose/fxa.yml and compose/fxa-<db>.yml on top, .env as prepare_environment.sh writes it
 # for them, the matching values. The bundled accounts database without a policy user (its root
 # installs the policy); the pairing server on (COMPOSE_PROFILES=pairing) but with your own server
 # (ADMIN_UNCONFIRMED_HOURS: the chart passes it only when set, so set in both, 0 the edge)
@@ -387,7 +384,7 @@ FXA_ADMIN_ENV = {
 FXA_ADMIN_HELM = ["--set", "admin.fxaSignIn=true", "--set", "fxa.adminClientId=0123456789abcdef",
                   "--set", "admin.oidc.redirectUrl=https://admin.example.test/auth/callback",
                   "--set", "admin.allowed.users=you@example.test"]
-FXA_FILES = ["docker-compose.yml", "docker-compose.fxa.yml"]
+FXA_FILES = SYNC_FILES["mariadb"] + ["compose/fxa.yml", "compose/fxa-mysql.yml"]
 CASES.update({
     "fxa-mysql": (FXA_FILES, FXA_BUNDLED_ENV, ["--set", "database.backend=mariadb"] + FXA_PAIRING_HELM),
     # a MySQL 8 pin: compose's FXA_MYSQL_ARGS as prepare_environment.sh writes them for it
@@ -396,7 +393,7 @@ CASES.update({
                    ["--set", "database.backend=mariadb", "--set", "fxa.database.image.mysql=docker.io/library/mysql:8"]
                    + FXA_PAIRING_HELM),
     # (also fxa.extraCaCerts: chart-only)
-    "fxa-mariadb": (FXA_FILES + ["docker-compose.fxa-mariadb.yml"], {**FXA_BUNDLED_ENV, "FXA_DB": "mariadb"},
+    "fxa-mariadb": (SYNC_FILES["mariadb"] + ["compose/fxa.yml", "compose/fxa-mariadb.yml"], {**FXA_BUNDLED_ENV, "FXA_DB": "mariadb"},
                     ["--set", "database.backend=mariadb", "--set", "fxa.database.backend=mariadb",
                      "--set", "fxa.extraCaCerts.configMap=ffs-test-ca"] + FXA_PAIRING_HELM),
     # your own accounts server, its users fxa and ffs_policy; a pairing server of your own elsewhere
@@ -404,7 +401,7 @@ CASES.update({
                                  "FXA_MYSQL_POLICY_USER": "ffs_policy"},
                      ["--set", "database.backend=mariadb", "--set", "fxa.database.bundled=false",
                       "--set", f"fxa.database.external.host={EXTDB}", "--set", "existingSecret=mine"] + FXA_HELM),
-    "fxa-postgres": (["docker-compose.sync-postgres.yml", "docker-compose.fxa.yml"],
+    "fxa-postgres": (SYNC_FILES["postgres"] + ["compose/fxa.yml", "compose/fxa-mysql.yml"],
                      {**FXA_BUNDLED_ENV, "SYNC_POSTGRES_APP_USER": "syncserver_app"},
                      ["--set", "database.backend=postgres"] + FXA_PAIRING_HELM),
 })
@@ -483,7 +480,8 @@ def compose_config(files, overrides, profiles):
             f.write(env_file(overrides, profiles))
         # nothing of this shell: .env alone (the shell wins over --env-file)
         env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "XDG_RUNTIME_DIR")}
-        cmd = ["docker", "compose", "--project-directory", REPO, "-p", "ffs-parity", "--env-file", path]
+        # (the project directory: compose/, the first file's, which the paths in the files are relative to)
+        cmd = ["docker", "compose", "-p", "ffs-parity", "--env-file", path]
         for f_ in files:
             cmd += ["-f", os.path.join(REPO, f_)]
         return json.loads(run(cmd + ["config", "--format", "json"], env=env))["services"]

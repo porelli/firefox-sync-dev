@@ -20,7 +20,8 @@ How to read the tables:
 | `SYNC_EXPORT_PORT` | – (the Service, port `syncstorage.service.port`, `8000`) | `127.0.0.1:5000` | where the host publishes the Sync server for your reverse proxy: `[address:]port`. A port alone in `.env` publishes it on every interface: [Host names and ports](../reverse-proxy.md#host-names-and-ports) | `CONTAINER_EXPORT_PORT` |
 | `FXA_OAUTH_SERVER_URL` | `fxa.oauthServerUrl` | `https://oauth.accounts.firefox.com/v1` | where the tokenserver checks the sign-in tokens. Self-hosted accounts: `http://fxa-auth:9000/v1` (Helm: the chart sets it with `fxa.enabled`) | |
 | `FXA_EMAIL_DOMAIN` | `fxa.emailDomain` | `api.accounts.firefox.com` | the tokenserver keeps each account as `<uid>@FXA_EMAIL_DOMAIN`. Self-hosted accounts: the host of `FXA_AUTH_URL` (Helm: set by the chart). A new value makes every account a new one | |
-| `COMPOSE_FILE` | – | unset: `docker-compose.yml` | the compose files, separated by `:`: add `docker-compose.sync-postgres.yml`, `docker-compose.sync-mysql.yml`, `docker-compose.fxa.yml`, `docker-compose.fxa-mariadb.yml` as needed | |
+| `COMPOSE_FILE` | – | unset: `docker-compose.yml`, Sync on MariaDB (installs from before `compose/`) | the compose files, separated by `:`: `compose/sync.yml`, the Sync database's, the accounts' ([The compose files](../install/compose.md#the-compose-files)) | |
+| `COMPOSE_PROJECT_NAME` | – | unset: the directory of the first compose file | the compose project, which names the containers and volumes: `prepare_environment.sh` writes the checkout's directory ([The compose files](../install/compose.md#the-compose-files)) | |
 | `COMPOSE_PROFILES` | `admin.enabled`, `backup.enabled` | unset: none | the optional services that run, the whole list comma-separated: `admin`, `backup`, `pairing` (self-hosted accounts), see [Optional services](../install/compose.md#optional-services) | |
 
 ## Images
@@ -45,7 +46,7 @@ The stack's own database containers. For a server you run yourself, see also [Yo
 
 | `.env` | Helm | Default | Meaning | Old name |
 |---|---|---|---|---|
-| `SYNC_DB` | `database.backend` | `mariadb` | the Sync database containers: `mariadb` or `mysql` ([MySQL instead of MariaDB](../databases.md#mysql-instead-of-mariadb)). PostgreSQL: `docker-compose.sync-postgres.yml` in `COMPOSE_FILE` (Helm: `postgres`) | |
+| `SYNC_DB` | `database.backend` | `mariadb` | the Sync database containers: `mariadb` or `mysql` ([MySQL instead of MariaDB](../databases.md#mysql-instead-of-mariadb)). PostgreSQL: `compose/sync-postgres.yml` in `COMPOSE_FILE` (Helm: `postgres`) | |
 | `SYNC_MARIADB_IMAGE` | `database.image.mariadb` | unset: `mariadb:lts` (Helm `docker.io/library/mariadb:lts`) | with `SYNC_DB=mariadb`, the MariaDB image of the Sync databases and of their backups. Pins: [Database majors](../upgrading.md#database-majors) | |
 | `SYNC_MYSQL_IMAGE` | `database.image.mysql` | unset: `mysql:lts` (Helm `docker.io/library/mysql:lts`) | with `SYNC_DB=mysql`, the MySQL image of the Sync databases and of their backups. Pins: [Database majors](../upgrading.md#database-majors) | |
 | `SYNC_POSTGRES_IMAGE` | `database.image.postgres` | unset: `postgres:latest`; `prepare_environment.sh` writes the major it finds | the PostgreSQL image of the Sync database and of its backups, compose's and the Quadlets'. Pin the major: [PostgreSQL](../upgrading.md#postgresql) | `POSTGRES_IMAGE` |
@@ -168,7 +169,7 @@ The alerts and the emails of the admin UI: [Alerts](../admin/alerts.md). The sam
 
 ## Accounts
 
-The self-hosted Mozilla accounts, with `docker-compose.fxa.yml` in `COMPOSE_FILE`: [Self-hosted accounts](../accounts.md). With the Helm chart, `fxa.enabled: true`: [Self-hosted accounts](../install/helm.md#self-hosted-accounts). The chart's values with no `.env` counterpart are in [Helm only](#helm-only).
+The self-hosted Mozilla accounts, with `compose/fxa.yml` in `COMPOSE_FILE`: [Self-hosted accounts](../accounts.md). With the Helm chart, `fxa.enabled: true`: [Self-hosted accounts](../install/helm.md#self-hosted-accounts). The chart's values with no `.env` counterpart are in [Helm only](#helm-only).
 
 | `.env` | Helm | Default | Meaning | Old name |
 |---|---|---|---|---|
@@ -178,7 +179,7 @@ The self-hosted Mozilla accounts, with `docker-compose.fxa.yml` in `COMPOSE_FILE
 | `FXA_CONTENT_URL` | `fxa.contentUrl` | required | the public URL of the accounts pages, for example `https://accounts.example.com` | |
 | `FXA_AUTH_URL` | `fxa.authUrl` | required | the public URL of the accounts API | |
 | `FXA_PROFILE_URL` | `fxa.profileUrl` | required | the public URL of the profile server | |
-| `FXA_DB` | `fxa.database.backend` | `mysql` | the accounts database: `mysql` or `mariadb` ([MySQL or MariaDB](../accounts.md#mysql-or-mariadb)). With compose, `mariadb` also needs `docker-compose.fxa-mariadb.yml` in `COMPOSE_FILE` | |
+| `FXA_DB` | `fxa.database.backend` | `mysql` | the accounts database: `mysql` or `mariadb` ([MySQL or MariaDB](../accounts.md#mysql-or-mariadb)). With compose, `mariadb` also needs `compose/fxa-mariadb.yml` in `COMPOSE_FILE`, not `compose/fxa-mysql.yml` | |
 | `FXA_MYSQL_IMAGE` | `fxa.database.image.mysql` | unset: `mysql:lts` (Helm `docker.io/library/mysql:lts`) | with `FXA_DB=mysql`, the image of `fxa-db` and of its backups. Pins: [Database majors](../upgrading.md#database-majors) | |
 | `FXA_MYSQL_ARGS` | – (from `fxa.database.image.mysql`: the native password options on a MySQL 8 pin, [Database majors](../upgrading.md#database-majors)) | empty | extra options of `fxa-db`'s `mysqld`. On `mysql:8` for accounts images without mozilla/fxa#21554: `--mysql-native-password=ON --authentication-policy=mysql_native_password` | |
 | `FXA_MARIADB_IMAGE` | `fxa.database.image.mariadb` | unset: `mariadb:lts` (Helm `docker.io/library/mariadb:lts`) | with `FXA_DB=mariadb`, the image of `fxa-db` and of its backups | |

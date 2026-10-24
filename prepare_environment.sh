@@ -502,14 +502,67 @@ fxa_installed() {
     [ -n "${pw}" ] && [[ "${pw}" != *"<REPLACE_WITH_"* ]]
 }
 
+# compose's project, which names the containers and the volumes: COMPOSE_PROJECT_NAME (this
+# shell's, then .env's), else the directory's name, as compose makes it a project name. Written
+# to .env with COMPOSE_FILE: with compose/ first there, compose would take "compose"
+compose_project() {
+    local project
+    project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
+    printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
+}
+# the compose files of an install (COMPOSE_FILE): compose/sync.yml and the Sync database's file,
+# with self-hosted accounts compose/fxa.yml and theirs, with docker compose on the Podman socket
+# compose/podman.yml (docs/install/compose.md#the-compose-files).
+# compose_files <mariadb|mysql|postgres> <"" or the accounts' mysql|mariadb> <podman: yes|no>
+compose_files() {
+    local files="compose/sync.yml:compose/sync-${1}.yml"
+    [ -n "${2}" ] && files="${files}:compose/fxa.yml:compose/fxa-${2}.yml"
+    [ "${3}" = yes ] && files="${files}:compose/podman.yml"
+    printf '%s\n' "${files}"
+}
+# COMPOSE_FILE with the files of before compose/ (docs/upgrading.md#files-that-moved) in their
+# new names, the others as they are (a directory before a name kept); nothing printed when none
+# is there. "" (no COMPOSE_FILE: docker-compose.yml, Sync on MariaDB) is docker-compose.yml.
+# docker-compose.yml + docker-compose.sync-mysql.yml -> compose/sync.yml:compose/sync-mysql.yml,
+# docker-compose.sync-postgres.yml (and its name before, docker-compose.postgres.yml) ->
+# compose/sync.yml:compose/sync-postgres.yml, docker-compose.fxa.yml (+ docker-compose.fxa-mariadb.yml)
+# -> compose/fxa.yml:compose/fxa-mysql.yml (fxa-mariadb.yml), docker-compose.podman.yml -> compose/podman.yml
+compose_files_moved() {
+    local value=${1:-docker-compose.yml} part dir sync_db=mariadb fxa_db=mysql new="" moved=no
+    local parts=()
+    IFS=: read -r -a parts <<< "${value}"
+    for part in "${parts[@]}"; do
+        case "${part##*/}" in
+            docker-compose.sync-mysql.yml) sync_db=mysql ;;
+            docker-compose.sync-postgres.yml|docker-compose.postgres.yml) sync_db=postgres ;;
+            docker-compose.fxa-mariadb.yml) fxa_db=mariadb ;;
+        esac
+    done
+    for part in "${parts[@]}"; do
+        dir=${part%"${part##*/}"}
+        case "${part##*/}" in
+            docker-compose.yml|docker-compose.sync-postgres.yml|docker-compose.postgres.yml)
+                part="${dir}compose/sync.yml:${dir}compose/sync-${sync_db}.yml" ;;
+            docker-compose.fxa.yml) part="${dir}compose/fxa.yml:${dir}compose/fxa-${fxa_db}.yml" ;;
+            docker-compose.podman.yml) part="${dir}compose/podman.yml" ;;
+            # in the one of compose/sync.yml or compose/fxa.yml
+            docker-compose.sync-mysql.yml|docker-compose.fxa-mariadb.yml) moved=yes; continue ;;
+            *) new=${new:+${new}:}${part}; continue ;;
+        esac
+        moved=yes
+        case ":${new}:" in *":${part%%:*}:"*) continue ;; esac
+        new=${new:+${new}:}${part}
+    done
+    [ "${moved}" = yes ] && printf '%s\n' "${new}"
+    return 0
+}
+
 # a database volume of an earlier install (the .env gone, or for another database):
 # "<runtime> volume <name>", for any of the names given (compose: <project>_<name>, Quadlets:
 # firefox-sync-<name>), e.g. db_volume fxa-db-mariadb
 db_volume() {
     local project runtime volume name
-    # compose's project: COMPOSE_PROJECT_NAME (this shell's, then .env's), else the directory
-    project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
-    project=$(printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+    project=$(compose_project)
     for runtime in docker podman; do
         command -v "${runtime}" > /dev/null 2>&1 || continue
         for name in "$@"; do
@@ -573,8 +626,7 @@ mariadb_volume_major() {
 # the project, the Quadlets' firefox-sync-tokenserver-db)
 mariadb_running_major() {
     local project runtime ctr
-    project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
-    project=$(printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+    project=$(compose_project)
     for runtime in docker podman; do
         command -v "${runtime}" > /dev/null 2>&1 || continue
         for ctr in $(${runtime} ps -q --filter "label=com.docker.compose.project=${project}" --filter label=com.docker.compose.service=tokenserver_db 2> /dev/null) \
@@ -793,7 +845,7 @@ render_units() {
                 continue
             fi
             # PostgreSQL: the admin UI's unit (admin/ or fxa/admin/) with the Sync database of
-            # docker-compose.sync-postgres.yml's ffs-admin: one database, as the Sync server's
+            # compose/sync-postgres.yml's ffs-admin: one database, as the Sync server's
             # role (its reader with ADMIN_DB_PASSWORD), no storage database of its own
             src=${file}
             if [ "${sync_db}" = postgres ] && [ "${filename}" = firefox-sync-admin.container ]; then
@@ -855,8 +907,8 @@ render_units() {
 # the settings of this release that need a value of their own (docs/upgrading.md#older-firefox-sync-releases), nothing else
 # changed: the admin UI's database users (ADMIN_DB_PASSWORD; the event log moves out of the
 # Sync server's reach at the next start), the Sync server's own role in the PostgreSQL
-# container (SYNC_POSTGRES_APP_USER, SYNC_POSTGRES_APP_PASSWORD), and in COMPOSE_FILE the new name of
-# docker-compose.postgres.yml (docker-compose.sync-postgres.yml), and with the accounts on
+# container (SYNC_POSTGRES_APP_USER, SYNC_POSTGRES_APP_PASSWORD), in COMPOSE_FILE the new names
+# of the compose files (compose/, docs/upgrading.md#files-that-moved) with COMPOSE_PROJECT_NAME, and with the accounts on
 # MariaDB FXA_MARIADB_IMAGE=mariadb:11, the major they run (the compose default is now
 # mariadb:lts, 12: written out, they stay on 11; a move is up to the admin, docs/upgrading.md#mariadb), on MySQL
 # FXA_MYSQL_IMAGE=mysql:8 and FXA_MYSQL_ARGS with mysql_native_password, Sync on MySQL
@@ -1002,24 +1054,36 @@ upgrade_env() {
         env_has "${name}" || set_value "${name}" "$(grep "^${name}=" "${SCRIPT_DIR}/.env-example" | cut -d= -f2-)"
     done
     [ -n "$(env_value ADMIN_DB_PASSWORD)" ] || set_value ADMIN_DB_PASSWORD "$(generate_random_string 32)"
-    # docker-compose.postgres.yml is now docker-compose.sync-postgres.yml (the old name is a
-    # symlink to it for a transition period, docs/upgrading.md#files-that-moved): the new name in COMPOSE_FILE
-    local compose_file compose_new part parts=() renamed=no
+    # the compose files moved to compose/ (docs/upgrading.md#files-that-moved): their new names in
+    # COMPOSE_FILE, and the project's name written next to it (compose/ first there, compose
+    # would name it "compose": other containers, other volumes). No COMPOSE_FILE (docker-compose.yml,
+    # which includes those of MariaDB now) with a docker-compose.override.yml, which compose reads
+    # only then: left as it is
+    local compose_file compose_new
     compose_file=$(env_value COMPOSE_FILE)
     case "${compose_file}" in
         \'*\') compose_file=${compose_file:1:${#compose_file}-2} ;;
         \"*\") compose_file=${compose_file:1:${#compose_file}-2} ;;
     esac
-    IFS=: read -r -a parts <<< "${compose_file}"
-    for part in "${parts[@]}"; do
-        case "${part}" in
-            docker-compose.postgres.yml|*/docker-compose.postgres.yml) part=${part%docker-compose.postgres.yml}docker-compose.sync-postgres.yml; renamed=yes ;;
-        esac
-        compose_new=${compose_new:+${compose_new}:}${part}
-    done
-    if [ "${renamed}" = yes ]; then
+    compose_new=$(compose_files_moved "${compose_file}")
+    # (the Quadlets read no COMPOSE_FILE: none stays none)
+    [ -z "${compose_file}" ] && [ "${quadlets}" = yes ] && compose_new=""
+    if [ -z "${compose_file}" ] && [ -n "${compose_new}" ] && { [ -f "${SCRIPT_DIR}/docker-compose.override.yml" ] || [ -f "${SCRIPT_DIR}/docker-compose.override.yaml" ]; }; then
+        echo "COMPOSE_FILE: not set, with a docker-compose.override.yml: left so (docker-compose.yml runs the files of compose/,"
+        echo "  docs/upgrading.md#files-that-moved). To set it: ${compose_new} and your file"
+    elif [ -n "${compose_new}" ]; then
         set_value COMPOSE_FILE "${compose_new}"
-        echo "COMPOSE_FILE: docker-compose.postgres.yml renamed to docker-compose.sync-postgres.yml (now ${compose_new})"
+        env_has COMPOSE_PROJECT_NAME || set_value COMPOSE_PROJECT_NAME "$(compose_project)"
+        echo "COMPOSE_FILE: the compose files moved to compose/ (docs/upgrading.md#files-that-moved): now ${compose_new}"
+        echo "  (before: ${compose_file:-not set, docker-compose.yml}), COMPOSE_PROJECT_NAME=$(env_value COMPOSE_PROJECT_NAME)"
+        local part parts=()
+        IFS=: read -r -a parts <<< "${compose_new}"
+        for part in "${parts[@]}"; do
+            case "${part}" in
+                compose/*.yml|*/compose/*.yml) ;;
+                *) echo "  NOTE: ${part}: relative paths in it (./...) are now relative to compose/, the directory of the first file"; break ;;
+            esac
+        done
     fi
     if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && [ -z "$(env_value SYNC_POSTGRES_APP_PASSWORD)" ]; then
         [ -n "$(env_value SYNC_POSTGRES_APP_USER)" ] || set_value SYNC_POSTGRES_APP_USER syncserver_app
@@ -1027,8 +1091,8 @@ upgrade_env() {
     fi
     # Sync on PostgreSQL, from before SYNC_POSTGRES_IMAGE: the major its data is on, read from the
     # stack's volume (PG_VERSION); without a readable volume (your own server, another host)
-    # postgres:18, which every release before SYNC_POSTGRES_IMAGE ran (git log --
-    # docker-compose.sync-postgres.yml)
+    # postgres:18, which every release before SYNC_POSTGRES_IMAGE ran (git log --follow --
+    # compose/sync-postgres.yml)
     if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && ! env_has SYNC_POSTGRES_IMAGE; then
         local pg_major=18 pg_volume
         if [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && pg_volume=$(db_volume postgres-db) \
@@ -1259,7 +1323,7 @@ read -e -p "Database backend [mariadb/mysql/postgres] [${DEFAULT_DATABASE_BACKEN
 DATABASE_BACKEND=${DATABASE_BACKEND:-${DEFAULT_DATABASE_BACKEND}}
 case "${DATABASE_BACKEND}" in
     mariadb|postgres) SYNC_DB=mariadb ;;
-    # MySQL containers (docker-compose.sync-mysql.yml), the same Sync images as MariaDB
+    # MySQL containers (compose/sync-mysql.yml), the same Sync images as MariaDB
     mysql|MySQL) DATABASE_BACKEND=mysql; SYNC_DB=mysql ;;
     *)
         echo "ERROR: unknown database backend '${DATABASE_BACKEND}'"
@@ -1582,7 +1646,7 @@ fi
 # PostgreSQL has no lts (every major is supported for 5 years) and no major opens another's
 # data: the major of the install, decided before .env is written. One that ran PostgreSQL
 # before keeps its SYNC_POSTGRES_IMAGE (without one: the major of its volume's data, else 18,
-# which every release before it used, git log -- docker-compose.sync-postgres.yml); a new setup over the PostgreSQL volume of an
+# which every release before it used, git log --follow -- compose/sync-postgres.yml); a new setup over the PostgreSQL volume of an
 # earlier install the major of its data; a new install the major postgres:latest is at now, read
 # from the image itself. Unset it would be postgres:latest, which a new major leaves unable to
 # start: not knowing the major is an error
@@ -1650,10 +1714,8 @@ apply_sed "${NEW_ENV}" "s|^SYNC_DB=.*|SYNC_DB=${SYNC_DB}|"
     apply_sed "${NEW_ENV}" "s|^# SYNC_MARIADB_IMAGE=.*|SYNC_MARIADB_IMAGE=$(sed_escape "${SYNC_MARIADB_PIN}")|"
 if [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
     # MySQL's certificate is self-signed: the init container's client does not check it
-    # (docker-compose.sync-mysql.yml does the same, this is for the Quadlets)
+    # (compose/sync-mysql.yml does the same, this is for the Quadlets)
     apply_sed "${NEW_ENV}" "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|"
-    # with the accounts, set below with theirs
-    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed "${NEW_ENV}" "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml|"
     # MySQL lts for new installs (9 today), written out (also the default when unset). One that
     # ran MySQL before SYNC_MYSQL_IMAGE, or whose MySQL volumes are still there, runs 8: pinned,
     # so that its data does not move to 9 by itself
@@ -1773,7 +1835,7 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         apply_sed "${NEW_ENV}" "s|^ADMIN_FXA_CLIENT_ID=.*|ADMIN_FXA_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
         apply_sed "${NEW_ENV}" "s|^ADMIN_ALLOWED_USERS=.*|ADMIN_ALLOWED_USERS=${ADMIN_ALLOWED_USERS}|"
         apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_REDIRECT_URL=.*|ADMIN_OIDC_REDIRECT_URL=https://${ADMIN_HOST}/auth/callback|"
-        # written out for the Quadlets too, which have no defaults like docker-compose.fxa.yml
+        # written out for the Quadlets too, which have no defaults like compose/fxa.yml
         apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_ISSUER=.*|ADMIN_OIDC_ISSUER=https://accounts.${FXA_DOMAIN}|"
         apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_CLIENT_ID=.*|ADMIN_OIDC_CLIENT_ID=${ADMIN_FXA_CLIENT_ID}|"
         apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_NAME=.*|ADMIN_OIDC_NAME=\"Mozilla account\"|"
@@ -1781,15 +1843,6 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
         # sessions through to the admin UI (SERVICES_WITH_EMAIL_VERIFICATION in fxa-auth)
         apply_sed "${NEW_ENV}" "s|^ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=.*|ADMIN_OIDC_TRUST_UNVERIFIED_EMAIL=true|"
     fi
-    if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        COMPOSE_FILES=docker-compose.sync-postgres.yml:docker-compose.fxa.yml
-    elif [ "${SYNC_COMPOSE_MYSQL}" = "yes" ]; then
-        COMPOSE_FILES=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml
-    else
-        COMPOSE_FILES=docker-compose.yml:docker-compose.fxa.yml
-    fi
-    [ "${FXA_DB}" = "mariadb" ] && COMPOSE_FILES="${COMPOSE_FILES}:docker-compose.fxa-mariadb.yml"
-    apply_sed "${NEW_ENV}" "s|# COMPOSE_FILE=.*|COMPOSE_FILE=${COMPOSE_FILES}|"
     # nginx example for the accounts host names
     cp ${SCRIPT_DIR}/config/nginx/fxa-example.conf ${SCRIPT_DIR}/config/nginx/fxa.conf
     apply_sed ${SCRIPT_DIR}/config/nginx/fxa.conf "s|<ACCOUNTS_HOST>|accounts.${FXA_DOMAIN}|g"
@@ -1818,7 +1871,6 @@ if [ "${SELF_HOST_FXA}" = "yes" ]; then
     fi
 fi
 if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-    [ "${SELF_HOST_FXA}" = "yes" ] || apply_sed "${NEW_ENV}" "s|# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.sync-postgres.yml|"
     apply_sed "${NEW_ENV}" "s|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-postgres|"
     apply_sed "${NEW_ENV}" "s|^SYNC_INIT_IMAGE=.*|SYNC_INIT_IMAGE=syncstorage-rs-postgres-init|"
     # the database container: the Sync server gets a role of its own, SYNC_POSTGRES_USER is the
@@ -1830,6 +1882,18 @@ if [ "${DATABASE_BACKEND}" = "postgres" ]; then
     # the major of the install, above
     apply_sed "${NEW_ENV}" "s|^# SYNC_POSTGRES_IMAGE=.*|SYNC_POSTGRES_IMAGE=$(sed_escape "${SYNC_POSTGRES_PIN}")|"
 fi
+# the compose files (also written for the Quadlets, which do not read it): the Sync database's,
+# MariaDB's with your own MySQL server too (its client, as before compose/), the accounts', and
+# compose/podman.yml for docker compose on the Podman socket; and the project's name, which
+# compose would take from compose/ ("compose") otherwise
+case "${DATABASE_BACKEND}" in
+    postgres) COMPOSE_SYNC_DB=postgres ;;
+    *) COMPOSE_SYNC_DB=$([ "${SYNC_COMPOSE_MYSQL}" = yes ] && echo mysql || echo mariadb) ;;
+esac
+COMPOSE_FILES=$(compose_files "${COMPOSE_SYNC_DB}" "$([ "${SELF_HOST_FXA}" = yes ] && echo "${FXA_DB}")" \
+    "$([ "${CONTAINER_RUNTIME}" = podman ] && [ "${DEPLOY_METHOD}" != quadlets ] && echo yes)")
+apply_sed "${NEW_ENV}" "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=${COMPOSE_FILES}|"
+apply_sed "${NEW_ENV}" "s|^# COMPOSE_PROJECT_NAME=.*|COMPOSE_PROJECT_NAME=$(compose_project)|"
 # the new .env in place, the one of before kept
 if [ -f "${SCRIPT_DIR}/.env" ]; then
     ENV_BACKUP=$(backup_name "${SCRIPT_DIR}/.env.before-setup")
@@ -2037,18 +2101,10 @@ if [ "${CONTAINER_RUNTIME}" = "podman" ] && [ "${DEPLOY_METHOD}" = "quadlets" ];
     echo ""
     echo "See docs/install/podman.md for detailed instructions"
 elif [ "${CONTAINER_RUNTIME}" = "podman" ]; then
-    if [ "${DATABASE_BACKEND}" = "postgres" ]; then
-        COMPOSE_FILES="-f docker-compose.sync-postgres.yml"
-    else
-        COMPOSE_FILES="-f docker-compose.yml -f docker-compose.podman.yml"
-    fi
-    [ "${SYNC_COMPOSE_MYSQL}" = "yes" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.sync-mysql.yml"
-    [ "${SELF_HOST_FXA}" = "yes" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.fxa.yml"
-    [ "${SELF_HOST_FXA}" = "yes" ] && [ "${FXA_DB}" = "mariadb" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.fxa-mariadb.yml"
-    echo "Next steps for docker compose with the Podman socket:"
+    echo "Next steps for docker compose with the Podman socket (COMPOSE_FILE of .env has compose/podman.yml):"
     echo "  1. systemctl --user enable --now podman.socket"
     echo "  2. export DOCKER_HOST=unix://\${XDG_RUNTIME_DIR}/podman/podman.sock"
-    echo "  3. docker compose ${COMPOSE_FILES} up -d"
+    echo "  3. docker compose up -d"
     [ "${BACKUPS}" = yes ] || echo "  (Optional) nightly backups: add backup to COMPOSE_PROFILES in .env (docs/backups.md#the-backup-service)"
     echo ""
     echo "See docs/install/podman.md for detailed instructions (podman-compose is not supported)"

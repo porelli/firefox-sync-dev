@@ -1,7 +1,7 @@
 # Builds the admin UI under test from admin/ as ADMIN_IMAGE (tests/e2e.sh, tests/e2e-fxa.sh).
 # Compose builds with BuildKit, which the Dockerfile needs (BUILDPLATFORM): plain docker
-# build does not without buildx.
+# build does not without buildx. Used alone: the path is of this directory.
 services:
   ffs-admin:
     image: ${ADMIN_IMAGE:?}
-    build: ../admin
+    build: ../../admin

@@ -5,7 +5,7 @@ account "alice" of the mock FxA syncs, SYNC_MAX_USERS is 1 (SYNC_MAX_USERS=initi
 that the page manages it). tests/e2e.sh also runs the read-only test (-k read_only) while
 the stack has a plain SYNC_MAX_USERS=1. The test stack sets
 ADMIN_STALE_DAYS=0, METRICS_FLUSH_SECONDS=5, HEALTH_CHECK_SECONDS=5 and METRICS_TOKEN
-(tests/docker-compose.test.yml).
+(tests/compose/sync.yml).
 
 Environment (besides those of test_client_flow.py):
   ADMIN_URL       the admin UI inside the stack's network (http://ffs-admin:8080)
@@ -190,7 +190,7 @@ def test_health(admin):
         f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
 
 
-# ADMIN_NOTIFY of the test stack (tests/docker-compose.test.yml): a webhook and a Slack-style
+# ADMIN_NOTIFY of the test stack (tests/compose/sync.yml): a webhook and a Slack-style
 # one, both to tests/notify_sink.py
 SINK = "http://notify-sink:8000"
 SINK_NAMES = "webhook+http://notify-sink:8000, slack+http://notify-sink:8000"
@@ -322,7 +322,7 @@ def test_configuration_page(admin):
     # where max users comes from: initial:N is managed on the overview, N is fixed
     row = config_row(page, "Max users")
     assert f"SYNC_MAX_USERS={os.environ['MAX_USERS_SETTING']}:" in row and ("then on the overview" in row) == EDITABLE, row
-    # the Sync databases, the settings of the test stack (tests/docker-compose.test.yml)
+    # the Sync databases, the settings of the test stack (tests/compose/sync.yml)
     assert ("Databases" in page) == MYSQL and ("PostgreSQL, tokenserver and storage in one database" in page) == (not MYSQL)
     if MYSQL:
         # the server as the health check read it (MariaDB 11.8.3, MySQL 8.4.6), not only the kind
@@ -572,7 +572,7 @@ def test_audit_trail_filters_and_pages(admin, admin_db):
 
 
 def test_local_time_label(admin):
-    # ADMIN_TZ=Europe/Rome in tests/docker-compose.test.yml: said once, at the bottom
+    # ADMIN_TZ=Europe/Rome in tests/compose/sync.yml: said once, at the bottom
     for path in ("/", "/activity", "/users/alice"):
         page = admin.get(path)
         # BACKUP_TIME is set in UTC: the backups say so, with the local time first

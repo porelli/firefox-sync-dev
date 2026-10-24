@@ -1,5 +1,5 @@
 """A webhook receiver for the end-to-end tests: the destinations of ADMIN_NOTIFY in the
-test stacks (tests/docker-compose.test.yml, tests/docker-compose.fxa-test.yml).
+test stacks (tests/compose/sync.yml, tests/compose/fxa.yml).
 
 Records every POST and PUT (method, path, headers, body) and answers 200, 500 under /fail.
 GET /_received: the requests as JSON, oldest first; DELETE /_received: forgets them.

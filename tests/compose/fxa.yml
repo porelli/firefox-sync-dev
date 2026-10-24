@@ -1,4 +1,4 @@
-# Test-only additions for docker-compose.fxa.yml: Caddy serving the public URLs over HTTPS
+# Test-only additions to compose/fxa.yml (paths relative to compose/): Caddy serving the public URLs over HTTPS
 # (internal CA), Mailpit catching the verification emails, the admin UI under test
 # (ADMIN_IMAGE, built from admin/ by tests/e2e-fxa.sh unless given), which also signs in
 # with these accounts (OpenID Connect).
@@ -18,11 +18,11 @@ services:
   caddy:
     image: caddy:alpine
     volumes:
-      - ./tests/Caddyfile.fxa:/etc/caddy/Caddyfile:ro
+      - ../tests/Caddyfile.fxa:/etc/caddy/Caddyfile:ro
       - caddy-data:/data/caddy
       # the access control of a variant (FFS_ACCESS), the test client CA (FFS_CERTS)
-      - ./tests/caddy:/etc/caddy/caddy:ro
-      - ${FFS_CERTS:-./tests/caddy}:/client-certs:ro
+      - ../tests/caddy:/etc/caddy/caddy:ro
+      - ${FFS_CERTS:-../tests/caddy}:/client-certs:ro
     environment:
       FFS_ACCESS: ${FFS_ACCESS:-none}
     # its admin API (only inside the container): Caddy runs with its configuration loaded; the
@@ -42,8 +42,8 @@ services:
     image: authelia/authelia:latest
     profiles: [authelia]
     volumes:
-      - ./tests/caddy/authelia/configuration.yml:/config/configuration.yml:ro
-      - ./tests/caddy/authelia/users.yml:/config/users.yml:ro
+      - ../tests/caddy/authelia/configuration.yml:/config/configuration.yml:ro
+      - ../tests/caddy/authelia/users.yml:/config/users.yml:ro
 
   # Caddy keeps its CA private, publish the certificate for the FxA services and the tests
   caddy-ca:
@@ -73,7 +73,7 @@ services:
     image: ${IMAGE_REPOSITORY:-${REPOSITORY:-}}:${SYNC_IMAGE:-${SYNCSTORAGE_IMAGE:-}}-${SYNC_IMAGE_TAG:-${SYNCSTORAGE_IMAGE_TAG:-}}
     entrypoint: ["python3", "/notify_sink.py"]
     volumes:
-      - ./tests/notify_sink.py:/notify_sink.py:ro
+      - ../tests/notify_sink.py:/notify_sink.py:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/_received"]
       start_period: 10s

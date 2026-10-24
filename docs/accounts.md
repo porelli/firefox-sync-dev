@@ -54,10 +54,11 @@ With the Helm chart there is no `prepare_environment.sh`: the values do it, see 
    ```
 
    `FXA_EMAIL_DOMAIN` must be the host name of `FXA_AUTH_URL`.
+1. Add `compose/fxa.yml` and `compose/fxa-mysql.yml` (or [fxa-mariadb.yml](#mysql-or-mariadb)) to `COMPOSE_FILE`, see [The compose files](install/compose.md#the-compose-files).
 1. Start everything:
 
    ```bash
-   docker compose -f docker-compose.yml -f docker-compose.fxa.yml up -d
+   docker compose up -d
    ```
 
 Every setting: [Settings](reference/settings.md#accounts).
@@ -69,10 +70,10 @@ Mozilla runs and supports its accounts on MySQL only, so `fxa-db` is MySQL by de
 To choose MariaDB:
 
 - With `prepare_environment.sh`: answer `mariadb` to the accounts database question. The default is `mysql`, whatever you chose for Sync: following Sync's default (MariaDB) would move most new installs off what Mozilla supports.
-- By hand: `FXA_DB=mariadb` in `.env`. With docker compose, add `docker-compose.fxa-mariadb.yml` at the end of `COMPOSE_FILE`:
+- By hand: `FXA_DB=mariadb` in `.env`. With docker compose, `compose/fxa-mariadb.yml` in place of `compose/fxa-mysql.yml` in `COMPOSE_FILE` ([The compose files](install/compose.md#the-compose-files)):
 
   ```ini
-  COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml
+  COMPOSE_FILE=compose/sync.yml:compose/sync-mariadb.yml:compose/fxa.yml:compose/fxa-mariadb.yml
   ```
 
   With Quadlets, `prepare_environment.sh` installs `config/quadlet/fxa/mariadb/` in place of the MySQL unit.
@@ -156,7 +157,7 @@ Read in fxa-mono v1.347.x. The setting is `ACCOUNT_EVENTS_ENABLED` of the auth s
 
 - Off, the auth server replaces its `AccountEventsManager` with one that does nothing (`bin/key_server.js`). No security event is written, and Recent activity stays empty.
 - On, every event is written to the accounts database. The other part of it, email events in Google's Firestore, stays off with `FIRESTORE_ENABLED=false`.
-- The auth server also reads the history at sign-in. After a confirmed sign-in from an IP address, later sign-ins from it skip the email code for `IP_PROFILING_RECENCY` (7 days), the sign-ins of Firefox for Sync too. From a shared network a password alone would then be enough. The stack sets it to 0, in `docker-compose.fxa.yml` and the Quadlets.
+- The auth server also reads the history at sign-in. After a confirmed sign-in from an IP address, later sign-ins from it skip the email code for `IP_PROFILING_RECENCY` (7 days), the sign-ins of Firefox for Sync too. From a shared network a password alone would then be enough. The stack sets it to 0, in `compose/fxa.yml` and the Quadlets.
 - The other skips don't depend on the setting. The one for a known browser (`SIGNIN_CONFIRMATION_DEVICE_FINGERPRINTING_ENABLED`) is off in Mozilla's defaults. The one for accounts created less than 48 hours ago applies either way.
 
 </details>

@@ -1,0 +1,154 @@
+# The Sync databases on MariaDB (SYNC_DB=mariadb, the default), for sync.yml: the tokenserver and
+# the storage databases (tokenserver_db, syncstorage_db), and what the services of sync.yml need
+# of them (docs/install/compose.md#the-compose-files). With your own MariaDB server
+# (SYNC_DB_CONTAINERS=0, docs/databases.md#your-own-server) too: then no database container.
+
+# the Sync server's databases, for it and its migrations
+x-sync-mariadb-env: &sync-mariadb-env
+  SYNC_SYNCSTORAGE__DATABASE_URL: mysql://${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}:${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}@${SYNC_STORAGE_DB_HOST:-${MARIADB_SYNCSTORAGE_SERVER:-}}:${SYNC_STORAGE_DB_PORT:-${MARIADB_SYNCSTORAGE_SERVER_PORT:-}}/${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+  SYNC_TOKENSERVER__NODE_TYPE: mysql
+  SYNC_TOKENSERVER__DATABASE_URL: mysql://${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}:${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}@${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}:${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}/${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+
+services:
+  syncstorage_migrate:
+    environment: *sync-mariadb-env
+    depends_on:
+      syncstorage_db:
+        condition: service_healthy
+      tokenserver_db:
+        condition: service_healthy
+
+  syncstorage:
+    environment: *sync-mariadb-env
+
+  syncstorage_db:
+    # SYNC_MARIADB_IMAGE: mariadb:lts by default, MariaDB's newest long-term major, which
+    # MARIADB_AUTO_UPGRADE follows: the data is upgraded at the first start on the next one,
+    # with no way back but a backup. prepare_environment.sh writes it (--upgrade and a re-run:
+    # the major the data of an install from before holds); without it the containers refuse
+    # data of another major (db/mysql/keep-major.sh). Pin a major (mariadb:12) to choose when
+    image: ${SYNC_MARIADB_IMAGE:-mariadb:lts}
+    # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
+    deploy:
+      replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "true"
+      MARIADB_DATABASE: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+      MARIADB_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
+      MARIADB_PASSWORD: ${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}
+      MARIADB_AUTO_UPGRADE: "true"
+      FFS_MYSQL_IMAGE: ${SYNC_MARIADB_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MARIADB_IMAGE
+      # the admin UI's reader of the Sync data, created by db/mysql/admin-user.sh:
+      # SELECT and DELETE here (sizes, purges, resets)
+      ADMIN_DB_ROLE: storage
+      ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
+      ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}
+    command: [sh, /ffs-db/keep-major.sh, sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - syncstorage-db:/var/lib/mysql
+      - ../db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ../db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
+    restart: unless-stopped
+
+  tokenserver_db:
+    # SYNC_MARIADB_IMAGE: as syncstorage_db
+    image: ${SYNC_MARIADB_IMAGE:-mariadb:lts}
+    # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
+    deploy:
+      replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "true"
+      MARIADB_DATABASE: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      MARIADB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      MARIADB_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
+      MARIADB_AUTO_UPGRADE: "true"
+      FFS_MYSQL_IMAGE: ${SYNC_MARIADB_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MARIADB_IMAGE
+      # the admin UI's users, created by db/mysql/admin-user.sh: ADMIN_DB_USER for its
+      # own database (the event log, the audit trail...), ADMIN_DB_SYNC_USER with SELECT
+      # and EXECUTE here
+      ADMIN_DB_ROLE: tokenserver
+      ADMIN_DB_USER: ${ADMIN_DB_USER:-ffs_admin_ui}
+      ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
+      ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}
+      ADMIN_DB_NAME: ${ADMIN_DB_NAME:-ffs_admin}
+    command: [sh, /ffs-db/keep-major.sh, sh, /ffs-db/admin-user.sh, mariadbd, --explicit_defaults_for_timestamp]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - tokenserver-db:/var/lib/mysql
+      - ../db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ../db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
+    restart: unless-stopped
+
+  tokenserver_db_init:
+    depends_on:
+      tokenserver_db:
+        condition: service_healthy
+    environment:
+      MARIADB_SERVER: ${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}
+      MARIADB_SERVER_PORT: ${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}
+      MARIADB_DATABASE: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      MARIADB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      MARIADB_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
+      # false with your own MySQL server: its certificate is self-signed
+      MARIADB_TLS_VERIFY: ${SYNC_DB_TLS_VERIFY:-${MARIADB_TLS_VERIFY:-true}}
+
+  ffs-admin:
+    environment:
+      # without ADMIN_DB_PASSWORD (an install from before it) the Sync users: only then do the
+      # *_DB_PASSWORD below get their passwords
+      TOKENSERVER_DB_TYPE: mysql
+      TOKENSERVER_DB_HOST: ${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}
+      TOKENSERVER_DB_PORT: ${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}
+      TOKENSERVER_DB_NAME: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      TOKENSERVER_DB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      TOKENSERVER_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}}
+      # what each account stores (sizes only, the data is encrypted by Firefox)
+      STORAGE_DB_HOST: ${SYNC_STORAGE_DB_HOST:-${MARIADB_SYNCSTORAGE_SERVER:-}}
+      STORAGE_DB_PORT: ${SYNC_STORAGE_DB_PORT:-${MARIADB_SYNCSTORAGE_SERVER_PORT:-}}
+      STORAGE_DB_NAME: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+      STORAGE_DB_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
+      STORAGE_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}}
+      # the configuration page: the database server
+      SYNC_DB: ${SYNC_DB:-mariadb}
+
+  backup:
+    # the client of the Sync databases: their image
+    image: ${SYNC_MARIADB_IMAGE:-mariadb:lts}
+    environment:
+      MARIADB_TLS_VERIFY: ${SYNC_DB_TLS_VERIFY:-${MARIADB_TLS_VERIFY:-true}}
+      TOKENSERVER_DB_TYPE: mysql
+      TOKENSERVER_DB_HOST: ${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}
+      TOKENSERVER_DB_PORT: ${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}
+      TOKENSERVER_DB_NAME: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      TOKENSERVER_DB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      TOKENSERVER_DB_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
+      STORAGE_DB_HOST: ${SYNC_STORAGE_DB_HOST:-${MARIADB_SYNCSTORAGE_SERVER:-}}
+      STORAGE_DB_PORT: ${SYNC_STORAGE_DB_PORT:-${MARIADB_SYNCSTORAGE_SERVER_PORT:-}}
+      STORAGE_DB_NAME: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+      STORAGE_DB_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
+      STORAGE_DB_PASSWORD: ${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}
+    # the databases healthy too: a docker compose up -d that recreates them (a new image, e.g.
+    # SYNC_MARIADB_IMAGE written by --upgrade) leaves the init container completed from before,
+    # and the loop's run at the start would meet them starting
+    depends_on:
+      tokenserver_db:
+        condition: service_healthy
+      syncstorage_db:
+        condition: service_healthy
+
+volumes:
+  syncstorage-db:
+  tokenserver-db:

@@ -137,13 +137,10 @@ dst_prepare() {
   # the old stack's project name was in the environment, firefox-sync's is in its .env
   unset COMPOSE_PROJECT_NAME
   mkdir -p "${DST}/tests"
-  cp -r "${CODE}"/docker-compose*.yml "${CODE}/.env-example" "${CODE}/config" "${CODE}/db" "${DST}/"
-  cp "${TESTS}/docker-compose.migrate.yml" "${DST}/tests/"
-  local backend=mysql files=docker-compose.yml
-  case ${DST_DB} in
-    mysql) files=docker-compose.yml:docker-compose.sync-mysql.yml ;;
-    postgres) backend=postgres files=docker-compose.sync-postgres.yml ;;
-  esac
+  cp -r "${CODE}/docker-compose.yml" "${CODE}/compose" "${CODE}/.env-example" "${CODE}/config" "${CODE}/db" "${DST}/"
+  mkdir -p "${DST}/tests/compose" && cp "${TESTS}/compose/migrate.yml" "${DST}/tests/compose/"
+  local backend=mysql files=compose/sync.yml:compose/sync-${DST_DB}.yml
+  [ "${DST_DB}" = postgres ] && backend=postgres
   sed -e "s|^SYNC_TOKENSERVER_DB_PASSWORD=.*|SYNC_TOKENSERVER_DB_PASSWORD=$(rnd)|" \
       -e "s|^SYNC_STORAGE_DB_PASSWORD=.*|SYNC_STORAGE_DB_PASSWORD=$(rnd)|" \
       -e "s|^SYNC_POSTGRES_PASSWORD=.*|SYNC_POSTGRES_PASSWORD=$(rnd)|" \
@@ -179,7 +176,7 @@ dst_test_env() {
   cat >> "${DST}/.env" <<EOF
 # tests/migrate.sh
 COMPOSE_PROJECT_NAME=${DST_PROJECT}
-COMPOSE_FILE=$1:tests/docker-compose.migrate.yml
+COMPOSE_FILE=$1:tests/compose/migrate.yml
 FXA_OAUTH_SERVER_URL=http://mock_fxa:6000
 ADMIN_IMAGE=${ADMIN_IMAGE}
 MIG_TEST_IMAGE=${TEST_IMAGE}
@@ -792,7 +789,7 @@ scenario_firefox_sync_old() {
   local old_app old_init=
   cp "${DST}/.env-example" "${DST}/.env"
   if [ "${kind}" = first ]; then
-    # docker-compose.yml names its image (syncstorage-rs-mysql-latest, then 0.17.x)
+    # its docker-compose.yml names its image (syncstorage-rs-mysql-latest, then 0.17.x)
     old_app=ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-0.17.1
     need "${old_app}" mariadb:11.4 || exit 1
     sed -i -e "s|^SYNC_MASTER_SECRET=.*|SYNC_MASTER_SECRET=$(rnd)|" -e "s|^METRICS_HASH_SECRET=.*|METRICS_HASH_SECRET=$(rnd)|" \
@@ -853,14 +850,15 @@ EOF
   echo "== upgrade in place (docs/upgrading.md#older-firefox-sync-releases, older firefox-sync releases)"
   # "Get the new files": this tree over the old one, the .env kept
   local f
-  # (docker-compose.postgres.yml: old releases need the symlink copied too;
+  # (the compose files of before compose/ gone, as git pull removes them, docs/upgrading.md#files-that-moved;
   # syncstorage-rs-init*: the init folders of the old release, now db/)
-  for f in docker-compose.yml docker-compose.sync-postgres.yml docker-compose.postgres.yml docker-compose.sync-mysql.yml docker-compose.podman.yml docker-compose.fxa.yml docker-compose.fxa-mariadb.yml .env-example; do
-    rm -f "${DST}/${f}" && cp -P "${CODE}/${f}" "${DST}/${f}"
+  rm -f "${DST}"/docker-compose*.yml
+  for f in docker-compose.yml .env-example; do
+    cp -P "${CODE}/${f}" "${DST}/${f}"
   done
-  rm -rf "${DST}/config" "${DST}/db" "${DST}/syncstorage-rs-init" "${DST}/syncstorage-rs-init-postgres"
-  cp -r "${CODE}/config" "${CODE}/db" "${DST}/"
-  mkdir -p "${DST}/tests" && cp "${TESTS}/docker-compose.migrate.yml" "${DST}/tests/"
+  rm -rf "${DST}/compose" "${DST}/config" "${DST}/db" "${DST}/syncstorage-rs-init" "${DST}/syncstorage-rs-init-postgres"
+  cp -r "${CODE}/compose" "${CODE}/config" "${CODE}/db" "${DST}/"
+  mkdir -p "${DST}/tests/compose" && cp "${TESTS}/compose/migrate.yml" "${DST}/tests/compose/"
   # "./prepare_environment.sh --upgrade": the old names of the settings renamed (the values
   # as they are), the passwords of the admin UI's database users. Before the lines of
   # .env-example: added first, their new names would hide the values under the old ones
@@ -871,6 +869,12 @@ EOF
   check "$? $(grep -cE '^ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}$' "${DST}/.env")" "0 1" "./prepare_environment.sh --upgrade sets ADMIN_DB_PASSWORD" || cat "${WORK}/upgrade.log"
   check "$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" "${DST}/.env") $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log")" "0 ${renamed}" \
     "./prepare_environment.sh --upgrade renames the ${renamed} old setting names of that .env" || cat "${WORK}/upgrade.log"
+  # COMPOSE_FILE with the files of compose/, the test's own kept; the project's name next to it,
+  # the directory's (compose/ first, compose would name it "compose": other volumes)
+  check "$(sed -n 's/^COMPOSE_FILE=//p' "${DST}/.env") $(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${DST}/.env") $(grep -c '^COMPOSE_FILE: the compose files moved to compose/' "${WORK}/upgrade.log")" \
+    "compose/sync.yml:compose/sync-mariadb.yml:migrate-test.yml ${DST_PROJECT} 1" "./prepare_environment.sh --upgrade: COMPOSE_FILE with the files of compose/, the project's name, and says so"
+  check "$(cd "${DST}" && docker compose config --format json | jq -r '.volumes | to_entries[] | .value.name' | grep -E 'tokenserver-db|syncstorage-db' | sort | paste -sd' ')" \
+    "$(echo "${volumes_before}" | tr ' ' '\n' | grep -E 'tokenserver-db|syncstorage-db' | paste -sd' ')" "the Sync volumes of compose/, named as before (the project's name)"
   # "Add the lines of .env-example that your .env lacks, with their default values"
   local key added=0
   while IFS= read -r line; do
@@ -890,11 +894,11 @@ EOF
   sed -i -e "s|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=${REPOSITORY}|" -e "s|^SYNC_IMAGE_TAG=.*|SYNC_IMAGE_TAG=${TAG}|" \
       -e "s|^SYNC_INIT_IMAGE_TAG=.*|SYNC_INIT_IMAGE_TAG=${TAG}|" \
       -e "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$(rnd)|" -e "s|^ADMIN_EXPORT_PORT=.*|ADMIN_EXPORT_PORT=127.0.0.1:$((PORT + 20))|" \
-      -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" -e "/^COMPOSE_FILE=/d" -e "/^# tests\/migrate.sh/d" "${DST}/.env"
+      -e "s|^FXA_SMTP_HOST=.*|FXA_SMTP_HOST=|" -e "/^COMPOSE_FILE=/d" -e "/^COMPOSE_PROJECT_NAME=/d" -e "/^# tests\/migrate.sh/d" "${DST}/.env"
   sed -i "/^FXA_OAUTH_SERVER_URL=/d" "${DST}/.env"
   echo "COMPOSE_PROFILES=admin" >> "${DST}/.env"
-  dst_test_env docker-compose.yml
-  sed -i "/^COMPOSE_PROJECT_NAME=/d" "${DST}/.env"
+  # (COMPOSE_PROJECT_NAME: the same, the directory's)
+  dst_test_env compose/sync.yml:compose/sync-mariadb.yml
   DST_DB=mariadb
   # docker compose pull would replace the init image built from this tree with the published one
   local init_image=${REPOSITORY}:syncstorage-rs-mysql-init-${TAG} init_id
@@ -919,7 +923,7 @@ EOF
 
 docker image inspect "${TEST_IMAGE}" > /dev/null 2>&1 || need "${TEST_IMAGE}" || exit 1
 if ! docker image inspect "${ADMIN_IMAGE}" > /dev/null 2>&1; then
-  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q \
+  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/compose/admin-build.yml" build -q \
     || { fail "admin UI image built from admin/"; exit 1; }
 fi
 echo "== ${SCENARIO} (firefox-sync: ${REPOSITORY} ${TAG})"

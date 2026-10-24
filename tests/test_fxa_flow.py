@@ -1,4 +1,4 @@
-"""What Firefox does with a self-hosted Mozilla account (docker-compose.fxa.yml).
+"""What Firefox does with a self-hosted Mozilla account (compose/fxa.yml).
 
 Sign-up, email verification, keys, OAuth, tokenserver and sync, all against this
 deployment through its public HTTPS URLs: no Mozilla service is involved.

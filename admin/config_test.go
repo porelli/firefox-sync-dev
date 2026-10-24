@@ -29,8 +29,8 @@ func adminEnvironments(t *testing.T) (map[string][]string, []string) {
 			vars[name] = append(vars[name], m[1]+m[2])
 		}
 	}
-	composes, _ := filepath.Glob("../docker-compose*.yml")
-	tests, _ := filepath.Glob("../tests/docker-compose*.yml")
+	composes, _ := filepath.Glob("../compose/*.yml")
+	tests, _ := filepath.Glob("../tests/compose/*.yml")
 	key := regexp.MustCompile(`^      ([A-Z][A-Z0-9_]*):(.*)$`)
 	for _, f := range append(composes, tests...) {
 		b, err := os.ReadFile(f)

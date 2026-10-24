@@ -1,5 +1,5 @@
 # Installed with the Sync server on PostgreSQL (docs/databases.md#postgresql), instead of the two
-# MariaDB units: one database for the tokenserver and the storage, as docker-compose.sync-postgres.yml's postgres_db.
+# MariaDB units: one database for the tokenserver and the storage, as compose/sync-postgres.yml's postgres_db.
 [Unit]
 Description=Firefox Sync - PostgreSQL Database
 After=firefox-sync-network.service

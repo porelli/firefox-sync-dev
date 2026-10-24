@@ -321,8 +321,8 @@ by firefox-sync.dbUrl: they must come before the URLs in every container
 {{- end }}
 
 {{/*
-The env of syncstorage-rs, as compose's x-syncstorage (docker-compose.yml and
-docker-compose.sync-postgres.yml), for the migrate init container and the server
+The env of syncstorage-rs, as compose's x-syncstorage (compose/sync.yml, the URLs
+of compose/sync-<db>.yml), for the migrate init container and the server
 */}}
 {{- define "firefox-sync.syncstorageEnv" -}}
 {{- include "firefox-sync.dbPasswordEnv" . }}
@@ -527,7 +527,7 @@ names are case-insensitive (and a trailing dot the same host) */ -}}
 
 {{/*
 MARIADB_TLS_VERIFY of the init container: the bundled MySQL's certificate is self-signed
-(docker-compose.sync-mysql.yml sets false), the bundled MariaDB's is checked; your own
+(compose/sync-mysql.yml sets false), the bundled MariaDB's is checked; your own
 server: database.external.tlsVerify
 */}}
 {{- define "firefox-sync.tlsVerify" -}}

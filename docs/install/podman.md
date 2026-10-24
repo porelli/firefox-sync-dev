@@ -150,20 +150,13 @@ Upgrading the images: see [Upgrading](../upgrading.md#quadlets).
 
 1. Check the optional services in `COMPOSE_PROFILES` of `.env`, as for [docker compose](compose.md#optional-services).
 
-1. Start the stack, with the file of your database backend:
+1. Start the stack:
 
    ```bash
-   # MariaDB
-   docker compose -f docker-compose.yml -f docker-compose.podman.yml up -d
-   # MySQL
-   docker compose -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml up -d
-   # PostgreSQL
-   docker compose -f docker-compose.sync-postgres.yml up -d
+   docker compose up -d
    ```
 
-   With `-f`, compose does not read `COMPOSE_FILE`: with self-hosted accounts add `-f docker-compose.fxa.yml` (and `-f docker-compose.fxa-mariadb.yml` with `FXA_DB=mariadb`), which also has the pairing server. The script prints the whole command for your choices.
-
-   [docker-compose.podman.yml](/docker-compose.podman.yml) gives the healthchecks of the Sync server and the MariaDB or MySQL databases more time, for slower rootless starts.
+   `COMPOSE_FILE` in `.env` has the files of your choices ([The compose files](compose.md#the-compose-files)) and [compose/podman.yml](/compose/podman.yml), which gives the Sync server's healthcheck more time, for slower rootless starts.
 
 Everything else works as in [docker compose](compose.md): logs with `docker compose logs -f`, `docker compose down` to stop.
 

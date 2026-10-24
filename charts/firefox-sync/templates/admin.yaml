@@ -1,5 +1,5 @@
 {{- /*
-The admin UI, compose's ffs-admin (docker-compose.yml, docker-compose.sync-postgres.yml)
+The admin UI, compose's ffs-admin (compose/sync.yml, compose/sync-<db>.yml)
 with the same variables, and ADMIN_DEPLOYMENT=kubernetes for the commands its pages show.
 Its Service is also the statsd host of the Sync server (SYNC_STATSD_HOST, syncstorage.yaml).
 */ -}}
@@ -258,7 +258,7 @@ spec:
               value: {{ $backend }}
             {{- end }}
             {{- if $f.enabled }}
-            # the self-hosted accounts, docker-compose.fxa.yml's ffs-admin: their database as
+            # the self-hosted accounts, compose/fxa.yml's ffs-admin: their database as
             # ffs_admin (made by the policy init container of auth), the sign-up gate in front of
             # auth (port gate), the checks of their public URLs
             - name: FXA_DB_HOST
@@ -315,7 +315,7 @@ spec:
             {{- end }}
             {{- if $f.extraCaCerts.configMap }}
             # fxa.extraCaCerts (chart-only): the public checks and sign-in trust that CA too, next
-            # to the system's (tests/docker-compose.fxa-test.yml: SSL_CERT_FILE)
+            # to the system's (tests/compose/fxa.yml: SSL_CERT_FILE)
             - name: SSL_CERT_DIR
               value: /ffs-ca
             {{- end }}

@@ -111,7 +111,7 @@ podman volume export firefox-sync-backups > ffs-backups.tar
 docker run --rm -v firefox-sync_fxa-keys:/keys:ro -v "$PWD":/out busybox tar -C /keys -czf /out/fxa-keys.tar.gz .
 ```
 
-Then `scp` or `rsync` the files to another machine. The volume is named after the compose project: the directory of `docker-compose.yml`, unless `COMPOSE_PROJECT_NAME` or `-p` sets another. So it is `firefox-sync_backups` only in a directory called `firefox-sync`.
+Then `scp` or `rsync` the files to another machine. The volume is named after the compose project: `COMPOSE_PROJECT_NAME` of `.env` (the directory of the checkout, [The compose files](install/compose.md#the-compose-files)), unless `-p` sets another. So it is `firefox-sync_backups` only in a directory called `firefox-sync`.
 
 The dumps hold what the databases hold: emails, the event log, the accounts' password checks. Keep the copies as private as `.env`, and encrypted if they leave your own machines.
 

@@ -1,5 +1,5 @@
 # Test-only: the accounts on a MySQL server outside the stack (EXTERNAL_DB=1 or fxa in
-# tests/e2e-fxa.sh), FXA_DB_CONTAINERS=0; with tests/docker-compose.external-db-test.yml when Sync
+# tests/e2e-fxa.sh), FXA_DB_CONTAINERS=0; with tests/compose/external-db.yml when Sync
 # is there too.
 
 services:
@@ -11,7 +11,7 @@ services:
     networks: [default, extdb]
   fxa-profile:
     networks: [default, extdb]
-  # (also in docker-compose.external-db-test.yml: with Sync on the server too)
+  # (also in external-db.yml: with Sync on the server too)
   ffs-admin:
     networks: [default, extdb]
   # the Python tests run in its image, they look into the accounts database

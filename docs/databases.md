@@ -59,15 +59,15 @@ This is about the stack's database containers for Sync. The two Sync databases (
 
 To choose it:
 
-- With `prepare_environment.sh`: answer `mysql` to the database backend question. It writes `SYNC_DB=mysql` and `SYNC_DB_TLS_VERIFY=false`, and adds [docker-compose.sync-mysql.yml](/docker-compose.sync-mysql.yml) to `COMPOSE_FILE`.
+- With `prepare_environment.sh`: answer `mysql` to the database backend question. It writes `SYNC_DB=mysql` and `SYNC_DB_TLS_VERIFY=false`, and puts [compose/sync-mysql.yml](/compose/sync-mysql.yml) in `COMPOSE_FILE`.
 - By hand, in `.env`:
 
   ```ini
   SYNC_DB=mysql
-  COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml
+  COMPOSE_FILE=compose/sync.yml:compose/sync-mysql.yml
   ```
 
-  With the accounts, add `:docker-compose.fxa.yml`. With the Podman socket, use `-f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml`.
+  The other files as before ([The compose files](install/compose.md#the-compose-files)).
 - With Quadlets, the units of [config/quadlet/sync-mysql/](/config/quadlet/sync-mysql) replace the two MariaDB units.
 - With the Helm chart: `database.backend: mysql`.
 
@@ -86,7 +86,7 @@ On kind or k3s on an Ubuntu host with `mysql-server` installed, see [Troubleshoo
 
 ## PostgreSQL
 
-The Sync server can run on PostgreSQL, with the `syncstorage-rs-postgres` images and [docker-compose.sync-postgres.yml](/docker-compose.sync-postgres.yml). `prepare_environment.sh` sets both when you answer `postgres` to the database backend question. The self-hosted accounts cannot use PostgreSQL.
+The Sync server can run on PostgreSQL, with the `syncstorage-rs-postgres` images and [compose/sync-postgres.yml](/compose/sync-postgres.yml). `prepare_environment.sh` sets both when you answer `postgres` to the database backend question. The self-hosted accounts cannot use PostgreSQL.
 
 With Quadlets, the units of [config/quadlet/sync-postgres/](/config/quadlet/sync-postgres) replace those of the Sync server, its migrations, its init container and the backups. They add `firefox-sync-postgres-db`, the one database, in its own volume `firefox-sync-postgres-db`, and `firefox-sync-sync-role-init`, which gives the Sync server its own role before the migrations, as compose's `sync_role_init`. The MariaDB units are not installed.
 

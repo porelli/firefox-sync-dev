@@ -1,4 +1,5 @@
-# Test-only additions, used together with docker-compose.yml or docker-compose.sync-postgres.yml
+# Test-only additions to compose/sync.yml (with any database's file); the relative paths are of
+# compose/, the directory of the first file.
 # Adds upstream's mock FxA OAuth server, shipped in the syncstorage-rs image, so that the
 # tokenserver login flow can be tested without a Mozilla account.
 # Point FXA_OAUTH_SERVER_URL to http://mock_fxa:6000 in the env file.
@@ -26,7 +27,7 @@ services:
     image: ghcr.io/dexidp/dex:v2.46.0
     command: [dex, serve, /etc/dex/ffs-test.yml]
     volumes:
-      - ./tests/dex.yml:/etc/dex/ffs-test.yml:ro
+      - ../tests/dex.yml:/etc/dex/ffs-test.yml:ro
     # its OpenID Connect discovery, what the admin UI reads first (wget of the Alpine image)
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5556/dex/.well-known/openid-configuration"]
@@ -42,7 +43,7 @@ services:
     image: ${IMAGE_REPOSITORY:-${REPOSITORY:-}}:${SYNC_IMAGE:-${SYNCSTORAGE_IMAGE:-}}-${SYNC_IMAGE_TAG:-${SYNCSTORAGE_IMAGE_TAG:-}}
     entrypoint: ["python3", "/notify_sink.py"]
     volumes:
-      - ./tests/notify_sink.py:/notify_sink.py:ro
+      - ../tests/notify_sink.py:/notify_sink.py:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8000/_received"]
       start_period: 10s

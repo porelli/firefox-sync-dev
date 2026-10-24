@@ -65,17 +65,17 @@ This only works between syncstorage-rs servers (the Rust one) on the same kind o
 1. Stop the old server, except its database, so that nothing changes during the dump. Make the dumps (see each section): `tokenserver.sql` and `syncstorage.sql` for MariaDB or MySQL, `syncserver.sql` (or three files) for PostgreSQL.
 1. Start only the database containers and load the dumps. PostgreSQL loads as the Sync server's role, never as the superuser: see [PostgreSQL users](reference/database-users.md#postgresql).
     ```bash
-    # MariaDB (docker-compose.yml)
+    # MariaDB (compose/sync-mariadb.yml)
     docker compose up -d --wait tokenserver_db syncstorage_db
     docker compose exec -T tokenserver_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"' < tokenserver.sql
     docker compose exec -T syncstorage_db sh -c 'MYSQL_PWD="$MARIADB_PASSWORD" mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE"' < syncstorage.sql
 
-    # MySQL (SYNC_DB=mysql, docker-compose.sync-mysql.yml): the same, with the MySQL client
+    # MySQL (SYNC_DB=mysql, compose/sync-mysql.yml): the same, with the MySQL client
     docker compose up -d --wait tokenserver_db syncstorage_db
     docker compose exec -T tokenserver_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"' < tokenserver.sql
     docker compose exec -T syncstorage_db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"' < syncstorage.sql
 
-    # PostgreSQL (COMPOSE_FILE=docker-compose.sync-postgres.yml): as the Sync server's role
+    # PostgreSQL (compose/sync-postgres.yml): as the Sync server's role
     # SYNC_POSTGRES_APP_USER, created first. Not as SYNC_POSTGRES_USER, the superuser: what the dump
     # brings (functions in a CHECK, an index, a view) would run with its rights (reference/database-users.md)
     docker compose up -d --wait postgres_db
@@ -142,7 +142,7 @@ With the self-hosted accounts, they move in the same steps: see [With the self-h
     The bundled databases are new: their passwords need not be the old ones, but none may be empty. An `.env` without `ADMIN_DB_PASSWORD` or `SYNC_POSTGRES_APP_PASSWORD` needs one generated.
 1. Write your values from `.env`. Each setting's value is in the Helm column of [Settings](reference/settings.md). The ones that matter here:
     - `SYNC_PUBLIC_URL` becomes `syncDomain`: keep it, so Firefox goes on with the same address;
-    - `SYNC_DB` becomes `database.backend` (`postgres` with `docker-compose.sync-postgres.yml` in `COMPOSE_FILE`);
+    - `SYNC_DB` becomes `database.backend` (`postgres` with `compose/sync-postgres.yml` in `COMPOSE_FILE`);
     - `SYNC_POSTGRES_IMAGE` becomes `database.image.postgres`: the same major (its dump also loads into a newer one);
     - `backup.enabled: true` is needed for the restore;
     - and `existingSecret: ffs-secrets`, and the Ingress ([Install](install/helm.md#install)).
@@ -353,7 +353,7 @@ The accounts must move: an account is the record in `fxa.accounts`, and its Sync
       cp -a /old/. /fxa/packages/fxa-profile-server/var/public/ && chown -R 10001:10001 /fxa/packages/fxa-profile-server/var/public'
     docker compose up -d
     ```
-    The names come from [docker-compose.fxa.yml](/docker-compose.fxa.yml) (`SECRET_KEY_FILE`, `PUBLIC_KEY_FILE`, `VAPID_KEYS_FILE`, `FXA_OPENID_KEYFILE`, `FXA_OPENID_NEWKEYFILE`, `FXA_OPENID_OLDKEYFILE`). `fxa-migrations` then upgrades the schema, `fxa-policy` installs the [sign-up policy](accounts.md#who-can-sign-up), and the OAuth clients are registered again for `FXA_CONTENT_URL`. Leave out `sync` (the Python syncserver) and `ffs`. Loading into MariaDB (`FXA_DB=mariadb`) is not covered: keep MySQL.
+    The names come from [compose/fxa.yml](/compose/fxa.yml) (`SECRET_KEY_FILE`, `PUBLIC_KEY_FILE`, `VAPID_KEYS_FILE`, `FXA_OPENID_KEYFILE`, `FXA_OPENID_NEWKEYFILE`, `FXA_OPENID_OLDKEYFILE`). `fxa-migrations` then upgrades the schema, `fxa-policy` installs the [sign-up policy](accounts.md#who-can-sign-up), and the OAuth clients are registered again for `FXA_CONTENT_URL`. Leave out `sync` (the Python syncserver) and `ffs`. Loading into MariaDB (`FXA_DB=mariadb`) is not covered: keep MySQL.
 1. Set up the reverse proxy ([fxa-example.conf](/config/nginx/fxa-example.conf), [Reverse proxy](reverse-proxy.md#host-names-and-ports)): the content, auth and profile host names to the new ports, and also `<oauth>.<domain>` to `FXA_AUTH_EXPORT_PORT`, because Firefox keeps the OAuth address it read when it signed in. For Sync, either keep `https://<sync>.<domain>` with `/token/` sent to firefox-sync without the prefix (`location /token/ { proxy_pass http://127.0.0.1:5000/; }`) and the rest to firefox-sync as it is, or change the devices (next step).
 1. Firefox: the accounts address stays the same ([Self-hosted accounts](firefox.md#self-hosted-accounts)).
     - With the `/token/` rewrite, the devices stay signed in and upload their data to the empty Sync server.

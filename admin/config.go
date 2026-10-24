@@ -362,7 +362,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 		}
 		return setting(label, name, dotenv, "not set", "")
 	}
-	postgresSetting := "COMPOSE_FILE=docker-compose.sync-postgres.yml"
+	postgresSetting := "COMPOSE_FILE: compose/sync-postgres.yml"
 	if a.deployment.Kubernetes() != nil {
 		postgresSetting = "database.backend=postgres"
 	}
@@ -423,7 +423,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 	// the self-hosted accounts
 	accounts := configGroup{ID: "accounts", Title: "Accounts"}
 	if !fxa {
-		accounts.Intro = "Mozilla's accounts: Firefox signs in at accounts.firefox.com, the server only knows the account ids. Self-hosted accounts: docker-compose.fxa.yml, see docs/accounts.md."
+		accounts.Intro = "Mozilla's accounts: Firefox signs in at accounts.firefox.com, the server only knows the account ids. Self-hosted accounts: compose/fxa.yml, see docs/accounts.md."
 	} else {
 		fxaHost := shown("FXA_DB_HOST", "fxa-db")
 		// the image is FXA_MYSQL_IMAGE (lts or a pinned major), not known here: the version once checked
@@ -432,7 +432,7 @@ func (a *App) configPage(w http.ResponseWriter, r *http.Request, s *session) {
 			// the image is FXA_MARIADB_IMAGE, not known here: the version once checked
 			dbName = a.deployment.dbServer(components, "Accounts database", "MariaDB", "MariaDB", fxaHost)
 		}
-		accounts.Intro = "The self-hosted Mozilla accounts (docker-compose.fxa.yml)."
+		accounts.Intro = "The self-hosted Mozilla accounts (compose/fxa.yml)."
 		k := a.deployment.Kubernetes()
 		if k != nil {
 			accounts.Intro = "The self-hosted Mozilla accounts (fxa.enabled of the chart). Their auth pod runs the migrations and the sign-up policy first, as its init containers: " +

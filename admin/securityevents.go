@@ -440,7 +440,7 @@ func securityMetrics(b *strings.Builder, counts map[string]int64) {
 }
 
 // accountEventsOn: whether the auth server records the history, from FXA_ACCOUNT_EVENTS as
-// docker-compose.fxa.yml and the Quadlets pass it to ACCOUNT_EVENTS_ENABLED. The auth
+// compose/fxa.yml and the Quadlets pass it to ACCOUNT_EVENTS_ENABLED. The auth
 // server (convict) takes anything but "false" as true, an empty value too: so does this.
 // Not set: off, the stack's default
 func accountEventsOn(value string, set bool) bool {

@@ -1,4 +1,4 @@
-# Test reverse proxy for docker-compose.fxa.yml: HTTPS with Caddy's internal CA
+# Test reverse proxy for compose/fxa.yml: HTTPS with Caddy's internal CA
 {
 	skip_install_trust
 	# certificates of the internal CA for 30 days, not 12 hours: the admin UI warns

@@ -21,7 +21,7 @@
 #   SYNC_MYSQL_FROM  e.g. mysql:8, with SYNC_DB=mysql: the quadlets' Sync databases start on it, then
 #               move to mysql:lts as docs/upgrading.md#mysql-8-to-9 says
 #   SYNC_DB     mariadb (default), mysql or postgres: the Sync databases of the compose and quadlet phases
-#               (MySQL, docker-compose.sync-mysql.yml and config/quadlet/sync-mysql/: compose as an
+#               (MySQL, compose/sync-mysql.yml and config/quadlet/sync-mysql/: compose as an
 #               install from before on mysql:8, pinned by --upgrade; the quadlets on mysql:lts.
 #               PostgreSQL, config/quadlet/sync-postgres/: compose with PostgreSQL only, the quadlets
 #               on the major of postgres:latest, with its major guard); the MySQL and PostgreSQL
@@ -175,12 +175,19 @@ compose_sql() { # backend user password database query
   fi
 }
 
+# docker compose as the setup has it in .env (COMPOSE_FILE, COMPOSE_PROJECT_NAME), with the admin
+# UI's test override (ADMIN_TEST_COMPOSE)
+dcp() { env COMPOSE_FILE="$(env_of COMPOSE_FILE):${ADMIN_TEST_COMPOSE[1]}" docker compose "$@"; }
+# (timeout runs commands, not functions)
+dcp_timeout() { timeout "$1" env COMPOSE_FILE="$(env_of COMPOSE_FILE):${ADMIN_TEST_COMPOSE[1]}" docker compose "${@:2}"; }
 compose_test() {
-  local backend=$1 sync_user sync_password sync_db admin_password sync_role sync_role_password; shift
+  local backend=$1 sync_user sync_password sync_db admin_password sync_role sync_role_password old_files new_files
   echo "== docker compose on the Podman socket (${backend})"
   setup "${backend}" 2
   check "$?" 0 "prepare_environment.sh (${backend}, compose)"
-  check "$(grep -c "docker compose $* up -d" "setup-${backend}-2.log")" 1 "prepare_environment.sh prints the compose command (${backend})"
+  new_files=compose/sync.yml:compose/sync-${backend}.yml:compose/podman.yml
+  check "$(env_of COMPOSE_FILE) $(env_of COMPOSE_PROJECT_NAME) $(grep -c '^  3. docker compose up -d$' "setup-${backend}-2.log")" "${new_files} ffs 1" \
+    "prepare_environment.sh writes COMPOSE_FILE (compose/podman.yml too) and the project's name, prints the compose command (${backend})"
   # first as an install from before ADMIN_DB_PASSWORD (the admin UI's tables in the
   # tokenserver database), then upgraded below
   admin_password=$(env_of ADMIN_DB_PASSWORD)
@@ -220,15 +227,26 @@ compose_test() {
   local pair old_lines
   for pair in "${RENAMED_SETTINGS[@]}"; do sed -i "s|^${pair%%=*}=|${pair#*=}=|" .env; done
   old_lines=$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env)
-  timeout 600 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" up -d > "compose-${backend}.log" 2>&1
+  dcp_timeout 600 up -d > "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up, before ADMIN_DB_PASSWORD, with the old setting names (${backend})"
   check "$(podman logs "$(ctr tokenserver_db_init)" 2>&1 | grep -c 'WARNING: settings under their old names, in .env or in the environment docker compose runs in')" 1 "the init container warns of the old setting names (${backend})"
   check "$(admin_up /login)" 200 "admin UI before ADMIN_DB_PASSWORD (compose, ${backend})"
   compose_sql "${backend}" "${sync_user}" "${sync_password}" "${sync_db}" \
     "INSERT INTO ffs_events (at, kind, detail) VALUES ($(date +%s)000, 'admin', 'ffs-podman: before the upgrade by admin (password)')" > /dev/null
   check "$?" 0 "an audit event in the tokenserver database, as before (${backend})"
-  # an install from before docker-compose.sync-postgres.yml had the old name in COMPOSE_FILE
-  [ "${backend}" = postgres ] && sed -i 's|^COMPOSE_FILE=docker-compose.sync-postgres.yml$|COMPOSE_FILE=docker-compose.postgres.yml|' .env
+  # an install from before compose/ (docs/upgrading.md#files-that-moved): COMPOSE_FILE with the old
+  # names, no COMPOSE_PROJECT_NAME. MariaDB: none, docker-compose.yml, which includes those of
+  # compose/ now: the stack's containers as they are; PostgreSQL: the name before docker-compose.sync-postgres.yml
+  case "${backend}" in
+    mariadb) old_files="" new_files=compose/sync.yml:compose/sync-mariadb.yml ;;
+    mysql) old_files=docker-compose.yml:docker-compose.podman.yml:docker-compose.sync-mysql.yml ;;
+    postgres) old_files=docker-compose.postgres.yml new_files=compose/sync.yml:compose/sync-postgres.yml ;;
+  esac
+  sed -i -e '/^COMPOSE_FILE=/d' -e '/^COMPOSE_PROJECT_NAME=/d' .env
+  [ -z "${old_files}" ] || echo "COMPOSE_FILE=${old_files}" >> .env
+  [ -n "${old_files}" ] || check "$(docker compose ps -q syncstorage) $(docker compose config --services | grep -cxE 'syncstorage|tokenserver_db|syncstorage_db')" \
+    "$(podman ps -q --no-trunc --filter label=com.docker.compose.project=ffs --filter label=com.docker.compose.service=syncstorage) 3" \
+    "no COMPOSE_FILE: docker-compose.yml runs Sync on MariaDB, and finds the stack's containers (mariadb)"
   [ "${backend}" != mysql ] || sed -i '/^SYNC_MYSQL_IMAGE=/d' .env
   # (the old names left, as counted for the rename below)
   if [ "${backend}" = postgres ]; then
@@ -240,8 +258,8 @@ compose_test() {
   check "$?" 0 "prepare_environment.sh --upgrade (${backend})"
   check "$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env) $(grep -c '^Renamed in .env' "upgrade-${backend}.log") $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "upgrade-${backend}.log")" \
     "0 1 ${old_lines}" "--upgrade renames the old setting names, and says so (${backend})"
-  [ "${backend}" != postgres ] || check "$(grep -cx 'COMPOSE_FILE=docker-compose.sync-postgres.yml' .env) $(grep -c '^COMPOSE_FILE: docker-compose.postgres.yml renamed to docker-compose.sync-postgres.yml' "upgrade-${backend}.log")" \
-    "1 1" "--upgrade renames docker-compose.postgres.yml in COMPOSE_FILE, and says so (postgres)"
+  check "$(env_of COMPOSE_FILE) $(env_of COMPOSE_PROJECT_NAME) $(grep -c '^COMPOSE_FILE: the compose files moved to compose/' "upgrade-${backend}.log")" "${new_files} ffs 1" \
+    "--upgrade: COMPOSE_FILE ${old_files:-not set} with the files of compose/, the project's name, and says so (${backend})"
   check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $([ "${backend}" != postgres ] || env_of SYNC_POSTGRES_APP_USER)" \
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
   [ "${backend}" != postgres ] || check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:18" "--upgrade writes SYNC_POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"
@@ -255,7 +273,7 @@ compose_test() {
   [ "${backend}" != mysql ] || check "$(env_of SYNC_MYSQL_IMAGE) $(grep -c 'Sync databases stay on MySQL 8' "upgrade-${backend}.log") $(env_of FXA_MYSQL_IMAGE)" "mysql:8 1 " \
     "--upgrade pins the Sync databases of an install from before on MySQL 8, nothing for the accounts it has not (mysql)"
   admin_password=$(env_of ADMIN_DB_PASSWORD)
-  timeout 600 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" up -d >> "compose-${backend}.log" 2>&1
+  dcp_timeout 600 up -d >> "compose-${backend}.log" 2>&1
   check "$?" 0 "docker compose up (${backend})"
   check "$(hb)" 200 "/__heartbeat__ (compose, ${backend})"
   check "$(podman inspect -f '{{.State.ExitCode}}' "$(ctr syncstorage_migrate)")" 0 "migrate container exit code (${backend})"
@@ -292,17 +310,13 @@ compose_test() {
       "the tokenserver user cannot write the event log (compose, ${backend})"
   fi
   podman logs "$(ctr tokenserver_db_init)" 2>&1 | grep -E "Max users|ERROR"
-  check "$(compose_healthy 300 docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}")" "all healthy" "every long-running container healthy, the one-shot ones exited 0 (compose, ${backend})"
+  check "$(compose_healthy 300 dcp)" "all healthy" "every long-running container healthy, the one-shot ones exited 0 (compose, ${backend})"
   [ "${FAILED}" = 0 ] || diagnose "compose-${backend}.log"
-  docker compose "$@" "${ADMIN_TEST_COMPOSE[@]}" down -v > /dev/null 2>&1
+  dcp down -v > /dev/null 2>&1
 }
 # (SYNC_DB=postgres: compose with PostgreSQL only, MariaDB's is the default run's)
-if [ "${SYNC_DB}" = mysql ]; then
-  compose_test mysql -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.sync-mysql.yml
-elif [ "${SYNC_DB}" = mariadb ]; then
-  compose_test mariadb -f docker-compose.yml -f docker-compose.podman.yml
-fi
-compose_test postgres -f docker-compose.sync-postgres.yml
+[ "${SYNC_DB}" = postgres ] || compose_test "${SYNC_DB}"
+compose_test postgres
 
 echo "== where the Sync server listens: on this host only by default (nothing started)"
 # answers as setup, the port: the default, a port alone, another address, not a port
@@ -376,9 +390,10 @@ check "$? $(grep -c 'with another SYNC_MASTER_SECRET than' upgrade-other-units.l
 [ "${FAILED}" = 0 ] || cat upgrade-older-units.log upgrade-other-units.log
 rm -rf .env .env.before-setup-* .env.before-upgrade-* quadlets.before-* "${WORK}/fresh" "${WORK}/fresh-timers"
 
-# the admin UI quadlet gets every setting of the compose ffs-admin service: the keys
+# the admin UI quadlet gets every setting of the compose ffs-admin service (.env given: the first
+# compose file is in compose/, compose would look there): the keys
 # only in compose (allowed: $2, a regex), then those only in the quadlet
-compose_env_keys() { docker compose --profile admin "$@" config --format json 2> /dev/null | jq -r '.services["ffs-admin"].environment | keys[]' | LC_ALL=C sort; }
+compose_env_keys() { docker compose --env-file .env --profile admin "$@" config --format json 2> /dev/null | jq -r '.services["ffs-admin"].environment | keys[]' | LC_ALL=C sort; }
 quadlet_env_keys() { sed -nE 's/^Environment="?([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$1" | LC_ALL=C sort -u; }
 env_keys_diff() {
   local compose quadlet
@@ -392,12 +407,11 @@ export QUADLET_DIR=${HOME}/.config/containers/systemd
 # what differs with PostgreSQL: its compose file, its units (one database and the role's
 # init instead of two databases), what the admin UI reaches (one database)
 if [ "${SYNC_DB}" = postgres ]; then
-  sync_compose=(-f docker-compose.sync-postgres.yml)
+  sync_compose=(-f compose/sync.yml -f compose/sync-postgres.yml)
   DB_UNITS=(postgres-db sync-role-init)
   DB_UP=("${SYNC_UP[@]}")
 else
-  sync_compose=(-f docker-compose.yml)
-  [ "${SYNC_DB}" = mysql ] && sync_compose+=(-f docker-compose.sync-mysql.yml)
+  sync_compose=(-f compose/sync.yml -f "compose/sync-${SYNC_DB}.yml")
   DB_UNITS=(syncstorage-db tokenserver-db)
   DB_UP=("${SYNC_UP[@]}" 'ffs_up{component="Storage database"} 1')
 fi
@@ -506,7 +520,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then sync_listen=${PORT}; else sync_listen=127.0.
 check "$(env_of SYNC_EXPORT_PORT) $(sed -n 's/^PublishPort=//p' "${QUADLET_DIR}/firefox-sync-syncstorage.container")" "${sync_listen} ${sync_listen}:8000" \
   "SYNC_EXPORT_PORT=${sync_listen} in .env and the Sync server's PublishPort (quadlets)"
 # the healthchecks of compose, those of the Quadlets (as rendered from .env)
-check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup "${sync_compose[@]}")" same "every long-running service has a healthcheck, the Quadlets compose's (${SYNC_DB})"
+check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup "${sync_compose[@]}")" same "every long-running service has a healthcheck, the Quadlets compose's (${SYNC_DB})"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in quadlets"
 # with the admin UI, SYNC_MAX_USERS=initial:1: the init container and the admin UI both get it
 check "$(grep -hcxF 'Environment=MAX_USERS=initial:1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container") $(grep -hcxF 'Environment="MAX_USERS=initial:1"' "${QUADLET_DIR}/firefox-sync-admin.container")" "1 1" \
@@ -952,8 +966,8 @@ fi
 echo "== quadlets with the Sync databases on MySQL (SYNC_DB=mysql): only what is installed"
 setup mysql 1
 check "$?" 0 "prepare_environment.sh (quadlets, MySQL)"
-check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup -f docker-compose.yml -f docker-compose.sync-mysql.yml)" same "the MySQL Quadlets' healthchecks are compose's"
-check "$(grep -c '^SYNC_DB=mysql$' .env) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml$' .env)" "1 1" "SYNC_DB=mysql in .env, with the compose overlay"
+check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup -f compose/sync.yml -f compose/sync-mysql.yml)" same "the MySQL Quadlets' healthchecks are compose's"
+check "$(grep -c '^SYNC_DB=mysql$' .env) $(grep -c '^COMPOSE_FILE=compose/sync.yml:compose/sync-mysql.yml$' .env)" "1 1" "SYNC_DB=mysql in .env, with its compose file"
 check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}"/firefox-sync-{syncstorage-db,tokenserver-db,backup}.container | paste -sd' ') $(env_of SYNC_MYSQL_IMAGE)" \
   "docker.io/library/mysql:lts docker.io/library/mysql:lts docker.io/library/mysql:lts mysql:lts" "MySQL lts database and backup units for a new install"
 check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db*.volume 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
@@ -971,9 +985,9 @@ if [ "${SYNC_DB}" != postgres ]; then
   rm -f .env
   setup postgres 1
   check "$?" 0 "prepare_environment.sh (quadlets, PostgreSQL)"
-  check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup -f docker-compose.sync-postgres.yml)" same "the PostgreSQL Quadlets' healthchecks are compose's"
+  check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup -f compose/sync.yml -f compose/sync-postgres.yml)" same "the PostgreSQL Quadlets' healthchecks are compose's"
   pg_units_check "quadlets rendered"
-  check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l) $(env_keys_diff "-f docker-compose.sync-postgres.yml" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS|TOKENSERVER_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "0 |" \
+  check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l) $(env_keys_diff "-f compose/sync.yml -f compose/sync-postgres.yml" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS|TOKENSERVER_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "0 |" \
     "no unreplaced placeholders, the admin UI's unit passes every setting of compose's (PostgreSQL)"
   "${QUADLET}" -dryrun -user > quadlet-postgres-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the PostgreSQL units"
@@ -982,7 +996,7 @@ if [ "${SYNC_DB}" != postgres ]; then
   # (answers as setup, then the accounts' domain, SMTP host, port, user, password, sender, allowlist, admin emails)
   rm -f .env
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 postgres 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" | ./prepare_environment.sh > setup-postgres-fxa.log 2>&1
-  check "$? $(grep -hcxE 'Environment="(TOKENSERVER_DB_TYPE=postgres|TOKENSERVER_DB_HOST=firefox-sync-postgres-db|FXA_DB_HOST=fxa-db)"' "${QUADLET_DIR}/firefox-sync-admin.container") $(env_keys_diff "-f docker-compose.sync-postgres.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL|TOKENSERVER_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "0 3 |" \
+  check "$? $(grep -hcxE 'Environment="(TOKENSERVER_DB_TYPE=postgres|TOKENSERVER_DB_HOST=firefox-sync-postgres-db|FXA_DB_HOST=fxa-db)"' "${QUADLET_DIR}/firefox-sync-admin.container") $(env_keys_diff "-f compose/sync.yml -f compose/sync-postgres.yml -f compose/fxa.yml -f compose/fxa-mysql.yml" 'FXA_PAIRING_URL|TOKENSERVER_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "0 3 |" \
     "with the accounts: the admin UI's unit on PostgreSQL and the accounts, every setting of compose's (quadlets rendered)"
   "${QUADLET}" -dryrun -user > quadlet-postgres-fxa-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the PostgreSQL units with the accounts"
@@ -1142,7 +1156,7 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" \
     n n mariadb | ./prepare_environment.sh > setup-fxa-mariadb.log 2>&1
   check "$?" 0 "prepare_environment.sh (quadlets, accounts on MariaDB)"
-  check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing -f docker-compose.yml -f docker-compose.fxa.yml -f docker-compose.fxa-mariadb.yml)" same \
+  check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup --profile pairing -f compose/sync.yml -f compose/sync-mariadb.yml -f compose/fxa.yml -f compose/fxa-mariadb.yml)" same \
     "the Quadlets' healthchecks with the accounts on MariaDB are compose's"
   check "$(fxa_db_image) $(ls "${QUADLET_DIR}"/firefox-sync-fxa-db* 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
     "docker.io/library/mariadb:lts firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB lts unit and its own volume, not MySQL's"
@@ -1206,9 +1220,8 @@ if [ -z "${SKIP_FXA:-}" ]; then
     "me@fxa.invalid" "" "${fxa_db_answers[@]}" \
     | ./prepare_environment.sh > setup-fxa-quadlets.log 2>&1
   check "$?" 0 "prepare_environment.sh (quadlets with accounts)"
-  fxa_compose=(-f docker-compose.yml -f docker-compose.fxa.yml)
-  [ "${FXA_DB}" = mariadb ] && fxa_compose+=(-f docker-compose.fxa-mariadb.yml)
-  check "$(health_parity "${QUADLET_DIR}" docker compose --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
+  fxa_compose=(-f compose/sync.yml -f compose/sync-mariadb.yml -f compose/fxa.yml -f "compose/fxa-${FXA_DB}.yml")
+  check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
     "every long-running service has a healthcheck, the Quadlets with the accounts compose's (${FXA_DB})"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
   # MySQL: lts when the accounts image of .env has mozilla/fxa#21554, else 8 with mysql_native_password
@@ -1226,7 +1239,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   [ "${FXA_DB}" = mariadb ] || check "$(sed -n 's/^Exec=//p' "${QUADLET_DIR}/firefox-sync-fxa-db.container")" "${expected_exec}" "fxa-db's options (FXA_MYSQL_ARGS)"
   check "$(grep -c 'FXA_DB_HOST=fxa-db' "${QUADLET_DIR}/firefox-sync-admin.container")" 1 "admin UI quadlet for the accounts"
   # no pairing server in the quadlets
-  check "$(env_keys_diff "-f docker-compose.yml -f docker-compose.fxa.yml" 'FXA_PAIRING_URL|TOKENSERVER_DB_PASSWORD|STORAGE_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "|" "admin quadlet with the accounts passes every setting of the compose service"
+  check "$(env_keys_diff "-f compose/sync.yml -f compose/sync-mariadb.yml -f compose/fxa.yml -f compose/fxa-mysql.yml" 'FXA_PAIRING_URL|TOKENSERVER_DB_PASSWORD|STORAGE_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "|" "admin quadlet with the accounts passes every setting of the compose service"
   # max accounts: not asked here (the last question), unlimited and managed in the admin UI
   check "$(cat "${QUADLET_DIR}/firefox-sync-fxa-policy.container" "${QUADLET_DIR}/firefox-sync-admin.container" | grep -cxF 'Environment="FXA_MAX_ACCOUNTS=initial:unlimited"')" 2 \
     "FXA_MAX_ACCOUNTS=initial:unlimited in the sign-up policy and admin UI quadlets"

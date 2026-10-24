@@ -1,5 +1,6 @@
-# The accounts database on MariaDB instead of MySQL (FXA_DB=mariadb, see docs/accounts.md#mysql-or-mariadb), on top of
-# docker-compose.fxa.yml: COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml
+# The accounts database on MariaDB (FXA_DB=mariadb, see docs/accounts.md#mysql-or-mariadb), for
+# fxa.yml: fxa-db and the client of its backups (docs/install/compose.md#the-compose-files). With
+# your own server (FXA_DB_CONTAINERS=0) too: then no database container.
 # Mozilla supports MySQL only; MariaDB passes the same tests here: lts (12 today) with our
 # accounts images, 11 (11.4 to 11.8) with any (docs/accounts.md#mysql-or-mariadb).
 
@@ -12,10 +13,13 @@ services:
     # https://github.com/mozilla/fxa/pull/21494, applied to our images until it is in a
     # release (upstream-patches.yml)
     image: ${FXA_MARIADB_IMAGE:-mariadb:lts}
+    # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
+    deploy:
+      replicas: ${FXA_DB_CONTAINERS:-1}
     environment:
+      MYSQL_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD}
       MARIADB_AUTO_UPGRADE: "true"
-      # without FXA_MARIADB_IMAGE, data of another major is refused (db/mysql/keep-major.sh,
-      # mounted by docker-compose.fxa.yml)
+      # without FXA_MARIADB_IMAGE, data of another major is refused (db/mysql/keep-major.sh)
       FFS_MYSQL_IMAGE: ${FXA_MARIADB_IMAGE:-}
       FFS_MYSQL_SETTING: FXA_MARIADB_IMAGE
     # the default authentication is mysql_native_password (MariaDB has no caching_sha2_password),
@@ -23,10 +27,21 @@ services:
     command: [sh, /ffs-db/keep-major.sh, docker-entrypoint.sh, mariadbd, --event-scheduler=ON]
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-    # replaces the fxa-db volume (same path): MariaDB cannot open MySQL's data files,
-    # an existing fxa-db volume is left as it is
+      start_period: 30s
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # not MySQL's volume (same path): MariaDB cannot open MySQL's data files, an existing
+    # fxa-db volume is left as it is
     volumes:
       - fxa-db-mariadb:/var/lib/mysql
+      - ../db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
+    restart: unless-stopped
+
+  fxa-migrations:
+    depends_on:
+      fxa-db:
+        condition: service_healthy
 
   # the backups of the accounts with MariaDB's client (the same version as fxa-db, see there)
   backup-fxa:

@@ -1,4 +1,4 @@
-# Test-only: what tests/helm-fxa.sh e2e runs next to the chart, as tests/docker-compose.fxa-test.yml:
+# Test-only: what tests/helm-fxa.sh e2e runs next to the chart, as tests/compose/fxa.yml:
 # the mail catcher (the verification codes the tests read) and the tests' own state between Jobs
 apiVersion: apps/v1
 kind: Deployment

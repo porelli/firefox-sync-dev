@@ -1,0 +1,146 @@
+# The Sync databases on MySQL (SYNC_DB=mysql, see docs/databases.md#mysql-instead-of-mariadb), for
+# sync.yml: as sync-mariadb.yml, with MySQL's containers, volumes and client (docs/install/compose.md#the-compose-files).
+# Same images for the Sync server (syncstorage-rs-mysql) and the init container: upstream
+# syncstorage-rs is developed and tested on MySQL 8, the tests here run it on lts and 8 too.
+
+# the Sync server's databases, for it and its migrations
+x-sync-mysql-env: &sync-mysql-env
+  SYNC_SYNCSTORAGE__DATABASE_URL: mysql://${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}:${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}@${SYNC_STORAGE_DB_HOST:-${MARIADB_SYNCSTORAGE_SERVER:-}}:${SYNC_STORAGE_DB_PORT:-${MARIADB_SYNCSTORAGE_SERVER_PORT:-}}/${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+  SYNC_TOKENSERVER__NODE_TYPE: mysql
+  SYNC_TOKENSERVER__DATABASE_URL: mysql://${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}:${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}@${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}:${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}/${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+
+x-sync-mysql: &sync-mysql
+  # SYNC_MYSQL_IMAGE: mysql:lts by default, MySQL's newest long-term major (9 today); the
+  # installs from before run mysql:8 (prepare_environment.sh --upgrade writes it, moving to
+  # lts: docs/upgrading.md#mysql-8-to-9). On data of another major the containers do not start unless
+  # SYNC_MYSQL_IMAGE is set (db/mysql/keep-major.sh): MySQL would upgrade it for good
+  image: ${SYNC_MYSQL_IMAGE:-mysql:lts}
+  # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
+  deploy:
+    replicas: ${SYNC_DB_CONTAINERS:-${DB_CONTAINERS:-1}}
+  # no binary logging, like the MariaDB containers: no replica reads it, and it would keep
+  # 30 days of every change (binlog_expire_logs_seconds). With it on, the init container's
+  # max users procedure and trigger would also need log_bin_trust_function_creators (ERROR 1419)
+  # (through db/mysql/admin-user.sh, the admin UI's user, see sync-mariadb.yml)
+  command: [sh, /ffs-db/keep-major.sh, sh, /ffs-db/admin-user.sh, mysqld, --disable-log-bin]
+  healthcheck:
+    # over TCP: during the first start the image runs a temporary server on the socket only;
+    # as the stack's user (the root password is random), mysqladmin ping only asks if it answers
+    # (the password in mysqladmin's environment, not in its arguments, which ps shows on the host)
+    test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -u\"$${MYSQL_USER}\" --silent"]
+    start_period: 30s
+    interval: 10s
+    timeout: 5s
+    retries: 10
+  restart: unless-stopped
+
+services:
+  syncstorage_migrate:
+    environment: *sync-mysql-env
+    depends_on:
+      syncstorage_db:
+        condition: service_healthy
+      tokenserver_db:
+        condition: service_healthy
+
+  syncstorage:
+    environment: *sync-mysql-env
+
+  syncstorage_db:
+    <<: *sync-mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+      MYSQL_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
+      MYSQL_PASSWORD: ${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}
+      FFS_MYSQL_IMAGE: ${SYNC_MYSQL_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MYSQL_IMAGE
+      # the admin UI's reader of the Sync data, as sync-mariadb.yml's
+      ADMIN_DB_ROLE: storage
+      ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
+      ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}
+    # not MariaDB's volume (same path): MySQL must not open MariaDB's data files, an existing
+    # syncstorage-db volume is left as it is
+    volumes:
+      - syncstorage-db-mysql:/var/lib/mysql
+      - ../db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ../db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
+
+  tokenserver_db:
+    <<: *sync-mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      MYSQL_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      MYSQL_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
+      FFS_MYSQL_IMAGE: ${SYNC_MYSQL_IMAGE:-}
+      FFS_MYSQL_SETTING: SYNC_MYSQL_IMAGE
+      # the admin UI's users, as sync-mariadb.yml's
+      ADMIN_DB_ROLE: tokenserver
+      ADMIN_DB_USER: ${ADMIN_DB_USER:-ffs_admin_ui}
+      ADMIN_DB_SYNC_USER: ${ADMIN_DB_SYNC_USER:-ffs_admin_sync}
+      ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-}
+      ADMIN_DB_NAME: ${ADMIN_DB_NAME:-ffs_admin}
+    volumes:
+      - tokenserver-db-mysql:/var/lib/mysql
+      - ../db/mysql/admin-user.sh:/ffs-db/admin-user.sh:ro
+      - ../db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
+
+  tokenserver_db_init:
+    depends_on:
+      tokenserver_db:
+        condition: service_healthy
+    environment:
+      MARIADB_SERVER: ${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}
+      MARIADB_SERVER_PORT: ${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}
+      MARIADB_DATABASE: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      MARIADB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      MARIADB_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
+      # the init container's MariaDB client checks the server's certificate by default, and
+      # MySQL's is self-signed (ERROR 2026): TLS without the check, on the stack's own network
+      MARIADB_TLS_VERIFY: "false"
+
+  ffs-admin:
+    environment:
+      # as sync-mariadb.yml's
+      TOKENSERVER_DB_TYPE: mysql
+      TOKENSERVER_DB_HOST: ${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}
+      TOKENSERVER_DB_PORT: ${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}
+      TOKENSERVER_DB_NAME: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      TOKENSERVER_DB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      TOKENSERVER_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}}
+      STORAGE_DB_HOST: ${SYNC_STORAGE_DB_HOST:-${MARIADB_SYNCSTORAGE_SERVER:-}}
+      STORAGE_DB_PORT: ${SYNC_STORAGE_DB_PORT:-${MARIADB_SYNCSTORAGE_SERVER_PORT:-}}
+      STORAGE_DB_NAME: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+      STORAGE_DB_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
+      STORAGE_DB_PASSWORD: ${ADMIN_DB_PASSWORD:-${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}}
+      # the configuration page: the database server
+      SYNC_DB: ${SYNC_DB:-mysql}
+
+  # the backups (COMPOSE_PROFILES=backup) with MySQL's own client and mysqldump: the MariaDB
+  # client refuses MySQL's self-signed certificate; the same image as the databases
+  backup:
+    image: ${SYNC_MYSQL_IMAGE:-mysql:lts}
+    environment:
+      MARIADB_TLS_VERIFY: ${SYNC_DB_TLS_VERIFY:-${MARIADB_TLS_VERIFY:-true}}
+      TOKENSERVER_DB_TYPE: mysql
+      TOKENSERVER_DB_HOST: ${SYNC_TOKENSERVER_DB_HOST:-${MARIADB_TOKENSERVER_SERVER:-}}
+      TOKENSERVER_DB_PORT: ${SYNC_TOKENSERVER_DB_PORT:-${MARIADB_TOKENSERVER_SERVER_PORT:-}}
+      TOKENSERVER_DB_NAME: ${SYNC_TOKENSERVER_DB_NAME:-${MARIADB_TOKENSERVER_DATABASE:-}}
+      TOKENSERVER_DB_USER: ${SYNC_TOKENSERVER_DB_USER:-${MARIADB_TOKENSERVER_USER:-}}
+      TOKENSERVER_DB_PASSWORD: ${SYNC_TOKENSERVER_DB_PASSWORD:-${MARIADB_TOKENSERVER_PASSWORD:-}}
+      STORAGE_DB_HOST: ${SYNC_STORAGE_DB_HOST:-${MARIADB_SYNCSTORAGE_SERVER:-}}
+      STORAGE_DB_PORT: ${SYNC_STORAGE_DB_PORT:-${MARIADB_SYNCSTORAGE_SERVER_PORT:-}}
+      STORAGE_DB_NAME: ${SYNC_STORAGE_DB_NAME:-${MARIADB_SYNCSTORAGE_DATABASE:-}}
+      STORAGE_DB_USER: ${SYNC_STORAGE_DB_USER:-${MARIADB_SYNCSTORAGE_USER:-}}
+      STORAGE_DB_PASSWORD: ${SYNC_STORAGE_DB_PASSWORD:-${MARIADB_SYNCSTORAGE_PASSWORD:-}}
+    # the databases healthy too, as sync-mariadb.yml's
+    depends_on:
+      tokenserver_db:
+        condition: service_healthy
+      syncstorage_db:
+        condition: service_healthy
+
+volumes:
+  syncstorage-db-mysql:
+  tokenserver-db-mysql:

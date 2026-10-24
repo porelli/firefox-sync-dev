@@ -404,7 +404,7 @@ fxa_backup_lint() {
   check "backups with the accounts: init container backup-accounts (fxaDbImage, compose's backup-fxa env, backup.sh now, a failure recorded) before the Sync scope in ${f}-backup; none with your own accounts server (its user cannot read ffs), nor without the accounts"
 }
 
-# the admin UI with the accounts: compose's ffs-admin block of docker-compose.fxa.yml (and the
+# the admin UI with the accounts: compose's ffs-admin block of compose/fxa.yml (and the
 # chart's own: Redis' password, the servers' Services, the test CA), the sign-up gate's port, its
 # wait for auth; sign-in with the accounts (admin.fxaSignIn): the client id given or derived, the
 # redirect URL, the client in auth (and content) as compose renders them
@@ -605,7 +605,7 @@ fxa_objects_lint() {
   [[ "$(fxa_db_spec --set fxa.database.backend=mariadb --set fxa.database.image.mariadb=docker.io/library/mariadb:11 | jq -c '.args')" == '["mariadbd","--event-scheduler=ON"]' ]] \
     || fail "fxa-db on mariadb:11: not mariadbd --event-scheduler=ON"
   [[ "$(python3 -c 'import sys, yaml; i = yaml.safe_load(open(sys.argv[1]))["fxa"]["database"]["image"]; print(i["mysql"], i["mariadb"])' "${CHART_DIR}/values.yaml")" \
-    == "docker.io/library/mysql:$(sed -n 's/^ *image: ${FXA_MYSQL_IMAGE:-mysql:\(.*\)}$/\1/p' "${REPO_ROOT}/docker-compose.fxa.yml" | sort -u) docker.io/library/mariadb:$(sed -n 's/^ *image: ${FXA_MARIADB_IMAGE:-mariadb:\(.*\)}$/\1/p' "${REPO_ROOT}/docker-compose.fxa-mariadb.yml" | sort -u)" ]] \
+    == "docker.io/library/mysql:$(sed -n 's/^ *image: ${FXA_MYSQL_IMAGE:-mysql:\(.*\)}$/\1/p' "${REPO_ROOT}/compose/fxa-mysql.yml" | sort -u) docker.io/library/mariadb:$(sed -n 's/^ *image: ${FXA_MARIADB_IMAGE:-mariadb:\(.*\)}$/\1/p' "${REPO_ROOT}/compose/fxa-mariadb.yml" | sort -u)" ]] \
     || fail "fxa.database.image: not compose's FXA_MYSQL_IMAGE and FXA_MARIADB_IMAGE defaults"
   check "fxa-db: mysql:lts and mariadb:lts as compose's defaults; mysql_native_password only on a MySQL 8 pin (mysql:8, 8.4, 8.4.7@digest; none on 9, 9.7, latest, lts), as compose's FXA_MYSQL_ARGS"
   [[ "$(fxa_db_spec --set fxa.database.backend=mariadb)" == '{"args":["mariadbd","--event-scheduler=ON"],"claim":"data-mariadb","env":{"MARIADB_AUTO_UPGRADE":"true","MYSQL_ROOT_PASSWORD":"FXA_MYSQL_PASSWORD"},"image":"docker.io/library/mariadb:lts","mount":{"mountPath":"/var/lib/mysql","name":"data-mariadb","subPath":"data"},"probe":["healthcheck.sh","--connect","--innodb_initialized"]}' ]] \
@@ -1918,7 +1918,7 @@ fxa_postgres_restore() {
   SYNC_RESTORED="${run}, its role, the Sync database and the admin UI's as the page says: ${after}"
 }
 
-# admin_test_env: tests/docker-compose.fxa-test.yml's test-only settings of the admin UI that
+# admin_test_env: tests/compose/fxa.yml's test-only settings of the admin UI that
 # the chart has no value for (its checks every 5 s, accounts unconfirmed at once), after every
 # helm install and upgrade; nothing without the admin UI. (Those the chart has values for are
 # in tests/helm/fxa-values.yaml: set here, Helm 4 would refuse the next upgrade.)
@@ -2032,7 +2032,7 @@ wait_init_failed() {
   return 1
 }
 
-# fxa_fixtures: what the e2e runs next to the chart, as tests/docker-compose.fxa-test.yml:
+# fxa_fixtures: what the e2e runs next to the chart, as tests/compose/fxa.yml:
 # the Ingress controller (tests/helm/traefik.yaml) with every *.fxa.test resolved to it (as
 # compose's network aliases of Caddy), a test CA and its *.fxa.test certificate (Secret
 # fxa-test-tls; the CA in the ConfigMap fxa-test-ca, root.crt, as compose's caddy-ca volume),

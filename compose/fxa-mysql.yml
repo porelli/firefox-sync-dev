@@ -1,0 +1,50 @@
+# The accounts database on MySQL (FXA_DB=mysql, the default; what Mozilla runs), for fxa.yml:
+# fxa-db and the client of its backups (docs/install/compose.md#the-compose-files). With your own
+# server (FXA_DB_CONTAINERS=0) too: then no database container.
+
+services:
+  fxa-db:
+    # FXA_MYSQL_IMAGE: mysql:lts by default, MySQL's newest long-term major (9 today), for
+    # accounts images with https://github.com/mozilla/fxa/pull/21554 (the mysql2 driver,
+    # caching_sha2_password; applied to our images until it is in a release,
+    # upstream-patches.yml). The installs from before, and the images without it (Mozilla's,
+    # ours from before), run mysql:8 with FXA_MYSQL_ARGS=--mysql-native-password=ON
+    # --authentication-policy=mysql_native_password: their driver speaks nothing else, and
+    # MySQL 9 has no such plugin (nor these options: it refuses to start with them).
+    # prepare_environment.sh writes both (--upgrade: mysql:8 for the installs from before);
+    # moving to lts: docs/upgrading.md#mysql-8-to-9. On data of another major the container does not
+    # start unless FXA_MYSQL_IMAGE is set (db/mysql/keep-major.sh)
+    image: ${FXA_MYSQL_IMAGE:-mysql:lts}
+    # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
+    deploy:
+      replicas: ${FXA_DB_CONTAINERS:-1}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD}
+      FFS_MYSQL_IMAGE: ${FXA_MYSQL_IMAGE:-}
+      FFS_MYSQL_SETTING: FXA_MYSQL_IMAGE
+    # (a string: FXA_MYSQL_ARGS are words of their own, none when it is empty)
+    command: sh /ffs-db/keep-major.sh docker-entrypoint.sh mysqld --event-scheduler=ON ${FXA_MYSQL_ARGS:-}
+    healthcheck:
+      # over TCP: during the first start the image runs a temporary server on the socket only
+      # (the password in mysqladmin's environment, not in its arguments, which ps shows on the host)
+      test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_ROOT_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot --silent"]
+      start_period: 30s
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - fxa-db:/var/lib/mysql
+      - ../db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
+    restart: unless-stopped
+
+  fxa-migrations:
+    depends_on:
+      fxa-db:
+        condition: service_healthy
+
+  # the backups of the accounts with MySQL's client (mysqldump), the same image as fxa-db
+  backup-fxa:
+    image: ${FXA_MYSQL_IMAGE:-mysql:lts}
+
+volumes:
+  fxa-db:

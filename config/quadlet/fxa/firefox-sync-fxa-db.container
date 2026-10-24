@@ -5,7 +5,7 @@ After=firefox-sync-network.service
 [Container]
 # FXA_MYSQL_IMAGE of .env (prepare_environment.sh: mysql:lts, or mysql:8 for the installs from
 # before and for accounts images without mozilla/fxa#21554, with FXA_MYSQL_ARGS: see
-# docker-compose.fxa.yml)
+# compose/fxa-mysql.yml)
 Image=%FXA_MYSQL_IMAGE%
 ContainerName=firefox-sync-fxa-db
 Network=firefox-sync-network.network

@@ -135,7 +135,7 @@ load_images() {
         || fail "init image not built"
       # with BuildKit (the Dockerfile's BUILDPLATFORM), as tests/e2e.sh builds it
       ADMIN_IMAGE="${repository}:admin-${ADMIN_TAG}" COMPOSE_BAKE=false docker compose -p ffs-helm-admin-build \
-        -f "${SCRIPT_DIR}/docker-compose.admin-build.yml" build -q || fail "admin image not built"
+        -f "${SCRIPT_DIR}/compose/admin-build.yml" build -q || fail "admin image not built"
     fi
     kind load docker-image --name "${CLUSTER}" "${repository}:syncstorage-rs-${flavor}-init-${init_tag}"
     check "init image built from ${init_dir}"

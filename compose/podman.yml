@@ -1,0 +1,11 @@
+# docker compose on the Podman socket (docs/install/podman.md#docker-compose-on-the-podman-socket),
+# with sync.yml and any database's file: more time for the Sync server's healthcheck in rootless
+# environments. The databases keep their own timings, as the Quadlets do on the same Podman.
+
+services:
+  syncstorage:
+    healthcheck:
+      interval: 45s
+      timeout: 15s
+      retries: 5
+      start_period: 30s

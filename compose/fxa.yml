@@ -1,5 +1,6 @@
-# Self-hosted Mozilla accounts (FxA), on top of docker-compose.yml or docker-compose.sync-postgres.yml
-# Usage: docker compose -f docker-compose.yml -f docker-compose.fxa.yml up -d
+# Self-hosted Mozilla accounts (FxA), without their database: with sync.yml and its database's
+# file, and exactly one of fxa-mysql.yml and fxa-mariadb.yml (docs/install/compose.md#the-compose-files).
+# Relative paths are relative to this directory, compose/.
 #
 # Uses amd64 and arm64 builds of Mozilla's releases (mozilla/fxa-mono). The public URLs below
 # must be served by your reverse proxy, see docs/reverse-proxy.md#host-names-and-ports:
@@ -18,9 +19,9 @@ x-fxa: &fxa
   platform: linux/${FXA_ARCH:-amd64}
   restart: unless-stopped
 
-# the accounts database: fxa-db (MySQL, MariaDB with docker-compose.fxa-mariadb.yml), or your own
-# MySQL 8.4 or 9 (9 with our images) or MariaDB 11.4+ server (12 with our images;
-# FXA_DB_CONTAINERS=0, docs/reference/database-users.md#the-accounts)
+# the accounts database: fxa-db (fxa-mysql.yml or fxa-mariadb.yml), or your own MySQL 8.4 or 9
+# (9 with our images) or MariaDB 11.4+ server (12 with our images; FXA_DB_CONTAINERS=0,
+# docs/reference/database-users.md#the-accounts)
 x-fxa-mysql: &fxa-mysql
   MYSQL_HOST: ${FXA_MYSQL_HOST:-fxa-db}
   MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
@@ -28,40 +29,6 @@ x-fxa-mysql: &fxa-mysql
   MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
 
 services:
-  fxa-db:
-    # FXA_MYSQL_IMAGE: mysql:lts by default, MySQL's newest long-term major (9 today), for
-    # accounts images with https://github.com/mozilla/fxa/pull/21554 (the mysql2 driver,
-    # caching_sha2_password; applied to our images until it is in a release,
-    # upstream-patches.yml). The installs from before, and the images without it (Mozilla's,
-    # ours from before), run mysql:8 with FXA_MYSQL_ARGS=--mysql-native-password=ON
-    # --authentication-policy=mysql_native_password: their driver speaks nothing else, and
-    # MySQL 9 has no such plugin (nor these options: it refuses to start with them).
-    # prepare_environment.sh writes both (--upgrade: mysql:8 for the installs from before);
-    # moving to lts: docs/upgrading.md#mysql-8-to-9. On data of another major the container does not
-    # start unless FXA_MYSQL_IMAGE is set (db/mysql/keep-major.sh)
-    image: ${FXA_MYSQL_IMAGE:-mysql:lts}
-    # 0: your own server (docs/databases.md#your-own-server); compose then skips the dependency on it
-    deploy:
-      replicas: ${FXA_DB_CONTAINERS:-1}
-    environment:
-      MYSQL_ROOT_PASSWORD: ${FXA_MYSQL_PASSWORD}
-      FFS_MYSQL_IMAGE: ${FXA_MYSQL_IMAGE:-}
-      FFS_MYSQL_SETTING: FXA_MYSQL_IMAGE
-    # (a string: FXA_MYSQL_ARGS are words of their own, none when it is empty)
-    command: sh /ffs-db/keep-major.sh docker-entrypoint.sh mysqld --event-scheduler=ON ${FXA_MYSQL_ARGS:-}
-    healthcheck:
-      # over TCP: during the first start the image runs a temporary server on the socket only
-      # (the password in mysqladmin's environment, not in its arguments, which ps shows on the host)
-      test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_ROOT_PASSWORD} mysqladmin ping -h 127.0.0.1 --protocol=tcp -uroot --silent"]
-      start_period: 30s
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    volumes:
-      - fxa-db:/var/lib/mysql
-      - ./db/mysql/keep-major.sh:/ffs-db/keep-major.sh:ro
-    restart: unless-stopped
-
   fxa-redis:
     # the accounts' cache (sessions' last use, revoked tokens), no volume: lost on a recreate
     # anyway, so it follows Redis's newest major
@@ -74,7 +41,7 @@ services:
     restart: unless-stopped
 
   # (the one-shot services, restart: "no", have no healthcheck: their exit status counts,
-  # see docker-compose.yml)
+  # see sync.yml)
   # the image runs as app (10001), new volumes are created as root
   fxa-keys-owner:
     <<: *fxa
@@ -106,9 +73,7 @@ services:
       PUSHBOX_MYSQL_PORT: ${FXA_MYSQL_PORT:-3306}
       PUSHBOX_MYSQL_USERNAME: ${FXA_MYSQL_USER:-root}
       PUSHBOX_MYSQL_PASSWORD: ${FXA_MYSQL_PASSWORD}
-    depends_on:
-      fxa-db:
-        condition: service_healthy
+    # (and the database container: the database's file)
     restart: "no"
 
   # who can create an account (FXA_SIGNUPS, FXA_SIGNUP_ALLOWLIST, FXA_MAX_ACCOUNTS), enforced by the
@@ -238,7 +203,7 @@ services:
       LOG_LEVEL: ${FXA_LOG_LEVEL:-INFO}
     volumes:
       - fxa-keys:/fxa-keys
-      - ./config/fxa:/fxa-config:ro
+      - ../config/fxa:/fxa-config:ro
     depends_on:
       fxa-keys-owner:
         condition: service_completed_successfully
@@ -283,7 +248,7 @@ services:
       REDIS_HOST: fxa-redis
       GEODB_ENABLED: "false"
     volumes:
-      - ./config/fxa:/fxa-config:ro
+      - ../config/fxa:/fxa-config:ro
     depends_on:
       fxa-auth:
         condition: service_healthy
@@ -437,9 +402,7 @@ services:
   # volume: the sync backup service records the result. Run one now:
   # docker compose exec backup-fxa sh /ffs-backup/backup.sh now
   backup-fxa:
-    # the client of fxa-db (mysqldump; mariadb-dump with docker-compose.fxa-mariadb.yml), the
-    # same image as fxa-db
-    image: ${FXA_MYSQL_IMAGE:-mysql:lts}
+    # (its image, the client of the accounts database: the database's file)
     profiles: [backup]
     entrypoint: [sh, /ffs-backup/backup.sh]
     command: [loop]
@@ -451,7 +414,7 @@ services:
       FXA_DB_PORT: ${FXA_MYSQL_PORT:-3306}
       FXA_DB_USER: ${FXA_MYSQL_USER:-root}
       FXA_DB_PASSWORD: ${FXA_MYSQL_PASSWORD}
-    # as the backup service's (docker-compose.yml): backup.sh health
+    # as the backup service's (sync.yml): backup.sh health
     healthcheck:
       test: ["CMD", "sh", "/ffs-backup/backup.sh", "health"]
       start_period: 1m
@@ -459,7 +422,7 @@ services:
       timeout: 10s
       retries: 2
     volumes:
-      - ./config/backup:/ffs-backup:ro
+      - ../config/backup:/ffs-backup:ro
       - backups:/backups
     depends_on:
       fxa-policy:
@@ -467,7 +430,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  fxa-db:
   fxa-keys:
   fxa-profile-images:
   backups:

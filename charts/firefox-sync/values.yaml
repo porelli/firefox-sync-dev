@@ -45,7 +45,7 @@ smtp:
   insecureAuth: ""
 
 # The Mozilla accounts Firefox signs in with: Mozilla's (the default), or your own with
-# fxa.enabled (compose's docker-compose.fxa.yml, see docs/accounts.md), with the names of .env below
+# fxa.enabled (compose's compose/fxa.yml, see docs/accounts.md), with the names of .env below
 fxa:
   # Mozilla's accounts (fxa.enabled false): FXA_OAUTH_SERVER_URL and FXA_EMAIL_DOMAIN of .env.
   # Ignored with fxa.enabled: the chart's auth server (http://<release>-firefox-sync-fxa-auth:9000/v1)

@@ -153,9 +153,34 @@ The same stack: upgrade in place, nothing to export. The volumes (`<directory>_t
 
 ### Files that moved
 
-The release that added `db/` moved some files. The image names and the names of the installed Quadlet units did not change.
+The compose files are now in `compose/`: one for the Sync server, one per database, the same for the accounts ([The compose files](install/compose.md#the-compose-files)). The services, containers, volumes and settings keep their names.
 
-- `docker-compose.postgres.yml` is now `docker-compose.sync-postgres.yml`. `./prepare_environment.sh --upgrade` (below) changes it in `COMPOSE_FILE` of your `.env` and says so. By hand, replace `docker-compose.postgres.yml` with `docker-compose.sync-postgres.yml` there and in `-f` of your own scripts and units.
+| Before (`COMPOSE_FILE`) | Now |
+|---|---|
+| none, or `docker-compose.yml` | `compose/sync.yml:compose/sync-mariadb.yml` |
+| `docker-compose.yml:docker-compose.sync-mysql.yml` | `compose/sync.yml:compose/sync-mysql.yml` |
+| `docker-compose.sync-postgres.yml` (before it, `docker-compose.postgres.yml`) | `compose/sync.yml:compose/sync-postgres.yml` |
+| `:docker-compose.fxa.yml` | `:compose/fxa.yml:compose/fxa-mysql.yml` |
+| `:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml` | `:compose/fxa.yml:compose/fxa-mariadb.yml` |
+| `-f docker-compose.podman.yml` | `:compose/podman.yml` |
+
+Run the one command, in the checkout:
+
+```bash
+./prepare_environment.sh --upgrade
+```
+
+It writes the new names in `COMPOSE_FILE` (your own files stay in it, after them) and `COMPOSE_PROJECT_NAME` with the directory's name, the project's name before, and says so. Without `COMPOSE_PROJECT_NAME`, compose would name the project after `compose/`, the directory of the first file, and find none of your containers and volumes.
+
+Without it:
+
+- `COMPOSE_FILE` with the old names: `docker compose` stops at once, the old file not found (`no such file or directory`). Nothing starts or changes until you run `--upgrade`.
+- No `COMPOSE_FILE` (Sync on MariaDB): `docker-compose.yml` is still there and runs the files of `compose/`, as the same project (with the compose of the [requirements](install/compose.md#requirements)). `--upgrade` writes `COMPOSE_FILE` there too, unless you have a `docker-compose.override.yml`, which compose reads only without `COMPOSE_FILE`.
+- Your own scripts and units with `-f`: change the names, and add `--env-file .env` (compose looks for `.env` in the directory of the first file).
+- Your own compose files in `COMPOSE_FILE`: their relative paths are now relative to `compose/` (`./config` becomes `../config`).
+
+The release that added `db/` moved other files. The image names and the names of the installed Quadlet units did not change.
+
 - `config/database/` is gone. `sync-mariadb.sql` is now [db/mysql/sync.sql](/db/mysql/sync.sql), `sync-postgres.sql` is [db/postgres/sync.sql](/db/postgres/sync.sql), and `fxa-mysql.sql`, `fxa-mariadb.sql` and `admin-user.sh` are in [db/mysql/](/db/mysql). With your own database server, `prepare_environment.sh` reads them from there. If you fill in the SQL by hand, take it from the new paths ([Create the databases and users](databases.md#create-the-databases-and-users)).
 - `syncstorage-rs-init/` and `syncstorage-rs-init-postgres/` are now `db/mysql/init/` and `db/postgres/init/`. This only matters if you build the init images yourself (`docker build db/mysql/init`).
 - `config/quadlet/mysql/` is now `config/quadlet/sync-mysql/` (`SYNC_DB=mysql`), where `prepare_environment.sh` looks for it. The units keep their names, but the database units now mount `db/mysql/admin-user.sh`. Render them again before the next start (`--upgrade` does, [Quadlets](#quadlets)): the old units point at `config/database/admin-user.sh`, which `git pull` removes.
@@ -179,7 +204,7 @@ Moving to the newer major later is up to you, with a backup first: [MariaDB](#ma
 1. Get the new files (`git pull` in the clone). Keep your `.env`: don't run `./prepare_environment.sh` again, it would generate new passwords that the databases don't have.
 1. Run `./prepare_environment.sh --upgrade`. It changes only what this release needs, keeps every value already there, and leaves the old file as `.env.before-upgrade-<UTC time>` (readable by you only, as `.env`):
     - it renames the settings your `.env` has under their old names ([Renamed settings](#renamed-settings));
-    - it puts `docker-compose.sync-postgres.yml` in place of `docker-compose.postgres.yml` in `COMPOSE_FILE`;
+    - it writes the files of `compose/` in `COMPOSE_FILE`, and `COMPOSE_PROJECT_NAME` ([Files that moved](#files-that-moved));
     - it sets `ADMIN_DB_PASSWORD`, the password of the admin UI's database users: at the next start the event log and the audit trail move out of the Sync server's reach ([The admin UI's own database](#the-admin-uis-own-database));
     - with the PostgreSQL container, it sets `SYNC_POSTGRES_APP_USER` and `SYNC_POSTGRES_APP_PASSWORD`, a role of the Sync server's own that is no superuser;
     - it writes the database majors the install runs ([Database majors](#database-majors)).
@@ -229,7 +254,7 @@ Your own backup jobs that record their runs now write into `ffs_admin` as `ffs_a
 
 - docker compose: `tests/migrate.sh firefox-sync-2024-12` (4705bda, images 0.18.2) and `firefox-sync-2024-07` (the first release, 7f52fa0, image 0.17.1). The old release's files and `.env`, an account syncs, then the new files over them, `./prepare_environment.sh --upgrade`, the missing lines of `.env-example` added as above, `docker compose pull && docker compose up -d`: the same volumes, the same accounts on the same node with their data, and `SYNC_MAX_USERS` and the admin UI count them.
 - The Quadlets: `UPGRADE_FROM=<checkout of the release before> tests/podman.sh` (cb8e519, MariaDB containers) runs the steps of [Quadlets](#quadlets) except the pull: every password and secret of the old `.env` stays (under its new name), the units of before are kept, a second `--upgrade` changes nothing, and the stack starts with the passwords of before, with no `SET PASSWORD`. The admin UI's audit event of before moves into `ffs_admin`. `tests/podman.sh` also renders a running install again with a setting and an image changed (`--render-units`), and stops and starts it.
-- The files moved for `db/`: `tests/podman.sh` has `--upgrade` rename `docker-compose.postgres.yml` in `COMPOSE_FILE`, and `UPGRADE_FROM=<checkout of cb8e519> tests/e2e.sh postgres` runs the upgraded stack through the `docker-compose.postgres.yml` symlink.
+- The files moved to `compose/`: `tests/podman.sh` (compose on the Podman socket) and `tests/e2e.sh` have `--upgrade` write `COMPOSE_FILE` from each old layout (none, `docker-compose.sync-mysql.yml`, `docker-compose.postgres.yml`) and `COMPOSE_PROJECT_NAME`, and start the stack with it; without `COMPOSE_FILE`, `docker-compose.yml` finds the running MariaDB stack. `tests/migrate.sh firefox-sync-2024-12` keeps the same volumes. `UPGRADE_FROM=<checkout of the release before> tests/e2e.sh` runs that release's compose files, then this tree's on the same volumes.
 - The admin UI's own database: `tests/e2e.sh` with `UPGRADE_FROM` (MariaDB, MySQL and PostgreSQL), and `tests/podman.sh` with `prepare_environment.sh --upgrade`.
 - The old setting names: `tests/podman.sh` starts its compose phase from an `.env` with only the old names and has `--upgrade` rename them; `tests/e2e.sh` starts its install from before with only the old names; `tests/migrate.sh firefox-sync-2024-12` upgrades a real `.env` of then.
 - The Quadlets on your own database server: `EXTERNAL_DB=1 tests/podman.sh` (MariaDB `lts`; MySQL `lts` with `SYNC_DB=mysql`, PostgreSQL `latest` with `SYNC_DB=postgres`), the server outside the units, its databases and users made by `database-setup.sql`: the Sync server and the admin UI on it, a backup recorded there, `--upgrade` writing `database-setup.sql` again, a setting rendered again and every unit started again.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Upgrade of the self-hosted Mozilla accounts in place (docker-compose.fxa.yml): the stack
+# Upgrade of the self-hosted Mozilla accounts in place (compose/fxa.yml): the stack
 # starts on an older release, an account signs up, registers a device, gets a refresh
 # token and syncs; then FXA_VERSION is changed in .env and the stack upgraded as docs/upgrading.md#self-hosted-accounts
 # says (a backup, docker compose pull, docker compose up -d). Checked after: the
@@ -126,9 +126,8 @@ slot_fxa_ports "${ENV_FILE}"
 # prefer to the file and which would hide its pins from db/mysql/keep-major.sh
 export -n FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MARIADB_IMAGE SYNC_MYSQL_IMAGE SYNC_POSTGRES_IMAGE 2> /dev/null
 load_env "${ENV_FILE}"
-COMPOSE_EXTRA=()
 if [ "${FXA_DB}" = mariadb ]; then
-  COMPOSE_EXTRA=(-f "${CODE}/docker-compose.fxa-mariadb.yml") DB_CLIENT=mariadb
+  DB_CLIENT=mariadb
 else
   DB_CLIENT=mysql
 fi
@@ -136,8 +135,8 @@ ADMIN_GIVEN=${ADMIN_IMAGE:-}
 export ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
 
 dc() {
-  docker compose -p "${PROJECT}" --env-file "${ENV_FILE}" --project-directory "${CODE}" \
-    -f "${CODE}/docker-compose.yml" -f "${CODE}/docker-compose.fxa.yml" -f "${TESTS}/docker-compose.fxa-test.yml" "${COMPOSE_EXTRA[@]}" "$@"
+  docker compose -p "${PROJECT}" --env-file "${ENV_FILE}" -f "${CODE}/compose/sync.yml" -f "${CODE}/compose/sync-mariadb.yml" \
+    -f "${CODE}/compose/fxa.yml" -f "${CODE}/compose/fxa-${FXA_DB}.yml" -f "${TESTS}/compose/fxa.yml" "$@"
 }
 FAILED=0
 # compose prefers the environment to --env-file: change both
@@ -231,7 +230,7 @@ upgrade_tests() {
 
 echo "== ${PROJECT}: accounts ${FXA_FROM} (${from_arch}) -> ${NEW} (${NEW_ARCH}), on ${FXA_DB}${MARIADB_TO:+ ${MARIADB_INSTALLED} -> ${MARIADB_TO}}${FXA_SAME_TAG:+, the older release installed as ${NEW}}"
 if [ -z "${ADMIN_GIVEN}" ]; then
-  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
+  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/compose/admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
 fi
 dc down -v --remove-orphans > /dev/null 2>&1
 # both releases first, to know them: the admin UI must show the new one (a tag like

@@ -1,7 +1,7 @@
 """The admin UI's single sign-on: OpenID Connect (Dex) and a trusted proxy's header.
 
 Runs after test_admin_sync.py in the syncstorage-rs image, see tests/e2e.sh. The test
-stack (tests/docker-compose.test.yml) has Dex (tests/dex.yml) at http://dex:5556/dex,
+stack (tests/compose/sync.yml) has Dex (tests/dex.yml) at http://dex:5556/dex,
 and the admin UI with ADMIN_ALLOWED_USERS=admin@ffs-e2e.invalid,@admins.invalid,
 ADMIN_ALLOWED_GROUPS=ffs-admins, the headers X-Test-Email and X-Test-Groups trusted
 from the stack's containers (this one too), and the password.

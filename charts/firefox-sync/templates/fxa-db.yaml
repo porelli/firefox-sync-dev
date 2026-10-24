@@ -1,5 +1,5 @@
 {{- /*
-The accounts database, compose's fxa-db (MySQL; MariaDB with docker-compose.fxa-mariadb.yml):
+The accounts database, compose's fxa-db (compose/fxa-mysql.yml; MariaDB: compose/fxa-mariadb.yml):
 only with fxa.database.bundled, your own server otherwise. Its root password is
 FXA_MYSQL_PASSWORD, as compose's
 */ -}}

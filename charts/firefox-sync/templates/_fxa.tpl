@@ -1,6 +1,6 @@
 {{/*
-The self-hosted Mozilla accounts (fxa.enabled), compose's docker-compose.fxa.yml (and
-docker-compose.fxa-mariadb.yml): their images, hosts, env blocks, security contexts and checks
+The self-hosted Mozilla accounts (fxa.enabled), compose's compose/fxa.yml (and
+compose/fxa-mysql.yml, compose/fxa-mariadb.yml): their images, hosts, env blocks, security contexts and checks
 */}}
 
 {{/*

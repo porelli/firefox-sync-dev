@@ -25,7 +25,7 @@
 #                   10.231.4.0/24 SYNC_DB=mysql);
 #                   its containers are in the upper half, the admin UI's trusted proxies, the
 #                   gateway (the host) at .1 is not
-#   SYNC_DB         mysql: the mysql backend on MySQL containers (docker-compose.sync-mysql.yml)
+#   SYNC_DB         mysql: the mysql backend on MySQL containers (compose/sync-mysql.yml)
 #                   instead of MariaDB (default mariadb); own project, PORT 28654 and TEST_SUBNET 10.231.4.0/24
 #   SYNC_MYSQL_IMAGE the MySQL of SYNC_DB=mysql and of EXTERNAL_DB=1 with mysql (default: mysql:lts);
 #                   mysql:8 as the installs from before: SYNC_DB=mysql then also checks that
@@ -69,10 +69,10 @@ ENV_FILE=${WORK}/${BACKEND}.env
 
 SYNC_DB=${SYNC_DB:-mariadb}
 case ${BACKEND}:${SYNC_DB} in
-  mysql:mariadb)    COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28651 + SLOT_PORTS))}; NET=$((1 + SLOT_NET)) ;;
-  postgres:mariadb) COMPOSE=${CODE}/docker-compose.sync-postgres.yml; PORT=${PORT:-$((28652 + SLOT_PORTS))}; NET=$((2 + SLOT_NET)) ;;
+  mysql:mariadb)    SYNC_FILE=mariadb;  PORT=${PORT:-$((28651 + SLOT_PORTS))}; NET=$((1 + SLOT_NET)) ;;
+  postgres:mariadb) SYNC_FILE=postgres; PORT=${PORT:-$((28652 + SLOT_PORTS))}; NET=$((2 + SLOT_NET)) ;;
   # (28653 is tests/e2e-fxa.sh's)
-  mysql:mysql)      COMPOSE=${CODE}/docker-compose.yml;          PORT=${PORT:-$((28654 + SLOT_PORTS))}; NET=$((4 + SLOT_NET)); PROJECT=${PROJECT}-mysqldb ;;
+  mysql:mysql)      SYNC_FILE=mysql;    PORT=${PORT:-$((28654 + SLOT_PORTS))}; NET=$((4 + SLOT_NET)); PROJECT=${PROJECT}-mysqldb ;;
   postgres:*) echo "SYNC_DB is for the mysql backend"; exit 2 ;;
   mysql:*) echo "SYNC_DB: mariadb or mysql"; exit 2 ;;
   *) echo "unknown backend ${BACKEND}"; exit 2 ;;
@@ -83,7 +83,7 @@ if [ "${SYNC_DB}" = mysql ] && [ -n "${EXTERNAL_DB:-}" ]; then
 fi
 SYNC_MYSQL_IMAGE=${SYNC_MYSQL_IMAGE:-mysql:lts} MYSQL_TESTED=${SYNC_MYSQL_IMAGE:-mysql:lts}
 case "${SYNC_MYSQL_IMAGE##*:}" in 8|8.*) MYSQL_PINNED=8 ;; *) MYSQL_PINNED="" ;; esac
-# the admin UI trusts the X-Test-Email header of the containers (tests/docker-compose.test.yml),
+# the admin UI trusts the X-Test-Email header of the containers (tests/compose/sync.yml),
 # not of the gateway: what comes from the host
 export TEST_SUBNET=${TEST_SUBNET:-10.231.${NET}.0/24}
 export TEST_TRUSTED=${TEST_SUBNET%.0/24}.128/25 TEST_GATEWAY=${TEST_SUBNET%.0/24}.1
@@ -130,7 +130,6 @@ DATABASE_SERVER=
 # what the admin UI reports, and the database client in the database containers
 DB_CLIENT=mariadb
 if [ "${SYNC_DB}" = mysql ]; then
-  COMPOSE_EXTRA=(-f "${CODE}/docker-compose.sync-mysql.yml")
   DATABASE_SERVER=MySQL DB_CLIENT=mysql
   # written out, as prepare_environment.sh does
   sed -i "s|^# SYNC_MYSQL_IMAGE=.*|SYNC_MYSQL_IMAGE=${SYNC_MYSQL_IMAGE}|" "${ENV_FILE}"
@@ -142,7 +141,9 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
   export EXTDB_NETWORK=${EXTDB}
   # the admin UI's peers come from either network
   export TEST_TRUSTED_PROXIES=${TEST_TRUSTED},${EXTDB_SUBNET%.0/24}.128/25
-  COMPOSE_EXTRA=(-f "${TESTS}/docker-compose.external-db-test.yml")
+  # (with SYNC_DB=mysql too: compose/sync-mariadb.yml, as prepare_environment.sh writes for your own server)
+  SYNC_FILE=$([ "${BACKEND}" = postgres ] && echo postgres || echo mariadb)
+  COMPOSE_EXTRA=("${TESTS}/compose/external-db.yml")
   [ "${BACKEND}" = mysql ] && DATABASE_SERVER=MySQL
   sed -i -e "s|^SYNC_DB_CONTAINERS=.*|SYNC_DB_CONTAINERS=0|" -e "s|^SYNC_DB_TLS_VERIFY=.*|SYNC_DB_TLS_VERIFY=false|" \
       -e "s|^SYNC_TOKENSERVER_DB_HOST=.*|SYNC_TOKENSERVER_DB_HOST=${EXTDB}|" \
@@ -169,7 +170,7 @@ if [ -n "${DEMO:-}" ]; then
   printf 'services:\n  ffs-admin:\n    environment:\n%s' "$(printf '      %s: ""\n' ADMIN_OIDC_ISSUER ADMIN_OIDC_CLIENT_ID \
     ADMIN_OIDC_CLIENT_SECRET ADMIN_OIDC_REDIRECT_URL ADMIN_OIDC_NAME ADMIN_AUTH_HEADER ADMIN_AUTH_GROUPS_HEADER ADMIN_TRUSTED_PROXIES \
     ADMIN_ALLOWED_USERS ADMIN_ALLOWED_GROUPS)" > "${WORK}/demo.yml"
-  COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.demo.yml" -f "${WORK}/demo.yml")
+  COMPOSE_EXTRA+=("${TESTS}/compose/demo.yml" "${WORK}/demo.yml")
   # a public URL that looks like one, the email domain of Mozilla's accounts
   sed -i -e "s|^SYNC_PUBLIC_URL=.*|SYNC_PUBLIC_URL=https://sync.example.org|" -e "s|^FXA_EMAIL_DOMAIN=.*|FXA_EMAIL_DOMAIN=api.accounts.firefox.com|" \
     -e "s|^SYNC_MAX_USERS=.*|SYNC_MAX_USERS=initial:10|" "${ENV_FILE}"
@@ -200,15 +201,39 @@ ROOT=${CODE}
   for s in syncstorage ffs-admin backup $([ "${BACKEND}" = postgres ] && echo postgres_db || echo tokenserver_db syncstorage_db); do
     printf '  %s:\n    healthcheck:\n      start_period: 5m\n      start_interval: 1s\n' "${s}"
   done; } > "${WORK}/health-test.yml"
-# (old releases: docker-compose.postgres.yml, the symlink of then)
-dc() {
-  local compose health=()
-  compose=${ROOT}/$(basename "${COMPOSE}")
-  [ -e "${compose}" ] || compose=${ROOT}/docker-compose.postgres.yml
-  [ "${ROOT}" = "${CODE}" ] && health=(-f "${WORK}/health-test.yml")
-  docker compose -p "${PROJECT}" -f "${compose}" -f "${ROOT}/tests/docker-compose.test.yml" \
-    "${COMPOSE_EXTRA[@]/#"${CODE}"/${ROOT}}" "${health[@]}" --env-file "${ENV_FILE}" "$@"
+# compose_files <root>: the -f of the stack's compose files of ROOT, with the test's (COMPOSE_EXTRA:
+# this tree's names). A release from before compose/ (docs/upgrading.md#files-that-moved): its
+# names, docker-compose.yml (+ docker-compose.sync-mysql.yml), docker-compose.sync-postgres.yml
+# (docker-compose.postgres.yml before it) and tests/docker-compose.*-test.yml
+compose_files() {
+  local root=$1 extra f
+  if [ -e "${root}/compose/sync.yml" ]; then
+    printf -- '-f\n%s\n' "${root}/compose/sync.yml" "${root}/compose/sync-${SYNC_FILE}.yml" "${root}/tests/compose/sync.yml"
+  else
+    case "${SYNC_FILE}" in
+      mariadb) printf -- '-f\n%s\n' "${root}/docker-compose.yml" ;;
+      mysql) printf -- '-f\n%s\n' "${root}/docker-compose.yml" "${root}/docker-compose.sync-mysql.yml" ;;
+      postgres) f=${root}/docker-compose.sync-postgres.yml; [ -e "${f}" ] || f=${root}/docker-compose.postgres.yml; printf -- '-f\n%s\n' "${f}" ;;
+    esac
+    printf -- '-f\n%s\n' "${root}/tests/docker-compose.test.yml"
+  fi
+  for extra in "${COMPOSE_EXTRA[@]}"; do
+    f=${extra/#"${CODE}"/${root}}
+    if [ ! -e "${root}/compose/sync.yml" ]; then
+      case "${f}" in */tests/compose/*.yml) f=${f%/compose/*}/docker-compose.${f##*/compose/}; f=${f%.yml}; f=${f/%.external-db/.external-db-test}.yml ;; esac
+    fi
+    printf -- '-f\n%s\n' "${f}"
+  done
 }
+# dc_args: the arguments of docker compose for the stack (DC_ARGS), dc: docker compose with them
+dc_args() {
+  local f
+  DC_ARGS=(-p "${PROJECT}")
+  while IFS= read -r f; do DC_ARGS+=("${f}"); done < <(compose_files "${ROOT}")
+  [ "${ROOT}" = "${CODE}" ] && DC_ARGS+=(-f "${WORK}/health-test.yml")
+  DC_ARGS+=(--env-file "${ENV_FILE}")
+}
+dc() { dc_args; docker compose "${DC_ARGS[@]}" "$@"; }
 FAILED=0
 # compose_healthy, the healthchecks of the stack
 # shellcheck source=tests/healthy.sh
@@ -446,7 +471,7 @@ trap teardown EXIT
 
 if [ -z "${ADMIN_GIVEN}" ]; then
   # (one build of the tag at a time: the other tests build it too)
-  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
+  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/compose/admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
 fi
 echo "== ${PROJECT}: pulling ${REPOSITORY} ${TAG}"
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
@@ -506,7 +531,7 @@ if [ -n "${UPGRADE_FROM:-}" ]; then
   ROOT=$(cd -- "${UPGRADE_FROM}" && pwd) || exit 1
   ADMIN_NOW=${ADMIN_IMAGE} INIT_NOW=${SYNC_INIT_IMAGE_TAG}
   export ADMIN_IMAGE=ffs-admin:e2e-from${SLOT_SUFFIX}
-  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build-from -f "${ROOT}/tests/docker-compose.admin-build.yml" build -q ||
+  ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build-from -f "$(ls "${ROOT}/tests/compose/admin-build.yml" "${ROOT}/tests/docker-compose.admin-build.yml" 2> /dev/null | head -n 1)" build -q ||
     { echo "FAIL: admin UI image built from ${UPGRADE_FROM}/admin"; exit 1; }
   # (releases before db/: syncstorage-rs-init, syncstorage-rs-init-postgres)
   init_dir=${ROOT}/db/${BACKEND}/init
@@ -545,7 +570,6 @@ OLD_EVENTS=$(sql "SELECT COUNT(*) FROM ffs_events;")
 if [ -n "${UPGRADE_FROM:-}" ]; then
   # this tree from here on; with PostgreSQL through the upgraded stack
   ROOT=${CODE}
-  [ "${BACKEND}" = postgres ] && COMPOSE=${CODE}/docker-compose.sync-postgres.yml
   export ADMIN_IMAGE=${ADMIN_NOW}
   set_env SYNC_INIT_IMAGE_TAG "${INIT_NOW}"
 fi
@@ -572,10 +596,18 @@ echo "== ./prepare_environment.sh --upgrade renames the old setting names"
 UP=${WORK}/upgrade
 # SYNC_DB=mysql on mysql:8: as an install from before SYNC_MYSQL_IMAGE, which --upgrade pins
 [ "${SYNC_DB}" = mysql ] && [ -n "${MYSQL_PINNED}" ] && sed -i '/^SYNC_MYSQL_IMAGE=/d' "${ENV_FILE}"
+# COMPOSE_FILE as an install from before compose/ has it (docs/upgrading.md#files-that-moved):
+# none for MariaDB (docker-compose.yml); the test's -f go first
+case "${SYNC_FILE}" in
+  mysql) echo "COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml" >> "${ENV_FILE}" ;;
+  postgres) echo "COMPOSE_FILE=docker-compose.sync-postgres.yml" >> "${ENV_FILE}" ;;
+esac
 mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
 # (the compose project of this test, as a user running docker compose -p would set it)
 (cd "${UP}" && COMPOSE_PROJECT_NAME=${PROJECT} ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
 check "$?" 0 "./prepare_environment.sh --upgrade" || cat "${WORK}/upgrade.log"
+check "$(grep -cx "COMPOSE_FILE=compose/sync.yml:compose/sync-${SYNC_FILE}.yml" "${UP}/.env") $(grep -cx "COMPOSE_PROJECT_NAME=${PROJECT}" "${UP}/.env") $(grep -c '^COMPOSE_FILE: the compose files moved to compose/' "${WORK}/upgrade.log")" \
+  "1 1 1" "--upgrade: COMPOSE_FILE with the files of compose/ (sync-${SYNC_FILE}.yml), the project's name next to it, and says so"
 # the Sync MariaDB containers of an install from before SYNC_MARIADB_IMAGE (mariadb:lts): pinned
 # to the major their data holds, which they keep running
 if [ "${BACKEND}" = mysql ] && [ "${SYNC_DB}" = mariadb ] && [ -z "${EXTDB}" ]; then
@@ -642,7 +674,8 @@ echo "== the migrations step ends when syncstorage-rs does not stop on SIGTERM"
 # succeeds (it answered its heartbeat: the migrations ran)
 T0=$(date +%s)
 # (timeout: without the kill it never ends)
-OUT=$(timeout 120 docker compose -p "${PROJECT}" -f "${COMPOSE}" -f "${TESTS}/docker-compose.test.yml" "${COMPOSE_EXTRA[@]}" --env-file "${ENV_FILE}" \
+dc_args
+OUT=$(timeout 120 docker compose "${DC_ARGS[@]}" \
   run --rm --no-deps -v "${TESTS}/hung_syncserver.sh:/app/bin/syncserver:ro" syncstorage_migrate 2>&1)
 RC=$? SECS=$(($(date +%s) - T0))
 check "${RC} $(grep -c 'still running 30 s after SIGTERM, killed' <<< "${OUT}") $(grep -c 'Migrations completed' <<< "${OUT}")" "0 1 1" \
@@ -803,7 +836,7 @@ if [ "${SYNC_DB}" = mysql ]; then
     check "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Name}}{{end}}{{end}}' "$(dc ps -a -q "${db}")")" \
       "${PROJECT}_${db//_/-}-mysql" "${db} in its own volume, not MariaDB's"
   done
-  # no binary logging (docker-compose.sync-mysql.yml), the trigger without log_bin_trust_function_creators
+  # no binary logging (compose/sync-mysql.yml), the trigger without log_bin_trust_function_creators
   mysql_version=$(sql "SELECT VERSION();")
   check "$(sql "SELECT @@log_bin, @@log_bin_trust_function_creators;") $([ -z "${MYSQL_PINNED}" ] || [[ "${mysql_version}" == "${MYSQL_PINNED}".* ]] && echo yes)" "$(printf '0\t0') yes" \
     "MySQL ${mysql_version} without binary logging"

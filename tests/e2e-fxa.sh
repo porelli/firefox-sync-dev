@@ -1,5 +1,5 @@
 #!/bin/bash
-# End-to-end test of the stack with self-hosted Mozilla accounts (docker-compose.fxa.yml):
+# End-to-end test of the stack with self-hosted Mozilla accounts (compose/fxa.yml):
 # sign-up, email verification, OAuth and sync through HTTPS, without any Mozilla service,
 # and the admin UI (sign-up policy, accounts, max users), by default built from admin/.
 #
@@ -20,7 +20,7 @@
 #   FXA_ACCOUNT_EVENTS true (default here, off for users) records the security history of the
 #                    accounts: every test then also runs with it on, test_fxa_admin.py checks it
 #   SKIP_PULL        set to 1 to use the local images (e.g. an init image built from this tree)
-#   FXA_DB           mysql (default, FXA_MYSQL_IMAGE) or mariadb (FXA_MARIADB_IMAGE, docker-compose.fxa-mariadb.yml)
+#   FXA_DB           mysql (default, FXA_MYSQL_IMAGE) or mariadb (FXA_MARIADB_IMAGE, compose/fxa-mariadb.yml)
 #                    for the accounts database
 #   FXA_MYSQL_IMAGE  with FXA_DB=mysql (default: mysql:lts, MySQL 9 today, when the accounts image has
 #                    mozilla/fxa#21554, tests/fxa_fix.sh; else mysql:8 with
@@ -222,13 +222,12 @@ ACCESS_RUN=()
 [ "${FFS_ACCESS}" = authelia ] && ACCESS_RUN=(-e FFS_SSO_USER=sso -e FFS_SSO_PASSWORD=ffs-sso-test)
 # (RERUN: as the kept stack was started)
 COMPOSE_EXTRA=()
-[ "${FXA_DB}" = mariadb ] && COMPOSE_EXTRA=(-f "${CODE}/docker-compose.fxa-mariadb.yml")
 if [ "${FXA_DB_CONTAINERS:-1}" = 0 ]; then
   export EXTDB_NETWORK=${EXTDB}
-  COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.external-db-fxa-test.yml")
-  [ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.external-db-test.yml")
+  COMPOSE_EXTRA+=(-f "${TESTS}/compose/external-db-fxa.yml")
+  [ "${SYNC_DB_CONTAINERS:-1}" = 0 ] && COMPOSE_EXTRA+=(-f "${TESTS}/compose/external-db.yml")
 fi
-[ -n "${DEMO:-}" ] && COMPOSE_EXTRA+=(-f "${TESTS}/docker-compose.demo.yml")
+[ -n "${DEMO:-}" ] && COMPOSE_EXTRA+=(-f "${TESTS}/compose/demo.yml")
 # the server's name and version as the admin UI shows them, its client
 if [ "${FXA_DB}" = mariadb ]; then
   # a major (mariadb:11): MariaDB 11.x, a series (11.8): 11.8.x; lts or another name: any version
@@ -260,8 +259,9 @@ ADMIN_GIVEN=${ADMIN_IMAGE:-}
 export ADMIN_IMAGE=${ADMIN_IMAGE:-ffs-admin:test}
 
 dc() {
-  docker compose -p "${PROJECT}" --env-file "${ENV_FILE}" --project-directory "${CODE}" \
-    -f "${CODE}/docker-compose.yml" -f "${CODE}/docker-compose.fxa.yml" -f "${TESTS}/docker-compose.fxa-test.yml" "${COMPOSE_EXTRA[@]}" "$@"
+  # (Sync on MariaDB: tests/compose/fxa.yml has the healthchecks of its databases)
+  docker compose -p "${PROJECT}" --env-file "${ENV_FILE}" -f "${CODE}/compose/sync.yml" -f "${CODE}/compose/sync-mariadb.yml" \
+    -f "${CODE}/compose/fxa.yml" -f "${CODE}/compose/fxa-${FXA_DB}.yml" -f "${TESTS}/compose/fxa.yml" "${COMPOSE_EXTRA[@]}" "$@"
 }
 FAILED=0
 # compose_healthy, the healthchecks of the stack
@@ -297,6 +297,8 @@ SETUP=${WORK}/setup${SLOT_SUFFIX} && mkdir -p "${SETUP}" && cp -r "${CODE}/." "$
 # FxA, FxA domain, SMTP host, port, user, password, sender, sign-up allowlist, admin emails, admin host
 answers=(sync.example.org "${SETUP}" 5000 2 mariadb)
 command -v podman > /dev/null && answers+=(2)
+# docker compose on the Podman socket (answer 2): compose/podman.yml in COMPOSE_FILE too
+PODMAN_FILE=$(command -v podman > /dev/null && echo :compose/podman.yml)
 admin_answer=$((${#answers[@]} + 2))
 answers+=("" latest "" y "" smtp.example.org 587 mailer 'p@ss|w&rd\#1 $x' "" "alice@example.org, @example.net" "admin@example.org" "")
 # compose as configured by .env: only what prepare_environment.sh wrote, not this shell's
@@ -305,6 +307,10 @@ setup_compose() { (cd "${SETUP}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKE
 # the last questions: your own database servers for Sync and the accounts (no, no), the accounts database (mysql), max accounts
 printf '%s\n' "${answers[@]}" "" "" "" 5 | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup.log" 2>&1
 check "$?" 0 "prepare_environment.sh with self-hosted accounts"
+# the project as before compose/: the directory's name (compose/ first in COMPOSE_FILE would name it "compose")
+setup_project=$(basename "${SETUP}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+check "$(grep -cx "COMPOSE_PROJECT_NAME=${setup_project}" "${SETUP}/.env") $(setup_compose config | sed -n 's/^name: //p') $(setup_compose config | grep -c "name: ${setup_project}_fxa-db$")" \
+  "1 ${setup_project} 1" "COMPOSE_PROJECT_NAME written: the project and its volumes named after the directory, as before"
 password='p@ss|w&rd\#1 $x'
 check "$(grep -cxF "FXA_SMTP_PASS='${password}'" "${SETUP}/.env")" 1 "SMTP password written as typed"
 check "$(sed -n 's/^SYNC_MARIADB_IMAGE=//p' "${SETUP}/.env")" mariadb:lts "the Sync MariaDB containers on mariadb:lts for a new install"
@@ -387,7 +393,7 @@ prepare_again() {
 }
 prepare_again postgres ""
 check "$?" 0 "prepare_environment.sh with PostgreSQL and self-hosted accounts"
-check "$(grep -c '^COMPOSE_FILE=docker-compose.sync-postgres.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" 1 "PostgreSQL compose file with the accounts"
+check "$(grep -cx "COMPOSE_FILE=compose/sync.yml:compose/sync-postgres.yml:compose/fxa.yml:compose/fxa-mysql.yml${PODMAN_FILE}" "${SETUP}/.env")" 1 "PostgreSQL compose files with the accounts"
 check "$(setup_compose config --services | grep -cxE 'postgres_db|fxa-auth|fxa-policy|ffs-admin')" 4 "compose stack with PostgreSQL, the accounts and the admin UI"
 # the major of postgres:latest now, pinned (a new major cannot open the data)
 pg_major=$(docker run --rm --entrypoint postgres postgres:latest --version 2> /dev/null | sed -n 's/^postgres (PostgreSQL) \([0-9]*\)[^0-9].*/\1/p')
@@ -397,7 +403,7 @@ check "$(setup_compose config | sed -n '/^  ffs-admin:/,/^  [a-z]/p' | grep -cE 
 # Sync on MySQL containers (SYNC_DB=mysql), the same mysql images
 prepare_again mysql ""
 check "$?" 0 "prepare_environment.sh with MySQL for Sync and self-hosted accounts"
-check "$(env_value SYNC_DB) $(env_value SYNC_DB_TLS_VERIFY) $(env_value SYNC_MYSQL_IMAGE) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" \
+check "$(env_value SYNC_DB) $(env_value SYNC_DB_TLS_VERIFY) $(env_value SYNC_MYSQL_IMAGE) $(grep -cx "COMPOSE_FILE=compose/sync.yml:compose/sync-mysql.yml:compose/fxa.yml:compose/fxa-mysql.yml${PODMAN_FILE}" "${SETUP}/.env")" \
   "mysql false mysql:lts 1" "Sync on MySQL lts in .env, with the accounts"
 check "$(setup_compose config | sed -n '/^  tokenserver_db:/,/^  [a-z]/p' | grep -cE '^ +(image: mysql:lts|source: tokenserver-db-mysql|- --disable-log-bin|FFS_MYSQL_IMAGE: mysql:lts)$')" 4 \
   "tokenserver_db on MySQL lts without binary logging, in its own volume, the image chosen"
@@ -466,7 +472,7 @@ check "$(echo "${external_config}" | grep -cE '^ +replicas: 0$')" 3 "no database
 check "$(echo "${external_config}" | sed -n '/^  fxa-policy:/,/^  [a-z]/p' | grep -cE '^ +(FXA_DB_HOST: db.example.org|FXA_DB_PORT: "?3307"?|FXA_DB_ROOT_USER: ffs_policy)$')" 3 "sign-up policy installed by ffs_policy on your server"
 check "$(echo "${external_config}" | sed -n '/^  fxa-auth:/,/^  [a-z]/p' | grep -cE '^ +(AUTH_|PUSHBOX_)?MYSQL_USERNAME: fxa$')" 3 "the accounts connect as fxa"
 check "$(echo "${external_config}" | sed -n '/^  syncstorage:/,/^  [a-z]/p' | grep -cE '^ +SYNC_(SYNCSTORAGE|TOKENSERVER)__DATABASE_URL: mysql://[a-z]+:[A-Za-z0-9]+@db\.example\.org:3306/')" 2 "the Sync server connects to your server"
-check "$(env_value FXA_DB) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml$' "${SETUP}/.env")" "mysql 1" "the accounts on MySQL by default"
+check "$(env_value FXA_DB) $(grep -cx "COMPOSE_FILE=compose/sync.yml:compose/sync-mariadb.yml:compose/fxa.yml:compose/fxa-mysql.yml${PODMAN_FILE}" "${SETUP}/.env")" "mysql 1" "the accounts on MySQL by default"
 # localhost is the container itself: refused
 external_answers[admin_answer+12]=localhost
 rm -f "${SETUP}/.env"
@@ -533,7 +539,7 @@ answers[4]=mariadb
 rm -f "${SETUP}/.env" "${SETUP}"/database-setup*.sql
 printf '%s\n' "${answers[@]}" n n mariadb | (cd "${SETUP}" && ./prepare_environment.sh) > "${WORK}/setup-mariadb.log" 2>&1
 check "$?" 0 "prepare_environment.sh with the accounts on MariaDB"
-check "$(env_value FXA_DB) $(grep -c '^COMPOSE_FILE=docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml$' "${SETUP}/.env")" "mariadb 1" "MariaDB for the accounts in .env"
+check "$(env_value FXA_DB) $(grep -cx "COMPOSE_FILE=compose/sync.yml:compose/sync-mariadb.yml:compose/fxa.yml:compose/fxa-mariadb.yml${PODMAN_FILE}" "${SETUP}/.env")" "mariadb 1" "MariaDB for the accounts in .env"
 check "$(env_value FXA_MARIADB_IMAGE) $(setup_compose config | sed -n '/^  fxa-db:/,/^  [a-z]/p' | grep -cE '^ +(image: mariadb:lts|source: fxa-db-mariadb|- mariadbd)$')" "mariadb:lts 3" "fxa-db on MariaDB lts for a new install, in its own volume"
 check "$(setup_compose --profile backup config | sed -n '/^  backup-fxa:/,/^  [a-z]/p' | grep -cE '^ +image: mariadb:lts$')" 1 "the backups of the accounts with the same MariaDB"
 # an install from before FXA_MARIADB_IMAGE (MariaDB 11): the new files alone move it to lts
@@ -658,7 +664,7 @@ fi
 echo "== ${PROJECT}: syncstorage ${REPOSITORY} ${TAG}, mozilla/fxa-mono ${FXA_VERSION}, accounts on ${FXA_DB}"
 if [ -z "${ADMIN_GIVEN}" ]; then
   # (one build of the tag at a time: the other tests build it too)
-  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/docker-compose.admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
+  COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build -f "${TESTS}/compose/admin-build.yml" build -q || { echo "FAIL: admin UI image built from admin/"; exit 1; }
 fi
 [ -n "${SKIP_PULL:-}" ] || dc pull -q || exit 1
 # left by an earlier run with KEEP=1: a fresh stack, not its volumes or database server

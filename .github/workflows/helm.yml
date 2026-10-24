@@ -35,8 +35,9 @@ on:
       - tests/browser/**
       - config/fxa/**
       - .env-example
-      - tests/docker-compose.admin-build.yml
-      - docker-compose*.yml
+      - tests/compose/admin-build.yml
+      - docker-compose.yml
+      - compose/**
       - db/**
       - config/backup/**
       - admin/**
