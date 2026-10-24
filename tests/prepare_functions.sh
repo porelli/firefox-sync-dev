@@ -1,6 +1,7 @@
 #!/bin/bash
-# (the tables are .env lines as written: their $ and quotes are literal)
-# shellcheck disable=SC2016,SC1003
+# (the tables are .env lines as written: their $ and quotes are literal; the copies of the script
+# made here are not there to follow; PATH set for a subshell on purpose; ls of the files made here)
+# shellcheck disable=SC2016,SC1003,SC1091,SC2030,SC2031,SC2012
 # The functions of prepare_environment.sh (setup/*.sh) that need no container, on tables, per
 # file: setup/env.sh (the values of .env as compose reads them, env_plain; .env written through a
 # symlink, replace_env; the substitutions without the values on a command line, sed_script and
@@ -277,6 +278,38 @@ ln -s "${WORK}/here" "${WORK}/here-link"
 check "$(units_dir) $(SCRIPT_DIR=${WORK}/here units_of_here && echo here) $(SCRIPT_DIR=${WORK}/here-link units_of_here && echo through-link) $(SCRIPT_DIR=${WORK} units_of_here || echo not-there) $(units_without_dir || echo with-dir)" \
   "${WORK}/here here through-link not-there with-dir" "units rendered from a checkout: that one (also through a symlink), not another"
 
+echo "== setup/quadlets.sh: the secrets in the units' environment files, not in the units (render_units, secret_setting)"
+check "$(for k in SYNC_MASTER_SECRET ADMIN_PASSWORD FXA_SMTP_PASS ADMIN_METRICS_TOKEN FXA_FLOW_ID_KEY ADMIN_NOTIFY SYNC_POSTGRES_CONNECT_PASSWORD; do secret_setting "${k}" && printf y; done) $(for k in FXA_ACCESS_TOKEN_LIFETIME SYNC_TOKENSERVER_DB_HOST ADMIN_FXA_CLIENT_ID FXA_SMTP_USER SYNC_PUBLIC_URL; do secret_setting "${k}" || printf n; done)" \
+  "yyyyyyy nnnnn" "secret_setting: PASS, PASSWORD, SECRET, TOKEN, KEY parts and ADMIN_NOTIFY; not the tokens' lifetime, TOKENSERVER, an id"
+R=${WORK}/render && mkdir -p "${R}/config" && cp -r "${CODE}/config/quadlet" "${R}/config/" && cp "${CODE}/.env-example" "${R}/"
+sed -e 's|<REPLACE_WITH_SOMETHING_SECURE>|s3cretValue|' -e 's|<REPLACE_WITH_YOUR_DOMAIN>|sync.example.org|' \
+  -e '/^FXA_SMTP_PASS=/d' -e 's|^ADMIN_NOTIFY=.*|ADMIN_NOTIFY=ntfy://tokenTOKEN123@ntfy.example.org/ffs|' "${CODE}/.env-example" > "${R}/.env"
+# (as the setup writes a password typed: in single quotes)
+printf '%s\n' "FXA_SMTP_PASS='50% p&ss|w \\#1 \"q\"'" >> "${R}/.env"
+printf '#!/bin/sh\nexit 0\n' > "${WORK}/bin/systemctl"; printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v sed)" > "${WORK}/bin/sed"; chmod +x "${WORK}/bin/systemctl" "${WORK}/bin/sed"
+render() { (PATH=${WORK}/bin:${PATH} SCRIPT_DIR=${R} QUADLET_DIR=${R}/units SYSTEMD_USER_DIR=${R}/timers SELF_HOST_FXA=yes ADMIN_UI=yes render_units) > "${WORK}/render-$1.log" 2>&1; }
+render first
+smtp=$(SCRIPT_DIR=${R} env_plain FXA_SMTP_PASS)
+leaks=$(grep -rlF -e s3cretValue -e tokenTOKEN123 -e "${smtp}" -e "${smtp//%/%%}" "${R}/units"/*.container "${R}/units"/*.volume "${R}/units"/*.network "${R}/timers" 2> /dev/null | wc -l | tr -d ' ')
+envs=$(ls "${R}/units"/*.env | wc -l | tr -d ' ')
+check "$? ${leaks} $([ "${envs}" -gt 10 ] && echo files) $(for f in "${R}/units"/*.env; do mode "${f}"; done | sort -u | paste -sd' ') $(for f in "${R}/units"/*.env; do grep -cxF "EnvironmentFile=${f}" "${f%.env}.container"; done | sort -u | paste -sd' ')" \
+  "0 0 files 600 1" "render_units: no secret in a unit, the timers either; each unit's secrets in its environment file (EnvironmentFile=), 0600"
+check "$(grep -cxF "SMTP_PASS=${smtp}" "${R}/units/firefox-sync-fxa-auth.env") $(grep -cxF 'ADMIN_NOTIFY=ntfy://tokenTOKEN123@ntfy.example.org/ffs' "${R}/units/firefox-sync-admin.env") $(grep -c '^SYNC_MASTER_SECRET=s3cretValue$' "${R}/units/firefox-sync-syncstorage.env") $(grep -c 'SYNC_MASTER_SECRET' "${R}/units/firefox-sync-admin.env")" \
+  "1 1 1 0" "the environment files: each value as it is (a %, quotes and \\ too: no systemd there), a unit's own secrets only"
+render again
+check "$(grep -c 'nothing changed' "${WORK}/render-again.log")" 1 "render_units again: nothing changed"
+# the units of before, their secrets in them: rendered, the environment files written, the secrets out
+sed -i.bak '/^EnvironmentFile=/d' "${R}/units/firefox-sync-syncstorage.container" && printf 'Environment=SYNC_MASTER_SECRET=s3cretValue\n' >> "${R}/units/firefox-sync-syncstorage.container"
+rm -f "${R}/units/firefox-sync-syncstorage.env" "${R}/units"/*.bak
+render old
+check "$(grep -c 's3cretValue' "${R}/units/firefox-sync-syncstorage.container") $(mode "${R}/units/firefox-sync-syncstorage.env") $(grep -c '^  ✓ firefox-sync-syncstorage\.\(container\|env\)$' "${WORK}/render-old.log")" "0 600 2" \
+  "a unit with its secret in it: rendered again, the secret into its environment file"
+# a unit not rendered any more (FXA_DB_CONTAINERS=0): its environment file removed too
+printf 'FXA_DB_CONTAINERS=0\n' >> "${R}/.env"
+render external
+check "$(ls "${R}/units/firefox-sync-fxa-db.container" "${R}/units/firefox-sync-fxa-db.env" 2> /dev/null | wc -l | tr -d ' ') $(grep -c '^  - firefox-sync-fxa-db\.env (removed)$' "${WORK}/render-external.log")" "0 1" \
+  "a unit no longer installed: its environment file removed with it"
+
 echo "== setup/upgrade.sh: --upgrade of an .env from before (upgrade_env)"
 mkdir -p "${WORK}/up" && cp -r "${CODE}/.env-example" "${CODE}/db" "${WORK}/up/"
 sed -e 's|<REPLACE_WITH_SOMETHING_SECURE>|s3cret|' -e 's|<REPLACE_WITH_YOUR_DOMAIN>|sync.example.org|' \
@@ -290,7 +323,7 @@ upv() { ENV_READ=${WORK}/up/.env SCRIPT_DIR=${WORK}/up env_plain "$1"; }
 check "${up_rc} $(upv COMPOSE_FILE) $(upv COMPOSE_PROJECT_NAME) $(upv SYNC_PUBLIC_URL) $(upv SYNC_MAX_USERS) $(grep -c '^\(SYNCSTORAGE_DOMAIN\|MAX_USERS\)=' "${WORK}/up/.env")" \
   "0 compose/sync.yml:compose/sync-postgres.yml up https://sync.example.org 1 0" \
   "upgrade_env: the files of compose/ and the project in COMPOSE_FILE, the old names renamed (their values kept)"
-check "$(echo "$(upv ADMIN_DB_PASSWORD)" | grep -cE '^[A-Za-z0-9]{32}$') $(upv SYNC_POSTGRES_IMAGE) $(mode "${WORK}/up/.env") $(ls "${WORK}/up"/.env.before-upgrade-* | wc -l | tr -d ' ') $(grep -c '^Then: docker compose pull && docker compose up -d$' "${WORK}/upgrade.log")" \
+check "$(upv ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $(upv SYNC_POSTGRES_IMAGE) $(mode "${WORK}/up/.env") $(ls "${WORK}/up"/.env.before-upgrade-* | wc -l | tr -d ' ') $(grep -c '^Then: docker compose pull && docker compose up -d$' "${WORK}/upgrade.log")" \
   "1 postgres:18 600 1 1" "upgrade_env: the missing password, the PostgreSQL major of before, .env this user's only, the old one kept, what to run next" \
   || cat "${WORK}/upgrade.log"
 (unset COMPOSE_PROJECT_NAME; FFS_ENTRY_DIR=${WORK}/up QUADLET_DIR=${WORK}/no-units upgrade_env) < /dev/null > "${WORK}/upgrade-again.log" 2>&1

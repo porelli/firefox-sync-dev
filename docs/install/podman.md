@@ -5,7 +5,7 @@ This page installs the Sync server with rootless Podman, in one of two ways: Qua
 ## Requirements
 
 - Podman 4.4 or later ([install](https://podman.io/docs/installation)), set up for rootless use ([Podman's rootless tutorial](https://github.com/containers/podman/blob/main/docs/tutorials/rootless_tutorial.md)).
-- For docker compose on the Podman socket: `docker compose` v2. The Docker daemon is not needed.
+- For docker compose on the Podman socket: `docker compose`, the version of [docker compose](compose.md#requirements). The Docker daemon is not needed.
 - A host name with HTTPS, proxied to the port of the Sync server: see [Reverse proxy](../reverse-proxy.md).
 
 The stack uses named volumes only, so rootless Podman handles their ownership, and SELinux labels stay on.
@@ -27,7 +27,7 @@ Quadlets are unit files that Podman turns into systemd services: see [podman-sys
    ./prepare_environment.sh
    ```
 
-   It detects Podman and asks for the deployment method: answer `1`, Quadlets (the default). Its other questions are those of [docker compose](compose.md#what-the-setup-script-asks). It writes `.env`, copies the units of [config/quadlet/](/config/quadlet) with your values into `~/.config/containers/systemd/` (the backup timer into `~/.config/systemd/user/`), and reloads systemd.
+   It detects Podman and asks for the deployment method: answer `1`, Quadlets (the default). Its other questions are those of [docker compose](compose.md#what-the-setup-script-asks). It writes `.env`, copies the units of [config/quadlet/](/config/quadlet) with your values into `~/.config/containers/systemd/` (the backup timer into `~/.config/systemd/user/`), and reloads systemd. The units hold no secret: the passwords, keys and tokens of a unit's container, and `ADMIN_NOTIFY`, are in its environment file next to it, `firefox-sync-<name>.env`, readable by you only, which the unit reads (`EnvironmentFile=`). Values there are as they are in `.env`, without the escapes of systemd.
 
 1. Start the Sync server:
 
@@ -109,7 +109,7 @@ Podman 4.9 (Ubuntu 24.04) orders the units on the start of their container, not 
 
 ### Change a setting
 
-The installed units hold their own copy of the values of `.env`: a change of `.env` alone does nothing. To change a setting, or to pin an image (`SYNC_IMAGE_TAG`, `ADMIN_IMAGE`, `SYNC_MARIADB_IMAGE`...):
+The installed units and their environment files hold their own copy of the values of `.env`: a change of `.env` alone does nothing. To change a setting, or to pin an image (`SYNC_IMAGE_TAG`, `ADMIN_IMAGE`, `SYNC_MARIADB_IMAGE`...):
 
 1. Change it in `.env`.
 1. Render the units again from `.env`:
@@ -118,7 +118,7 @@ The installed units hold their own copy of the values of `.env`: a change of `.e
    ./prepare_environment.sh --render-units
    ```
 
-   It asks nothing and keeps every password and secret. It reads `.env` as compose does (single and double quotes with their escapes, a comment after the value, `export`, `$$`; not the `${NAME}` of other values), writes only the units that change and lists them, keeps all the units of before in `quadlets.before-<UTC time>/` of the checkout, and reloads systemd. Run again, it changes nothing. Without installed units (a compose install) it refuses; `./prepare_environment.sh --render-units --fresh` installs the units of `.env`. Before that it does to `.env` what `--upgrade` does ([Quadlets](../upgrading.md#quadlets)): on an `.env` of this release, nothing.
+   It asks nothing and keeps every password and secret. It reads `.env` as compose does (single and double quotes with their escapes, a comment after the value, `export`, `$$`; not the `${NAME}` of other values), writes only the units and environment files that change and lists them, keeps all those of before in `quadlets.before-<UTC time>/` of the checkout (readable by you only), and reloads systemd. Run again, it changes nothing. Without installed units (a compose install) it refuses; `./prepare_environment.sh --render-units --fresh` installs the units of `.env`. Before that it does to `.env` what `--upgrade` does ([Quadlets](../upgrading.md#quadlets)): on an `.env` of this release, nothing.
 1. Restart the units it listed. A new image: pull it first (`podman pull`, the name of its `Image=` line). For example `SYNC_MAX_USERS` is in the init container and, with the admin UI, in its unit; the migrations run again before the Sync server starts:
 
    ```bash

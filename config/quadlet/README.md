@@ -31,7 +31,7 @@ With your own database server (`SYNC_DB_CONTAINERS=0`, or `FXA_DB_CONTAINERS=0` 
 `prepare_environment.sh`, from the root of the repository, with Quadlets as its deployment method:
 
 - copies these files to `~/.config/containers/systemd/` (or `QUADLET_DIR`), and the timer to `~/.config/systemd/user/`;
-- replaces their `%VARIABLE%` placeholders with the values of your `.env`;
+- replaces their `%VARIABLE%` placeholders with the values of your `.env`, the `Environment=` lines with a secret moved into the unit's own `firefox-sync-<name>.env` (`EnvironmentFile=`, 0600);
 - reloads systemd.
 
 It is meant for the first install: run again, it writes a new `.env` with new secrets. To change a setting later, see [Change a setting](../../docs/install/podman.md#change-a-setting).

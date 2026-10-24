@@ -32,13 +32,34 @@ units_without_dir() {
 # whether the installed Sync server's unit has the SYNC_MASTER_SECRET of .env, as a unit
 # rendered from it has (compared here, not on a command line; systemd's %% for a %)
 units_have_env_secret() {
-    local unit env
+    local unit env file=${QUADLET_DIR}/firefox-sync-syncstorage.env
     env=$(env_value SYNC_MASTER_SECRET)
+    [ -n "${env}" ] && [[ "${env}" != *"<REPLACE_WITH_"* ]] || return 1
+    # units of this release: in the unit's environment file, as it is (secret_env_file)
+    if [ -f "${file}" ] && grep -q '^SYNC_MASTER_SECRET=' "${file}"; then
+        unit=$(sed -n 's/^SYNC_MASTER_SECRET=//p' "${file}" | head -n 1)
+        [ "${unit}" = "${env}" ]
+        return
+    fi
+    # those of before, with the secrets in the unit
     unit=$(sed -n 's/^Environment=\("\{0,1\}\)SYNC_MASTER_SECRET=/\1/p' "${QUADLET_DIR}/firefox-sync-syncstorage.container" | head -n 1)
     case "${unit}" in \"*\") unit=${unit:1:${#unit}-2} ;; esac
-    [ -n "${env}" ] && [[ "${env}" != *"<REPLACE_WITH_"* ]] || return 1
     [ "${unit}" = "${env}" ] || [ "${unit}" = "${env//\%/%%}" ]
 }
+# a setting of .env that is a secret: a part of its name PASS, PASSWORD, SECRET, TOKEN or KEY
+# (not the lifetime of the access tokens), and ADMIN_NOTIFY (its URLs have the tokens of the
+# destinations), as the admin UI tells them (admin/config_test.go: secretName)
+secret_setting() {
+    case "${1}" in
+        FXA_ACCESS_TOKEN_LIFETIME) return 1 ;;
+        ADMIN_NOTIFY) return 0 ;;
+    esac
+    case "_${1}_" in *_PASS_*|*_PASSWORD_*|*_SECRET_*|*_TOKEN_*|*_KEY_*) return 0 ;; esac
+    return 1
+}
+# the environment file of a unit (firefox-sync-<name>.env next to it): the variables of its
+# container that hold a secret, out of the unit itself (its EnvironmentFile=), this user's only
+secret_env_file() { printf '%s/%s.env' "${QUADLET_DIR}" "${1%.*}"; }
 
 # the Quadlet units of .env, with the units SELF_HOST_FXA and ADMIN_UI say (the answers of
 # the setup, or what the install has with --upgrade): rendered aside, then only the units
@@ -153,9 +174,9 @@ render_units() {
         sed -E -e "/^(After|Requires)=/{s/(=| )(${DROP_DEPS})/\1/g; s/= +/=/; s/ +$//; s/  +/ /g;}" -e '/^Requires=$/d'
     }
 
-    # fill the %NAME% placeholders from .env (and SCRIPT_DIR); systemd expands %, double it.
-    # One sed script (a file, sed_script: the values are passwords), its substitutions in the
-    # order of the names
+    # fill the %NAME% placeholders of a unit from .env (and SCRIPT_DIR); systemd expands %,
+    # double it. No secret is left in a unit (split_secrets): one sed script of the other
+    # values, its substitutions in the order of the names
     render_quadlet() {
         local file=${1} content name value script=""
         for name in $(grep -o '%[A-Z][A-Z0-9_]*%' "${file}" | sort -u | tr -d '%'); do
@@ -173,6 +194,62 @@ render_units() {
         done
         content=$(sed_script "${script}" "${file}") || return 1
         printf '%s\n' "${content}"
+    }
+
+    # split_secrets <template> <unit> <env>: the Environment= lines of the template with a
+    # secret of .env (secret_setting) as KEY=VALUE into env, the other lines into unit, with
+    # EnvironmentFile= under [Container] when there are any (none: env empty)
+    split_secrets() {
+        local line name secret rest unit=() env=()
+        while IFS= read -r line || [ -n "${line}" ]; do
+            secret=""
+            if [[ "${line}" == Environment=* ]]; then
+                rest=${line}
+                while [[ "${rest}" =~ %([A-Z][A-Z0-9_]*)% ]]; do
+                    name=${BASH_REMATCH[1]}
+                    secret_setting "${name}" && secret=yes
+                    rest=${rest#*%"${name}"%}
+                done
+            fi
+            if [ -n "${secret}" ]; then
+                line=${line#Environment=}
+                case "${line}" in \"*\") line=${line:1:${#line}-2} ;; esac
+                env+=("${line}")
+            else
+                unit+=("${line}")
+            fi
+        done < "${1}"
+        : > "${3}"
+        [ "${#env[@]}" = 0 ] || printf '%s\n' "${env[@]}" > "${3}"
+        for line in ${unit[@]+"${unit[@]}"}; do
+            printf '%s\n' "${line}"
+            # (systemd expands % in the unit: doubled)
+            [ "${line}" = "[Container]" ] && [ "${#env[@]}" != 0 ] && printf 'EnvironmentFile=%s\n' "$(secret_env_file "${4}" | sed -e 's/%/%%/g')"
+        done > "${2}"
+        return 0
+    }
+    # render_env <env template>: its %NAME% from .env as render_quadlet takes them, as they are
+    # (no systemd there: no %% for a %; podman reads each KEY=VALUE line as written), in this
+    # shell (no value on a command line)
+    render_env() {
+        local line name value out
+        while IFS= read -r line || [ -n "${line}" ]; do
+            out=""
+            while [[ "${line}" =~ %([A-Z][A-Z0-9_]*)% ]]; do
+                name=${BASH_REMATCH[1]}
+                if [[ "${RENDER_KEYS}" == *" ${name} "* ]]; then
+                    value=${!name}
+                elif ENV_READ="${SCRIPT_DIR}/.env-example" env_has "${name}"; then
+                    value=$(ENV_READ="${SCRIPT_DIR}/.env-example" env_plain "${name}")
+                else
+                    echo "ERROR: ${1} needs ${name}, which is not set in .env" >&2
+                    return 1
+                fi
+                out=${out}${line%%"%${name}%"*}${value}
+                line=${line#*"%${name}%"}
+            done
+            printf '%s\n' "${out}${line}"
+        done < "${1}"
     }
 
     QUADLET_SOURCES=("${SCRIPT_DIR}/config/quadlet")
@@ -215,11 +292,21 @@ render_units() {
                     -e 's|%SYNC_TOKENSERVER_DB_NAME%|%SYNC_POSTGRES_NAME%|; s|%SYNC_TOKENSERVER_DB_USER%|%SYNC_POSTGRES_CONNECT_USER%|' \
                     -e '/^Environment="STORAGE_DB_[A-Z]*=/d' -e '/^Environment="SYNC_DB=/d' "${file}" > "${src}" || { rm -rf "${stage}"; exit 1; }
             fi
+            # the secrets into the unit's environment file (secret_env_file), this user's only
+            split_secrets "${src}" "${stage}/.${filename}.unit" "${stage}/.${filename}.env" "${filename}" || { rm -rf "${stage}"; exit 1; }
+            if [ -s "${stage}/.${filename}.env" ]; then
+                (umask 077; render_env "${stage}/.${filename}.env" > "${stage}/$(basename "$(secret_env_file "${filename}")")") \
+                    || { rm -rf "${stage}"; exit 1; }
+            fi
             # (an empty PodmanArgs= would reset the ones before it, the network aliases)
-            render_quadlet "${src}" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
+            render_quadlet "${stage}/.${filename}.unit" | drop_deps | sed -e '/^PodmanArgs=$/d' > "${stage}/${filename}"
             [ "${PIPESTATUS[0]}" = 0 ] || { rm -rf "${stage}"; exit 1; }
+            rm -f "${stage}/.${filename}.unit" "${stage}/.${filename}.env"
             [ "${src}" = "${file}" ] || rm -f "${src}"
         done
+    done
+    for file in "${QUADLET_DIR}"/firefox-sync-*.env; do
+        [ -f "${file}" ] && [ ! -f "${stage}/$(basename "${file}")" ] && removed+=("$(basename "${file}")")
     done
     for file in "${stage}"/*; do
         filename=$(basename "${file}")
@@ -233,7 +320,7 @@ render_units() {
         UNITS_CHANGED=""
         return 0
     fi
-    # the units of before (their passwords too: this user only), all of them
+    # the units of before and their environment files (the secrets: this user only), all of them
     # (nothing is written when that copy fails)
     if ls "${QUADLET_DIR}"/firefox-sync-* "${SYSTEMD_USER_DIR}"/firefox-sync-*.timer > /dev/null 2>&1; then
         backup=$(backup_name "${SCRIPT_DIR}/quadlets.before")
@@ -248,7 +335,15 @@ render_units() {
     for filename in "${changed[@]}"; do
         target_dir=${QUADLET_DIR}
         [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
-        cp "${stage}/${filename}" "${target_dir}/${filename}" || { rm -rf "${stage}"; exit 1; }
+        if [[ "${filename}" == *.env ]]; then
+            # (the secrets: this user's only, also over a file of other permissions)
+            if ! { rm -f "${target_dir}/${filename}" && (umask 077; cp "${stage}/${filename}" "${target_dir}/${filename}") \
+                && chmod 600 "${target_dir}/${filename}"; }; then
+                rm -rf "${stage}"; exit 1
+            fi
+        else
+            cp "${stage}/${filename}" "${target_dir}/${filename}" || { rm -rf "${stage}"; exit 1; }
+        fi
         echo "  ✓ ${filename}"
     done
     for filename in "${removed[@]}"; do

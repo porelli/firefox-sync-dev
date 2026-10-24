@@ -109,16 +109,18 @@ health_parity() {
     qtest=$(sed -n 's/^HealthCmd=//p' "${q}" | tail -1)
     case "${qtest}" in \[*) qtest=$(echo "${qtest}" | jq -r 'join(" ")') ;; esac
     # systemd's escapes of the rendered values; then, as compose's, the $NAME of the
-    # container's shell with the unit's Environment=
+    # container's shell with the unit's Environment= and its environment file (the secrets, as
+    # they are: no escapes there)
     qtest=$(echo "${qtest}" | sed 's/%%/%/g; s/\$\$/$/g')
-    qtest=$(Q=${qtest} awk '
+    qtest=$({ cat "${q}"; [ ! -f "${q%.container}.env" ] || sed 's/^/EnvFile=/' "${q%.container}.env"; } | Q=${qtest} awk '
       /^Environment=/ { l = substr($0, 13); if (l ~ /^".*"$/) l = substr(l, 2, length(l) - 2)
         k = l; sub(/=.*/, "", k); v = substr(l, length(k) + 2); gsub(/%%/, "%", v); env[k] = v }
+      /^EnvFile=/ { l = substr($0, 9); k = l; sub(/=.*/, "", k); env[k] = substr(l, length(k) + 2) }
       END { c = ENVIRON["Q"]; out = ""
         while (match(c, /[$]([{][A-Za-z_][A-Za-z0-9_]*[}]|[A-Za-z_][A-Za-z0-9_]*)/)) {
           n = substr(c, RSTART + 1, RLENGTH - 1); gsub(/[{}]/, "", n)
           out = out substr(c, 1, RSTART - 1) env[n]; c = substr(c, RSTART + RLENGTH) }
-        print out c }' "${q}" | words)
+        print out c }' | words)
     test=$(echo "${test}" | words)
     [ "${test}" = "${qtest}" ] || out="${out}; ${s}: command [${test}] in compose, [${qtest}] in ${unit}"
     local key c v

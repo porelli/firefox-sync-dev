@@ -26,6 +26,9 @@ ffs_traps() {
     # in a subshell the traps of the main shell are not set (trap -p still shows them): not
     # chained there (bash 3.2 has no BASHPID: the parent of a command of this shell)
     [ "$(exec sh -c 'echo "${PPID}"')" = "$$" ] || main=""
+    # (and there the files of the main shell are not its own: at its exit only those it makes,
+    # when it set up FFS_TMP itself, e.g. a function of the sourced script in a pipe)
+    [ -n "${main}" ] || FFS_TEMPS=()
     for sig in EXIT INT TERM; do
         # (trap -p prints the trap as a command, quoted: its third word is the action)
         before=""

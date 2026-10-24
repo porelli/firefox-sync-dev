@@ -68,6 +68,32 @@ hb() {
   echo "${c}"
 }
 ctr() { podman ps -a -q --filter "label=com.docker.compose.service=$1" | head -1; }
+# a unit with the variables of its environment file (firefox-sync-<name>.env, the secrets), these
+# as Environment= lines; unit_count <regex> <unit>...: the lines of each that match, counted
+unit_env() { cat "$1"; [ ! -f "${1%.*}.env" ] || sed 's/^/Environment=/' "${1%.*}.env"; }
+unit_count() { local re=$1 u; shift; for u in "$@"; do unit_env "${u}" | grep -cE "${re}"; done | paste -sd' '; }
+# no secret of .env (secret_setting of prepare_environment.sh, a value of 6 characters or more) in
+# a unit, the timers or the units' environment files of others than this user; each unit's
+# EnvironmentFile= there: "none", or what is wrong
+units_secret_free() {
+  ( source ./prepare_environment.sh && SCRIPT_DIR=${PWD} || exit 1
+    local key value f out=""
+    while IFS= read -r key; do
+      secret_setting "${key}" || continue
+      value=$(env_plain "${key}")
+      [ "${#value}" -ge 6 ] && [[ "${value}" != *"<REPLACE_WITH_"* ]] || continue
+      for f in "${QUADLET_DIR}"/firefox-sync-*.container "${QUADLET_DIR}"/firefox-sync-*.volume "${QUADLET_DIR}"/firefox-sync-*.network "${SYSTEMD_USER_DIR:-${HOME}/.config/systemd/user}"/firefox-sync-*.timer; do
+        [ -f "${f}" ] || continue
+        grep -qF -- "${value}" "${f}" || grep -qF -- "${value//%/%%}" "${f}" && out="${out} ${key}:$(basename "${f}")"
+      done
+    done < <(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}\([A-Z][A-Z0-9_]*\)=.*/\2/p' .env | sort -u)
+    for f in "${QUADLET_DIR}"/firefox-sync-*.env; do
+      [ -f "${f}" ] || continue
+      [ "$(stat -c %a "${f}")" = 600 ] || out="${out} $(basename "${f}"):$(stat -c %a "${f}")"
+      grep -qxF "EnvironmentFile=${f}" "${f%.env}.container" || out="${out} $(basename "${f%.env}.container"):no-EnvironmentFile"
+    done
+    echo "${out:- none}" | sed 's/^ //' )
+}
 started() { date -d "$(podman inspect -f "{{.State.$2}}" "$1" | sed 's/ +0000 UTC//; s/ [A-Z]*$//')" +%s%N; }
 
 diagnose() {
@@ -374,8 +400,15 @@ check "$? $(ls "${WORK}/fresh"/firefox-sync-syncstorage.container "${WORK}/fresh
 # the units of an earlier release, which name no checkout (before the backups: firefox-sync's
 # main branch): --upgrade renders them when they have the SYNC_MASTER_SECRET of .env, says so
 older_units() {
-  rm -f "${WORK}/fresh/firefox-sync-backup.container"
+  local u
+  rm -f "${WORK}/fresh/firefox-sync-backup.container" "${WORK}/fresh/firefox-sync-backup.env"
   sed -i '/^Volume=\//d' "${WORK}/fresh"/*.container
+  # and their secrets in the units, as Environment= lines (before the environment files)
+  for u in "${WORK}/fresh"/*.container; do
+    [ -f "${u%.*}.env" ] || continue
+    sed -i -e '/^EnvironmentFile=/d' -e "/^\[Container\]$/r /dev/stdin" "${u}" < <(sed 's/^/Environment=/' "${u%.*}.env")
+    rm -f "${u%.*}.env"
+  done
 }
 older_units
 QUADLET_DIR=${WORK}/fresh SYSTEMD_USER_DIR=${WORK}/fresh-timers ./prepare_environment.sh --upgrade < /dev/null > upgrade-older-units.log 2>&1
@@ -394,7 +427,7 @@ rm -rf .env .env.before-setup-* .env.before-upgrade-* quadlets.before-* "${WORK}
 # compose file is in compose/, compose would look there): the keys
 # only in compose (allowed: $2, a regex), then those only in the quadlet
 compose_env_keys() { docker compose --env-file .env --profile admin "$@" config --format json 2> /dev/null | jq -r '.services["ffs-admin"].environment | keys[]' | LC_ALL=C sort; }
-quadlet_env_keys() { sed -nE 's/^Environment="?([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$1" | LC_ALL=C sort -u; }
+quadlet_env_keys() { unit_env "$1" | sed -nE 's/^Environment="?([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' | LC_ALL=C sort -u; }
 env_keys_diff() {
   local compose quadlet
   compose=$(compose_env_keys $1) quadlet=$(quadlet_env_keys "${QUADLET_DIR}/firefox-sync-admin.container")
@@ -522,13 +555,14 @@ check "$(env_of SYNC_EXPORT_PORT) $(sed -n 's/^PublishPort=//p' "${QUADLET_DIR}/
 # the healthchecks of compose, those of the Quadlets (as rendered from .env)
 check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup "${sync_compose[@]}")" same "every long-running service has a healthcheck, the Quadlets compose's (${SYNC_DB})"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in quadlets"
+check "$(units_secret_free)" none "no secret of .env in the units, the secrets in their environment files, 0600 (quadlets)"
 # with the admin UI, SYNC_MAX_USERS=initial:1: the init container and the admin UI both get it
 check "$(grep -hcxF 'Environment=MAX_USERS=initial:1' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container") $(grep -hcxF 'Environment="MAX_USERS=initial:1"' "${QUADLET_DIR}/firefox-sync-admin.container")" "1 1" \
   "SYNC_MAX_USERS=initial:1 in the init and admin UI quadlets"
 # without the accounts: not their settings, nor those of the sign-up gate and of the unconfirmed accounts
 # nor the Sync users' passwords: the Quadlets always have ADMIN_DB_PASSWORD, compose only passes them without it
 check "$(env_keys_diff "${sync_compose[*]}" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS|TOKENSERVER_DB_PASSWORD|STORAGE_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "|" "admin quadlet passes every setting of the compose service (${SYNC_DB})"
-check "$(grep -cE '^Environment="(TOKENSERVER|STORAGE)_DB_PASSWORD=' "${QUADLET_DIR}/firefox-sync-admin.container") $(grep -cE '^Environment="ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}"$' "${QUADLET_DIR}/firefox-sync-admin.container")" \
+check "$(unit_count '^Environment="?(TOKENSERVER|STORAGE)_DB_PASSWORD=' "${QUADLET_DIR}/firefox-sync-admin.container") $(unit_count '^Environment="?ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}"?$' "${QUADLET_DIR}/firefox-sync-admin.container")" \
   "0 1" "the admin UI quadlet has its own database password, none of the Sync users"
 # the help of the backups on the overview: their time, how many, the Quadlets' commands
 check "$(grep -cxE 'Environment="(BACKUP_TIME=03:00|BACKUP_KEEP=7|ADMIN_DEPLOYMENT=quadlets)"' "${QUADLET_DIR}/firefox-sync-admin.container")" 3 \
@@ -546,8 +580,8 @@ pg_units_check() { # what
     "SYNC_POSTGRES_IMAGE=postgres:${pg_major}, the major of Podman's postgres:latest, for the database and the backup units, no --arch ($1)"
   check "$(ls "${QUADLET_DIR}"/firefox-sync-*-db.container "${QUADLET_DIR}"/firefox-sync-*-db*.volume "${QUADLET_DIR}"/firefox-sync-sync-role-init.container 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
     "firefox-sync-postgres-db.container firefox-sync-postgres-db.volume firefox-sync-sync-role-init.container" "one PostgreSQL database and the role's init, no MariaDB or MySQL unit ($1)"
-  check "$(grep -hcE '^Environment="?(SYNC_(SYNCSTORAGE|TOKENSERVER)__DATABASE_URL=postgres://syncserver_app:[A-Za-z0-9]+@firefox-sync-postgres-db:5432/syncserver|TOKENSERVER_DB_TYPE=postgres|TOKENSERVER_DB_HOST=firefox-sync-postgres-db)"?$' \
-    "${QUADLET_DIR}"/firefox-sync-{syncstorage,syncstorage-migrate,admin,backup}.container | paste -sd' ')" "2 2 2 2" \
+  check "$(unit_count '^Environment="?(SYNC_(SYNCSTORAGE|TOKENSERVER)__DATABASE_URL=postgres://syncserver_app:[A-Za-z0-9]+@firefox-sync-postgres-db:5432/syncserver|TOKENSERVER_DB_TYPE=postgres|TOKENSERVER_DB_HOST=firefox-sync-postgres-db)"?$' \
+    "${QUADLET_DIR}"/firefox-sync-{syncstorage,syncstorage-migrate,admin,backup}.container)" "2 2 2 2" \
     "the Sync server, its migrations, the admin UI and the backups on PostgreSQL, as the Sync server's role ($1)"
 }
 [ "${SYNC_DB}" != postgres ] || pg_units_check quadlets
@@ -645,6 +679,7 @@ cp -p .env "${WORK}/edited.env"
 ./prepare_environment.sh --render-units < /dev/null > render-units.log 2>&1
 check "$?" 0 "prepare_environment.sh --render-units (quadlets)"
 check "$(secrets_kept "${WORK}/rendered.env" .env | sed 's/ [0-9]*$//') $(cmp -s .env "${WORK}/edited.env" && echo same)" "kept same" "--render-units keeps every password and secret, and .env as it is (quadlets)"
+check "$(units_secret_free)" none "--render-units: no secret of .env in the units, the secrets in their environment files, 0600"
 # only the admin UI's unit changed (fast_admin_checks' line gone with it), the units of before kept
 check "$(sed -n 's/^  ✓ //p' render-units.log | paste -sd' ') $(grep -cxE 'Image=localhost/ffs-admin:pinned|Environment="(ADMIN_STALE_DAYS=45|ADMIN_INSECURE_COOKIE=1)"' "${QUADLET_DIR}/firefox-sync-admin.container") $(($(ls -d quadlets.before-* | wc -l) - backups)) $(grep -Hc '^Image=localhost/ffs-admin:pinned' quadlets.before-*/firefox-sync-admin.container 2> /dev/null | grep -c ':0$')" \
   "firefox-sync-admin.container 3 1 $((backups + 1))" "--render-units writes the changed unit only, with ADMIN_IMAGE and the settings, the units of before kept (quadlets)"
@@ -976,6 +1011,7 @@ check "$(grep -hcxE 'Exec=sh /ffs-db/admin-user\.sh mysqld --disable-log-bin|Hea
   "2 2" "MySQL without binary logging, healthcheck over TCP (the password in its environment, not on its command line)"
 check "$(grep -cxF 'Environment=MARIADB_TLS_VERIFY=false' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" 1 "init container does not check MySQL's self-signed certificate"
 check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders in the MySQL quadlets"
+check "$(units_secret_free)" none "no secret of .env in the MySQL units, the secrets in their environment files, 0600"
 "${QUADLET}" -dryrun -user > quadlet-mysql-dryrun.log 2>&1
 check "$?" 0 "quadlet generator accepts the MySQL database units"
 stop_quadlets
@@ -989,6 +1025,7 @@ if [ "${SYNC_DB}" != postgres ]; then
   pg_units_check "quadlets rendered"
   check "$(grep -l '%[A-Z_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l) $(env_keys_diff "-f compose/sync.yml -f compose/sync-postgres.yml" 'FXA_.*|ADMIN_SIGNUP_BURST|ADMIN_DELETE_UNCONFIRMED_DAYS|TOKENSERVER_DB_PASSWORD|FFS_OLD_ENV_NAMES')" "0 |" \
     "no unreplaced placeholders, the admin UI's unit passes every setting of compose's (PostgreSQL)"
+  check "$(units_secret_free)" none "no secret of .env in the PostgreSQL units, the secrets in their environment files, 0600"
   "${QUADLET}" -dryrun -user > quadlet-postgres-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the PostgreSQL units"
   stop_quadlets
@@ -1007,8 +1044,8 @@ if [ "${SYNC_DB}" != postgres ]; then
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 postgres 1 "" "${TAG}" "" "" y pg.ffs-e2e.invalid "" "" "" "" n | ./prepare_environment.sh > setup-postgres-external.log 2>&1
   check "$? $(ls "${QUADLET_DIR}"/firefox-sync-*-db.* 2> /dev/null | wc -l) $(grep -hE '^(After|Requires)=.*-db\.service' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" "0 0 0" \
     "your own PostgreSQL server: no database unit, no dependency on one (quadlets)"
-  check "$(grep -hcE '^Environment="?(SYNC_SYNCSTORAGE__DATABASE_URL=postgres://syncserver:[A-Za-z0-9]+@pg\.ffs-e2e\.invalid:5432/syncserver|POSTGRES_SERVER=pg\.ffs-e2e\.invalid|POSTGRES_SYNC_USER=|TOKENSERVER_DB_HOST=pg\.ffs-e2e\.invalid)"?$' \
-    "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,sync-role-init,admin}.container | paste -sd' ')" "1 2 2 1" \
+  check "$(unit_count '^Environment="?(SYNC_SYNCSTORAGE__DATABASE_URL=postgres://syncserver:[A-Za-z0-9]+@pg\.ffs-e2e\.invalid:5432/syncserver|POSTGRES_SERVER=pg\.ffs-e2e\.invalid|POSTGRES_SYNC_USER=|TOKENSERVER_DB_HOST=pg\.ffs-e2e\.invalid)"?$' \
+    "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,sync-role-init,admin}.container)" "1 2 2 1" \
     "the units connect to your server as SYNC_POSTGRES_USER, no role of their own (quadlets)"
   "${QUADLET}" -dryrun -user > quadlet-postgres-external-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the PostgreSQL units without the database"
@@ -1053,15 +1090,16 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
     | ./prepare_environment.sh > setup-external.log 2>&1
   check "$?" 0 "prepare_environment.sh (quadlets, your own ${SYNC_DB} server)"
   check "$(env_of SYNC_DB_CONTAINERS) $(ls "${QUADLET_DIR}"/firefox-sync-*-db.* 2> /dev/null | wc -l)" "0 0" "SYNC_DB_CONTAINERS=0, no database quadlets"
+  check "$(units_secret_free)" none "no secret of .env in the units of your own server, the secrets in their environment files, 0600"
   check "$(grep -hE '^(After|Requires)=.*-db\.service' "${QUADLET_DIR}"/firefox-sync-* | wc -l) $(grep -c '^Requires=firefox-sync-syncstorage-migrate.service$' "${QUADLET_DIR}/firefox-sync-tokenserver-db-init.container")" "0 1" \
     "no dependencies on database units, the init still needs the migrations"
   if [ "${SYNC_DB}" = postgres ]; then
-    check "$(grep -hcE "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=postgres://syncserver:[A-Za-z0-9]+@${EXTDB}:5432/syncserver|POSTGRES_SERVER=${EXTDB}|TOKENSERVER_DB_HOST=${EXTDB})\"?$" \
-      "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container | paste -sd' ')" "1 1 1" "quadlets connect to your server"
+    check "$(unit_count "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=postgres://syncserver:[A-Za-z0-9]+@${EXTDB}:5432/syncserver|POSTGRES_SERVER=${EXTDB}|TOKENSERVER_DB_HOST=${EXTDB})\"?$" \
+      "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container)" "1 1 1" "quadlets connect to your server"
     ext_dumps="ffs_admin.sql.gz syncserver.sql.gz"
   else
-    check "$(grep -hcE "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=mysql://syncstorage:[A-Za-z0-9]+@${EXTDB}:3306/syncstorage|MARIADB_SERVER=${EXTDB}|MARIADB_TLS_VERIFY=false|STORAGE_DB_HOST=${EXTDB})\"?$" \
-      "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container | paste -sd' ')" "1 2 1" "quadlets connect to your server"
+    check "$(unit_count "^Environment=\"?(SYNC_SYNCSTORAGE__DATABASE_URL=mysql://syncstorage:[A-Za-z0-9]+@${EXTDB}:3306/syncstorage|MARIADB_SERVER=${EXTDB}|MARIADB_TLS_VERIFY=false|STORAGE_DB_HOST=${EXTDB})\"?$" \
+      "${QUADLET_DIR}"/firefox-sync-{syncstorage,tokenserver-db-init,admin}.container)" "1 2 1" "quadlets connect to your server"
     ext_dumps="ffs_admin.sql.gz syncstorage.sql.gz tokenserver.sql.gz"
   fi
   "${QUADLET}" -dryrun -user > quadlet-external-dryrun.log 2>&1
@@ -1138,7 +1176,7 @@ if [ -n "${EXTERNAL_DB:-}" ]; then
   printf '%s\n' ffs-e2e.invalid "" "${PORT}" 1 mariadb 1 "" "${TAG}" "" y fxa.invalid mail.invalid 587 test pw "" "" "" \
     n y fxa-mysql.invalid "" "" "" | ./prepare_environment.sh > setup-fxa-external.log 2>&1
   check "$?" 0 "prepare_environment.sh (quadlets, accounts on your own server)"
-  check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 11 "accounts quadlet files without the database"
+  check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-*.{container,volume} 2> /dev/null | wc -l)" 11 "accounts quadlet files without the database"
   check "$(grep -hoE '^Environment="(((AUTH|OAUTH|PROFILE|PUSHBOX)_)?MYSQL|FXA_DB)_HOST=[^"]*"' "${QUADLET_DIR}"/firefox-sync-{fxa-*,admin}.container | sed 's/.*=//' | sort | uniq -c | sed 's/^ *//')" \
     '10 fxa-mysql.invalid"' "the accounts connect to your server"
   check "$(grep -hcE '^Environment="(FXA_DB_ROOT_USER=ffs_policy|FXA_MYSQL_USER=fxa)"$' "${QUADLET_DIR}/firefox-sync-fxa-policy.container")" 2 "sign-up policy installed by ffs_policy"
@@ -1159,7 +1197,7 @@ if [ -z "${SKIP_FXA:-}" ] && [ "${FXA_DB}" != mariadb ]; then
   check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup --profile pairing -f compose/sync.yml -f compose/sync-mariadb.yml -f compose/fxa.yml -f compose/fxa-mariadb.yml)" same \
     "the Quadlets' healthchecks with the accounts on MariaDB are compose's"
   check "$(fxa_db_image) $(ls "${QUADLET_DIR}"/firefox-sync-fxa-db* 2> /dev/null | xargs -n1 basename | LC_ALL=C sort | paste -sd' ')" \
-    "docker.io/library/mariadb:lts firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container" "MariaDB lts unit and its own volume, not MySQL's"
+    "docker.io/library/mariadb:lts firefox-sync-fxa-db-mariadb.volume firefox-sync-fxa-db.container firefox-sync-fxa-db.env" "MariaDB lts unit (and its environment file) and its own volume, not MySQL's"
   check "$(sed -n 's/^Image=//p' "${QUADLET_DIR}/firefox-sync-backup-fxa.container")" docker.io/library/mariadb:lts "the backups of the accounts with the same MariaDB"
   "${QUADLET}" -dryrun -user > quadlet-fxa-mariadb-dryrun.log 2>&1
   check "$?" 0 "quadlet generator accepts the MariaDB accounts database"
@@ -1223,7 +1261,7 @@ if [ -z "${SKIP_FXA:-}" ]; then
   fxa_compose=(-f compose/sync.yml -f compose/sync-mariadb.yml -f compose/fxa.yml -f "compose/fxa-${FXA_DB}.yml")
   check "$(health_parity "${QUADLET_DIR}" docker compose --env-file .env --profile admin --profile backup --profile pairing "${fxa_compose[@]}")" same \
     "every long-running service has a healthcheck, the Quadlets with the accounts compose's (${FXA_DB})"
-  check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-* 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
+  check "$(ls "${QUADLET_DIR}"/firefox-sync-fxa-*.{container,volume} 2> /dev/null | wc -l)" 13 "accounts quadlet files installed"
   # MySQL: lts when the accounts image of .env has mozilla/fxa#21554, else 8 with mysql_native_password
   if [ "${FXA_DB}" = mariadb ]; then
     expected_image=docker.io/library/mariadb:lts expected_exec=mariadbd
@@ -1248,7 +1286,9 @@ if [ -z "${SKIP_FXA:-}" ]; then
   check "$(cat "${QUADLET_DIR}/firefox-sync-fxa-auth.container" "${QUADLET_DIR}/firefox-sync-admin.container" | grep -cxE 'Environment="(ACCOUNT_EVENTS_ENABLED|FXA_ACCOUNT_EVENTS)=false"|Environment="IP_PROFILING_RECENCY=0"')" 3 \
     "no security history by default in the accounts and admin UI quadlets"
   check "$(grep -lE '%[A-Z][A-Z0-9_]*%' "${QUADLET_DIR}"/firefox-sync-* | wc -l)" 0 "no unreplaced placeholders"
-  check "$(grep -c 'SMTP_PASS=p%%ss|w&rd"' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" 1 "values escaped for systemd"
+  check "$(units_secret_free)" none "no secret of .env in the units of the accounts either, the secrets in their environment files, 0600"
+  check "$(grep -cxF 'SMTP_PASS=p%ss|w&rd' "${QUADLET_DIR}/firefox-sync-fxa-auth.env") $(grep -c 'SMTP_PASS' "${QUADLET_DIR}/firefox-sync-fxa-auth.container")" "1 0" \
+    "the SMTP password as it is in fxa-auth's environment file (no systemd there to escape a % for), none in its unit"
   # the admin UI signs in with these accounts: its OAuth client always asks the sign-in code
   admin_client=$(grep '^ADMIN_FXA_CLIENT_ID=' .env | cut -d= -f2)
   check "$(echo "${admin_client}" | grep -cE '^[0-9a-f]{16}$')" 1 "admin UI OAuth client id (quadlets)"
