@@ -602,7 +602,7 @@ case "${SYNC_FILE}" in
   mysql) echo "COMPOSE_FILE=docker-compose.yml:docker-compose.sync-mysql.yml" >> "${ENV_FILE}" ;;
   postgres) echo "COMPOSE_FILE=docker-compose.sync-postgres.yml" >> "${ENV_FILE}" ;;
 esac
-mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
+mkdir -p "${UP}" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/setup" "${CODE}/.env-example" "${CODE}/db" "${UP}/" && cp "${ENV_FILE}" "${UP}/.env"
 # (the compose project of this test, as a user running docker compose -p would set it)
 (cd "${UP}" && COMPOSE_PROJECT_NAME=${PROJECT} ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
 check "$?" 0 "./prepare_environment.sh --upgrade" || cat "${WORK}/upgrade.log"

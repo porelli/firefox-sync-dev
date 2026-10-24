@@ -1,10 +1,15 @@
 #!/bin/bash
-# The functions of prepare_environment.sh that need no container, on tables: the values of
-# .env as compose reads them (env_plain), the addresses of SYNC_EXPORT_PORT
-# (valid_export_port), .env written through a symlink (replace_env), the substitutions without
-# the values on a command line (sed_script, sed_escape), and whether an accounts image has a
-# fix of upstream-patches.yml (fxa_has_fix, config/fxa/fixed-in). The script is sourced: its
-# functions only, nothing asked or written. No container runtime needed; with docker compose
+# (the tables are .env lines as written: their $ and quotes are literal)
+# shellcheck disable=SC2016,SC1003
+# The functions of prepare_environment.sh (setup/*.sh) that need no container, on tables, per
+# file: setup/env.sh (the values of .env as compose reads them, env_plain; .env written through a
+# symlink, replace_env; the substitutions without the values on a command line, sed_script and
+# sed_escape; the compose files of an install), setup/validate.sh (the addresses of
+# SYNC_EXPORT_PORT, the limits, names, hosts and ports), setup/databases.sh (database-setup.sql),
+# setup/images.sh (whether an accounts image has a fix of upstream-patches.yml, fxa_has_fix and
+# config/fxa/fixed-in), setup/quadlets.sh (the checkout the units were rendered from),
+# setup/upgrade.sh (--upgrade of an .env from before), and the script loading setup/ from its
+# real path. The script is sourced: its functions only, nothing asked or written. No container runtime needed; with docker compose
 # (COMPOSE=1, or found) the .env table is also compared with what `docker compose config` reads.
 #
 # Usage: tests/prepare_functions.sh   (bash 3.2, macOS, too)
@@ -25,7 +30,7 @@ source "${CODE}/prepare_environment.sh" || { echo "FAIL: source prepare_environm
 check "$(type -t env_plain) $(type -t valid_export_port) $(type -t replace_env) $(type -t fxa_has_fix)" "function function function function" \
   "prepare_environment.sh sourced: its functions, nothing run"
 
-echo "== .env values as compose reads them (env_plain)"
+echo "== setup/env.sh: .env values as compose reads them (env_plain)"
 # "<line of .env> => <value compose reads>"; no $NAME in them, which compose would replace
 # with another value (env_plain does not)
 ENV_CASES=(
@@ -98,7 +103,7 @@ sender='Mozilla "accounts" \ $HOME <no-reply@example.org>'
 printf 'S1="%s"\n' "$(env_dq "${sender}")" > "${WORK}/.env"
 check "$(env_plain S1)" "${sender}" "a value written with env_dq reads back as it was"
 
-echo "== the address and port of SYNC_EXPORT_PORT (valid_export_port)"
+echo "== setup/validate.sh: the address and port of SYNC_EXPORT_PORT (valid_export_port)"
 for p in 5000 1 65535 127.0.0.1:5000 0.0.0.0:5000 255.255.255.255:80 '[::]:5000' '[::1]:5000' '[fe80::1]:443' \
   '[2001:db8::8a2e:370:7334]:5000' '[2001:db8:0:0:0:0:2:1]:5000' '[1:2:3:4:5:6:7::]:5000' '[::ffff:192.0.2.1]:5000' '[64:ff9b::192.0.2.33]:80'; do
   check "$(valid_export_port "${p}" && echo valid)" valid "valid_export_port accepts ${p}"
@@ -109,14 +114,14 @@ for p in "" 0 65536 123456 abc localhost:5000 256.1.1.1:5000 1.2.3:5000 1.2.3.4.
   check "$(valid_export_port "${p}" || echo refused)" refused "valid_export_port refuses '${p}'"
 done
 
-echo "== .env written through a symlink (replace_env)"
+echo "== setup/env.sh: .env written through a symlink (replace_env)"
 mkdir -p "${WORK}/real" "${WORK}/dir" "${WORK}/ro"
 mode() { stat -c %a "$1" 2> /dev/null || stat -f %Lp "$1"; }
 new_env() { (umask 077; printf 'NEW=%s\n' "$1" > "${WORK}/dir/.env.new"); }
 printf 'OLD=1\n' > "${WORK}/real/env"; chmod 644 "${WORK}/real/env"
 ln -s ../real/env "${WORK}/dir/.env"
 new_env 1; replace_env "${WORK}/dir/.env.new" "${WORK}/dir/.env"
-check "$? $([ -L "${WORK}/dir/.env" ] && echo link) $(cat "${WORK}/real/env") $(mode "${WORK}/real/env") $(ls "${WORK}/dir/.env.new" "${WORK}/real"/.env* 2> /dev/null | wc -l | tr -d ' ')" \
+check "$? $([ -L "${WORK}/dir/.env" ] && echo link) $(cat "${WORK}/real/env") $(mode "${WORK}/real/env") $(find "${WORK}/dir/.env.new" "${WORK}/real" -name ".env*" 2> /dev/null | wc -l | tr -d ' ')" \
   "0 link NEW=1 600 0" "a relative symlink stays one, its target replaced, 0600, nothing left aside"
 # a symlink to a symlink, absolute
 ln -s "${WORK}/dir/.env" "${WORK}/dir/.env2"
@@ -133,7 +138,7 @@ printf 'OLD=1\n' > "${WORK}/dir/plain"
 new_env 4; replace_env "${WORK}/dir/.env.new" "${WORK}/dir/plain"
 check "$([ -L "${WORK}/dir/plain" ] || echo file) $(cat "${WORK}/dir/plain") $(mode "${WORK}/dir/plain")" "file NEW=4 600" "a plain .env: replaced by the new file"
 
-echo "== substitutions with the values in a file, not on the command line (sed_script, sed_escape)"
+echo "== setup/env.sh, setup/databases.sh: substitutions with the values in a file, not on the command line (sed_script, sed_escape, render_sql)"
 tricky='a&b|c/d\e"f'"'"'g$h#i%j'
 printf 'X=@V@ %%V%%\n' > "${WORK}/template"
 check "$(sed_script "s|@V@|$(sed_escape "${tricky}")|g" "${WORK}/template")" "X=${tricky} %V%" "sed_script with sed_escape: & | / \\ quotes \$ # % as they are"
@@ -168,7 +173,7 @@ for sig in TERM INT; do
 done
 TMPDIR=${WORK}/tmp
 
-echo "== accounts images with a fix of upstream-patches.yml (fxa_has_fix, config/fxa/fixed-in)"
+echo "== setup/images.sh: accounts images with a fix of upstream-patches.yml (fxa_has_fix, config/fxa/fixed-in)"
 has() { fxa_has_fix "$@"; echo $?; }
 check "$(fxa_fixed_in mozilla/fxa#21554)|$(fxa_fixed_in mozilla/fxa#21494)" "|" "config/fxa/fixed-in: no release has them yet"
 LABEL='mozilla/fxa#21494@3e2cb67..0eaa3a2 mozilla/fxa#21554@3e2cb67..84d71e2+v1.347.3'
@@ -198,6 +203,98 @@ check "$(fxa_release v1.347.3) $(fxa_release fxa-mono-v1.347.3) $(fxa_release 1.
 json='[{"Config":{"Labels":{"org.firefox-sync.upstream-patches":"none","org.opencontainers.image.version":"v1.353.0"}}}]'
 check "$(fxa_inspected_has mozilla/fxa#21554 "${json}" fxa-mono-latest; echo $?) $(fxa_inspected_has mozilla/fxa#21494 "${json}" fxa-mono-latest; echo $?)" "0 1" \
   "the labels of an image's JSON: released and newer has it, the other not"
+
+echo "== prepare_environment.sh: setup/ of its real path"
+mkdir -p "${WORK}/linked"
+ln -s "${CODE}/prepare_environment.sh" "${WORK}/linked/prepare_environment.sh"
+check "$(source "${WORK}/linked/prepare_environment.sh" && echo "$(type -t upgrade_env) ${SELF_DIR} ${FFS_ENTRY_DIR}")" \
+  "function ${CODE} $(cd "${WORK}/linked" && pwd)" "sourced through a symlink: the functions of setup/ next to its target, the setup's directory where it was started"
+cp -r "${CODE}/prepare_environment.sh" "${WORK}/no-setup.sh"
+check "$(source "${WORK}/no-setup.sh" 2> /dev/null; echo $?) $(bash "${WORK}/no-setup.sh" --upgrade > /dev/null 2>&1; echo $?)" "1 1" \
+  "without setup/ next to it: sourced, the source fails; run, it stops (1)"
+
+echo "== setup/env.sh: the compose files of an install (compose_files, compose_files_moved, compose_project)"
+check "$(compose_files mariadb "" no) $(compose_files postgres mysql no) $(compose_files mysql mariadb yes)" \
+  "compose/sync.yml:compose/sync-mariadb.yml compose/sync.yml:compose/sync-postgres.yml:compose/fxa.yml:compose/fxa-mysql.yml compose/sync.yml:compose/sync-mysql.yml:compose/fxa.yml:compose/fxa-mariadb.yml:compose/podman.yml" \
+  "compose_files: Sync's database, the accounts' and compose/podman.yml"
+# "<COMPOSE_FILE of before> => <now>" (docs/upgrading.md#files-that-moved; nothing: no file of before in it)
+MOVED_CASES=(
+  ' => compose/sync.yml:compose/sync-mariadb.yml'
+  'docker-compose.yml => compose/sync.yml:compose/sync-mariadb.yml'
+  'docker-compose.yml:docker-compose.sync-mysql.yml => compose/sync.yml:compose/sync-mysql.yml'
+  'docker-compose.sync-postgres.yml => compose/sync.yml:compose/sync-postgres.yml'
+  'docker-compose.postgres.yml => compose/sync.yml:compose/sync-postgres.yml'
+  'docker-compose.yml:docker-compose.fxa.yml => compose/sync.yml:compose/sync-mariadb.yml:compose/fxa.yml:compose/fxa-mysql.yml'
+  'docker-compose.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml => compose/sync.yml:compose/sync-mariadb.yml:compose/fxa.yml:compose/fxa-mariadb.yml'
+  'docker-compose.yml:docker-compose.sync-mysql.yml:docker-compose.fxa.yml => compose/sync.yml:compose/sync-mysql.yml:compose/fxa.yml:compose/fxa-mysql.yml'
+  'docker-compose.sync-postgres.yml:docker-compose.fxa.yml:docker-compose.fxa-mariadb.yml => compose/sync.yml:compose/sync-postgres.yml:compose/fxa.yml:compose/fxa-mariadb.yml'
+  'docker-compose.yml:docker-compose.podman.yml => compose/sync.yml:compose/sync-mariadb.yml:compose/podman.yml'
+  'docker-compose.yml:docker-compose.podman.yml:docker-compose.sync-mysql.yml => compose/sync.yml:compose/sync-mysql.yml:compose/podman.yml'
+  './docker-compose.yml:my-override.yml => ./compose/sync.yml:./compose/sync-mariadb.yml:my-override.yml'
+  '/opt/ffs/docker-compose.sync-postgres.yml:/opt/ffs/docker-compose.fxa.yml => /opt/ffs/compose/sync.yml:/opt/ffs/compose/sync-postgres.yml:/opt/ffs/compose/fxa.yml:/opt/ffs/compose/fxa-mysql.yml'
+  'compose/sync.yml:compose/sync-mysql.yml => '
+  'compose/sync.yml:compose/sync-postgres.yml:compose/fxa.yml:compose/fxa-mysql.yml:mine.yml => '
+)
+for c in "${MOVED_CASES[@]}"; do
+  check "$(compose_files_moved "${c% => *}")" "${c#* => }" "compose_files_moved: '${c% => *}'"
+done
+check "$(unset COMPOSE_PROJECT_NAME; SCRIPT_DIR=${WORK}/My_Sync.Dir-2 compose_project) $(COMPOSE_PROJECT_NAME=Other compose_project)" "my_syncdir-2 other" \
+  "compose_project: the directory's name as compose makes it a project name, or COMPOSE_PROJECT_NAME"
+mkdir -p "${WORK}/named" && printf 'COMPOSE_PROJECT_NAME=kept\n' > "${WORK}/named/.env"
+check "$(unset COMPOSE_PROJECT_NAME; SCRIPT_DIR=${WORK}/named compose_project)" kept "compose_project: COMPOSE_PROJECT_NAME of .env"
+
+echo "== setup/validate.sh: limits, database names, hosts, ports (valid_limit, valid_name, valid_host, valid_port)"
+for v in 0 1 2147483647 unlimited; do check "$( (valid_limit "max users" "${v}") && echo ok)" ok "valid_limit accepts ${v}"; done
+for v in "" -1 1.5 initial:4 2147483648 99999999999 lots; do
+  check "$( (valid_limit "max users" "${v}") > /dev/null; echo $?)" 1 "valid_limit refuses '${v}' (exit 1)"
+done
+for v in syncstorage _a a1_b2 "$(printf 'a%.0s' $(seq 1 32))"; do check "$( (valid_name "${v}") && echo ok)" ok "valid_name accepts ${v}"; done
+for v in "" 1a Sync a-b "a b" "$(printf 'a%.0s' $(seq 1 33))" "a;drop"; do
+  check "$( (valid_name "${v}") > /dev/null; echo $?)" 1 "valid_name refuses '${v}'"
+done
+for v in db.example.org 172.17.0.1 host.containers.internal my_db; do check "$( (valid_host "${v}") && echo ok)" ok "valid_host accepts ${v}"; done
+for v in "" localhost 127.0.0.1 0.0.0.0 ::1 fe80::1 "db example" 'db;x'; do
+  check "$( (valid_host "${v}") > /dev/null; echo $?)" 1 "valid_host refuses '${v}'"
+done
+check "$( (valid_port 3306) && echo ok) $( (valid_port "") > /dev/null; echo $?) $( (valid_port 33a) > /dev/null; echo $?)" "ok 1 1" "valid_port: digits only"
+
+echo "== setup/databases.sh: database-setup.sql of your own server (render_sync_sql)"
+mkdir -p "${WORK}/sql" && cp -r "${CODE}/db" "${WORK}/sql/"
+sed -e 's|<REPLACE_WITH_SOMETHING_SECURE>|pw\&ord|' "${CODE}/.env-example" > "${WORK}/sql/.env"
+for engine in mariadb postgres; do
+  (SCRIPT_DIR=${WORK}/sql; ENV_READ=${WORK}/sql/.env; render_sync_sql "${engine}")
+  check "$(grep -c '@[A-Z_]*@' "${WORK}/sql/database-setup.sql") $([ "$(grep -c 'pw&ord' "${WORK}/sql/database-setup.sql")" -gt 0 ] && echo values) $(mode "${WORK}/sql/database-setup.sql")" \
+    "0 values 600" "render_sync_sql ${engine}: every placeholder filled from .env, as written (& too), this user's only"
+done
+
+echo "== setup/quadlets.sh: the checkout the installed units are of (units_installed, units_dir, units_of_here, units_without_dir)"
+QUADLET_DIR=${WORK}/units && mkdir -p "${QUADLET_DIR}" "${WORK}/here"
+check "$(units_installed || echo none)" none "no units: none installed"
+printf '[Container]\nContainerName=firefox-sync-syncstorage\nImage=ghcr.io/porelli/firefox-sync:syncstorage-rs-mysql-latest\n' > "${QUADLET_DIR}/firefox-sync-syncstorage.container"
+check "$(units_installed && echo yes) [$(units_dir)] $(units_without_dir && echo without-dir)" "yes [] without-dir" "units of an earlier release: no checkout in them"
+printf 'Volume=%s/config/backup:/ffs-backup:ro,Z\n' "${WORK}/here" > "${QUADLET_DIR}/firefox-sync-backup.container"
+ln -s "${WORK}/here" "${WORK}/here-link"
+check "$(units_dir) $(SCRIPT_DIR=${WORK}/here units_of_here && echo here) $(SCRIPT_DIR=${WORK}/here-link units_of_here && echo through-link) $(SCRIPT_DIR=${WORK} units_of_here || echo not-there) $(units_without_dir || echo with-dir)" \
+  "${WORK}/here here through-link not-there with-dir" "units rendered from a checkout: that one (also through a symlink), not another"
+
+echo "== setup/upgrade.sh: --upgrade of an .env from before (upgrade_env)"
+mkdir -p "${WORK}/up" && cp -r "${CODE}/.env-example" "${CODE}/db" "${WORK}/up/"
+sed -e 's|<REPLACE_WITH_SOMETHING_SECURE>|s3cret|' -e 's|<REPLACE_WITH_YOUR_DOMAIN>|sync.example.org|' \
+  -e 's|^SYNC_PUBLIC_URL=|SYNCSTORAGE_DOMAIN=|' -e 's|^SYNC_MAX_USERS=|MAX_USERS=|' -e 's|^ADMIN_DB_PASSWORD=.*|ADMIN_DB_PASSWORD=|' \
+  -e 's|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.postgres.yml|' -e 's|^FXA_MYSQL_PASSWORD=.*|FXA_MYSQL_PASSWORD=<REPLACE_WITH_SOMETHING_SECURE>|' \
+  -e 's|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-postgres|' -e 's|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=app|' "${CODE}/.env-example" > "${WORK}/up/.env"
+chmod 644 "${WORK}/up/.env"
+(unset COMPOSE_PROJECT_NAME; FFS_ENTRY_DIR=${WORK}/up QUADLET_DIR=${WORK}/no-units upgrade_env) < /dev/null > "${WORK}/upgrade.log" 2>&1
+up_rc=$?
+upv() { ENV_READ=${WORK}/up/.env SCRIPT_DIR=${WORK}/up env_plain "$1"; }
+check "${up_rc} $(upv COMPOSE_FILE) $(upv COMPOSE_PROJECT_NAME) $(upv SYNC_PUBLIC_URL) $(upv SYNC_MAX_USERS) $(grep -c '^\(SYNCSTORAGE_DOMAIN\|MAX_USERS\)=' "${WORK}/up/.env")" \
+  "0 compose/sync.yml:compose/sync-postgres.yml up https://sync.example.org 1 0" \
+  "upgrade_env: the files of compose/ and the project in COMPOSE_FILE, the old names renamed (their values kept)"
+check "$(echo "$(upv ADMIN_DB_PASSWORD)" | grep -cE '^[A-Za-z0-9]{32}$') $(upv SYNC_POSTGRES_IMAGE) $(mode "${WORK}/up/.env") $(ls "${WORK}/up"/.env.before-upgrade-* | wc -l | tr -d ' ') $(grep -c '^Then: docker compose pull && docker compose up -d$' "${WORK}/upgrade.log")" \
+  "1 postgres:18 600 1 1" "upgrade_env: the missing password, the PostgreSQL major of before, .env this user's only, the old one kept, what to run next" \
+  || cat "${WORK}/upgrade.log"
+(unset COMPOSE_PROJECT_NAME; FFS_ENTRY_DIR=${WORK}/up QUADLET_DIR=${WORK}/no-units upgrade_env) < /dev/null > "${WORK}/upgrade-again.log" 2>&1
+check "$? $(ls "${WORK}/up"/.env.before-upgrade-* | wc -l | tr -d ' ') $(grep -c '^Updated ' "${WORK}/upgrade-again.log")" "0 1 0" "upgrade_env run again: nothing changes"
 
 [ "${FAILED}" = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit "${FAILED}"

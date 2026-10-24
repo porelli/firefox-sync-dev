@@ -119,7 +119,7 @@ fxa_lint() {
   # (and FXA_REDIS_PASSWORD, the chart's own: compose's Redis is on a network of its own)
   local generated="FXA_ADMIN_DB_PASSWORD FXA_AUTH_SECRET FXA_CONTENT_SESSION_SECRET FXA_FLOW_ID_KEY FXA_MYSQL_PASSWORD FXA_OAUTH_SECRET FXA_PROFILE_SECRET FXA_REDIS_PASSWORD FXA_SESSION_TOKEN_HANDLE_KEY"
   local prepared
-  prepared=$({ sed -n 's/^ *for name in \(FXA_MYSQL_PASSWORD .*\); do$/\1/p' "${REPO_ROOT}/prepare_environment.sh" | tr ' ' '\n'; echo FXA_REDIS_PASSWORD; } | LC_ALL=C sort | paste -sd' ' -)
+  prepared=$({ sed -n 's/^ *for name in \(FXA_MYSQL_PASSWORD .*\); do$/\1/p' "${REPO_ROOT}"/setup/*.sh | tr ' ' '\n'; echo FXA_REDIS_PASSWORD; } | LC_ALL=C sort | paste -sd' ' -)
   [[ "${prepared}" == "${generated}" ]] || fail "prepare_environment.sh generates ${prepared} (with the chart's FXA_REDIS_PASSWORD), the chart ${generated}"
   secret_data() { helm template test-release "${CHART_DIR}" "$@" --show-only templates/secret.yaml | manifests | jq -c '.[0].data'; }
   local on off added

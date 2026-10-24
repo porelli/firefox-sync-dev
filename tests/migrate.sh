@@ -864,7 +864,7 @@ EOF
   # .env-example: added first, their new names would hide the values under the old ones
   local renamed
   renamed=$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" "${DST}/.env")
-  cp "${CODE}/prepare_environment.sh" "${DST}/"
+  rm -rf "${DST}/setup" && cp -r "${CODE}/prepare_environment.sh" "${CODE}/setup" "${DST}/"
   (cd "${DST}" && ./prepare_environment.sh --upgrade) > "${WORK}/upgrade.log" 2>&1
   check "$? $(grep -cE '^ADMIN_DB_PASSWORD=[A-Za-z0-9]{32}$' "${DST}/.env")" "0 1" "./prepare_environment.sh --upgrade sets ADMIN_DB_PASSWORD" || cat "${WORK}/upgrade.log"
   check "$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" "${DST}/.env") $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "${WORK}/upgrade.log")" "0 ${renamed}" \

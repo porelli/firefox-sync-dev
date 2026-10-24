@@ -12,8 +12,8 @@ SLOT_SUFFIX=""
 SLOT_PORTS=$((SLOT * 1000))
 SLOT_NET=$((SLOT * 10))
 
-# RENAMED_SETTINGS of prepare_environment.sh: the settings renamed to the SYNC_ prefix, new=old
-eval "$(sed -n '/^RENAMED_SETTINGS=(/,/^)/p' "$(dirname -- "${BASH_SOURCE[0]}")/../prepare_environment.sh")"
+# RENAMED_SETTINGS of prepare_environment.sh (setup/env.sh): the settings renamed to the SYNC_ prefix, new=old
+eval "$(sed -n '/^RENAMED_SETTINGS=(/,/^)/p' "$(dirname -- "${BASH_SOURCE[0]}")/../setup/env.sh")"
 # REPOSITORY and POSTGRES_IMAGE, given to the tests (the images under test, vm.sh), are also
 # the old names of IMAGE_REPOSITORY and SYNC_POSTGRES_IMAGE: kept out of compose's
 # environment, which would take them for settings of .env (and list them as old names)
