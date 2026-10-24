@@ -239,6 +239,9 @@ FAILED=0
 # shellcheck source=tests/healthy.sh
 source "${TESTS}/healthy.sh"
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; return 1; fi; }
+# -f compose/... without --env-file .env: compose reads compose/.env (none), so it stops, and says why
+check "$(cd "${CODE}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} docker compose -f compose/sync.yml -f "compose/sync-${SYNC_FILE}.yml" config -q > "${WORK}/no-env.log" 2>&1; echo $?) $(grep -q 'required variable SYNC_MASTER_SECRET is missing a value: set it in .env' "${WORK}/no-env.log" && echo 1)" \
+  "1 1" "-f compose/... without --env-file .env: docker compose stops, saying what to do"
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 hb() {
   local c
@@ -529,6 +532,7 @@ set_env SYNC_POSTGRES_APP_PASSWORD ""
 if [ -n "${UPGRADE_FROM:-}" ]; then
   # that release itself: its compose files, its admin UI and its init container
   ROOT=$(cd -- "${UPGRADE_FROM}" && pwd) || exit 1
+  FROM_DIR=${ROOT}
   ADMIN_NOW=${ADMIN_IMAGE} INIT_NOW=${SYNC_INIT_IMAGE_TAG}
   export ADMIN_IMAGE=ffs-admin:e2e-from${SLOT_SUFFIX}
   ADMIN_IMAGE=${ADMIN_IMAGE} COMPOSE_BAKE=false one_at_a_time admin-build docker compose -p ffs-admin-build-from -f "$(ls "${ROOT}/tests/compose/admin-build.yml" "${ROOT}/tests/docker-compose.admin-build.yml" 2> /dev/null | head -n 1)" build -q ||
@@ -1605,6 +1609,29 @@ echo "== every container that keeps running healthy, the one-shot ones exited 0"
 # (your own server: no restore above, the admin UI is still removed)
 [ -z "${EXTDB}" ] || dc up -d > /dev/null 2>&1
 check "$(compose_healthy 300 dc)" "all healthy" "every long-running container healthy (docker compose ps), the one-shot ones exited 0"
+
+if [ -n "${UPGRADE_FROM:-}" ] && [ "${SYNC_FILE}" = mariadb ] && [ -z "${EXTDB}" ]; then
+  echo "== an install of ${UPGRADE_FROM} without COMPOSE_FILE (docker-compose.yml), the files of this tree over it: nothing recreated"
+  dc stop > /dev/null 2>&1
+  # its project: the directory's name, as with a clone (no COMPOSE_PROJECT_NAME)
+  SH=${WORK}/${PROJECT}-shim && mkdir -p "${SH}" && cp -r "${FROM_DIR}/." "${SH}/"
+  grep -vE '^(COMPOSE_FILE|COMPOSE_PROJECT_NAME)=' "${ENV_FILE}" > "${SH}/.env"
+  # your own override, which compose reads only without COMPOSE_FILE: still read through the shim
+  printf 'services:\n  syncstorage:\n    environment:\n      FFS_OVERRIDE: "1"\n' > "${SH}/docker-compose.override.yml"
+  shim_dc() { (cd "${SH}" && env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME docker compose "$@"); }
+  shim_ids() { docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$(basename "${SH}")" | LC_ALL=C sort | paste -sd' '; }
+  shim_dc up -d > "${WORK}/shim-before.log" 2>&1
+  check "$? $(shim_dc ps -q syncstorage | wc -l | tr -d ' ')" "0 1" "the install of before up, docker-compose.yml without COMPOSE_FILE" || tail -20 "${WORK}/shim-before.log"
+  ids_before=$(shim_ids)
+  # git pull: the old compose files gone, those of this tree there
+  # (git pull removes the overlays of before, not your docker-compose.override.yml)
+  rm -f "${SH}"/docker-compose.{sync-mysql,sync-postgres,postgres,podman,fxa,fxa-mariadb}.yml && rm -rf "${SH}/compose" "${SH}/db" "${SH}/config"
+  cp -r "${CODE}/docker-compose.yml" "${CODE}/compose" "${CODE}/db" "${CODE}/config" "${SH}/"
+  shim_dc up -d > "${WORK}/shim-after.log" 2>&1
+  check "$? $(grep -ciE 'recreat' "${WORK}/shim-after.log") $([ "$(shim_ids)" = "${ids_before}" ] && echo same) $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(shim_dc ps -q syncstorage)" | grep -c '^FFS_OVERRIDE=1$')" \
+    "0 0 same 1" "docker compose up -d with the files of this tree: no container recreated (the same ids), the override still applies" || cat "${WORK}/shim-after.log"
+  shim_dc down -v > /dev/null 2>&1
+fi
 
 RESULT=${BACKEND}$([ "${SYNC_DB}" = mysql ] && echo " (MySQL, ${MYSQL_TESTED})")$([ -n "${PG_FROM}" ] && echo " (PostgreSQL ${PG_FROM} to ${PG_TO})")
 [ ${FAILED} = 0 ] && echo "RESULT ${RESULT}: all checks passed" || echo "RESULT ${RESULT}: some checks FAILED"

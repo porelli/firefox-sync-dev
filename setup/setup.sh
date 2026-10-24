@@ -620,6 +620,7 @@ COMPOSE_FILES=$(compose_files "${COMPOSE_SYNC_DB}" "$([ "${SELF_HOST_FXA}" = yes
     "$([ "${CONTAINER_RUNTIME}" = podman ] && [ "${DEPLOY_METHOD}" != quadlets ] && echo yes)")
 apply_sed "${NEW_ENV}" "s|^# COMPOSE_FILE=.*|COMPOSE_FILE=${COMPOSE_FILES}|"
 apply_sed "${NEW_ENV}" "s|^# COMPOSE_PROJECT_NAME=.*|COMPOSE_PROJECT_NAME=$(compose_project)|"
+ENV_READ=${NEW_ENV} compose_settings_check
 # the new .env in place, the one of before kept
 if [ -f "${SCRIPT_DIR}/.env" ]; then
     ENV_BACKUP=$(backup_name "${SCRIPT_DIR}/.env.before-setup")

@@ -96,7 +96,7 @@ Which units `--upgrade` renders: the units installed in `~/.config/containers/sy
 - Units of an earlier release, which name no checkout (the releases before the backups, firefox-sync's `main` branch): rendered again when they have the `SYNC_MASTER_SECRET` of your `.env`, so were rendered from it. It says so.
 - Units of another checkout, or of an earlier release with another `SYNC_MASTER_SECRET`: left as they are. It says what it found. If they are this install's, `./prepare_environment.sh --render-units` renders them from this `.env` (the units of before kept as above).
 
-To go back: the old files and images, the newest `.env.before-upgrade-<time>` as `.env`, the files of `quadlets.before-<time>/` back into `~/.config/containers/systemd/` (`firefox-sync-backup.timer` into `~/.config/systemd/user/`), `systemctl --user daemon-reload`, and the backup of step 1: see [Rollback](#rollback).
+To go back: the old files and images, the newest `.env.before-upgrade-<time>` as `.env`, the files of `quadlets.before-<time>/` back into `~/.config/containers/systemd/` (`firefox-sync-backup.timer` into `~/.config/systemd/user/`) with the `firefox-sync-*.env` files of the new units removed there when the units of before have none, `systemctl --user daemon-reload`, and the backup of step 1: see [Rollback](#rollback).
 
 New images of the same release, without new files: steps 5 and 6, with the units stopped as in step 2.
 
@@ -170,13 +170,13 @@ Run the one command, in the checkout:
 ./prepare_environment.sh --upgrade
 ```
 
-It writes the new names in `COMPOSE_FILE` (your own files stay in it, after them) and `COMPOSE_PROJECT_NAME` with the directory's name, the project's name before, and says so. Without `COMPOSE_PROJECT_NAME`, compose would name the project after `compose/`, the directory of the first file, and find none of your containers and volumes.
+It writes the new names in `COMPOSE_FILE` (your own files stay in it, after them; with docker compose on the Podman socket also `compose/podman.yml`, which the setup of before had only in its `-f` command) and `COMPOSE_PROJECT_NAME` with the directory's name, the project's name before, and says so. Without `COMPOSE_PROJECT_NAME`, compose would name the project after `compose/`, the directory of the first file, and find none of your containers and volumes.
 
 Without it:
 
 - `COMPOSE_FILE` with the old names: `docker compose` stops at once, the old file not found (`no such file or directory`). Nothing starts or changes until you run `--upgrade`.
 - No `COMPOSE_FILE` (Sync on MariaDB): `docker-compose.yml` is still there and runs the files of `compose/`, as the same project (with the compose of the [requirements](install/compose.md#requirements)). `--upgrade` writes `COMPOSE_FILE` there too, unless you have a `docker-compose.override.yml`, which compose reads only without `COMPOSE_FILE`.
-- Your own scripts and units with `-f`: change the names, and add `--env-file .env` (compose looks for `.env` in the directory of the first file).
+- Your own scripts and units with `-f`: change the names, and add `--env-file .env` (compose looks for `.env` in the directory of the first file; without it, it stops: `required variable SYNC_MASTER_SECRET is missing a value`). An exported `COMPOSE_FILE` or `COMPOSE_PROJECT_NAME` (your shell, a unit's `Environment=`) wins over `.env`: `--upgrade` says so, change it there too.
 - Your own compose files in `COMPOSE_FILE`: their relative paths are now relative to `compose/` (`./config` becomes `../config`).
 
 The release that added `db/` moved other files. The image names and the names of the installed Quadlet units did not change.

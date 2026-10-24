@@ -263,10 +263,12 @@ compose_test() {
   # an install from before compose/ (docs/upgrading.md#files-that-moved): COMPOSE_FILE with the old
   # names, no COMPOSE_PROJECT_NAME. MariaDB: none, docker-compose.yml, which includes those of
   # compose/ now: the stack's containers as they are; PostgreSQL: the name before docker-compose.sync-postgres.yml
+  # (the setup of before had docker-compose.podman.yml in its -f command only: none for MariaDB
+  # and PostgreSQL, --upgrade adds compose/podman.yml as compose runs on the Podman socket here)
   case "${backend}" in
-    mariadb) old_files="" new_files=compose/sync.yml:compose/sync-mariadb.yml ;;
+    mariadb) old_files="" ;;
     mysql) old_files=docker-compose.yml:docker-compose.podman.yml:docker-compose.sync-mysql.yml ;;
-    postgres) old_files=docker-compose.postgres.yml new_files=compose/sync.yml:compose/sync-postgres.yml ;;
+    postgres) old_files=docker-compose.postgres.yml ;;
   esac
   sed -i -e '/^COMPOSE_FILE=/d' -e '/^COMPOSE_PROJECT_NAME=/d' .env
   [ -z "${old_files}" ] || echo "COMPOSE_FILE=${old_files}" >> .env
@@ -284,8 +286,9 @@ compose_test() {
   check "$?" 0 "prepare_environment.sh --upgrade (${backend})"
   check "$(grep -cE "^($(IFS='|'; echo "${RENAMED_SETTINGS[*]#*=}"))=" .env) $(grep -c '^Renamed in .env' "upgrade-${backend}.log") $(grep -c '^  [A-Z_]* -> [A-Z_]*$' "upgrade-${backend}.log")" \
     "0 1 ${old_lines}" "--upgrade renames the old setting names, and says so (${backend})"
-  check "$(env_of COMPOSE_FILE) $(env_of COMPOSE_PROJECT_NAME) $(grep -c '^COMPOSE_FILE: the compose files moved to compose/' "upgrade-${backend}.log")" "${new_files} ffs 1" \
-    "--upgrade: COMPOSE_FILE ${old_files:-not set} with the files of compose/, the project's name, and says so (${backend})"
+  check "$(env_of COMPOSE_FILE) $(env_of COMPOSE_PROJECT_NAME) $(grep -c '^COMPOSE_FILE: the compose files moved to compose/' "upgrade-${backend}.log") $(grep -c '^COMPOSE_FILE: docker compose on the Podman socket: compose/podman.yml added' "upgrade-${backend}.log")" \
+    "${new_files} ffs 1 $([ "${backend}" = mysql ] && echo 0 || echo 1)" \
+    "--upgrade: COMPOSE_FILE ${old_files:-not set} with the files of compose/ and compose/podman.yml, the project's name, and says so (${backend})"
   check "$(env_of ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $([ "${backend}" != postgres ] || env_of SYNC_POSTGRES_APP_USER)" \
     "1 $([ "${backend}" != postgres ] || echo syncserver_app)" "--upgrade generates the missing passwords (${backend})"
   [ "${backend}" != postgres ] || check "$(env_of SYNC_POSTGRES_IMAGE)" "postgres:18" "--upgrade writes SYNC_POSTGRES_IMAGE=postgres:18 for PostgreSQL (postgres)"

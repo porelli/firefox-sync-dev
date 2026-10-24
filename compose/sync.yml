@@ -24,7 +24,8 @@ x-syncstorage: &syncstorage
     FFS_BOTH_ENV_NAMES: *both-env-names
     SYNC_HOST: 0.0.0.0
     SYNC_HUMAN_LOGS: 1
-    SYNC_MASTER_SECRET: ${SYNC_MASTER_SECRET}
+    # (required: without it compose read no .env, e.g. -f compose/... without --env-file .env)
+    SYNC_MASTER_SECRET: "${SYNC_MASTER_SECRET:?set it in .env; compose read none, run it in the checkout with COMPOSE_FILE in .env, or add --env-file .env to -f compose/... (docs/upgrading.md#files-that-moved)}"
     SYNC_TOKENSERVER__ENABLED: "true"
     SYNC_TOKENSERVER__RUN_MIGRATIONS: "true"
     SYNC_TOKENSERVER__INIT_NODE_URL: ${SYNC_PUBLIC_URL:-${SYNCSTORAGE_DOMAIN:-}}

@@ -4,8 +4,9 @@ Requires=docker.service
 After=docker.service
 
 [Service]
-# docker compose reads COMPOSE_FILE from .env (set by prepare_environment.sh for PostgreSQL
-# and for the self-hosted Mozilla accounts, which are then started and stopped with the rest)
+# docker compose reads COMPOSE_FILE and COMPOSE_PROJECT_NAME from .env in WorkingDirectory
+# (prepare_environment.sh writes them: the files of compose/, with the self-hosted accounts
+# theirs, which are then started and stopped with the rest)
 Restart=always
 User=<DOCKER_USER>
 Group=docker

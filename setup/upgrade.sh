@@ -187,6 +187,15 @@ upgrade_env() {
             esac
         done
     fi
+    # docker compose on the Podman socket: compose/podman.yml in COMPOSE_FILE (the setup of before
+    # had it in its -f command only)
+    local compose_podman
+    if [ "${quadlets}" != yes ] && [ -n "$(env_value COMPOSE_FILE)" ] && compose_on_podman \
+        && compose_podman=$(compose_files_podman "$(env_value COMPOSE_FILE)") && [ -n "${compose_podman}" ]; then
+        set_value COMPOSE_FILE "${compose_podman}"
+        echo "COMPOSE_FILE: docker compose on the Podman socket: compose/podman.yml added (now ${compose_podman})"
+    fi
+    compose_settings_check
     if [ "$(env_value SYNC_IMAGE)" = "syncstorage-rs-postgres" ] && [ "$(env_value SYNC_DB_CONTAINERS)" != 0 ] && [ -z "$(env_value SYNC_POSTGRES_APP_PASSWORD)" ]; then
         [ -n "$(env_value SYNC_POSTGRES_APP_USER)" ] || set_value SYNC_POSTGRES_APP_USER syncserver_app
         set_value SYNC_POSTGRES_APP_PASSWORD "$(generate_random_string 32)"

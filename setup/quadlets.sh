@@ -308,10 +308,15 @@ render_units() {
     for file in "${QUADLET_DIR}"/firefox-sync-*.env; do
         [ -f "${file}" ] && [ ! -f "${stage}/$(basename "${file}")" ] && removed+=("$(basename "${file}")")
     done
-    for file in "${stage}"/*; do
+    # (the environment files first: a unit is never there without the file it names)
+    for file in "${stage}"/*.env "${stage}"/*; do
+        [ -f "${file}" ] || continue
         filename=$(basename "${file}")
+        case " ${changed[*]-} " in *" ${filename} "*) continue ;; esac
         target_dir=${QUADLET_DIR}
         [[ "${filename}" == *.timer ]] && target_dir=${SYSTEMD_USER_DIR}
+        # (the same content: this user's only all the same)
+        if [[ "${filename}" == *.env ]] && [ -f "${target_dir}/${filename}" ]; then chmod 600 "${target_dir}/${filename}"; fi
         cmp -s "${file}" "${target_dir}/${filename}" || changed+=("${filename}")
     done
     if [ "${#changed[@]}" = 0 ] && [ "${#removed[@]}" = 0 ]; then

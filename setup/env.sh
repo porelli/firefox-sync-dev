@@ -250,7 +250,62 @@ fxa_installed() {
 compose_project() {
     local project
     project=${COMPOSE_PROJECT_NAME:-$( [ -f "${SCRIPT_DIR}/.env" ] && env_plain COMPOSE_PROJECT_NAME)}
-    printf '%s' "${project:-$(basename "${SCRIPT_DIR}")}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
+    normalize_project "${project:-$(basename "${SCRIPT_DIR}")}"
+}
+# a name as compose makes it a project name (compose-go's NormalizeProjectName): lowercase, only
+# a-z 0-9 _ -, no _ or - at its start
+normalize_project() {
+    local name
+    name=$(printf '%s' "${1}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+    while [ -n "${name}" ] && case "${name}" in [_-]*) true ;; *) false ;; esac; do name=${name#?}; done
+    printf '%s' "${name}"
+}
+# COMPOSE_PROJECT_NAME of .env (ENV_READ) against the name of this directory: a WARNING when they
+# differ (a copy of another checkout manages that one's containers and volumes,
+# docs/reference/settings.md); a NOTE when this shell exports COMPOSE_FILE or
+# COMPOSE_PROJECT_NAME with other values than .env's, which compose takes instead
+compose_settings_check() {
+    local here project file
+    here=$(normalize_project "$(basename "${SCRIPT_DIR}")")
+    project=$(env_plain COMPOSE_PROJECT_NAME)
+    if [ -n "${project}" ] && [ "${project}" != "${here}" ]; then
+        echo "WARNING: COMPOSE_PROJECT_NAME=${project} in .env, while this directory would be the project ${here}:"
+        echo "  docker compose here runs the containers and volumes of the project ${project}. If this is a copy of"
+        echo "  another checkout, \`docker compose down -v\` here removes that one's volumes: give a second stack a name"
+        echo "  of its own in .env (docs/reference/settings.md, COMPOSE_PROJECT_NAME)"
+    fi
+    file=$(env_plain COMPOSE_FILE)
+    [ -n "$(printenv COMPOSE_FILE)" ] && [ "$(printenv COMPOSE_FILE)" != "${file}" ] && \
+        echo "NOTE: COMPOSE_FILE is exported where this runs ($(printenv COMPOSE_FILE)), which docker compose takes over .env's (${file:-none}): change it there too (your shell, a unit's Environment=)"
+    [ -n "$(printenv COMPOSE_PROJECT_NAME)" ] && [ "$(printenv COMPOSE_PROJECT_NAME)" != "${project}" ] && \
+        echo "NOTE: COMPOSE_PROJECT_NAME is exported where this runs ($(printenv COMPOSE_PROJECT_NAME)), which docker compose takes over .env's (${project:-none}): change it there too (your shell, a unit's Environment=)"
+    return 0
+}
+# docker compose on the Podman socket: DOCKER_HOST is Podman's, the project's containers are
+# Podman's, or Podman is there without Docker (not the Quadlets: their caller asks)
+compose_on_podman() {
+    case "${DOCKER_HOST:-}" in *podman*) return 0 ;; esac
+    command -v podman > /dev/null 2>&1 || return 1
+    command -v docker > /dev/null 2>&1 || return 0
+    [ -n "$(podman ps -a -q --filter "label=com.docker.compose.project=$(compose_project)" 2> /dev/null)" ]
+}
+# COMPOSE_FILE with compose/podman.yml after the last file of compose/ (nothing printed when it has it)
+compose_files_podman() {
+    local part parts=() new="" done=no last=-1 i=0
+    case ":${1}:" in *:compose/podman.yml:*|*/compose/podman.yml:*) return 0 ;; esac
+    IFS=: read -r -a parts <<< "${1}"
+    for part in "${parts[@]}"; do
+        case "${part}" in compose/*.yml|*/compose/*.yml) last=${i} ;; esac
+        i=$((i + 1))
+    done
+    i=0
+    for part in "${parts[@]}"; do
+        new=${new:+${new}:}${part}
+        if [ "${i}" = "${last}" ]; then new="${new}:${part%compose/*}compose/podman.yml"; done=yes; fi
+        i=$((i + 1))
+    done
+    [ "${done}" = yes ] || new=${new:+${new}:}compose/podman.yml
+    printf '%s\n' "${new}"
 }
 # the compose files of an install (COMPOSE_FILE): compose/sync.yml and the Sync database's file,
 # with self-hosted accounts compose/fxa.yml and theirs, with docker compose on the Podman socket

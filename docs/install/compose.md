@@ -113,9 +113,9 @@ COMPOSE_PROJECT_NAME=firefox-sync
 
 Compose takes the directory of the first file as the project's directory:
 
-- `COMPOSE_PROJECT_NAME` keeps the project, and so the names of the containers and volumes, that of the directory of the checkout. Without it compose would name the project `compose`, and find none of them.
+- `COMPOSE_PROJECT_NAME` keeps the project, and so the names of the containers and volumes, that of the directory of the checkout. Without it compose would name the project `compose`, and find none of them. A copy of the checkout, or a second stack, needs a name of its own (`COMPOSE_PROJECT_NAME` in [Settings](../reference/settings.md#sync)).
 - Relative paths in compose files, also in your own files in `COMPOSE_FILE`, are relative to `compose/`: `../config/` is the checkout's `config/`.
-- With `-f` instead of `COMPOSE_FILE`, add `--env-file .env`: compose looks for `.env` in `compose/` otherwise.
+- With `-f` instead of `COMPOSE_FILE`, add `--env-file .env`: compose looks for `.env` in `compose/` otherwise, and stops (`required variable SYNC_MASTER_SECRET is missing a value`).
 
 `docker-compose.yml` at the top is only for the installs from before `compose/` that never set `COMPOSE_FILE`: it runs `compose/sync.yml` and `compose/sync-mariadb.yml` ([Files that moved](../upgrading.md#files-that-moved)).
 

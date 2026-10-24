@@ -19,14 +19,15 @@ unset ENV_READ
 # where this script was started from (the default checkout of the setup and of --upgrade), and
 # its real path, its symlinks followed (readlink without -f: macOS before 12.3 has none)
 FFS_ENTRY_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-FFS_REAL=${BASH_SOURCE[0]}
-while [ -L "${FFS_REAL}" ]; do
+FFS_REAL=${BASH_SOURCE[0]} FFS_LINKS=0
+while [ -L "${FFS_REAL}" ] && [ "${FFS_LINKS}" -lt 40 ]; do
     FFS_LINK=$(readlink "${FFS_REAL}") || break
     case "${FFS_LINK}" in /*) FFS_REAL=${FFS_LINK} ;; *) FFS_REAL=$(dirname "${FFS_REAL}")/${FFS_LINK} ;; esac
+    FFS_LINKS=$((FFS_LINKS + 1))
 done
 # the checkout of this script (setup/, config/fxa/fixed-in), whatever directory the setup writes into
 SELF_DIR=$( cd -- "$( dirname -- "${FFS_REAL}" )" &> /dev/null && pwd )
-unset FFS_REAL FFS_LINK
+unset FFS_REAL FFS_LINK FFS_LINKS
 
 # sourced (tests/prepare_functions.sh, tests/fxa_fix.sh): the functions only, below
 FFS_SOURCED=""

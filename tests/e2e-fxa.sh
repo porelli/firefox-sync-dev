@@ -270,6 +270,9 @@ source "${TESTS}/healthy.sh"
 # compose prefers the environment to --env-file: change both
 set_env() { sed -i "s|^$1=.*|$1=$2|" "${ENV_FILE}"; export "$1=$2"; }
 check() { if [ "$1" = "$2" ]; then echo "PASS: $3"; else echo "FAIL: $3 (expected '$2', got '$1')"; FAILED=1; return 1; fi; }
+# -f compose/... without --env-file .env (compose/.env: none): compose stops, compose/fxa.yml too
+check "$(cd "${CODE}" && env -i PATH="${PATH}" HOME="${HOME}" ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} SYNC_MASTER_SECRET=x docker compose -f compose/sync.yml -f compose/sync-mariadb.yml -f compose/fxa.yml -f compose/fxa-mysql.yml config -q > "${WORK}/no-env.log" 2>&1; echo $?) $(grep -q 'required variable FXA_OAUTH_SECRET is missing a value: set it in .env' "${WORK}/no-env.log" && echo 1)" \
+  "1 1" "-f compose/fxa.yml without --env-file .env: docker compose stops, saying what to do"
 state() { docker inspect -f "{{.State.$2}}" "$(dc ps -a -q "$1")" 2> /dev/null; }
 
 teardown() {

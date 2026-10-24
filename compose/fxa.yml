@@ -144,7 +144,8 @@ services:
       # secrets
       # the auth server signs OAuth assertions with OAUTH_SERVER_SECRET_KEY and accepts
       # those signed with one of AUTH_SERVER_SECRETS: they must share the secret
-      OAUTH_SERVER_SECRET_KEY: ${FXA_OAUTH_SECRET}
+      # (required: as SYNC_MASTER_SECRET in sync.yml, compose read no .env without it)
+      OAUTH_SERVER_SECRET_KEY: "${FXA_OAUTH_SECRET:?set it in .env; compose read none, run it in the checkout with COMPOSE_FILE in .env, or add --env-file .env to -f compose/... (docs/upgrading.md#files-that-moved)}"
       OAUTH_SERVER_SECRETS: ${FXA_OAUTH_SECRET}
       AUTH_SERVER_SECRETS: ${FXA_OAUTH_SECRET}
       AUTH_SERVER_SHARED_SECRET: ${FXA_AUTH_SECRET}

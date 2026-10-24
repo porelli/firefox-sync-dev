@@ -241,6 +241,29 @@ for c in "${MOVED_CASES[@]}"; do
 done
 check "$(unset COMPOSE_PROJECT_NAME; SCRIPT_DIR=${WORK}/My_Sync.Dir-2 compose_project) $(COMPOSE_PROJECT_NAME=Other compose_project)" "my_syncdir-2 other" \
   "compose_project: the directory's name as compose makes it a project name, or COMPOSE_PROJECT_NAME"
+# as compose-go's NormalizeProjectName: lowercase, a-z 0-9 _ -, no _ or - first
+for c in 'firefox-sync => firefox-sync' 'FFS_Prod => ffs_prod' '_-ffs.copy => ffscopy' '--a_b-c => a_b-c' '___ => ' 'Été 2 => t2' 'ffs staging => ffsstaging' '9lives => 9lives'; do
+  check "$(normalize_project "${c% => *}")" "${c#* => }" "normalize_project: '${c% => *}'"
+done
+check "$(unset COMPOSE_PROJECT_NAME; SCRIPT_DIR=${WORK}/-_Lead.Ing compose_project)" leading "compose_project: the directory's name without its leading - and _"
+# a copy of a checkout: .env names the original's project, said loudly; an exported value, a NOTE
+mkdir -p "${WORK}/ffs-staging" && printf 'COMPOSE_PROJECT_NAME=ffs\nCOMPOSE_FILE=compose/sync.yml:compose/sync-mariadb.yml\n' > "${WORK}/ffs-staging/.env"
+said=$(unset COMPOSE_FILE COMPOSE_PROJECT_NAME; SCRIPT_DIR=${WORK}/ffs-staging ENV_READ=${WORK}/ffs-staging/.env compose_settings_check)
+check "$(grep -c '^WARNING: COMPOSE_PROJECT_NAME=ffs in .env, while this directory would be the project ffs-staging:' <<< "${said}") $(grep -c 'down -v' <<< "${said}")" "1 1" \
+  "compose_settings_check: a copy's .env with the original's project name: a WARNING, and what down -v would do"
+said=$(SCRIPT_DIR=${WORK}/ffs-staging ENV_READ=${WORK}/ffs-staging/.env COMPOSE_FILE=docker-compose.yml COMPOSE_PROJECT_NAME=ffs compose_settings_check)
+check "$(grep -c '^NOTE: COMPOSE_FILE is exported' <<< "${said}") $(grep -c '^NOTE: COMPOSE_PROJECT_NAME is exported' <<< "${said}")" "1 0" \
+  "compose_settings_check: an exported COMPOSE_FILE other than .env's, a NOTE (COMPOSE_PROJECT_NAME the same: none)"
+mkdir -p "${WORK}/ffs" && printf 'COMPOSE_PROJECT_NAME=ffs\n' > "${WORK}/ffs/.env"
+check "$(unset COMPOSE_FILE COMPOSE_PROJECT_NAME; SCRIPT_DIR=${WORK}/ffs ENV_READ=${WORK}/ffs/.env compose_settings_check | wc -l | tr -d ' ')" 0 "compose_settings_check: the directory's own name, nothing said"
+# docker compose on the Podman socket: compose/podman.yml after the files of compose/
+for c in 'compose/sync.yml:compose/sync-mariadb.yml => compose/sync.yml:compose/sync-mariadb.yml:compose/podman.yml' \
+  'compose/sync.yml:compose/sync-postgres.yml:compose/fxa.yml:compose/fxa-mysql.yml:mine.yml => compose/sync.yml:compose/sync-postgres.yml:compose/fxa.yml:compose/fxa-mysql.yml:compose/podman.yml:mine.yml' \
+  '/opt/f/compose/sync.yml:/opt/f/compose/sync-mysql.yml => /opt/f/compose/sync.yml:/opt/f/compose/sync-mysql.yml:/opt/f/compose/podman.yml' \
+  'compose/sync.yml:compose/sync-mysql.yml:compose/podman.yml => '; do
+  check "$(compose_files_podman "${c% => *}")" "${c#* => }" "compose_files_podman: '${c% => *}'"
+done
+check "$(DOCKER_HOST=unix:///run/user/1000/podman/podman.sock compose_on_podman && echo podman)" podman "compose_on_podman: DOCKER_HOST is Podman's socket"
 mkdir -p "${WORK}/named" && printf 'COMPOSE_PROJECT_NAME=kept\n' > "${WORK}/named/.env"
 check "$(unset COMPOSE_PROJECT_NAME; SCRIPT_DIR=${WORK}/named compose_project)" kept "compose_project: COMPOSE_PROJECT_NAME of .env"
 
@@ -296,14 +319,16 @@ check "$? ${leaks} $([ "${envs}" -gt 10 ] && echo files) $(for f in "${R}/units"
   "0 0 files 600 1" "render_units: no secret in a unit, the timers either; each unit's secrets in its environment file (EnvironmentFile=), 0600"
 check "$(grep -cxF "SMTP_PASS=${smtp}" "${R}/units/firefox-sync-fxa-auth.env") $(grep -cxF 'ADMIN_NOTIFY=ntfy://tokenTOKEN123@ntfy.example.org/ffs' "${R}/units/firefox-sync-admin.env") $(grep -c '^SYNC_MASTER_SECRET=s3cretValue$' "${R}/units/firefox-sync-syncstorage.env") $(grep -c 'SYNC_MASTER_SECRET' "${R}/units/firefox-sync-admin.env")" \
   "1 1 1 0" "the environment files: each value as it is (a %, quotes and \\ too: no systemd there), a unit's own secrets only"
+chmod 644 "${R}/units/firefox-sync-syncstorage.env"
 render again
-check "$(grep -c 'nothing changed' "${WORK}/render-again.log")" 1 "render_units again: nothing changed"
+check "$(grep -c 'nothing changed' "${WORK}/render-again.log") $(mode "${R}/units/firefox-sync-syncstorage.env")" "1 600" "render_units again: nothing changed, an environment file made 0644 back to 0600"
 # the units of before, their secrets in them: rendered, the environment files written, the secrets out
 sed -i.bak '/^EnvironmentFile=/d' "${R}/units/firefox-sync-syncstorage.container" && printf 'Environment=SYNC_MASTER_SECRET=s3cretValue\n' >> "${R}/units/firefox-sync-syncstorage.container"
 rm -f "${R}/units/firefox-sync-syncstorage.env" "${R}/units"/*.bak
 render old
-check "$(grep -c 's3cretValue' "${R}/units/firefox-sync-syncstorage.container") $(mode "${R}/units/firefox-sync-syncstorage.env") $(grep -c '^  ✓ firefox-sync-syncstorage\.\(container\|env\)$' "${WORK}/render-old.log")" "0 600 2" \
-  "a unit with its secret in it: rendered again, the secret into its environment file"
+check "$(grep -c 's3cretValue' "${R}/units/firefox-sync-syncstorage.container") $(mode "${R}/units/firefox-sync-syncstorage.env") $(grep '^  ✓ firefox-sync-syncstorage\.\(container\|env\)$' "${WORK}/render-old.log" | paste -sd' ')" \
+  "0 600   ✓ firefox-sync-syncstorage.env   ✓ firefox-sync-syncstorage.container" \
+  "a unit with its secret in it: rendered again, its environment file written first, then the unit without the secret"
 # a unit not rendered any more (FXA_DB_CONTAINERS=0): its environment file removed too
 printf 'FXA_DB_CONTAINERS=0\n' >> "${R}/.env"
 render external
@@ -317,7 +342,8 @@ sed -e 's|<REPLACE_WITH_SOMETHING_SECURE>|s3cret|' -e 's|<REPLACE_WITH_YOUR_DOMA
   -e 's|^# COMPOSE_FILE=.*|COMPOSE_FILE=docker-compose.postgres.yml|' -e 's|^FXA_MYSQL_PASSWORD=.*|FXA_MYSQL_PASSWORD=<REPLACE_WITH_SOMETHING_SECURE>|' \
   -e 's|^SYNC_IMAGE=.*|SYNC_IMAGE=syncstorage-rs-postgres|' -e 's|^SYNC_POSTGRES_APP_PASSWORD=.*|SYNC_POSTGRES_APP_PASSWORD=app|' "${CODE}/.env-example" > "${WORK}/up/.env"
 chmod 644 "${WORK}/up/.env"
-(unset COMPOSE_PROJECT_NAME; FFS_ENTRY_DIR=${WORK}/up QUADLET_DIR=${WORK}/no-units upgrade_env) < /dev/null > "${WORK}/upgrade.log" 2>&1
+# (docker compose on Docker here, also on a host with Podman: compose_on_podman is tested above)
+(unset COMPOSE_PROJECT_NAME; compose_on_podman() { return 1; }; FFS_ENTRY_DIR=${WORK}/up QUADLET_DIR=${WORK}/no-units upgrade_env) < /dev/null > "${WORK}/upgrade.log" 2>&1
 up_rc=$?
 upv() { ENV_READ=${WORK}/up/.env SCRIPT_DIR=${WORK}/up env_plain "$1"; }
 check "${up_rc} $(upv COMPOSE_FILE) $(upv COMPOSE_PROJECT_NAME) $(upv SYNC_PUBLIC_URL) $(upv SYNC_MAX_USERS) $(grep -c '^\(SYNCSTORAGE_DOMAIN\|MAX_USERS\)=' "${WORK}/up/.env")" \
@@ -326,7 +352,7 @@ check "${up_rc} $(upv COMPOSE_FILE) $(upv COMPOSE_PROJECT_NAME) $(upv SYNC_PUBLI
 check "$(upv ADMIN_DB_PASSWORD | grep -cE '^[A-Za-z0-9]{32}$') $(upv SYNC_POSTGRES_IMAGE) $(mode "${WORK}/up/.env") $(ls "${WORK}/up"/.env.before-upgrade-* | wc -l | tr -d ' ') $(grep -c '^Then: docker compose pull && docker compose up -d$' "${WORK}/upgrade.log")" \
   "1 postgres:18 600 1 1" "upgrade_env: the missing password, the PostgreSQL major of before, .env this user's only, the old one kept, what to run next" \
   || cat "${WORK}/upgrade.log"
-(unset COMPOSE_PROJECT_NAME; FFS_ENTRY_DIR=${WORK}/up QUADLET_DIR=${WORK}/no-units upgrade_env) < /dev/null > "${WORK}/upgrade-again.log" 2>&1
+(unset COMPOSE_PROJECT_NAME; compose_on_podman() { return 1; }; FFS_ENTRY_DIR=${WORK}/up QUADLET_DIR=${WORK}/no-units upgrade_env) < /dev/null > "${WORK}/upgrade-again.log" 2>&1
 check "$? $(ls "${WORK}/up"/.env.before-upgrade-* | wc -l | tr -d ' ') $(grep -c '^Updated ' "${WORK}/upgrade-again.log")" "0 1 0" "upgrade_env run again: nothing changes"
 
 [ "${FAILED}" = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
