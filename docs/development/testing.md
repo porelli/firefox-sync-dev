@@ -86,6 +86,8 @@ Every command copies the checkout into its slot first, so uncommitted changes ar
 - `FFS_GHCR_TOKEN`: a token for `docker login ghcr.io` in the VM at `provision`, needed only when `REPOSITORY` is private: a fine-grained or classic token with `read:packages` only. It is stored in the VM's `~/.docker/config.json`. Without it the VM pulls public images only; `FFS_GHCR_GH=1` (or a yes at the prompt) uses `gh auth token` instead, a broader token. No token is printed.
 - `FFS_VM_SSH_KEY`: the SSH key, by default `~/.ssh/id_ed25519`, or one `create` makes in `FFS_VM_DIR` when there is none. `CPUS` and `MEM` (MB): by default three quarters of the host's CPUs and half its memory.
 
+`create` also makes the VM's SSH host key and gives it to cloud-init, so every connection checks it against `FFS_VM_DIR/known_hosts` (connections share a master of the script's own, not one of `~/.ssh/config`). A VM created before has its key recorded at the first connection: trust on first use, on the host's loopback. The slots' locks are in `FFS_VM_DIR/slots`; the script refuses a `FFS_VM_DIR` that is not yours or that others can write to. Test logs go to a new private folder in `${TMPDIR:-/tmp}`, or `LOGS`. `provision` sends the token only to the host key it knows, and only when the port's listener is the VM's qemu.
+
 Tested on macOS on Apple silicon (arm64, HVF). macOS on Intel and Linux with KVM, and with them the amd64 VM, are written for (`qemu-system-x86_64`, the OVMF and AAVMF firmware paths, `genisoimage` and `xorriso`) but not tested yet.
 
 ## The Sync server and Podman
