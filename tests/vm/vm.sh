@@ -159,7 +159,8 @@ OLD_LOCKS=/tmp/ffs-vm-slots
 PASS_ENV=(REPOSITORY TAG KEEP FXA_IMAGE FXA_VERSION FXA_ARCH FXA_PAIRING_IMAGE ADMIN_IMAGE FXA_DB
   FXA_MARIADB_IMAGE FXA_MARIADB_FROM POSTGRES_IMAGE EXTERNAL_DB SYNC_DB FXA_FROM FXA_FROM_ARCH
   FXA_SAME_TAG FXA_ACCOUNT_EVENTS FXA_TEST_IMAGE SKIP_BROWSER SKIP_FXA UPGRADE_FROM PYTEST_ARGS
-  FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MYSQL_TO SYNC_MYSQL_IMAGE FXA_NEW_LOCAL FXA_MYSQL_FROM SYNC_MYSQL_FROM)
+  FXA_MYSQL_IMAGE FXA_MYSQL_ARGS FXA_MYSQL_TO SYNC_MYSQL_IMAGE FXA_NEW_LOCAL FXA_MYSQL_FROM SYNC_MYSQL_FROM
+  DB_BOOTSTRAP)
 SUITES_ALL=(e2e-mysql e2e-postgres podman e2e-fxa)
 
 vssh() { known_host && ssh "${SSH_OPTS[@]}" ubuntu@127.0.0.1 "$@"; }
@@ -1126,6 +1127,12 @@ ssh_cmd() {
   local cmd="$*"
   local kind_re='helm(-[a-z]+)?\.sh.*e2e|(^|[^a-z])kind([^a-z]|$)'
   if [ -n "${KIND:-}" ] || [[ "${cmd}" =~ ${kind_re} ]]; then needs=kind; fi
+  # the podman suite run by hand takes the Podman lock too, as vm.sh test podman does: the
+  # Quadlets have one set of names per VM user
+  local podman_re='podman\.sh|(^|[^a-z_-])systemctl --user'
+  if [ -n "${PODMAN:-}" ] || [[ "${cmd}" =~ ${podman_re} ]]; then
+    if [ "${needs}" = - ]; then needs=podman; else needs="${needs},podman"; fi
+  fi
   enter_slot "ssh ${cmd:0:60}" ${NOSYNC:+nosync}
   resolve_upgrade_from
   [ -z "${UPGRADE_FROM:-}" ] || cmd="export UPGRADE_FROM=${UPGRADE_FROM} && ${cmd}"
