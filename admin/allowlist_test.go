@@ -25,16 +25,35 @@ func allowlistFake(on *bool, eventAt *int64) *fakeFxa {
 	// the refusals whose event is written (ffs_mark_refusal_reported)
 	var mu sync.Mutex
 	reported := map[string]int64{rejectUID: 1}
+	// the details of ffs_events written
+	logged := map[string]bool{}
 	fake.execErr = func(query string, args []driver.Value) error {
-		if strings.Contains(query, "ffs_mark_refusal_reported") {
-			mu.Lock()
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.Contains(query, "ffs_mark_refusal_reported"):
 			reported[args[0].(string)] = 1
-			mu.Unlock()
+		case strings.HasPrefix(query, "INSERT INTO ffs_events"):
+			logged[args[2].(string)] = true
 		}
 		return nil
 	}
-	fake.answer = func(query string, _ []driver.Value) *fakeRows {
+	fake.answer = func(query string, args []driver.Value) *fakeRows {
 		switch {
+		case strings.Contains(query, "WHERE uid = '*dropped*'"):
+			if *eventAt < 100 {
+				return &fakeRows{}
+			}
+			// (eventAt 100 and more: that many refusals dropped)
+			return &fakeRows{cols: []string{"n", "last"}, rows: [][]driver.Value{{*eventAt, time.Now().UnixMilli()}}}
+		case strings.Contains(query, "FROM ffs_events WHERE kind = ? AND detail = ?"):
+			mu.Lock()
+			defer mu.Unlock()
+			n := int64(0)
+			if logged[args[1].(string)] {
+				n = 1
+			}
+			return &fakeRows{cols: []string{"n"}, rows: [][]driver.Value{{n}}}
 		case strings.Contains(query, "config_key = 'allowed_accounts'"):
 			n := int64(0)
 			if *on {
@@ -47,10 +66,10 @@ func allowlistFake(on *bool, eventAt *int64) *fakeFxa {
 		case strings.Contains(query, "FROM sync_refused_accounts"):
 			mu.Lock()
 			defer mu.Unlock()
-			return &fakeRows{cols: []string{"uid", "first", "last", "attempts", "rejected", "by", "reported"}, rows: [][]driver.Value{
-				{pendingUID, int64(1700000300000), int64(1700000400000), int64(3), int64(0), "", reported[pendingUID]},
-				{"bob", int64(1700000200000), int64(1700000200000), int64(1), int64(0), "", reported["bob"]},
-				{rejectUID, int64(1700000100000), int64(1700000500000), int64(7), int64(1700000150000), "admin (password)", reported[rejectUID]},
+			return &fakeRows{cols: []string{"uid", "first", "last", "attempts", "rejected", "by", "reported", "id"}, rows: [][]driver.Value{
+				{pendingUID, int64(1700000300000), int64(1700000400000), int64(3), int64(0), "", reported[pendingUID], int64(12)},
+				{"bob", int64(1700000200000), int64(1700000200000), int64(1), int64(0), "", reported["bob"], int64(11)},
+				{rejectUID, int64(1700000100000), int64(1700000500000), int64(7), int64(1700000150000), "admin (password)", reported[rejectUID], int64(10)},
 			}}
 		case strings.Contains(query, "SELECT n.current_load"):
 			// the node's load: counted, its accounts (eventAt: the drift)
@@ -255,24 +274,35 @@ func TestWatchRefusals(t *testing.T) {
 	on, eventAt := true, int64(0)
 	fake := allowlistFake(&on, &eventAt)
 	app, _, _, _ := allowlistApp(t, fake, true)
-	// both pending ones, oldest first, once each (their rows are marked), the rejected one never
+	app.rec = &Recorder{db: app.sync, current: map[string]*metric{}, cumulative: map[string]*metric{}}
+	marks := func() []string {
+		var m []string
+		for i, q := range fake.statements() {
+			if q == "CALL ffs_mark_refusal_reported(?)" {
+				m = append(m, fake.args[i][0].(string))
+			}
+		}
+		return m
+	}
+	// the limit of the kind reached this minute: nothing written, nothing marked, no alert
+	app.rec.eventsMinute, app.rec.eventsCount = time.Now().Unix()/60, map[string]int{"sign-up refused": maxEventsPerMinute}
+	app.health.watchRefusals(t.Context())
+	if lines := alerts(t, app.alerter, 1); len(lines) != 0 || len(marks()) != 0 {
+		t.Errorf("over the limit: %q, marked %q", lines, marks())
+	}
+	// room again: both pending ones, oldest first, written then marked, the rejected one never
+	app.rec.eventsMinute = 0
 	app.health.watchRefusals(t.Context())
 	app.health.watchRefusals(t.Context())
 	lines := alerts(t, app.alerter, 3)
-	want := []string{"sign-up refused: " + refusalEvent("bob"), "sign-up refused: " + refusalEvent(pendingUID)}
+	want := []string{"sign-up refused: " + refusalEvent("bob", 11), "sign-up refused: " + refusalEvent(pendingUID, 12)}
 	if len(lines) != 2 || !strings.HasSuffix(lines[0], want[0]) || !strings.HasSuffix(lines[1], want[1]) {
 		t.Errorf("first rounds:\n%s", strings.Join(lines, "\n"))
 	}
-	var marks []string
-	for i, q := range fake.statements() {
-		if q == "CALL ffs_mark_refusal_reported(?)" {
-			marks = append(marks, fake.args[i][0].(string))
-		}
+	if strings.Join(marks(), " ") != "bob "+pendingUID {
+		t.Errorf("marked: %q", marks())
 	}
-	if strings.Join(marks, " ") != "bob "+pendingUID {
-		t.Errorf("marked: %q", marks)
-	}
-	// a restart (a new Health): what the rows say, nothing again
+	// a restart: the rows say they are written, nothing again
 	app.health = newHealth(app)
 	app.health.watchRefusals(t.Context())
 	if lines := alerts(t, app.alerter, 1); len(lines) != 0 {
@@ -284,6 +314,48 @@ func TestWatchRefusals(t *testing.T) {
 	app.health.watchRefusals(t.Context())
 	if len(fake.queries) != n+1 {
 		t.Errorf("off: %q", fake.queries[n:])
+	}
+}
+
+func TestRefusalLoggedNotMarked(t *testing.T) {
+	// the event of bob's refusal is in the log, its row not marked (a pass that died): only marked
+	on, eventAt := true, int64(0)
+	fake := allowlistFake(&on, &eventAt)
+	app, _, _, _ := allowlistApp(t, fake, true)
+	app.rec = &Recorder{db: app.sync, current: map[string]*metric{}, cumulative: map[string]*metric{}}
+	if err := app.rec.Event("sign-up refused", refusalEvent("bob", 11)); err != nil {
+		t.Fatal(err)
+	}
+	app.health.watchRefusals(t.Context())
+	lines := alerts(t, app.alerter, 2)
+	if len(lines) != 1 || !strings.HasSuffix(lines[0], refusalEvent(pendingUID, 12)) {
+		t.Errorf("alerts: %q", lines)
+	}
+	inserts := 0
+	for _, q := range fake.statements() {
+		if strings.HasPrefix(q, "INSERT INTO ffs_events") {
+			inserts++
+		}
+	}
+	if inserts != 2 {
+		t.Errorf("%d events written, not 2 (bob's of before, the other's)", inserts)
+	}
+}
+
+func TestDroppedRefusals(t *testing.T) {
+	on, eventAt := true, int64(0)
+	app, h, c, _ := allowlistApp(t, allowlistFake(&on, &eventAt), true)
+	page := getPage(h, "/", c).Body.String()
+	if strings.Contains(page, "Pending accounts list") {
+		t.Error("none dropped: a check")
+	}
+	eventAt = 150
+	page = getPage(h, "/", c).Body.String()
+	if !strings.Contains(page, "<td>Pending accounts list</td><td><span class=\"pill warn\">warning</span></td><td>150 accounts refused without a record since the list was full") {
+		t.Errorf("dropped: no warning")
+	}
+	if out := prometheusText(t, app); !strings.Contains(out, "ffs_sync_refusals_dropped 150\n") {
+		t.Errorf("metrics: %s", out)
 	}
 }
 
@@ -326,8 +398,14 @@ func TestWatchNodeLoad(t *testing.T) {
 		t.Errorf("large drift: %d resyncs, %+v", resyncs(), check)
 	}
 	page := getPage(h, "/", c).Body.String()
-	if !strings.Contains(page, "<td>Sync node load</td><td><span class=\"pill warn\">warning</span>") {
-		t.Errorf("overview: no warning of the node's load")
+	if !strings.Contains(page, "<td>Sync node load</td><td><span class=\"pill warn\">warning</span>") || strings.Count(page, "<td>Sync node load</td>") != 1 {
+		t.Errorf("overview: not one warning of the node's load (%d)", strings.Count(page, "<td>Sync node load</td>"))
+	}
+	// the node of SYNC_PUBLIC_URL with or without its trailing /
+	for i, q := range fake.queries {
+		if strings.Contains(q, "SELECT n.current_load") && (!strings.Contains(q, "TRIM(TRAILING '/' FROM n.node) =") || fake.qargs[i][0] != "https://sync.example.com") {
+			t.Errorf("node load query: %s %v", q, fake.qargs[i])
+		}
 	}
 	if check, _ := app.health.nodeLoadCheck(now.Add(nodeLoadShown + time.Hour)); !check.OK {
 		t.Errorf("a day later: %+v", check)

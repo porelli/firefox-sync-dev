@@ -105,8 +105,8 @@ func (a *App) setupChecks(ctx context.Context, status *SyncStatus, components []
 			checks = append(checks, c)
 		}
 	}
-	if a.health != nil {
-		if c, ok := a.health.nodeLoadCheck(time.Now()); ok {
+	if a.sync != nil {
+		if c, ok := a.droppedCheck(ctx, time.Now()); ok {
 			checks = append(checks, c)
 		}
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -58,8 +59,9 @@ type RefusedAccount struct {
 	RejectedAt         time.Time // zero: pending
 	RejectedBy         string
 	ValidUID, Rejected bool
-	// its event written (the first refusal's, once)
+	// its event written (the first refusal's, once); ID: named in that event
 	Reported bool
+	ID       int64
 }
 
 // SyncAllowlist: what the overview shows
@@ -100,8 +102,8 @@ func (s *SyncDB) AllowedAccounts(ctx context.Context) ([]AllowedAccount, error) 
 // RefusedAccounts: newest first
 func (s *SyncDB) RefusedAccounts(ctx context.Context) ([]RefusedAccount, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT uid, first_at, last_at, attempts, COALESCE(rejected_at, 0), COALESCE(rejected_by, ''),
-		CASE WHEN reported_at IS NULL THEN 0 ELSE 1 END
-		FROM sync_refused_accounts ORDER BY first_at DESC, uid`)
+		CASE WHEN reported_at IS NULL THEN 0 ELSE 1 END, id
+		FROM sync_refused_accounts WHERE uid <> '*dropped*' ORDER BY first_at DESC, uid`)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +112,7 @@ func (s *SyncDB) RefusedAccounts(ctx context.Context) ([]RefusedAccount, error) 
 	for rows.Next() {
 		var r RefusedAccount
 		var first, last, rejected, reported int64
-		if err := rows.Scan(&r.UID, &first, &last, &r.Attempts, &rejected, &r.RejectedBy, &reported); err != nil {
+		if err := rows.Scan(&r.UID, &first, &last, &r.Attempts, &rejected, &r.RejectedBy, &reported, &r.ID); err != nil {
 			return nil, err
 		}
 		r.FirstAt, r.LastAt, r.Rejected = ms(first), ms(last), rejected != 0
@@ -144,6 +146,18 @@ func (s *SyncDB) RemoveAllowedAccount(ctx context.Context, uid string) error {
 
 func (s *SyncDB) RejectAccount(ctx context.Context, uid, by string) error {
 	return s.call(ctx, "ffs_reject_account", uid, oneLine(by, 255))
+}
+
+// DroppedRefusals: the refusals not recorded because the list was full (1000 accounts, none
+// it could let go: rejected, or not reported yet), and the last one
+func (s *SyncDB) DroppedRefusals(ctx context.Context) (int, time.Time, error) {
+	var n int
+	var last int64
+	err := s.db.QueryRowContext(ctx, "SELECT attempts, last_at FROM sync_refused_accounts WHERE uid = '*dropped*'").Scan(&n, &last)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, time.Time{}, nil
+	}
+	return n, ms(last), err
 }
 
 // MarkRefusalReported: the event of the refusal is written (its row keeps it: no clock, no
@@ -334,17 +348,18 @@ func (a *App) changeAllowlist(w http.ResponseWriter, r *http.Request, s *session
 	a.doneTo(w, r, s, allowlistBack, message, err)
 }
 
-// refusalEvent: the event of an account refused by the allowlist (kind sign-up refused, alerted)
-func refusalEvent(uid string) string {
-	return "Sync: account " + oneLine(uid, 64) + " is not on the allowlist (SYNC_ALLOWED_ACCOUNTS): refused, waiting for your approval"
+// refusalEvent: the event of an account refused by the allowlist (kind sign-up refused, alerted),
+// with the id of its row: a second pass knows it is written
+func refusalEvent(uid string, id int64) string {
+	return fmt.Sprintf("Sync: account %s is not on the allowlist (SYNC_ALLOWED_ACCOUNTS): refused, waiting for your approval (refusal %d)", oneLine(uid, 64), id)
 }
 
-const refusalPrefix = "Sync: account "
-
-// watchRefusals: an event (and its alert, both limited per minute like every kind) for each
-// account the allowlist refused that has none yet, once: the first refusal of an account, not
-// its retries, nor the rejected ones. Its row records that the event is written
-// (ffs_mark_refusal_reported), so a restart neither repeats nor loses them, whatever the clocks
+// watchRefusals: an event (and its alert) for each account the allowlist refused that has none
+// yet: its first refusal, not its retries, nor the rejected ones. The row is marked reported
+// (ffs_mark_refusal_reported) only once the event is in the log: one dropped by the limit per
+// minute of its kind, or not written, stops the pass, the next round goes on. Dying between the
+// event and the mark leaves it unmarked: the next pass finds the event by the row's id, and
+// only marks it. At least once in the log, one alert.
 func (h *Health) watchRefusals(ctx context.Context) {
 	app := h.app
 	if app == nil || app.sync == nil {
@@ -365,12 +380,49 @@ func (h *Health) watchRefusals(ctx context.Context) {
 		if r.Reported || r.Rejected {
 			continue
 		}
-		app.event("sign-up refused", refusalEvent(r.UID))
+		detail := refusalEvent(r.UID, r.ID)
+		written, err := app.refusalLogged(ctx, detail)
+		if err != nil {
+			log.Printf("watching the refused Sync accounts: %v", err)
+			return
+		}
+		if !written {
+			if app.rec != nil {
+				if written, err = app.rec.EventWritten("sign-up refused", detail); err != nil || !written {
+					// (logged by the recorder) or over its limit: the next round
+					return
+				}
+			}
+			app.alert("sign-up refused", detail)
+		}
 		if err := app.sync.MarkRefusalReported(ctx, r.UID); err != nil {
 			log.Printf("watching the refused Sync accounts: %v", err)
 			return
 		}
 	}
+}
+
+// refusalLogged: the event of a refusal is in the log already (a pass that died before its mark)
+func (a *App) refusalLogged(ctx context.Context, detail string) (bool, error) {
+	if a.rec == nil {
+		return false, nil
+	}
+	var n int
+	err := a.sync.mine().QueryRowContext(ctx, a.sync.q("SELECT COUNT(*) FROM ffs_events WHERE kind = ? AND detail = ?"), "sign-up refused", oneLine(detail, 509)).Scan(&n)
+	return n > 0, err
+}
+
+// droppedCheck: the setup check of refusals not recorded, for a week after the last one
+func (a *App) droppedCheck(ctx context.Context, now time.Time) (setupCheck, bool) {
+	if on, err := a.sync.AllowlistOn(ctx); err != nil || !on {
+		return setupCheck{}, false
+	}
+	n, last, err := a.sync.DroppedRefusals(ctx)
+	if err != nil || n == 0 || now.Sub(last) > 7*24*time.Hour {
+		return setupCheck{}, false
+	}
+	return setupCheck{Name: "Pending accounts list", Text: fmt.Sprintf("%s refused without a record since the list was full, the last at %s: it keeps 1000 accounts and lets go only pending ones already alerted, never rejected ones. Approve or reject the pending accounts to make room.",
+		plural(n, "account"), formatTime(last, adminZone))}, true
 }
 
 // allowlistValue: the allowlist in force, for the configuration page

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -35,7 +36,7 @@ type loadCorrection struct {
 func (s *SyncDB) NodeLoad(ctx context.Context, node string) (counted, accounts int, found bool, err error) {
 	err = s.db.QueryRowContext(ctx, s.q(`SELECT n.current_load,
 		(SELECT COUNT(DISTINCT u.email) FROM users u WHERE u.nodeid = n.id AND u.replaced_at IS NULL)
-		FROM nodes n JOIN services s ON n.service = s.id WHERE s.service = 'sync-1.5' AND n.node = ?`), node).Scan(&counted, &accounts)
+		FROM nodes n JOIN services s ON n.service = s.id WHERE s.service = 'sync-1.5' AND TRIM(TRAILING '/' FROM n.node) = ?`), strings.TrimSuffix(node, "/")).Scan(&counted, &accounts)
 	if err == sql.ErrNoRows {
 		return 0, 0, false, nil
 	}
