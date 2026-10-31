@@ -40,6 +40,8 @@ on:
       - 'docs/hooks/**'
       - 'docs/requirements.txt'
       - 'tests/check_site_anchors.py'
+      # the local VM's script (docs/development/testing.md#local-vm): CI does not run it
+      - 'tests/vm/**'
 
 # one run at a time per branch: a branch never cancels or waits for main's runs
 concurrency:

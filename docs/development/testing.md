@@ -18,6 +18,7 @@ Every image build runs the CI tests before the multi-arch tags (for example `syn
 | [tests/prepare_functions.sh](/tests/prepare_functions.sh) | the functions of `prepare_environment.sh` ([setup/](/setup)) that need no container, on tables, per file: `.env` read as compose reads it (compared with `docker compose config` when there is one), written through a symlink, no value on `sed`'s command line, the compose files of an install (env.sh); the addresses of `SYNC_EXPORT_PORT`, the limits, names and hosts (validate.sh); `database-setup.sql` (databases.sh); the accounts images with a fix of [upstream-patches.yml](/upstream-patches.yml) (images.sh); the checkout of the units (quadlets.sh); `--upgrade` of an `.env` from before (upgrade.sh); `setup/` loaded from the script's real path | `tests/podman.sh` runs it first; anywhere, also macOS's bash 3.2 | `COMPOSE` |
 | [tests/check_markdown_links.py](/tests/check_markdown_links.py) and [its self-test](/tests/test_check_markdown_links.py) | the links of the docs, see [Links](#links) | CI: docs.yml, every push | `--code`, `--settings`; `--external` by hand |
 | [tests/check_site_anchors.py](/tests/check_site_anchors.py) | after `mkdocs build`, every anchor of the docs is an id of the site's page, see [Docs site](#docs-site) | CI: docs.yml, every push | `--site` |
+| [tests/vm/vm.sh](/tests/vm/vm.sh) | the suites above in a local Ubuntu VM, several at once, see [Local VM](#local-vm) | local only | `REPO`, `REPOSITORY`, `FFS_VM_DIR`, `FFS_GHCR_TOKEN` |
 | `cd admin && go test ./...` | the admin UI's unit tests, see [Admin UI](#admin-ui) | CI: admin.yml `unit` | none |
 
 The end-to-end scripts finish with [tests/healthy.sh](/tests/healthy.sh): every container that keeps running is healthy, and the one-shot ones exited with 0. `tests/podman.sh` also checks that each long-running Quadlet has the healthcheck of its compose service (the same command and timings), and that no such service lacks one.
@@ -51,13 +52,41 @@ The jobs run on amd64, and these on arm64 too: fxa.yml `test` and `test-podman`,
 
 Redis (the accounts' cache, no volume) follows `redis:alpine` in every run with the accounts.
 
-Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test e2e-mysql` with `SYNC_DB=mysql` and `SYNC_MYSQL_IMAGE=mysql:8`, `e2e-fxa` with `FXA_MYSQL_IMAGE=mysql:8` or `FXA_DB=mariadb FXA_MARIADB_IMAGE=mariadb:11`, `fxa-upgrade` with `FXA_FROM=<an older accounts image>` (and `FXA_MYSQL_TO`).
+Locally, in the [local VM](#local-vm): `REPO=<worktree> tests/vm/vm.sh test e2e-mysql` with `SYNC_DB=mysql` and `SYNC_MYSQL_IMAGE=mysql:8`, `e2e-fxa` with `FXA_MYSQL_IMAGE=mysql:8` or `FXA_DB=mariadb FXA_MARIADB_IMAGE=mariadb:11`, `fxa-upgrade` with `FXA_FROM=<an older accounts image>` (and `FXA_MYSQL_TO`).
 
 ### What CI does not test
 
 - Sync with Mozilla's real accounts: the tests sign in through a mock of them (upstream's mock FxA), and upstream's tokenserver test against Mozilla's stage accounts is left out.
 - Firefox on Android and iOS: their sync, pairing from the phone's side, client certificates. The real Firefox of the tests is the desktop one, on Linux.
 - The self-hosted accounts on PostgreSQL: Mozilla's accounts server does not support it, so neither does this project. Not a gap.
+
+## Local VM
+
+[tests/vm/vm.sh](/tests/vm/vm.sh) runs the end-to-end suites on your machine instead of GitHub, in an Ubuntu VM like CI's runners: the newest Ubuntu LTS, its Docker, compose and Podman, a systemd user session, and the latest kind, helm, kubectl, chart-testing, kubeconform, yamllint and yamale. It has up to three slots, so three commands can run at once, each in its own copy of the checkout with its own ports and names ([tests/slot.sh](/tests/slot.sh)). The header of the script documents every command and variable; `tests/vm/vm.sh help` prints it.
+
+Requirements on the host: `qemu` (`qemu-system-aarch64` or `qemu-system-x86_64`, `qemu-img`) with its UEFI firmware (edk2: Homebrew's `qemu` has it; on Linux the `qemu-efi-aarch64` or `ovmf` package), one of `mkisofs`, `genisoimage` or `xorriso`, `ssh`, `curl`, `rsync` and `git`, hardware virtualization (HVF on macOS, `/dev/kvm` on Linux), and about 50 GB of disk for the VM.
+
+```bash
+tests/vm/vm.sh create            # the disk and the cloud-init seed, on the newest Ubuntu LTS
+tests/vm/vm.sh start             # boot; the first boot also provisions
+tests/vm/vm.sh provision         # later: apt upgrades and the latest tools
+tests/vm/vm.sh test e2e-mysql    # or e2e-postgres, e2e-fxa, podman, fxa-upgrade, all, several at once
+tests/vm/vm.sh test affected     # the suites the changes since the remote's default branch need
+tests/vm/vm.sh ssh 'cd firefox-sync && tests/helm.sh lint'
+tests/vm/vm.sh slots             # who holds which slot, the VM's free disk
+tests/vm/vm.sh stop
+tests/vm/vm.sh destroy           # the disk, not the base image
+```
+
+Every command copies the checkout into its slot first, so uncommitted changes are tested too. The settings:
+
+- `FFS_VM_DIR`: where the VM's files are (disk, base image, seed, UEFI variables, pid, console log), outside the checkout. Default `${XDG_DATA_HOME:-~/.local/share}/firefox-sync-vm`. An existing VM keeps working when `FFS_VM_DIR` points at it; to move it there instead, stop it, move the directory, and for a VM created before the script was in the repository (its disk names the base image by an absolute path) run `qemu-img rebase -u -b <codename>-server-cloudimg-<arch>.img -F qcow2 disk.qcow2` in it. A second VM needs its own `FFS_VM_DIR` and `SSH_PORT` (default 2222) at `create`; both are remembered there.
+- `REPO`: the checkout under test, by default the one the script is in. `REPO=<worktree>` tests a worktree with the VM.
+- `REPOSITORY`: the images under test (with `TAG`, default `latest`). By default `ghcr.io/<owner>/<repo>` of the checkout's remote named `dev` or ending in `-dev`, else of `origin`, in lowercase (`FFS_VM_REMOTE` picks another remote). The development repository's images are newer than the public repository's, which only get releases.
+- `FFS_GHCR_TOKEN`: a token for `docker login ghcr.io` in the VM at `provision`, needed only when `REPOSITORY` is private: a fine-grained or classic token with `read:packages` only. It is stored in the VM's `~/.docker/config.json`. Without it the VM pulls public images only; `FFS_GHCR_GH=1` (or a yes at the prompt) uses `gh auth token` instead, a broader token. No token is printed.
+- `FFS_VM_SSH_KEY`: the SSH key, by default `~/.ssh/id_ed25519`, or one `create` makes in `FFS_VM_DIR` when there is none. `CPUS` and `MEM` (MB): by default three quarters of the host's CPUs and half its memory.
+
+Tested on macOS on Apple silicon (arm64, HVF). macOS on Intel and Linux with KVM, and with them the amd64 VM, are written for (`qemu-system-x86_64`, the OVMF and AAVMF firmware paths, `genisoimage` and `xorriso`) but not tested yet.
 
 ## The Sync server and Podman
 
@@ -126,7 +155,7 @@ Our builds are in the registry of the repository whose fxa.yml built them; the e
 - `CLIENT_CERT=1`: a test client CA (made by the script with OpenSSL), its certificate in each Firefox profile (`pk12util`, `security.default_personal_cert`). The pages answer `403` without it, the admin UI's host refuses the handshake, a certificate of another CA is refused, the open paths and the other hosts answer anybody. A Firefox probe checks that its background requests send no client certificate: when that changes, the page needs to.
 - `SSO=authelia`: an Authelia container (`authelia/authelia:latest`, one user), forward auth on the pages but the open paths, every Firefox signs in to Authelia first. The admin UI also signs in with Authelia's header on `admin-sso.fxa.test` (`ADMIN_AUTH_HEADER`, `ADMIN_TRUSTED_PROXIES` the address of Caddy), and ignores a forged one on `admin.fxa.test`.
 
-`SKIP_SETUP=1` leaves out the `prepare_environment.sh` checks, which these variants do not change. [admin.yml](/.github/workflows/admin.yml) runs both in `e2e-fxa`, on amd64 with MySQL. Locally: `REPO=<worktree> ~/vms/ffs-test/vm.sh test 'CLIENT_CERT=1 SKIP_SETUP=1 e2e-fxa'`.
+`SKIP_SETUP=1` leaves out the `prepare_environment.sh` checks, which these variants do not change. [admin.yml](/.github/workflows/admin.yml) runs both in `e2e-fxa`, on amd64 with MySQL. Locally: `tests/vm/vm.sh test 'CLIENT_CERT=1 SKIP_SETUP=1 e2e-fxa'`.
 
 ## Admin UI
 
