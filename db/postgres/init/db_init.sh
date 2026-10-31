@@ -133,6 +133,7 @@ echo "Firefox Sync Database Initialization"
 echo "=========================================="
 echo "Domain: ${DOMAIN}"
 echo "Max Users: ${MAX_USERS:-}"
+echo "Allowed accounts: ${SYNC_ALLOWED_ACCOUNTS:-(everyone)}"
 echo "Database: ${POSTGRES_DATABASE}"
 echo "=========================================="
 
@@ -176,6 +177,61 @@ if ! parse_max_users "${MAX_USERS:-}"; then
   exit 1
 fi
 [ "${MAX_USERS_MODE}" = fixed ] && MAX_USERS_FIXED=TRUE || MAX_USERS_FIXED=FALSE
+
+# SYNC_ALLOWED_ACCOUNTS (docs/limits.md#sync_allowed_accounts), invite-only Sync: empty is off,
+# everyone gets in. uid,uid... or fixed:uid,...: the list, set again on every start (read-only
+# in the admin UI). initial:uid,... (admin: initial: with none): those added when the allowlist
+# turns on (first start, new database), then managed in the admin UI. A uid is 32 hexadecimal
+# characters (lowercased here). Anything else stops here, like SYNC_MAX_USERS
+parse_allowed_accounts() {
+  local value=${1//[[:space:]]/} list uid parts=()
+  ALLOWED_MODE=off ALLOWED_UIDS=() ALLOWED_BAD=""
+  case "${value}" in
+    "") return 0 ;;
+    admin) ALLOWED_MODE=initial; return 0 ;;
+    initial:*) ALLOWED_MODE=initial; list=${value#initial:} ;;
+    fixed:*) ALLOWED_MODE=fixed; list=${value#fixed:} ;;
+    *) ALLOWED_MODE=fixed; list=${value} ;;
+  esac
+  IFS=, read -r -a parts <<< "${list}"
+  for uid in ${parts[@]+"${parts[@]}"}; do
+    [ -n "${uid}" ] || continue
+    uid=${uid,,}
+    [[ "${uid}" =~ ^[0-9a-f]{32}$ ]] || { ALLOWED_BAD=${uid}; return 1; }
+    ALLOWED_UIDS+=("${uid}")
+  done
+  [ "${ALLOWED_MODE}" = initial ] || [ "${#ALLOWED_UIDS[@]}" -gt 0 ]
+}
+
+if ! parse_allowed_accounts "${SYNC_ALLOWED_ACCOUNTS:-}"; then
+  if [ -n "${ALLOWED_BAD}" ]; then
+    echo "✗ ERROR: SYNC_ALLOWED_ACCOUNTS='${SYNC_ALLOWED_ACCOUNTS}' is not valid: '${ALLOWED_BAD}' is not an account id"
+    echo "  (32 hexadecimal characters, docs/limits.md#find-the-uid-of-an-account)"
+  else
+    echo "✗ ERROR: SYNC_ALLOWED_ACCOUNTS='${SYNC_ALLOWED_ACCOUNTS}' lists no account id: give the uids, comma-separated,"
+    echo "  admin to approve them in the admin UI, or leave it empty to let everyone in"
+  fi
+  exit 1
+fi
+
+# allowed_sql: the statements of SYNC_ALLOWED_ACCOUNTS, after allowlist.sql: the list (fixed:
+# exactly these uids; initial: these added when it was not on yet), then on or off
+allowed_sql() {
+  local uid rows="" now="(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT" was_off
+  for uid in ${ALLOWED_UIDS[@]+"${ALLOWED_UIDS[@]}"}; do
+    rows="${rows:+${rows} UNION ALL }SELECT '${uid}' AS uid"
+  done
+  was_off="NOT EXISTS (SELECT 1 FROM config WHERE config_key = 'allowed_accounts' AND config_value = 'on')"
+  if [ "${ALLOWED_MODE}" = fixed ]; then
+    echo "DELETE FROM sync_allowed_accounts WHERE uid NOT IN ($(printf "'%s'," "${ALLOWED_UIDS[@]}" | sed 's/,$//'));"
+    echo "INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by) SELECT v.uid, '', ${now}, 'SYNC_ALLOWED_ACCOUNTS' FROM (${rows}) v ON CONFLICT (uid) DO NOTHING;"
+  elif [ -n "${rows}" ]; then
+    echo "INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by) SELECT v.uid, '', ${now}, 'SYNC_ALLOWED_ACCOUNTS' FROM (${rows}) v WHERE ${was_off} ON CONFLICT (uid) DO NOTHING;"
+  fi
+  [ -z "${rows}" ] || echo "DELETE FROM sync_refused_accounts WHERE uid IN (SELECT uid FROM sync_allowed_accounts);"
+  echo "INSERT INTO config (config_key, config_value) VALUES ('allowed_accounts', '$([ "${ALLOWED_MODE}" = off ] && echo off || echo on)')"
+  echo "  ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP;"
+}
 
 # Function to check if a table exists (in public, where the migrations create them)
 table_exists() {
@@ -240,6 +296,15 @@ if sync_psql -v ON_ERROR_STOP=1 --single-transaction -f "${SQL_FILE}"; then
   echo "✓ SQL initialization completed successfully!"
 else
   echo "✗ ERROR: Failed to apply SQL initialization"
+  exit 1
+fi
+
+# the allowlist (allowlist.sql, then SYNC_ALLOWED_ACCOUNTS), as the owner of the tables
+echo "Applying the allowlist (SYNC_ALLOWED_ACCOUNTS)..."
+if { cat /scripts/allowlist.sql; allowed_sql; } | sync_psql -v ON_ERROR_STOP=1 -q --single-transaction; then
+  echo "✓ Allowlist applied"
+else
+  echo "✗ ERROR: Failed to apply the allowlist (SYNC_ALLOWED_ACCOUNTS)"
   exit 1
 fi
 
@@ -321,6 +386,12 @@ fi
 echo "After changing SYNC_MAX_USERS in .env:"
 echo "  docker compose up -d   (the init container and the admin UI)"
 echo "  (Quadlets: systemctl --user restart firefox-sync-tokenserver-db-init.service firefox-sync-admin.service)"
+allowed_in_db=$(sync_psql -tA -c 'SELECT COUNT(*) FROM sync_allowed_accounts;')
+case "${ALLOWED_MODE}" in
+  off) echo "SYNC_ALLOWED_ACCOUNTS empty: every account can sync (invite-only Sync is off)" ;;
+  fixed) echo "SYNC_ALLOWED_ACCOUNTS: invite-only, the ${allowed_in_db} accounts listed (set on every start, read-only in the admin UI)" ;;
+  initial) echo "SYNC_ALLOWED_ACCOUNTS=${SYNC_ALLOWED_ACCOUNTS//[[:space:]]/}: invite-only, ${allowed_in_db} accounts allowed, managed in the admin UI" ;;
+esac
 echo "=========================================="
 
 exit 0

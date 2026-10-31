@@ -17,3 +17,7 @@ GRANT UPDATE (config_value) ON public.config TO @ADMIN_SYNC_USER@;
 -- resets, deleted accounts and purges: rows of users and what their storage holds
 GRANT DELETE ON public.users, public.bsos, public.user_collections, public.batches, public.batch_bsos TO @ADMIN_SYNC_USER@;
 GRANT EXECUTE ON FUNCTION public.ffs_drop_admin_tables() TO @ADMIN_SYNC_USER@;
+-- the allowlist (SYNC_ALLOWED_ACCOUNTS): allow, remove, reject, through the functions of
+-- allowlist.sql
+GRANT EXECUTE ON FUNCTION public.ffs_allow_account(TEXT, TEXT, TEXT), public.ffs_remove_allowed_account(TEXT),
+    public.ffs_reject_account(TEXT, TEXT) TO @ADMIN_SYNC_USER@;
