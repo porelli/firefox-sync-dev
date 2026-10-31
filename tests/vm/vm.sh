@@ -144,6 +144,13 @@ SSH_OPTS=(-i "${KEY}" -p "${SSH_PORT}" -o IdentitiesOnly=yes -o StrictHostKeyChe
   -o GlobalKnownHostsFile=/dev/null -o ControlMaster=auto -o "ControlPath=${VM_DIR}/ssh-mux" -o ControlPersist=10m
   -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=30)
 SLOTS=${SLOTS:-3}
+# numbers only, for the settings that reach bash arithmetic or qemu (bash evaluates the
+# operands of $(( )), a[$(cmd)] would run cmd): a clear refusal instead
+number() { [[ "$2" =~ ^[0-9]+$ ]] || die "$1: a number, not '$2'"; }
+number SLOTS "${SLOTS}"
+number CLOCK_SLACK "${CLOCK_SLACK:-5}"
+[ -z "${CPUS:-}" ] || number CPUS "${CPUS}"
+[ -z "${MEM:-}" ] || number MEM "${MEM}"
 # the slots of this VM, in its private folder (before: a shared /tmp/ffs-vm-slots, read while
 # a holder of it lives, removed then)
 LOCKS=${VM_DIR}/slots
@@ -830,8 +837,10 @@ enter_slot() { # what [nosync]
 sync_clock() {
   local guest host drift
   guest=$(vssh 'date +%s' < /dev/null 2> /dev/null) || return 0
+  # (what the guest says is a number, or it is not used: see number above)
+  [[ "${guest}" =~ ^[0-9]+$ ]] || return 0
   host=$(date +%s)
-  drift=$((host - guest))
+  drift=$((host - 10#${guest}))
   [ "${drift#-}" -gt "${CLOCK_SLACK:-5}" ] || return 0
   say "the VM's clock is ${drift} s off the host's: set to the host's"
   vssh "sudo date -u -s @$(date +%s) > /dev/null && (sudo hwclock --systohc 2> /dev/null || true)" < /dev/null ||
@@ -980,6 +989,7 @@ summary() { # logs t0 job...
   for j in "$@"; do
     rc=1 secs=0 slot='?'
     read -r rc secs slot < "${logs}/$(job_name "${j}").rc" 2> /dev/null
+    [[ "${secs}" =~ ^[0-9]+$ ]] || secs=0
     printf '%-34s %s  %dm%02ds  slot %s  %s\n' "$(job_name "${j}")" "$([ "${rc}" = 0 ] && echo PASS || echo FAIL)" $((secs / 60)) $((secs % 60)) "${slot}" "${logs}/$(job_name "${j}").log"
     [ "${rc}" = 0 ] || { failed=1; grep -E '^FAIL|^FAILED|^vm.sh: ' "${logs}/$(job_name "${j}").log" | head -10 | sed 's/^/    /'; }
   done
