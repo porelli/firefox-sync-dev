@@ -376,6 +376,11 @@ EOF
   echo "created ${DISK} (${DISK_SIZE}, Ubuntu ${codename} ${IMG_ARCH}, ssh port ${SSH_PORT})"
 }
 
+# (from test, ssh...: a VM of FFS_VM_DIR, none made there unasked)
+start_existing() {
+  [ -f "${DISK}" ] || die "no VM in ${VM_DIR}: vm.sh create, or FFS_VM_DIR=<the folder of yours>"
+  start
+}
 start() {
   running && { echo "already running"; return; }
   [ -f "${DISK}" ] || create
@@ -385,6 +390,9 @@ start() {
   local cpus mem
   cpus=${CPUS:-$(($(host_cpus) * 3 / 4))} mem=${MEM:-$(($(host_mem_mb) / 2))}
   [ "${cpus}" -ge 1 ] || cpus=1
+  if command -v lsof > /dev/null 2>&1 && lsof -nP -iTCP:"${SSH_PORT}" -sTCP:LISTEN -t > /dev/null 2>&1; then
+    die "port ${SSH_PORT} is in use (another VM? a second one needs its own FFS_VM_DIR and SSH_PORT)"
+  fi
   # cache=unsafe: a throwaway test VM, I/O speed over crash safety; discard: space freed
   # in the VM (fstrim) goes back to the host
   "qemu-system-${QEMU_ARCH}" -machine "${MACHINE},accel=${ACCEL}" -cpu host -smp "${cpus}" -m "${mem}" \
@@ -795,8 +803,9 @@ slot_dir() { echo "firefox-sync-slot${SLOT_HELD}"; }
 enter_slot() { # what [nosync]
   need ssh rsync git
   [ -d "${REPO}" ] || die "REPO: no ${REPO}"
+  [ -f "${DISK}" ] || start_existing
   take_slot "$1"
-  running || start
+  running || start_existing
   install_lib || { say "VM not reachable"; exit 1; }
   # the end of what ran in this slot before (a run stopped from the host tears down for a while)
   vssh "source ~/.ffs/lib.sh && ffs_wait_lock 9 /tmp/ffs-slot-${SLOT_HELD}.lock 'the end of the last run of slot ${SLOT_HELD}' && mkdir -p ~/.ffs/cwd/${SLOT_HELD} && ln -sfn ~/$(slot_dir) ~/.ffs/cwd/${SLOT_HELD}/firefox-sync" < /dev/null
@@ -1045,7 +1054,7 @@ run_affected() {
   [ -n "${PLAN_ONLY:-}" ] && return 0
   local logs t0 pids=(); logs=$(new_logs) t0=$(date +%s)
   mkdir -p "${logs}"
-  running || start
+  running || start_existing
   for i in "${!groups[@]}"; do
     IFS='|' read -r -a members <<< "${groups[i]}"
     # (a subshell: its own slot, freed by its own traps)
