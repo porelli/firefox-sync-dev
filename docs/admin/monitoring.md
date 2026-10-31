@@ -28,6 +28,7 @@ The top of the overview lists what to look at now, one line each, with a link to
 | sign-ups that bypass the sign-up gate, see [Public checks](#public-checks) | Health |
 | the SMTP server does not work, or the last alert email failed | Health, the alert status |
 | max users near or at the limit, see [Near and full](../limits.md#near-and-full) | the max users form |
+| accounts refused by [invite-only Sync](../limits.md#sync_allowed_accounts), waiting for your approval | Pending accounts |
 | self-hosted accounts: max accounts near or at the limit | the max accounts form |
 | a backup failed, or the last good one is older than 36 hours | [Backups](../backups.md) |
 | orphaned Sync data, see [Storage](storage.md) | the purge |
@@ -266,6 +267,7 @@ scrape_configs:
 | `ffs_up{component}` | 1 if the component answers its health check |
 | `ffs_sync_accounts`, `ffs_sync_max_users` | accounts using Sync, and the limit (no `ffs_sync_max_users` with `SYNC_MAX_USERS=unlimited`) |
 | `ffs_sync_near_max_users`, `ffs_sync_full` | 1 when 90% of max users or more are taken, 1 when all are |
+| `ffs_sync_pending_accounts` | the accounts refused by [invite-only Sync](../limits.md#sync_allowed_accounts) and waiting for an approval (only while it is on) |
 | `ffs_sync_stored_items`, `ffs_sync_stored_bytes` | what all accounts store |
 | `ffs_accounts`, `ffs_accounts_max` | accounts of the self-hosted accounts service, and `FXA_MAX_ACCOUNTS` (none when unlimited) |
 | `ffs_accounts_near_max`, `ffs_accounts_full` | the same for `FXA_MAX_ACCOUNTS` |
