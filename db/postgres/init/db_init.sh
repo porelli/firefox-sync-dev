@@ -214,23 +214,30 @@ if ! parse_allowed_accounts "${SYNC_ALLOWED_ACCOUNTS:-}"; then
   exit 1
 fi
 
-# allowed_sql: the statements of SYNC_ALLOWED_ACCOUNTS, after allowlist.sql: the list (fixed:
-# exactly these uids; initial: these added when it was not on yet), then on or off
+# allowed_sql: the statements of SYNC_ALLOWED_ACCOUNTS, after allowlist.sql (all in one
+# transaction): fixed: exactly these uids; initial: these uids once, the first time the
+# allowlist is on (allowed_accounts_initial records it, as max_users' row does for
+# SYNC_MAX_USERS=initial:); on or off; the trigger only while it is on. Then the nodes' load
+# counted again (every start, the allowlist on or off)
 allowed_sql() {
-  local uid rows="" now="(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT" was_off
+  local uid rows="" now="(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT" first
   for uid in ${ALLOWED_UIDS[@]+"${ALLOWED_UIDS[@]}"}; do
     rows="${rows:+${rows} UNION ALL }SELECT '${uid}' AS uid"
   done
-  was_off="NOT EXISTS (SELECT 1 FROM config WHERE config_key = 'allowed_accounts' AND config_value = 'on')"
+  first="NOT EXISTS (SELECT 1 FROM config WHERE config_key = 'allowed_accounts_initial')"
   if [ "${ALLOWED_MODE}" = fixed ]; then
     echo "DELETE FROM sync_allowed_accounts WHERE uid NOT IN ($(printf "'%s'," "${ALLOWED_UIDS[@]}" | sed 's/,$//'));"
     echo "INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by) SELECT v.uid, '', ${now}, 'SYNC_ALLOWED_ACCOUNTS' FROM (${rows}) v ON CONFLICT (uid) DO NOTHING;"
   elif [ -n "${rows}" ]; then
-    echo "INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by) SELECT v.uid, '', ${now}, 'SYNC_ALLOWED_ACCOUNTS' FROM (${rows}) v WHERE ${was_off} ON CONFLICT (uid) DO NOTHING;"
+    echo "INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by) SELECT v.uid, '', ${now}, 'SYNC_ALLOWED_ACCOUNTS' FROM (${rows}) v WHERE ${first} ON CONFLICT (uid) DO NOTHING;"
   fi
   [ -z "${rows}" ] || echo "DELETE FROM sync_refused_accounts WHERE uid IN (SELECT uid FROM sync_allowed_accounts);"
+  [ "${ALLOWED_MODE}" = off ] || echo "INSERT INTO config (config_key, config_value) VALUES ('allowed_accounts_initial', 'applied') ON CONFLICT (config_key) DO NOTHING;"
   echo "INSERT INTO config (config_key, config_value) VALUES ('allowed_accounts', '$([ "${ALLOWED_MODE}" = off ] && echo off || echo on)')"
   echo "  ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP;"
+  echo "DROP TRIGGER IF EXISTS before_insert_allowed_user ON users;"
+  [ "${ALLOWED_MODE}" = off ] || echo "CREATE TRIGGER before_insert_allowed_user BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION ffs_check_allowed_account();"
+  echo "SELECT ffs_resync_node_load(NULL);"
 }
 
 # Function to check if a table exists (in public, where the migrations create them)

@@ -1,7 +1,8 @@
--- SYNC_ALLOWED_ACCOUNTS, invite-only Sync (docs/limits.md#sync_allowed_accounts): applied
--- by db_init.sh after db_init.sql, every start. db_init.sh appends the statements of the
--- setting (the list, on or off in the config table) and creates sync_refused_accounts
--- before this file runs.
+-- SYNC_ALLOWED_ACCOUNTS, invite-only Sync (docs/limits.md#sync_allowed_accounts), and the
+-- recount of the nodes' load: applied by db_init.sh after db_init.sql, every start. db_init.sh
+-- creates sync_refused_accounts first (its engine depends on the server), and appends the
+-- statements of the setting: the list, on or off, and the trigger, which exists only while
+-- the allowlist is on.
 
 -- the account ids (the uid of a Mozilla account, the part before the @ of the tokenserver's
 -- email) that may start to sync
@@ -10,15 +11,17 @@ CREATE TABLE IF NOT EXISTS sync_allowed_accounts (
     note VARCHAR(255) NOT NULL DEFAULT '',
     added_at BIGINT NOT NULL,
     added_by VARCHAR(255) NOT NULL
-) DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Before BeforeInsertUser (SYNC_MAX_USERS): an account not on the list is refused whether
--- or not there is room, and recorded in sync_refused_accounts, where the admin UI shows it
--- as pending. That table is MyISAM where it can be (db_init.sh): its row stays when SIGNAL
--- undoes the INSERT into users.
--- An email that has a row already is no new account (a keys change adds a row for it, as
--- do the accounts from before the allowlist): never refused here.
--- 'allowed_accounts' not 'on' (or no row): off, everyone gets in.
+-- Called by the trigger BeforeInsertAllowedUser, before BeforeInsertUser (SYNC_MAX_USERS): an
+-- account not on the list is refused whether or not there is room, and recorded in
+-- sync_refused_accounts, where the admin UI shows it as pending. That table is Aria (MariaDB)
+-- or MyISAM (MySQL) where it can be (db_init.sh): its row stays when SIGNAL undoes the INSERT
+-- into users. An email that has a row already is no new account (a keys change adds a row for
+-- it, as do the accounts from before the allowlist): never refused here. At most the newest
+-- 1000 refusals are kept. 'allowed_accounts' not 'on' (or no row): everyone gets in.
+-- (While this is replaced at a start, the trigger finds no procedure: an INSERT fails then,
+-- it is never let in unchecked.)
 DROP PROCEDURE IF EXISTS ffs_check_allowed_account;
 
 DELIMITER //
@@ -35,6 +38,10 @@ BEGIN
             INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts)
             VALUES (LEFT(account, 64), now_ms, now_ms, 1)
             ON DUPLICATE KEY UPDATE last_at = now_ms, attempts = attempts + 1;
+            IF (SELECT COUNT(*) FROM sync_refused_accounts) > 1000 THEN
+                DELETE FROM sync_refused_accounts WHERE uid NOT IN
+                    (SELECT uid FROM (SELECT uid FROM sync_refused_accounts ORDER BY last_at DESC, uid LIMIT 1000) newest);
+            END IF;
             SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Account not on the allowlist (SYNC_ALLOWED_ACCOUNTS)';
         END IF;
@@ -42,20 +49,10 @@ BEGIN
 END //
 DELIMITER ;
 
-DROP TRIGGER IF EXISTS BeforeInsertAllowedUser;
-
-DELIMITER //
-CREATE TRIGGER BeforeInsertAllowedUser
-BEFORE INSERT ON users
-FOR EACH ROW PRECEDES BeforeInsertUser
-BEGIN
-    CALL ffs_check_allowed_account(NEW.email);
-END //
-DELIMITER ;
-
 -- What the admin UI changes, with the privileges of this user (its own has SELECT and
 -- EXECUTE here, see db/mysql/admin-user.sh): with SYNC_ALLOWED_ACCOUNTS=admin or initial:
--- allow an account (Approve, Allow a uid), remove it from the list, reject a pending one
+-- allow an account (Approve, Allow a uid), remove it from the list, reject a pending one;
+-- and always: mark a refusal as alerted, recount the load of a node
 DROP PROCEDURE IF EXISTS ffs_allow_account;
 
 DELIMITER //
@@ -88,5 +85,47 @@ BEGIN
     UPDATE sync_refused_accounts
     SET rejected_at = CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED), rejected_by = by_whom
     WHERE uid = LOWER(account) AND rejected_at IS NULL;
+END //
+DELIMITER ;
+
+-- the admin UI's event of a refusal is written: no second one, after a restart neither
+DROP PROCEDURE IF EXISTS ffs_mark_refusal_reported;
+
+DELIMITER //
+CREATE PROCEDURE ffs_mark_refusal_reported(IN account VARCHAR(64))
+BEGIN
+    UPDATE sync_refused_accounts
+    SET reported_at = CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED)
+    WHERE uid = account AND reported_at IS NULL;
+END //
+DELIMITER ;
+
+-- The load of the nodes of sync-1.5 counted again from their accounts: the tokenserver adds one
+-- to current_load (and takes one from available) before it inserts a new account's row
+-- (allocate_user: add_user_to_node, then post_user, each on its own), and nothing takes it
+-- back when the INSERT is refused, by the allowlist or by SYNC_MAX_USERS: every refused try
+-- would fill the node a little more. The load is the accounts assigned to the node: its
+-- emails with a row that is not replaced, as the tokenserver counts one per allocation (a
+-- keys change adds a row, not a load). What was counted too much goes back to available
+-- (within capacity), on the nodes in use. node_url: that node only; NULL: every node (the
+-- init container, at every start).
+DROP PROCEDURE IF EXISTS ffs_resync_node_load;
+
+DELIMITER //
+CREATE PROCEDURE ffs_resync_node_load(IN node_url VARCHAR(255))
+BEGIN
+    START TRANSACTION;
+    -- (two statements: MySQL does not say in which order a multi-table UPDATE assigns)
+    UPDATE nodes n
+    JOIN services s ON s.service = 'sync-1.5' AND n.service = s.id
+    LEFT JOIN (SELECT nodeid, COUNT(DISTINCT email) AS real_load FROM users WHERE replaced_at IS NULL GROUP BY nodeid) u ON u.nodeid = n.id
+    SET n.available = GREATEST(0, LEAST(n.available + GREATEST(n.current_load - COALESCE(u.real_load, 0), 0), n.capacity - COALESCE(u.real_load, 0)))
+    WHERE (node_url IS NULL OR n.node = node_url) AND n.downed = 0 AND n.current_load <> COALESCE(u.real_load, 0);
+    UPDATE nodes n
+    JOIN services s ON s.service = 'sync-1.5' AND n.service = s.id
+    LEFT JOIN (SELECT nodeid, COUNT(DISTINCT email) AS real_load FROM users WHERE replaced_at IS NULL GROUP BY nodeid) u ON u.nodeid = n.id
+    SET n.current_load = COALESCE(u.real_load, 0)
+    WHERE (node_url IS NULL OR n.node = node_url) AND n.current_load <> COALESCE(u.real_load, 0);
+    COMMIT;
 END //
 DELIMITER ;
