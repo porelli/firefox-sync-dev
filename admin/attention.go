@@ -50,6 +50,8 @@ type attentionInput struct {
 	accountLimit *Limit
 	// ADMIN_DEPLOYMENT, for the commands
 	deployment deployment
+	// SYNC_ALLOWED_ACCOUNTS: the accounts waiting for an approval
+	pending int
 }
 
 // nearMaxUsers: 90% of max users or more are taken, full too (0: no new account at all,
@@ -157,6 +159,9 @@ func needsAttention(in attentionInput) []attention {
 		if line := syncLimit.line(in.status.Limit()); line != "" {
 			add(syncLimit.href, syncLimit.link, "%s.", line)
 		}
+	}
+	if in.pending > 0 {
+		add("#sync-allowlist", "Pending accounts", "%s waiting for your approval to sync (SYNC_ALLOWED_ACCOUNTS).", plural(in.pending, "account"))
 	}
 	if in.accountLimit != nil {
 		if line := accountsLimit.line(*in.accountLimit); line != "" {

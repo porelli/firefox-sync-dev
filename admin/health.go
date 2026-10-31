@@ -91,6 +91,10 @@ type Health struct {
 	// schema levels of the databases, see schema.go, and the error logged last
 	schema    []SchemaLevel
 	schemaErr string
+	// the first refusal (ms) of the newest account refused by the allowlist that has its
+	// event, known: read from the event log (allowlist.go)
+	refusalsSince int64
+	refusalsKnown bool
 	// the last alert of a burst of sign-ups (maintenance.go)
 	burstAlerted time.Time
 	// the runs of the backups (backup.go)
@@ -252,6 +256,7 @@ func (h *Health) run(ctx context.Context) {
 		h.checkAll(ctx)
 		h.watchAccounts(ctx)
 		h.watchSignupBurst(ctx, time.Now())
+		h.watchRefusals(ctx)
 		h.watchBlocks(ctx)
 		h.watchSecurityEvents(ctx)
 		h.watchSchema(ctx)
