@@ -1274,6 +1274,53 @@ check "$?" 0 "admin UI sign-in tests"
 check "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'X-Test-Email: admin@ffs-e2e.invalid' \
   "http://127.0.0.1:$((PORT + 20))/")" "303 http://127.0.0.1:$((PORT + 20))/login" "admin UI ignores the header of an untrusted peer"
 
+echo "== invite-only Sync (SYNC_ALLOWED_ACCOUNTS): the mock FxA's accounts by their uids, the admin UI"
+# (the uids of tests/test_sync_allowlist.py)
+LISTED_UID=$(printf 'a1%.0s' $(seq 16))
+allowed_on() { sql "SELECT config_value FROM config WHERE config_key = 'allowed_accounts';"; }
+allowed_list() { sql "SELECT uid FROM sync_allowed_accounts ORDER BY uid;" | paste -sd' '; }
+redeploy_allowed() { set_env SYNC_ALLOWED_ACCOUNTS "$1"; dc up -d > /dev/null 2>&1; INIT_CODE=$(wait_init); }
+check "$(allowed_on) $(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE event_object_table = 'users';")" "off 2" \
+  "off by default (SYNC_ALLOWED_ACCOUNTS empty), its trigger next to that of max users"
+MAX_BEFORE=$(max_users)
+sql "UPDATE config SET config_value = 'unlimited' WHERE config_key = 'max_users';" > /dev/null
+admin_pytest "/tests/test_sync_allowlist.py -k before_the_allowlist"
+check "$?" 0 "an account syncs before the allowlist"
+redeploy_allowed "initial:${LISTED_UID}"
+check "${INIT_CODE} $(allowed_on) $(allowed_list)" "0 on ${LISTED_UID}" "SYNC_ALLOWED_ACCOUNTS=initial:<uid>: on, the uid on the list"
+check "$(dc logs tokenserver_db_init 2>&1 | grep -c "SYNC_ALLOWED_ACCOUNTS=initial:${LISTED_UID}: invite-only, 1 accounts allowed, managed in the admin UI")" 1 "the init container says so"
+check "$(hb) $(admin_healthy)" "200 healthy" "/__heartbeat__ and the admin UI with the allowlist"
+# MySQL with binary logging and enforce_gtid_consistency (your own server here): refused, not recorded
+no_pending=0
+# (MariaDB has no enforce_gtid_consistency: an error, 0)
+[ "${BACKEND}" = mysql ] && no_pending=$(sql "SELECT @@log_bin AND @@enforce_gtid_consistency = 'ON';" 2> /dev/null)
+no_pending=${no_pending:-0}
+check "$(dc logs tokenserver_db_init 2>&1 | grep -c 'WARNING: MySQL with binary logging and enforce_gtid_consistency')" "${no_pending}" \
+  "the init container warns when the refusals cannot be recorded (here: ${no_pending})"
+admin_pytest "/tests/test_sync_allowlist.py -k 'not read_only and not before_the_allowlist'"
+check "$?" 0 "invite-only Sync tests (listed, refused and pending, approved, keys change, from before, reject, allow and remove, max users)"
+# initial: kept what the page changed
+rerun_init > /dev/null
+check "$(allowed_list | wc -w)" 3 "initial:<uid> keeps the uids approved in the admin UI on a restart"
+# a plain list: set on every start, the others go; read-only in the admin UI
+redeploy_allowed "${LISTED_UID}"
+check "${INIT_CODE} $(allowed_on) $(allowed_list)" "0 on ${LISTED_UID}" "SYNC_ALLOWED_ACCOUNTS=<uid>: exactly that list, set on every start"
+admin_pytest "/tests/test_sync_allowlist.py -k read_only"
+check "$?" 0 "admin UI: the allowlist read-only with a plain list, Reject works"
+echo "== SYNC_ALLOWED_ACCOUNTS not valid: the init container fails, nothing changes"
+for bad in "fixed:" "xyz" "${LISTED_UID},12345" "initial:${LISTED_UID}0" "admin,${LISTED_UID}"; do
+  set_env SYNC_ALLOWED_ACCOUNTS "${bad}"
+  check "$(rerun_init)" 1 "init container fails with SYNC_ALLOWED_ACCOUNTS=${bad}"
+done
+check "$(dc logs tokenserver_db_init 2>&1 | grep -c "SYNC_ALLOWED_ACCOUNTS='admin,${LISTED_UID}' is not valid: 'admin' is not an account id")" 1 "init container says why"
+check "$(allowed_on) $(allowed_list)" "on ${LISTED_UID}" "the allowlist unchanged by a SYNC_ALLOWED_ACCOUNTS not valid"
+# off again, max users as it was: every account gets in
+redeploy_allowed ""
+check "${INIT_CODE} $(allowed_on)" "0 off" "SYNC_ALLOWED_ACCOUNTS empty again: off"
+sql "UPDATE config SET config_value = '${MAX_BEFORE}' WHERE config_key = 'max_users';" > /dev/null
+# (the admin UI recreated: settled, its checks seeing the Sync server, before the next phase)
+check "$(hb) $(admin_healthy) $(metrics_show 'ffs_up{component="Sync server"} 1')" "200 healthy yes" "/__heartbeat__ and the admin UI after the allowlist"
+
 echo "== admin UI sees the Sync server go down and back up"
 health_events() { admin_sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'health' AND detail LIKE '$1';"; }
 # the start already has one of each (the admin UI starts first): more than before
