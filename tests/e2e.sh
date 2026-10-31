@@ -1332,6 +1332,28 @@ for bad in "fixed:" "xyz" "${LISTED_UID},12345" "initial:${LISTED_UID}0" "admin,
 done
 check "$(dc logs tokenserver_db_init 2>&1 | grep -c "SYNC_ALLOWED_ACCOUNTS='admin,${LISTED_UID}' is not valid: 'admin' is not an account id")" 1 "init container says why"
 check "$(allowed_on) $(allowed_list)" "on ${LISTED_UID}" "the allowlist unchanged by a SYNC_ALLOWED_ACCOUNTS not valid"
+echo "== a database that ran 6356fcd (this branch's first version): its refusals' table without reported_at and id"
+LEGACY_PENDING=$(printf 'a3%.0s' $(seq 16)) LEGACY_UID=$(printf 'a2%.0s' $(seq 16))
+legacy_table="CREATE TABLE sync_refused_accounts (uid VARCHAR(64) PRIMARY KEY, first_at BIGINT NOT NULL, last_at BIGINT NOT NULL,
+  attempts INT NOT NULL DEFAULT 1, rejected_at BIGINT NULL, rejected_by VARCHAR(255) NULL)"
+legacy_rows="INSERT INTO sync_refused_accounts VALUES ('${LEGACY_PENDING}', 1, 2, 3, NULL, NULL); DELETE FROM config WHERE config_key = 'allowed_accounts_initial';"
+if [ "${BACKEND}" = mysql ]; then
+  sql "DROP TRIGGER IF EXISTS BeforeInsertAllowedUser; DROP TABLE sync_refused_accounts; ${legacy_table} ENGINE=MyISAM DEFAULT CHARSET=utf8mb4; ${legacy_rows}" > /dev/null
+  columns() { sql "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'sync_refused_accounts' AND column_name IN ('reported_at', 'id');"; }
+else
+  sync_role_sql "DROP TRIGGER IF EXISTS before_insert_allowed_user ON users; DROP TABLE sync_refused_accounts; ${legacy_table}; ${legacy_rows}" > /dev/null
+  columns() { sql "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'sync_refused_accounts' AND column_name IN ('reported_at', 'id');"; }
+fi
+check "$? $(columns)" "0 0" "the table of 6356fcd made again, with a pending refusal"
+# (its allowlist had uids then: LISTED_UID, of the plain list above)
+redeploy_allowed "initial:${LEGACY_UID}"
+check "${INIT_CODE} $(columns) $(sql "SELECT COUNT(*) FROM sync_refused_accounts WHERE uid = '${LEGACY_PENDING}';") $(allowed_list | grep -c "${LEGACY_UID}")" "0 2 1 0" \
+  "the new init adds reported_at and id, keeps the refusal, and does not take initial: as new there"
+legacy_events() { admin_sql "SELECT COUNT(*) FROM ffs_events WHERE kind = 'sign-up refused' AND detail LIKE 'Sync: account ${LEGACY_PENDING} %';"; }
+for _ in $(seq 1 30); do [ "$(legacy_events)" = 1 ] && break; sleep 1; done
+check "$(legacy_events) $(metrics_show "ffs_sync_pending_accounts $(sql "SELECT COUNT(*) FROM sync_refused_accounts WHERE uid <> '*dropped*' AND rejected_at IS NULL;")")" "1 yes" \
+  "the admin UI reads it: its refusal reported once, the pending ones counted"
+sql "DELETE FROM sync_refused_accounts WHERE uid = '${LEGACY_PENDING}';" > /dev/null
 # off again, max users as it was: every account gets in
 redeploy_allowed ""
 check "${INIT_CODE} $(allowed_on) $(users_triggers)" "0 off 1" "SYNC_ALLOWED_ACCOUNTS empty again: off, its trigger gone"

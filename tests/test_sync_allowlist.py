@@ -30,6 +30,8 @@ LISTED_FULL = "f6" * 16
 OLD = "09" * 16
 # allowed after the refused tries of test_refused_tries_leave_the_node_load
 NODE_UID = "7e" * 16
+# refused while the list of pending ones is full
+FULL_LIST = "8f" * 16
 
 
 @pytest.fixture(scope="module")
@@ -90,8 +92,8 @@ def node_load(db):
     """current_load of the stack's node, and the accounts it has"""
     return tuple(db.execute(sqltext("""SELECT n.current_load,
         (SELECT COUNT(DISTINCT u.email) FROM users u WHERE u.nodeid = n.id AND u.replaced_at IS NULL)
-        FROM nodes n JOIN services s ON n.service = s.id WHERE s.service = 'sync-1.5' AND n.node = :node"""),
-        {"node": os.environ["SYNC_PUBLIC_URL"]}).first())
+        FROM nodes n JOIN services s ON n.service = s.id WHERE s.service = 'sync-1.5' AND TRIM(TRAILING '/' FROM n.node) = :node"""),
+        {"node": os.environ["SYNC_PUBLIC_URL"].rstrip("/")}).first())
 
 
 def sync_now(uid, **token):
@@ -238,10 +240,44 @@ def test_refused_tries_leave_the_node_load(db, admin):
     for i in range(12):
         refused_login(f"5{i:x}" * 16)
     assert until(lambda: node_load(db) == (accounts, accounts)), (node_load(db), accounts)
-    assert "<td>Sync node load</td><td><span class=\"pill warn\">warning</span>" in admin.get("/")
+    page = admin.get("/")
+    assert "<td>Sync node load</td><td><span class=\"pill warn\">warning</span>" in page and page.count("<td>Sync node load</td>") == 1
     admin.confirm(f"/sync/allowlist/allow?uid={NODE_UID}")
     sync_now(NODE_UID)
     assert rows(db, NODE_UID) == 1 and node_load(db) == (accounts + 1, accounts + 1)
+
+
+def test_cap_of_the_pending_list(db, admin, recorded):
+    # 1000 accounts kept: a new one takes the place of the oldest pending one already alerted,
+    # never of a rejected one or one not alerted yet; with none to let go it is refused without
+    # a record, counted, and the admin UI says so
+    if not recorded:
+        pytest.skip("no pending accounts on this server")
+    # (the pending ones of the tests before, alerted: rejected for the length of this one, so that
+    # only its own rows can go)
+    pending = [r[0] for r in db.execute(sqltext("SELECT uid FROM sync_refused_accounts WHERE uid <> '*dropped*' AND rejected_at IS NULL"))]
+    db.execute(sqltext("UPDATE sync_refused_accounts SET rejected_at = 1 WHERE uid <> '*dropped*' AND rejected_at IS NULL"))
+    kept = db.execute(sqltext("SELECT COUNT(*) FROM sync_refused_accounts WHERE uid <> '*dropped*'")).scalar()
+    fill = [{"u": f"cap{i:04d}", "t": 1000 + i} for i in range(1000 - kept)]
+    db.execute(sqltext("INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts, rejected_at, rejected_by, reported_at) "
+                       "VALUES (:u, :t, :t, 1, :t, 'test', :t)"), fill)
+    try:
+        refused_login(FULL_LIST)
+        assert refused(db, FULL_LIST) is None
+        assert db.execute(sqltext("SELECT attempts FROM sync_refused_accounts WHERE uid = '*dropped*'")).scalar() == 1
+        page = admin.get("/")
+        assert "<td>Pending accounts list</td><td><span class=\"pill warn\">warning</span></td><td>1 account refused without a record" in page, page[:5000]
+        assert "ffs_sync_refusals_dropped 1\n" in metrics()
+        # the oldest pending one already alerted goes, the rejected ones stay
+        db.execute(sqltext("UPDATE sync_refused_accounts SET rejected_at = NULL WHERE uid IN ('cap0000', 'cap0001')"))
+        refused_login(FULL_LIST)
+        assert refused(db, FULL_LIST) == (1, False)
+        assert db.execute(sqltext("SELECT uid FROM sync_refused_accounts WHERE uid IN ('cap0000', 'cap0001')")).scalar() == "cap0001"
+        assert db.execute(sqltext("SELECT COUNT(*) FROM sync_refused_accounts WHERE uid <> '*dropped*'")).scalar() == 1000
+    finally:
+        db.execute(sqltext("DELETE FROM sync_refused_accounts WHERE uid LIKE 'cap%' OR uid IN ('*dropped*', :u)"), {"u": FULL_LIST})
+        for uid in pending:
+            db.execute(sqltext("UPDATE sync_refused_accounts SET rejected_at = NULL WHERE uid = :u"), {"u": uid})
 
 
 def test_read_only(db, recorded):
