@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -20,6 +22,17 @@ const (
 // newest event of a refusal at eventAt (0: none)
 func allowlistFake(on *bool, eventAt *int64) *fakeFxa {
 	fake := &fakeFxa{nodes: [][]driver.Value{}, maxUsers: "10", syncUsers: 1}
+	// the refusals whose event is written (ffs_mark_refusal_reported)
+	var mu sync.Mutex
+	reported := map[string]int64{rejectUID: 1}
+	fake.execErr = func(query string, args []driver.Value) error {
+		if strings.Contains(query, "ffs_mark_refusal_reported") {
+			mu.Lock()
+			reported[args[0].(string)] = 1
+			mu.Unlock()
+		}
+		return nil
+	}
 	fake.answer = func(query string, _ []driver.Value) *fakeRows {
 		switch {
 		case strings.Contains(query, "config_key = 'allowed_accounts'"):
@@ -32,16 +45,16 @@ func allowlistFake(on *bool, eventAt *int64) *fakeFxa {
 			return &fakeRows{cols: []string{"uid", "note", "at", "by", "syncs"},
 				rows: [][]driver.Value{{allowedUID, "my phone", int64(1700000000000), "SYNC_ALLOWED_ACCOUNTS", int64(1)}}}
 		case strings.Contains(query, "FROM sync_refused_accounts"):
-			return &fakeRows{cols: []string{"uid", "first", "last", "attempts", "rejected", "by"}, rows: [][]driver.Value{
-				{pendingUID, int64(1700000300000), int64(1700000400000), int64(3), int64(0), ""},
-				{"bob", int64(1700000200000), int64(1700000200000), int64(1), int64(0), ""},
-				{rejectUID, int64(1700000100000), int64(1700000500000), int64(7), int64(1700000150000), "admin (password)"},
+			mu.Lock()
+			defer mu.Unlock()
+			return &fakeRows{cols: []string{"uid", "first", "last", "attempts", "rejected", "by", "reported"}, rows: [][]driver.Value{
+				{pendingUID, int64(1700000300000), int64(1700000400000), int64(3), int64(0), "", reported[pendingUID]},
+				{"bob", int64(1700000200000), int64(1700000200000), int64(1), int64(0), "", reported["bob"]},
+				{rejectUID, int64(1700000100000), int64(1700000500000), int64(7), int64(1700000150000), "admin (password)", reported[rejectUID]},
 			}}
-		case strings.Contains(query, "SELECT MAX(at) FROM ffs_events"):
-			if *eventAt == 0 {
-				return &fakeRows{cols: []string{"at"}, rows: [][]driver.Value{{nil}}}
-			}
-			return &fakeRows{cols: []string{"at"}, rows: [][]driver.Value{{*eventAt}}}
+		case strings.Contains(query, "SELECT n.current_load"):
+			// the node's load: counted, its accounts (eventAt: the drift)
+			return &fakeRows{cols: []string{"load", "accounts"}, rows: [][]driver.Value{{int64(5) + *eventAt, int64(5)}}}
 		}
 		return nil
 	}
@@ -184,6 +197,9 @@ func TestAllowlistConfirmAndChange(t *testing.T) {
 	}
 	var got []string
 	for i, q := range fake.statements() {
+		if strings.Contains(q, "ffs_mark_refusal_reported") {
+			continue
+		}
 		var args []string
 		for _, v := range fake.args[i] {
 			args = append(args, v.(string))
@@ -201,7 +217,7 @@ func TestAllowlistConfirmAndChange(t *testing.T) {
 	}
 	// each one an audit event, with who and the reason
 	lines := strings.Join(alerts(t, app.alerter, 4), "\n")
-	for _, want := range []string{"admin: Approved Sync account " + pendingUID + " by admin (password): my sister", "admin: Allowed Sync account " + strings.Repeat("d", 32) + " by admin (password)",
+	for _, want := range []string{"admin: Approved Sync account " + pendingUID + " by admin (password): my sister", "admin: Allowed Sync account " + strings.Repeat("d", 32) + " (note: Bob's laptop) by admin (password)",
 		"admin: Removed Sync account " + allowedUID + " from the allowlist by admin (password)", "admin: Rejected Sync account bob by admin (password)"} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("alerts: no %q in %q", want, lines)
@@ -239,7 +255,7 @@ func TestWatchRefusals(t *testing.T) {
 	on, eventAt := true, int64(0)
 	fake := allowlistFake(&on, &eventAt)
 	app, _, _, _ := allowlistApp(t, fake, true)
-	// no event of before: both pending ones, once, the rejected one never
+	// both pending ones, oldest first, once each (their rows are marked), the rejected one never
 	app.health.watchRefusals(t.Context())
 	app.health.watchRefusals(t.Context())
 	lines := alerts(t, app.alerter, 3)
@@ -247,11 +263,19 @@ func TestWatchRefusals(t *testing.T) {
 	if len(lines) != 2 || !strings.HasSuffix(lines[0], want[0]) || !strings.HasSuffix(lines[1], want[1]) {
 		t.Errorf("first rounds:\n%s", strings.Join(lines, "\n"))
 	}
-	// a restart: from the newest event of the log, the refusals after it alone
-	eventAt = 1700000250000
+	var marks []string
+	for i, q := range fake.statements() {
+		if q == "CALL ffs_mark_refusal_reported(?)" {
+			marks = append(marks, fake.args[i][0].(string))
+		}
+	}
+	if strings.Join(marks, " ") != "bob "+pendingUID {
+		t.Errorf("marked: %q", marks)
+	}
+	// a restart (a new Health): what the rows say, nothing again
 	app.health = newHealth(app)
 	app.health.watchRefusals(t.Context())
-	if lines := alerts(t, app.alerter, 2); len(lines) != 1 || !strings.HasSuffix(lines[0], want[1]) {
+	if lines := alerts(t, app.alerter, 1); len(lines) != 0 {
 		t.Errorf("after a restart: %q", lines)
 	}
 	// off: nothing read
@@ -260,5 +284,52 @@ func TestWatchRefusals(t *testing.T) {
 	app.health.watchRefusals(t.Context())
 	if len(fake.queries) != n+1 {
 		t.Errorf("off: %q", fake.queries[n:])
+	}
+}
+
+func TestWatchNodeLoad(t *testing.T) {
+	on, drift := false, int64(0)
+	fake := allowlistFake(&on, &drift)
+	app, h, c, _ := allowlistApp(t, fake, true)
+	app.syncDomain = "https://sync.example.com"
+	resyncs := func() int {
+		n := 0
+		for _, q := range fake.statements() {
+			if q == "CALL ffs_resync_node_load(?)" {
+				n++
+			}
+		}
+		return n
+	}
+	now := time.Now()
+	// the load as counted: nothing to do, no check shown
+	app.health.watchNodeLoad(t.Context(), now)
+	if _, shown := app.health.nodeLoadCheck(now); resyncs() != 0 || shown {
+		t.Errorf("no drift: %d resyncs", resyncs())
+	}
+	// a small drift: counted again (the first time), then not before nodeLoadEvery
+	drift = 3
+	app.health.watchNodeLoad(t.Context(), now)
+	app.health.watchNodeLoad(t.Context(), now.Add(time.Minute))
+	if c, shown := app.health.nodeLoadCheck(now); resyncs() != 1 || !shown || !c.OK {
+		t.Errorf("small drift: %d resyncs, %+v", resyncs(), c)
+	}
+	app.health.watchNodeLoad(t.Context(), now.Add(nodeLoadEvery+time.Minute))
+	if resyncs() != 2 || fake.args[len(fake.args)-1][0] != "https://sync.example.com" {
+		t.Errorf("after nodeLoadEvery: %d resyncs", resyncs())
+	}
+	// nodeLoadDrift or more: at once, and a warning of the setup checks for a day
+	drift = nodeLoadDrift
+	app.health.watchNodeLoad(t.Context(), now.Add(nodeLoadEvery+2*time.Minute))
+	check, _ := app.health.nodeLoadCheck(now.Add(nodeLoadEvery + 3*time.Minute))
+	if resyncs() != 3 || check.OK || !strings.Contains(check.Text, "The tokenserver counted 15 accounts on https://sync.example.com, which has 5") {
+		t.Errorf("large drift: %d resyncs, %+v", resyncs(), check)
+	}
+	page := getPage(h, "/", c).Body.String()
+	if !strings.Contains(page, "<td>Sync node load</td><td><span class=\"pill warn\">warning</span>") {
+		t.Errorf("overview: no warning of the node's load")
+	}
+	if check, _ := app.health.nodeLoadCheck(now.Add(nodeLoadShown + time.Hour)); !check.OK {
+		t.Errorf("a day later: %+v", check)
 	}
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -59,6 +58,8 @@ type RefusedAccount struct {
 	RejectedAt         time.Time // zero: pending
 	RejectedBy         string
 	ValidUID, Rejected bool
+	// its event written (the first refusal's, once)
+	Reported bool
 }
 
 // SyncAllowlist: what the overview shows
@@ -98,7 +99,8 @@ func (s *SyncDB) AllowedAccounts(ctx context.Context) ([]AllowedAccount, error) 
 
 // RefusedAccounts: newest first
 func (s *SyncDB) RefusedAccounts(ctx context.Context) ([]RefusedAccount, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT uid, first_at, last_at, attempts, COALESCE(rejected_at, 0), COALESCE(rejected_by, '')
+	rows, err := s.db.QueryContext(ctx, `SELECT uid, first_at, last_at, attempts, COALESCE(rejected_at, 0), COALESCE(rejected_by, ''),
+		CASE WHEN reported_at IS NULL THEN 0 ELSE 1 END
 		FROM sync_refused_accounts ORDER BY first_at DESC, uid`)
 	if err != nil {
 		return nil, err
@@ -107,15 +109,15 @@ func (s *SyncDB) RefusedAccounts(ctx context.Context) ([]RefusedAccount, error) 
 	var list []RefusedAccount
 	for rows.Next() {
 		var r RefusedAccount
-		var first, last, rejected int64
-		if err := rows.Scan(&r.UID, &first, &last, &r.Attempts, &rejected, &r.RejectedBy); err != nil {
+		var first, last, rejected, reported int64
+		if err := rows.Scan(&r.UID, &first, &last, &r.Attempts, &rejected, &r.RejectedBy, &reported); err != nil {
 			return nil, err
 		}
 		r.FirstAt, r.LastAt, r.Rejected = ms(first), ms(last), rejected != 0
 		if r.Rejected {
 			r.RejectedAt = ms(rejected)
 		}
-		r.ValidUID = uidPattern.MatchString(r.UID)
+		r.ValidUID, r.Reported = uidPattern.MatchString(r.UID), reported != 0
 		list = append(list, r)
 	}
 	return list, rows.Err()
@@ -142,6 +144,12 @@ func (s *SyncDB) RemoveAllowedAccount(ctx context.Context, uid string) error {
 
 func (s *SyncDB) RejectAccount(ctx context.Context, uid, by string) error {
 	return s.call(ctx, "ffs_reject_account", uid, oneLine(by, 255))
+}
+
+// MarkRefusalReported: the event of the refusal is written (its row keeps it: no clock, no
+// cursor, the same after a restart)
+func (s *SyncDB) MarkRefusalReported(ctx context.Context, uid string) error {
+	return s.call(ctx, "ffs_mark_refusal_reported", uid)
 }
 
 // syncAllowlist: the lists of the overview, nil when the allowlist is off
@@ -311,7 +319,11 @@ func (a *App) changeAllowlist(w http.ResponseWriter, r *http.Request, s *session
 		if refused != nil {
 			message = "Approved Sync account " + uid
 		}
-		err = a.sync.AllowAccount(r.Context(), uid, r.PostFormValue("note"), auditWho(s))
+		note, _ := cleanNote(r.PostFormValue("note"))
+		if note = oneLine(note, 255); note != "" {
+			message += " (note: " + note + ")"
+		}
+		err = a.sync.AllowAccount(r.Context(), uid, note, auditWho(s))
 	case "reject":
 		message = "Rejected Sync account " + uid
 		err = a.sync.RejectAccount(r.Context(), uid, auditWho(s))
@@ -329,9 +341,10 @@ func refusalEvent(uid string) string {
 
 const refusalPrefix = "Sync: account "
 
-// watchRefusals: an event (and its alert) for each account the allowlist refused since the
-// last one, once: the first refusal of an account, not its retries, nor the rejected ones.
-// From the newest such event of the log, so that a restart neither repeats nor loses them
+// watchRefusals: an event (and its alert, both limited per minute like every kind) for each
+// account the allowlist refused that has none yet, once: the first refusal of an account, not
+// its retries, nor the rejected ones. Its row records that the event is written
+// (ffs_mark_refusal_reported), so a restart neither repeats nor loses them, whatever the clocks
 func (h *Health) watchRefusals(ctx context.Context) {
 	app := h.app
 	if app == nil || app.sync == nil {
@@ -341,37 +354,23 @@ func (h *Health) watchRefusals(ctx context.Context) {
 	if err != nil || !on {
 		return
 	}
-	h.mu.Lock()
-	since, known := h.refusalsSince, h.refusalsKnown
-	h.mu.Unlock()
-	if !known {
-		var last sql.NullInt64
-		err := app.sync.mine().QueryRowContext(ctx, app.sync.q("SELECT MAX(at) FROM ffs_events WHERE kind = ? AND detail LIKE ?"),
-			"sign-up refused", refusalPrefix+"%").Scan(&last)
-		if err != nil {
-			log.Printf("watching the refused Sync accounts: %v", err)
-			return
-		}
-		since = last.Int64
-	}
 	refused, err := app.sync.RefusedAccounts(ctx)
 	if err != nil {
 		log.Printf("watching the refused Sync accounts: %v", err)
 		return
 	}
-	newest := since
+	// oldest first
 	for i := len(refused) - 1; i >= 0; i-- {
 		r := refused[i]
-		at := r.FirstAt.UnixMilli()
-		if at <= since || r.Rejected {
+		if r.Reported || r.Rejected {
 			continue
 		}
 		app.event("sign-up refused", refusalEvent(r.UID))
-		newest = max(newest, at)
+		if err := app.sync.MarkRefusalReported(ctx, r.UID); err != nil {
+			log.Printf("watching the refused Sync accounts: %v", err)
+			return
+		}
 	}
-	h.mu.Lock()
-	h.refusalsSince, h.refusalsKnown = newest, true
-	h.mu.Unlock()
 }
 
 // allowlistValue: the allowlist in force, for the configuration page
