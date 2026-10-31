@@ -20,9 +20,22 @@ CREATE TABLE IF NOT EXISTS sync_refused_accounts (
     attempts INT NOT NULL DEFAULT 1,
     rejected_at BIGINT,
     rejected_by VARCHAR(255),
+    -- named in the admin UI's event of it: a second pass finds it written (no second alert)
+    id BIGSERIAL,
     -- the admin UI's event of it written
     reported_at BIGINT
 );
+
+-- a table of before (6356fcd, which had no allowed_accounts_initial): its initial: uids, if
+-- any, were added then, not again; and its columns since
+INSERT INTO config (config_key, config_value)
+SELECT 'allowed_accounts_initial', 'applied'
+WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                  AND table_name = 'sync_refused_accounts' AND column_name = 'reported_at')
+  AND EXISTS (SELECT 1 FROM sync_allowed_accounts)
+ON CONFLICT (config_key) DO NOTHING;
+ALTER TABLE sync_refused_accounts ADD COLUMN IF NOT EXISTS reported_at BIGINT;
+ALTER TABLE sync_refused_accounts ADD COLUMN IF NOT EXISTS id BIGSERIAL;
 
 -- The function of the trigger before_insert_allowed_user, which fires before before_insert_user
 -- (SYNC_MAX_USERS: triggers fire in the order of their names): an account not on the list is
@@ -31,26 +44,41 @@ CREATE TABLE IF NOT EXISTS sync_refused_accounts (
 -- tokenserver then finds no new row: its post_user (tokenserver-postgres/src/db/db_impl.rs,
 -- "INSERT INTO users ... RETURNING uid" read with get_result) fails with NotFound, and the
 -- request with a 5xx; were upstream to read the result otherwise, a refused account could
--- get a token: tests/test_sync_allowlist.py checks the status. At most the newest 1000
--- refusals are kept. An email that has a row already is no new account (a keys change adds a row for
+-- get a token: tests/test_sync_allowlist.py checks the status. At most 1000 accounts are
+-- kept: a new one takes the place of the oldest pending one whose event the admin UI wrote
+-- (never a rejected one, never one not reported yet); when there is none, it is refused
+-- without a record, counted in the row '*dropped*' (no uid), which the admin UI shows. An email that has a row already is no new account (a keys change adds a row for
 -- it, as do the accounts from before the allowlist): never refused here.
 -- 'allowed_accounts' not 'on' (or no row): off, everyone gets in.
 CREATE OR REPLACE FUNCTION ffs_check_allowed_account() RETURNS trigger AS $$
 DECLARE
     account VARCHAR(255);
     now_ms BIGINT;
+    keep BOOLEAN;
 BEGIN
     IF EXISTS (SELECT 1 FROM config WHERE config_key = 'allowed_accounts' AND config_value = 'on')
        AND NOT EXISTS (SELECT 1 FROM users WHERE email = NEW.email) THEN
         account := lower(split_part(NEW.email, '@', 1));
         IF NOT EXISTS (SELECT 1 FROM sync_allowed_accounts WHERE uid = account) THEN
             now_ms := (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT;
-            INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts)
-            VALUES (left(account, 64), now_ms, now_ms, 1)
-            ON CONFLICT (uid) DO UPDATE SET last_at = EXCLUDED.last_at, attempts = sync_refused_accounts.attempts + 1;
-            IF (SELECT COUNT(*) FROM sync_refused_accounts) > 1000 THEN
-                DELETE FROM sync_refused_accounts WHERE uid NOT IN
-                    (SELECT uid FROM sync_refused_accounts ORDER BY last_at DESC, uid LIMIT 1000);
+            account := left(account, 64);
+            keep := TRUE;
+            IF NOT EXISTS (SELECT 1 FROM sync_refused_accounts WHERE uid = account)
+               AND (SELECT COUNT(*) FROM sync_refused_accounts WHERE uid <> '*dropped*') >= 1000 THEN
+                DELETE FROM sync_refused_accounts WHERE uid = (SELECT uid FROM sync_refused_accounts
+                    WHERE uid <> '*dropped*' AND rejected_at IS NULL AND reported_at IS NOT NULL
+                    ORDER BY last_at, uid LIMIT 1);
+                IF NOT FOUND THEN
+                    keep := FALSE;
+                    INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts, reported_at)
+                    VALUES ('*dropped*', now_ms, now_ms, 1, now_ms)
+                    ON CONFLICT (uid) DO UPDATE SET last_at = EXCLUDED.last_at, attempts = sync_refused_accounts.attempts + 1;
+                END IF;
+            END IF;
+            IF keep THEN
+                INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts)
+                VALUES (account, now_ms, now_ms, 1)
+                ON CONFLICT (uid) DO UPDATE SET last_at = EXCLUDED.last_at, attempts = sync_refused_accounts.attempts + 1;
             END IF;
             RAISE WARNING 'Account % not on the allowlist (SYNC_ALLOWED_ACCOUNTS): refused', account;
             RETURN NULL;
@@ -114,8 +142,13 @@ REVOKE ALL ON FUNCTION ffs_mark_refusal_reported(TEXT) FROM PUBLIC;
 -- would fill the node a little more. The load is the accounts assigned to the node: its
 -- emails with a row that is not replaced, as the tokenserver counts one per allocation (a
 -- keys change adds a row, not a load). What was counted too much goes back to available
--- (within capacity), on the nodes in use. node_url: that node only; NULL: every node (the
--- init container, at every start).
+-- (within capacity), on the nodes in use. node_url: that node only (with or without a trailing
+-- /, as SYNC_PUBLIC_URL may have it); NULL: every node (the init container, at every start).
+-- A recount between the tokenserver's add_user_to_node and its INSERT does not see that account
+-- yet: the load is one low until the next recount (minutes), harmless at any real capacity.
+-- The tokenserver takes no lock this could wait for (each statement on its own), so it is not
+-- tried: the next recount corrects it. (In the init container's transaction, the DROP TRIGGER
+-- before it holds users' lock: the tokenserver's reads of users wait for that transaction.)
 CREATE OR REPLACE FUNCTION ffs_resync_node_load(node_url TEXT) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 BEGIN
@@ -128,7 +161,7 @@ BEGIN
           FROM nodes n2 JOIN services s ON s.service = 'sync-1.5' AND n2.service = s.id
           LEFT JOIN users u ON u.nodeid = n2.id AND u.replaced_at IS NULL
           GROUP BY n2.id) r
-    WHERE r.id = n.id AND (node_url IS NULL OR n.node = node_url) AND n.current_load <> r.real_load;
+    WHERE r.id = n.id AND (node_url IS NULL OR TRIM(TRAILING '/' FROM n.node) = TRIM(TRAILING '/' FROM node_url)) AND n.current_load <> r.real_load;
 END;
 $$;
 REVOKE ALL ON FUNCTION ffs_resync_node_load(TEXT) FROM PUBLIC;

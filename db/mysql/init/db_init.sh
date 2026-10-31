@@ -116,8 +116,8 @@ fi
 
 # allowed_sql: the statements of SYNC_ALLOWED_ACCOUNTS, after allowlist.sql. The list and on or
 # off in one transaction (sync_allowed_accounts is InnoDB): fixed: exactly these uids; initial:
-# these uids once, the first time the allowlist is on (allowed_accounts_initial records it, as
-# max_users' row does for SYNC_MAX_USERS=initial:). The trigger only while it is on (with it off,
+# these uids once, the first time an initial: list is applied (allowed_accounts_initial records
+# it, as max_users' row does for SYNC_MAX_USERS=initial:; admin and fixed: do not set it). The trigger only while it is on (with it off,
 # no trigger that could write a non-transactional table), created once and kept (its body only
 # calls ffs_check_allowed_account): no start leaves the users table without it. Then the
 # nodes' load counted again (every start, the allowlist on or off)
@@ -127,6 +127,13 @@ allowed_sql() {
     rows="${rows:+${rows} UNION ALL }SELECT '${uid}' AS uid"
   done
   first="NOT EXISTS (SELECT 1 FROM config WHERE config_key = 'allowed_accounts_initial')"
+  # the trigger first: DDL commits by itself, and an 'on' committed before it would let an
+  # unlisted account in, for good (it then has a row). Early it checks nothing: its procedure
+  # reads allowed_accounts
+  if [ "${ALLOWED_MODE}" != off ] && [ "${ALLOWED_TRIGGER}" = 0 ]; then
+    printf '%s\n' "DELIMITER //" "CREATE TRIGGER BeforeInsertAllowedUser BEFORE INSERT ON users FOR EACH ROW PRECEDES BeforeInsertUser" \
+      "BEGIN CALL ffs_check_allowed_account(NEW.email); END //" "DELIMITER ;"
+  fi
   echo "START TRANSACTION;"
   if [ "${ALLOWED_MODE}" = fixed ]; then
     echo "DELETE FROM sync_allowed_accounts WHERE uid NOT IN ($(printf "'%s'," "${ALLOWED_UIDS[@]}" | sed 's/,$//'));"
@@ -134,7 +141,10 @@ allowed_sql() {
   elif [ -n "${rows}" ]; then
     echo "INSERT IGNORE INTO sync_allowed_accounts (uid, note, added_at, added_by) SELECT v.uid, '', ${now}, 'SYNC_ALLOWED_ACCOUNTS' FROM (${rows}) v WHERE ${first};"
   fi
-  [ "${ALLOWED_MODE}" = off ] || echo "INSERT IGNORE INTO config (config_key, config_value) VALUES ('allowed_accounts_initial', 'applied');"
+  # (initial: with uids; admin is initial: without)
+  if [ "${ALLOWED_MODE}" = initial ] && [ -n "${rows}" ]; then
+    echo "INSERT IGNORE INTO config (config_key, config_value) VALUES ('allowed_accounts_initial', 'applied');"
+  fi
   echo "INSERT INTO config (config_key, config_value) VALUES ('allowed_accounts', '$([ "${ALLOWED_MODE}" = off ] && echo off || echo on)')"
   echo "  ON DUPLICATE KEY UPDATE config_value = VALUES(config_value);"
   echo "COMMIT;"
@@ -142,10 +152,6 @@ allowed_sql() {
     echo "DROP TRIGGER IF EXISTS BeforeInsertAllowedUser;"
   else
     [ -z "${rows}" ] || echo "DELETE FROM sync_refused_accounts WHERE uid IN (SELECT uid FROM sync_allowed_accounts);"
-    if [ "${ALLOWED_TRIGGER}" = 0 ]; then
-      printf '%s\n' "DELIMITER //" "CREATE TRIGGER BeforeInsertAllowedUser BEFORE INSERT ON users FOR EACH ROW PRECEDES BeforeInsertUser" \
-        "BEGIN CALL ffs_check_allowed_account(NEW.email); END //" "DELIMITER ;"
-    fi
   fi
   echo "CALL ffs_resync_node_load(NULL);"
 }
@@ -257,6 +263,20 @@ fi
 #   any of these that cannot be read: InnoDB.
 # Checked on every start: a table of before changes engine.
 echo "Applying the allowlist (SYNC_ALLOWED_ACCOUNTS)..."
+# a table of before (6356fcd, the allowlist on or off then): its columns since, and its initial:
+# uids, if any, added then, not again (it had no allowed_accounts_initial)
+column_of() { db "${MARIADB_DATABASE}" -sN -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'sync_refused_accounts' AND column_name = '$1';"; }
+if [ "$(db "${MARIADB_DATABASE}" -sN -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'sync_refused_accounts';")" = 1 ]; then
+  if [ "$(column_of reported_at)" = 0 ]; then
+    echo "  sync_refused_accounts of before: reported_at added"
+    db "${MARIADB_DATABASE}" -e "INSERT IGNORE INTO config (config_key, config_value) SELECT 'allowed_accounts_initial', 'applied' FROM DUAL WHERE EXISTS (SELECT 1 FROM sync_allowed_accounts);
+      ALTER TABLE sync_refused_accounts ADD COLUMN reported_at BIGINT NULL;" || { echo "✗ ERROR: Failed to add reported_at to sync_refused_accounts"; exit 1; }
+  fi
+  if [ "$(column_of id)" = 0 ]; then
+    db "${MARIADB_DATABASE}" -e "ALTER TABLE sync_refused_accounts ADD COLUMN id BIGINT NOT NULL AUTO_INCREMENT UNIQUE;" \
+      || { echo "✗ ERROR: Failed to add id to sync_refused_accounts"; exit 1; }
+  fi
+fi
 engine_of() { db "${MARIADB_DATABASE}" -sN -e "SELECT engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'sync_refused_accounts';" 2> /dev/null; }
 ALLOWED_TRIGGER=0
 if [ "${ALLOWED_MODE}" != off ]; then
@@ -269,7 +289,8 @@ if [ "${ALLOWED_MODE}" != off ]; then
     why="MySQL with binary logging and enforce_gtid_consistency, or without myisam_recover_options"
   fi
   refused_table="CREATE TABLE IF NOT EXISTS sync_refused_accounts (uid VARCHAR(64) PRIMARY KEY, first_at BIGINT NOT NULL,
-    last_at BIGINT NOT NULL, attempts INT NOT NULL DEFAULT 1, rejected_at BIGINT NULL, rejected_by VARCHAR(255) NULL, reported_at BIGINT NULL)"
+    last_at BIGINT NOT NULL, attempts INT NOT NULL DEFAULT 1, rejected_at BIGINT NULL, rejected_by VARCHAR(255) NULL, reported_at BIGINT NULL,
+    id BIGINT NOT NULL AUTO_INCREMENT UNIQUE)"
   db "${MARIADB_DATABASE}" -e "${refused_table} ENGINE=${refused_engine} DEFAULT CHARSET=utf8mb4;" 2> /dev/null \
     || db "${MARIADB_DATABASE}" -e "${refused_table} DEFAULT CHARSET=utf8mb4;" || { echo "✗ ERROR: Failed to create sync_refused_accounts"; exit 1; }
   refused_now=$(engine_of)

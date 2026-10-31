@@ -18,8 +18,11 @@ CREATE TABLE IF NOT EXISTS sync_allowed_accounts (
 -- sync_refused_accounts, where the admin UI shows it as pending. That table is Aria (MariaDB)
 -- or MyISAM (MySQL) where it can be (db_init.sh): its row stays when SIGNAL undoes the INSERT
 -- into users. An email that has a row already is no new account (a keys change adds a row for
--- it, as do the accounts from before the allowlist): never refused here. At most the newest
--- 1000 refusals are kept. 'allowed_accounts' not 'on' (or no row): everyone gets in.
+-- it, as do the accounts from before the allowlist): never refused here. At most 1000 accounts
+-- are kept: a new one takes the place of the oldest pending one whose event the admin UI wrote
+-- (never a rejected one, never one not reported yet); when there is none, it is refused
+-- without a record, counted in the row '*dropped*' (no uid: 32 hexadecimal characters), which
+-- the admin UI shows. 'allowed_accounts' not 'on' (or no row): everyone gets in.
 -- (While this is replaced at a start, the trigger finds no procedure: an INSERT fails then,
 -- it is never let in unchecked.)
 DROP PROCEDURE IF EXISTS ffs_check_allowed_account;
@@ -29,18 +32,31 @@ CREATE PROCEDURE ffs_check_allowed_account(IN new_email VARCHAR(255))
 BEGIN
     DECLARE account VARCHAR(255);
     DECLARE now_ms BIGINT;
+    DECLARE keep INT;
 
     IF EXISTS (SELECT 1 FROM config WHERE config_key = 'allowed_accounts' AND config_value = 'on')
        AND NOT EXISTS (SELECT 1 FROM users WHERE email = new_email) THEN
         SET account = LOWER(SUBSTRING_INDEX(new_email, '@', 1));
         IF NOT EXISTS (SELECT 1 FROM sync_allowed_accounts WHERE uid = account) THEN
             SET now_ms = CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED);
-            INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts)
-            VALUES (LEFT(account, 64), now_ms, now_ms, 1)
-            ON DUPLICATE KEY UPDATE last_at = now_ms, attempts = attempts + 1;
-            IF (SELECT COUNT(*) FROM sync_refused_accounts) > 1000 THEN
-                DELETE FROM sync_refused_accounts WHERE uid NOT IN
-                    (SELECT uid FROM (SELECT uid FROM sync_refused_accounts ORDER BY last_at DESC, uid LIMIT 1000) newest);
+            SET account = LEFT(account, 64);
+            SET keep = 1;
+            IF NOT EXISTS (SELECT 1 FROM sync_refused_accounts WHERE uid = account)
+               AND (SELECT COUNT(*) FROM sync_refused_accounts WHERE uid <> '*dropped*') >= 1000 THEN
+                DELETE FROM sync_refused_accounts
+                WHERE uid <> '*dropped*' AND rejected_at IS NULL AND reported_at IS NOT NULL
+                ORDER BY last_at, uid LIMIT 1;
+                IF ROW_COUNT() = 0 THEN
+                    SET keep = 0;
+                    INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts, reported_at)
+                    VALUES ('*dropped*', now_ms, now_ms, 1, now_ms)
+                    ON DUPLICATE KEY UPDATE last_at = now_ms, attempts = attempts + 1;
+                END IF;
+            END IF;
+            IF keep = 1 THEN
+                INSERT INTO sync_refused_accounts (uid, first_at, last_at, attempts)
+                VALUES (account, now_ms, now_ms, 1)
+                ON DUPLICATE KEY UPDATE last_at = now_ms, attempts = attempts + 1;
             END IF;
             SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Account not on the allowlist (SYNC_ALLOWED_ACCOUNTS)';
@@ -107,8 +123,12 @@ DELIMITER ;
 -- would fill the node a little more. The load is the accounts assigned to the node: its
 -- emails with a row that is not replaced, as the tokenserver counts one per allocation (a
 -- keys change adds a row, not a load). What was counted too much goes back to available
--- (within capacity), on the nodes in use. node_url: that node only; NULL: every node (the
--- init container, at every start).
+-- (within capacity), on the nodes in use. node_url: that node only (with or without a trailing
+-- /, as SYNC_PUBLIC_URL may have it); NULL: every node (the init container, at every start).
+-- A recount between the tokenserver's add_user_to_node and its INSERT does not see that account
+-- yet: the load is one low until the next recount (minutes), harmless at any real capacity.
+-- The tokenserver takes no lock this could wait for (each statement on its own), so it is not
+-- tried: the next recount corrects it.
 DROP PROCEDURE IF EXISTS ffs_resync_node_load;
 
 DELIMITER //
@@ -120,12 +140,12 @@ BEGIN
     JOIN services s ON s.service = 'sync-1.5' AND n.service = s.id
     LEFT JOIN (SELECT nodeid, COUNT(DISTINCT email) AS real_load FROM users WHERE replaced_at IS NULL GROUP BY nodeid) u ON u.nodeid = n.id
     SET n.available = GREATEST(0, LEAST(n.available + GREATEST(n.current_load - COALESCE(u.real_load, 0), 0), n.capacity - COALESCE(u.real_load, 0)))
-    WHERE (node_url IS NULL OR n.node = node_url) AND n.downed = 0 AND n.current_load <> COALESCE(u.real_load, 0);
+    WHERE (node_url IS NULL OR TRIM(TRAILING '/' FROM n.node) = TRIM(TRAILING '/' FROM node_url)) AND n.downed = 0 AND n.current_load <> COALESCE(u.real_load, 0);
     UPDATE nodes n
     JOIN services s ON s.service = 'sync-1.5' AND n.service = s.id
     LEFT JOIN (SELECT nodeid, COUNT(DISTINCT email) AS real_load FROM users WHERE replaced_at IS NULL GROUP BY nodeid) u ON u.nodeid = n.id
     SET n.current_load = COALESCE(u.real_load, 0)
-    WHERE (node_url IS NULL OR n.node = node_url) AND n.current_load <> COALESCE(u.real_load, 0);
+    WHERE (node_url IS NULL OR TRIM(TRAILING '/' FROM n.node) = TRIM(TRAILING '/' FROM node_url)) AND n.current_load <> COALESCE(u.real_load, 0);
     COMMIT;
 END //
 DELIMITER ;

@@ -215,9 +215,9 @@ if ! parse_allowed_accounts "${SYNC_ALLOWED_ACCOUNTS:-}"; then
 fi
 
 # allowed_sql: the statements of SYNC_ALLOWED_ACCOUNTS, after allowlist.sql (all in one
-# transaction): fixed: exactly these uids; initial: these uids once, the first time the
-# allowlist is on (allowed_accounts_initial records it, as max_users' row does for
-# SYNC_MAX_USERS=initial:); on or off; the trigger only while it is on. Then the nodes' load
+# transaction): fixed: exactly these uids; initial: these uids once, the first time an
+# initial: list is applied (allowed_accounts_initial records it, as max_users' row does for
+# SYNC_MAX_USERS=initial:; admin and fixed: do not set it); on or off; the trigger only while it is on. Then the nodes' load
 # counted again (every start, the allowlist on or off)
 allowed_sql() {
   local uid rows="" now="(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT" first
@@ -232,7 +232,10 @@ allowed_sql() {
     echo "INSERT INTO sync_allowed_accounts (uid, note, added_at, added_by) SELECT v.uid, '', ${now}, 'SYNC_ALLOWED_ACCOUNTS' FROM (${rows}) v WHERE ${first} ON CONFLICT (uid) DO NOTHING;"
   fi
   [ -z "${rows}" ] || echo "DELETE FROM sync_refused_accounts WHERE uid IN (SELECT uid FROM sync_allowed_accounts);"
-  [ "${ALLOWED_MODE}" = off ] || echo "INSERT INTO config (config_key, config_value) VALUES ('allowed_accounts_initial', 'applied') ON CONFLICT (config_key) DO NOTHING;"
+  # (initial: with uids; admin is initial: without)
+  if [ "${ALLOWED_MODE}" = initial ] && [ -n "${rows}" ]; then
+    echo "INSERT INTO config (config_key, config_value) VALUES ('allowed_accounts_initial', 'applied') ON CONFLICT (config_key) DO NOTHING;"
+  fi
   echo "INSERT INTO config (config_key, config_value) VALUES ('allowed_accounts', '$([ "${ALLOWED_MODE}" = off ] && echo off || echo on)')"
   echo "  ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP;"
   echo "DROP TRIGGER IF EXISTS before_insert_allowed_user ON users;"
