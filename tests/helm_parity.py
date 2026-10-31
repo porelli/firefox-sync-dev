@@ -152,7 +152,7 @@ ALLOWED_COMMANDS = {
     f"{SYNC_MARIADB}:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mariadbd", "--explicit_defaults_for_timestamp"]],
                    "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
                    "SYNC_MARIADB_IMAGE unset in .env); the chart has no unset: database.image.mariadb"),
-    "mysql:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mysqld", "--disable-log-bin"]],
+    "mysql:db": ([None, ["sh", "/ffs-db/admin-user.sh", "mysqld", "--disable-log-bin", "--myisam-recover-options=BACKUP,FORCE"]],
                  "compose starts it through db/mysql/keep-major.sh (no upgrade of the data to another major with "
                  "SYNC_MYSQL_IMAGE unset in .env); the chart has no unset: database.image.mysql"),
     # the accounts' database: compose's command without db/mysql/keep-major.sh (the chart refuses

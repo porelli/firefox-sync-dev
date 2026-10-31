@@ -3,7 +3,7 @@ tokenserver, with the mock FxA (whose accounts have the uids chosen here), and t
 
 Runs in the syncstorage-rs image like test_admin_sync.py, see tests/e2e.sh: the stack has
 SYNC_ALLOWED_ACCOUNTS=initial:<LISTED> and max users unlimited. tests/e2e.sh runs -k
-before_the_allowlist first, with the allowlist off (an account from before it), -k read_only
+sync_while_off first, with the allowlist off (an account from before it), -k read_only
 at the end with a plain list (read-only in the admin UI), and the rest between them.
 Environment: as test_admin_sync.py.
 """
@@ -28,16 +28,18 @@ WHILE_FULL = "e5" * 16
 LISTED_FULL = "f6" * 16
 # synced before the allowlist was on
 OLD = "09" * 16
+# allowed after the refused tries of test_refused_tries_leave_the_node_load
+NODE_UID = "7e" * 16
 
 
 @pytest.fixture(scope="module")
 def recorded(db):
-    """the refusals are recorded (pending): not on MySQL with binary logging and
-    enforce_gtid_consistency, where the init container keeps them in InnoDB (your own server)"""
+    """the refusals are recorded (pending): Aria (MariaDB), MyISAM (the stack's MySQL), not in
+    InnoDB (your own MySQL with binary logging), see db/mysql/init/db_init.sh"""
     if os.environ["BACKEND"] != "mysql":
         return True
     engine = db.execute(sqltext("SELECT engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'sync_refused_accounts'")).scalar()
-    return engine.lower() == "myisam"
+    return engine.lower() != "innodb"
 
 
 def rows(db, uid):
@@ -73,6 +75,25 @@ def metrics():
     return requests.get(f"{ADMIN}/metrics", headers={"Authorization": f"Bearer {METRICS_TOKEN}"}, timeout=30).text
 
 
+# what the tokenserver answers a refused account, an internal error: the database error of the
+# trigger's SIGNAL, with PostgreSQL the row it does not find (see db/postgres/init/allowlist.sql)
+REFUSED = 500
+
+
+def refused_login(uid, **token):
+    res = login(uid, **token)
+    assert res.status_code == REFUSED, (res.status_code, res.text)
+    return res
+
+
+def node_load(db):
+    """current_load of the stack's node, and the accounts it has"""
+    return tuple(db.execute(sqltext("""SELECT n.current_load,
+        (SELECT COUNT(DISTINCT u.email) FROM users u WHERE u.nodeid = n.id AND u.replaced_at IS NULL)
+        FROM nodes n JOIN services s ON n.service = s.id WHERE s.service = 'sync-1.5' AND n.node = :node"""),
+        {"node": os.environ["SYNC_PUBLIC_URL"]}).first())
+
+
 def sync_now(uid, **token):
     """a token, and a write with it: the account syncs"""
     res = login(uid, **token)
@@ -94,8 +115,7 @@ def test_listed_uid_syncs(db):
 
 def test_unlisted_uid_refused_and_pending(db, admin, admin_db, recorded):
     for _ in range(2):
-        res = login(UNLISTED)
-        assert res.status_code != 200, res.text
+        refused_login(UNLISTED)
     assert rows(db, UNLISTED) == 0
     if not recorded:
         assert refused(db, UNLISTED) is None and "ffs_sync_pending_accounts 0\n" in metrics()
@@ -137,7 +157,7 @@ def test_keys_change_of_an_allowed_account(db):
     assert rows(db, LISTED) == 2
 
 
-def test_before_the_allowlist(db):
+def test_sync_while_off(db):
     # with the allowlist off: an account like any other
     sync_now(OLD)
     assert rows(db, OLD) == 1
@@ -155,7 +175,7 @@ def test_an_account_from_before_the_allowlist_keeps_working(db):
 def test_reject(db, admin, admin_db, recorded):
     if not recorded:
         pytest.skip("no pending accounts on this server")
-    assert login(REJECTED).status_code != 200
+    refused_login(REJECTED)
     assert until(lambda: refusal_events(admin_db, REJECTED) == 1)
     page, done = admin.confirm(f"/sync/allowlist/reject?uid={REJECTED}")
     assert "It stays refused" in page and f"Rejected Sync account {REJECTED}" in done
@@ -163,7 +183,7 @@ def test_reject(db, admin, admin_db, recorded):
     page = admin.get("/")
     assert f'data-uid="{REJECTED}"' not in table_of(page, "sync-pending") and f'<tr data-uid="{REJECTED}">' in table_of(page, "sync-rejected")
     # refused again, counted, no new event
-    assert login(REJECTED).status_code != 200
+    refused_login(REJECTED)
     assert refused(db, REJECTED) == (2, True)
     time.sleep(6)
     assert refusal_events(admin_db, REJECTED) == 1
@@ -192,18 +212,36 @@ def test_with_max_users(db, admin, recorded):
     full = db.execute(sqltext("SELECT COUNT(DISTINCT email) FROM users")).scalar()
     db.execute(sqltext("UPDATE config SET config_value = :v WHERE config_key = 'max_users'"), {"v": str(full)})
     try:
-        assert login(WHILE_FULL).status_code != 200 and refused(db, WHILE_FULL) == ((1, False) if recorded else None)
-        assert login(LISTED_FULL).status_code != 200 and refused(db, LISTED_FULL) is None and rows(db, LISTED_FULL) == 0
+        refused_login(WHILE_FULL)
+        assert refused(db, WHILE_FULL) == ((1, False) if recorded else None)
+        refused_login(LISTED_FULL)
+        assert refused(db, LISTED_FULL) is None and rows(db, LISTED_FULL) == 0
         # an account already here still changes its keys
         time.sleep(1.1)
         now = int(time.time())
         sync_now(LISTED, generation=now, keys_changed_at=now, client_state="cccc")
         # room again: the listed one gets in, the other is still refused
         db.execute(sqltext("UPDATE config SET config_value = :v WHERE config_key = 'max_users'"), {"v": str(full + 1)})
-        assert login(WHILE_FULL).status_code != 200 and refused(db, WHILE_FULL) == ((2, False) if recorded else None)
+        refused_login(WHILE_FULL)
+        assert refused(db, WHILE_FULL) == ((2, False) if recorded else None)
         sync_now(LISTED_FULL)
     finally:
         db.execute(sqltext("UPDATE config SET config_value = 'unlimited' WHERE config_key = 'max_users'"))
+
+
+def test_refused_tries_leave_the_node_load(db, admin):
+    # every refused try adds one to the node's load (the tokenserver counts it before the
+    # INSERT the trigger refuses): the admin UI counts it again, at once from 10 off (which also
+    # takes back the tries of the tests before), and says so in the setup checks; an allowed
+    # account still gets the node
+    accounts = node_load(db)[1]
+    for i in range(12):
+        refused_login(f"5{i:x}" * 16)
+    assert until(lambda: node_load(db) == (accounts, accounts)), (node_load(db), accounts)
+    assert "<td>Sync node load</td><td><span class=\"pill warn\">warning</span>" in admin.get("/")
+    admin.confirm(f"/sync/allowlist/allow?uid={NODE_UID}")
+    sync_now(NODE_UID)
+    assert rows(db, NODE_UID) == 1 and node_load(db) == (accounts + 1, accounts + 1)
 
 
 def test_read_only(db, recorded):

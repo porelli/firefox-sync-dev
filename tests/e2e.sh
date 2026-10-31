@@ -1280,28 +1280,46 @@ LISTED_UID=$(printf 'a1%.0s' $(seq 16))
 allowed_on() { sql "SELECT config_value FROM config WHERE config_key = 'allowed_accounts';"; }
 allowed_list() { sql "SELECT uid FROM sync_allowed_accounts ORDER BY uid;" | paste -sd' '; }
 redeploy_allowed() { set_env SYNC_ALLOWED_ACCOUNTS "$1"; dc up -d > /dev/null 2>&1; INIT_CODE=$(wait_init); }
-check "$(allowed_on) $(sql "SELECT COUNT(*) FROM information_schema.triggers WHERE event_object_table = 'users';")" "off 2" \
-  "off by default (SYNC_ALLOWED_ACCOUNTS empty), its trigger next to that of max users"
+users_triggers() { sql "SELECT COUNT(*) FROM information_schema.triggers WHERE event_object_table = 'users';"; }
+check "$(allowed_on) $(users_triggers)" "off 1" \
+  "off by default (SYNC_ALLOWED_ACCOUNTS empty): no trigger of it, max users' alone (no table it could write that is not transactional)"
 MAX_BEFORE=$(max_users)
 sql "UPDATE config SET config_value = 'unlimited' WHERE config_key = 'max_users';" > /dev/null
-admin_pytest "/tests/test_sync_allowlist.py -k before_the_allowlist"
+admin_pytest "/tests/test_sync_allowlist.py -k sync_while_off"
 check "$?" 0 "an account syncs before the allowlist"
 redeploy_allowed "initial:${LISTED_UID}"
-check "${INIT_CODE} $(allowed_on) $(allowed_list)" "0 on ${LISTED_UID}" "SYNC_ALLOWED_ACCOUNTS=initial:<uid>: on, the uid on the list"
+check "${INIT_CODE} $(allowed_on) $(allowed_list) $(users_triggers)" "0 on ${LISTED_UID} 2" "SYNC_ALLOWED_ACCOUNTS=initial:<uid>: on, the uid on the list, its trigger next to that of max users"
+# the refusals' table: Aria on MariaDB (crash-safe), MyISAM on the stack's MySQL (no binary
+# logging, myisam_recover_options), InnoDB on your own MySQL with binary logging (not recorded)
+if [ "${BACKEND}" = mysql ]; then
+  refused_engine=Aria
+  [ "${DATABASE_SERVER}" = MySQL ] && refused_engine=MyISAM
+  [ -n "${EXTDB}" ] && refused_engine=InnoDB
+  check "$(sql "SELECT engine FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'sync_refused_accounts';")" "${refused_engine}" \
+    "the refusals kept in ${refused_engine}"
+  [ "${DATABASE_SERVER}" = MySQL ] && [ -z "${EXTDB}" ] && check "$(sql "SELECT @@myisam_recover_options;")" "BACKUP,FORCE" "the stack's MySQL recovers MyISAM tables after a crash"
+fi
 check "$(dc logs tokenserver_db_init 2>&1 | grep -c "SYNC_ALLOWED_ACCOUNTS=initial:${LISTED_UID}: invite-only, 1 accounts allowed, managed in the admin UI")" 1 "the init container says so"
 check "$(hb) $(admin_healthy)" "200 healthy" "/__heartbeat__ and the admin UI with the allowlist"
-# MySQL with binary logging and enforce_gtid_consistency (your own server here): refused, not recorded
+# InnoDB (your own MySQL here): refused, not recorded, and said
 no_pending=0
-# (MariaDB has no enforce_gtid_consistency: an error, 0)
-[ "${BACKEND}" = mysql ] && no_pending=$(sql "SELECT @@log_bin AND @@enforce_gtid_consistency = 'ON';" 2> /dev/null)
-no_pending=${no_pending:-0}
-check "$(dc logs tokenserver_db_init 2>&1 | grep -c 'WARNING: MySQL with binary logging and enforce_gtid_consistency')" "${no_pending}" \
+[ "${refused_engine:-}" = InnoDB ] && no_pending=1
+check "$(dc logs tokenserver_db_init 2>&1 | grep -c 'accounts refused by SYNC_ALLOWED_ACCOUNTS are refused but not listed')" "${no_pending}" \
   "the init container warns when the refusals cannot be recorded (here: ${no_pending})"
-admin_pytest "/tests/test_sync_allowlist.py -k 'not read_only and not before_the_allowlist'"
-check "$?" 0 "invite-only Sync tests (listed, refused and pending, approved, keys change, from before, reject, allow and remove, max users)"
+admin_pytest "/tests/test_sync_allowlist.py -k 'not read_only and not sync_while_off'"
+check "$?" 0 "invite-only Sync tests (listed, refused and pending, approved, keys change, from before, reject, allow and remove, max users, the node's load)"
 # initial: kept what the page changed
 rerun_init > /dev/null
-check "$(allowed_list | wc -w)" 3 "initial:<uid> keeps the uids approved in the admin UI on a restart"
+check "$(allowed_list | wc -w)" 4 "initial:<uid> keeps the uids approved in the admin UI on a restart"
+# initial: once: a uid of it removed in the admin UI stays removed, also after off and on again
+sql "DELETE FROM sync_allowed_accounts WHERE uid = '${LISTED_UID}';" > /dev/null
+redeploy_allowed ""
+redeploy_allowed "initial:${LISTED_UID}"
+check "${INIT_CODE} $(allowed_on) $(allowed_list | grep -c "${LISTED_UID}")" "0 on 0" "initial:<uid> applies once: a uid removed since is not added again"
+# the node's load counted again at every start (a refused try counts in it)
+node_load() { sql "SELECT n.current_load - (SELECT COUNT(DISTINCT u.email) FROM users u WHERE u.nodeid = n.id AND u.replaced_at IS NULL) FROM nodes n WHERE n.node = '${SYNC_PUBLIC_URL}';"; }
+sql "UPDATE nodes SET current_load = current_load + 3 WHERE node = '${SYNC_PUBLIC_URL}';" > /dev/null
+check "$(node_load) $(rerun_init) $(node_load)" "3 0 0" "the init container counts the node's load again from its accounts"
 # a plain list: set on every start, the others go; read-only in the admin UI
 redeploy_allowed "${LISTED_UID}"
 check "${INIT_CODE} $(allowed_on) $(allowed_list)" "0 on ${LISTED_UID}" "SYNC_ALLOWED_ACCOUNTS=<uid>: exactly that list, set on every start"
@@ -1316,7 +1334,7 @@ check "$(dc logs tokenserver_db_init 2>&1 | grep -c "SYNC_ALLOWED_ACCOUNTS='admi
 check "$(allowed_on) $(allowed_list)" "on ${LISTED_UID}" "the allowlist unchanged by a SYNC_ALLOWED_ACCOUNTS not valid"
 # off again, max users as it was: every account gets in
 redeploy_allowed ""
-check "${INIT_CODE} $(allowed_on)" "0 off" "SYNC_ALLOWED_ACCOUNTS empty again: off"
+check "${INIT_CODE} $(allowed_on) $(users_triggers)" "0 off 1" "SYNC_ALLOWED_ACCOUNTS empty again: off, its trigger gone"
 sql "UPDATE config SET config_value = '${MAX_BEFORE}' WHERE config_key = 'max_users';" > /dev/null
 # (the admin UI recreated: settled, its checks seeing the Sync server, before the next phase)
 check "$(hb) $(admin_healthy) $(metrics_show 'ffs_up{component="Sync server"} 1')" "200 healthy yes" "/__heartbeat__ and the admin UI after the allowlist"
