@@ -88,6 +88,8 @@ Every command copies the checkout into its slot first, so uncommitted changes ar
 
 `create` also makes the VM's SSH host key and gives it to cloud-init, so every connection checks it against `FFS_VM_DIR/known_hosts` (connections share a master of the script's own, not one of `~/.ssh/config`). A VM created before has its key recorded at the first connection: trust on first use, on the host's loopback. The slots' locks are in `FFS_VM_DIR/slots`; the script refuses a `FFS_VM_DIR` that is not yours or that others can write to. Test logs go to a new private folder in `${TMPDIR:-/tmp}`, or `LOGS`. `provision` sends the token only to the host key it knows, and only when the port's listener is the VM's qemu.
 
+The VM's clock stops while the host sleeps, and its chrony may have no time source it can reach: every command (`test`, `ssh`, `image`...) and `start` set it to the host's when they are more than `CLOCK_SLACK` (5) seconds apart, and say so. qemu's RTC follows the host's clock in UTC; `provision` lets chrony step the clock whenever it is off by a second.
+
 Tested on macOS on Apple silicon (arm64, HVF). macOS on Intel and Linux with KVM, and with them the amd64 VM, are written for (`qemu-system-x86_64`, the OVMF and AAVMF firmware paths, `genisoimage` and `xorriso`) but not tested yet.
 
 ## The Sync server and Podman

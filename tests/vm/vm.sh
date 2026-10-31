@@ -72,6 +72,8 @@
 #                   checked against FFS_VM_DIR/known_hosts; a VM created without one has its key
 #                   recorded on the first connection (trust on first use)
 #   CPUS, MEM       at start: CPUs and MB of memory (default 3/4 of the host's CPUs, half its memory)
+#   CLOCK_SLACK     seconds the VM's clock may be off the host's before a command sets it to the
+#                   host's (default 5): the guest's clock stops while the host sleeps
 #   ACCEL           qemu's accelerator (default hvf on macOS, kvm on Linux)
 #   FFS_VM_FIRMWARE, FFS_VM_FIRMWARE_VARS  the UEFI code and variables template (default: edk2
 #                   of Homebrew's qemu, or of the Linux packages: AAVMF, OVMF, edk2)
@@ -394,8 +396,11 @@ start() {
     die "port ${SSH_PORT} is in use (another VM? a second one needs its own FFS_VM_DIR and SSH_PORT)"
   fi
   # cache=unsafe: a throwaway test VM, I/O speed over crash safety; discard: space freed
-  # in the VM (fstrim) goes back to the host
-  "qemu-system-${QEMU_ARCH}" -machine "${MACHINE},accel=${ACCEL}" -cpu host -smp "${cpus}" -m "${mem}" \
+  # in the VM (fstrim) goes back to the host. The RTC on the host's clock, in UTC (driftfix,
+  # catching up lost ticks, exists on x86 only); sync_clock does the rest
+  local rtc=base=utc,clock=host
+  [ "${QEMU_ARCH}" != x86_64 ] || rtc=${rtc},driftfix=slew
+  "qemu-system-${QEMU_ARCH}" -machine "${MACHINE},accel=${ACCEL}" -cpu host -smp "${cpus}" -m "${mem}" -rtc "${rtc}" \
     -drive if=pflash,format=raw,readonly=on,file="${FW_CODE}" \
     -drive if=pflash,format=raw,file="${VARS}" \
     -drive if=virtio,format=qcow2,file="${DISK}",cache=unsafe,discard=unmap,detect-zeroes=unmap \
@@ -415,6 +420,7 @@ start() {
     # (the upgraded kernel of the first boot)
     if vssh test -f /var/run/reboot-required < /dev/null; then say "rebooting (upgrades)"; stop; start; return; fi
   fi
+  sync_clock
   vssh 'podman --version; docker --version; docker compose version' < /dev/null 2> /dev/null
 }
 
@@ -541,6 +547,10 @@ provision() { # [first: the first boot, from start (nothing runs in the VM yet)]
     apt update
     apt install -y ${APT_PKGS[*]} > /dev/null
     apt upgrade -y > /dev/null
+    # chrony steps a clock that is off by more than a second whenever it can (not only in
+    # its first updates), for when a time source answers after the host slept
+    echo 'makestep 1 -1' | sudo tee /etc/chrony/conf.d/ffs-makestep.conf > /dev/null
+    sudo systemctl enable --now chrony > /dev/null 2>&1 && sudo systemctl restart chrony || true
     sudo usermod -aG docker ubuntu
     sudo loginctl enable-linger ubuntu
     # ~/.local/bin on PATH for every shell, also the non-interactive ones of ssh (before
@@ -807,9 +817,25 @@ enter_slot() { # what [nosync]
   take_slot "$1"
   running || start_existing
   install_lib || { say "VM not reachable"; exit 1; }
+  sync_clock
   # the end of what ran in this slot before (a run stopped from the host tears down for a while)
   vssh "source ~/.ffs/lib.sh && ffs_wait_lock 9 /tmp/ffs-slot-${SLOT_HELD}.lock 'the end of the last run of slot ${SLOT_HELD}' && mkdir -p ~/.ffs/cwd/${SLOT_HELD} && ln -sfn ~/$(slot_dir) ~/.ffs/cwd/${SLOT_HELD}/firefox-sync" < /dev/null
   [ -n "${2:-}" ] || sync_slot
+}
+# the guest's clock set to the host's when they are more than CLOCK_SLACK (5) seconds apart.
+# HVF and KVM stop the guest's counter while the host sleeps, and its chrony then has no source
+# it can reach in time (or none: NTS through user networking): after a night the guest was
+# hours behind, and apt refused the Release files signed "in the future". The host is the
+# reference; a step forward is what a real machine does after resuming
+sync_clock() {
+  local guest host drift
+  guest=$(vssh 'date +%s' < /dev/null 2> /dev/null) || return 0
+  host=$(date +%s)
+  drift=$((host - guest))
+  [ "${drift#-}" -gt "${CLOCK_SLACK:-5}" ] || return 0
+  say "the VM's clock is ${drift} s off the host's: set to the host's"
+  vssh "sudo date -u -s @$(date +%s) > /dev/null && (sudo hwclock --systohc 2> /dev/null || true)" < /dev/null ||
+    say "could not set the VM's clock"
 }
 sync_slot() {
   rsync -a --delete --exclude .git -e "ssh ${SSH_OPTS[*]}" "${REPO}/" "ubuntu@127.0.0.1:$(slot_dir)/" ||
